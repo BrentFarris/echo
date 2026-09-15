@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -195,6 +196,29 @@ func snapshotWorkspaceDirectoryChanges(ctx context.Context, execution ExecutionC
 
 func snapshotWorkspacePaths(ctx context.Context, execution ExecutionContext, roots []string) (workspaceSnapshot, error) {
 	snapshot := workspaceSnapshot{}
+	pathKey := func(path string) string {
+		path = filepath.Clean(path)
+		if runtime.GOOS == "windows" {
+			path = strings.ToLower(path)
+		}
+		return path
+	}
+	eventRoots := map[string]bool{}
+	if execution.WorkspaceFiles != nil {
+		registered, err := execution.WorkspaceFiles.Roots(execution.WorkspaceID)
+		if err != nil {
+			return nil, err
+		}
+		for _, root := range registered {
+			if execution.WorkspaceFiles.Tracks(execution.WorkspaceID, root.HostPath) {
+				path, err := filepath.EvalSymlinks(root.HostPath)
+				if err != nil {
+					return nil, err
+				}
+				eventRoots[pathKey(path)] = true
+			}
+		}
+	}
 	for _, root := range roots {
 		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
@@ -202,6 +226,11 @@ func snapshotWorkspacePaths(ctx context.Context, execution ExecutionContext, roo
 			}
 			if err := ctx.Err(); err != nil {
 				return err
+			}
+			// A shell started in a Git parent can contain an independently
+			// configured P4 root. Leave that entire subtree to event tracking.
+			if entry.IsDir() && eventRoots[pathKey(path)] {
+				return filepath.SkipDir
 			}
 			if path == root {
 				return nil

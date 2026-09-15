@@ -3953,6 +3953,7 @@ func (s *chatSession) toolContext(ctx context.Context, turnID string, scopes *to
 		WorkspaceSkills:        s.manager.server.workspaceSkills(s.workspace),
 		PluginAuthoring:        s.manager.server.pluginAuthoring(s.workspace.ID, roots),
 		SourceControl:          s.manager.server.sourceControl,
+		WorkspaceFiles:         s.manager.server.fs,
 	}
 }
 
@@ -4073,11 +4074,20 @@ func goalContinuationMessage() llm.Message {
 type workspaceSourceControlProfile struct {
 	hasGit    bool
 	hasFossil bool
+	hasP4     bool
 }
 
 func (p workspaceSourceControlProfile) restrictToolScopes(scopes *tools.ToolScopeChecker) {
 	if scopes == nil {
 		return
+	}
+	if p.hasP4 {
+		if !p.hasGit {
+			scopes.DenyTool("git_inspect")
+		}
+		if !p.hasFossil {
+			scopes.DenyTool(tools.FossilInspectToolName)
+		}
 	}
 	switch {
 	case p.hasFossil && !p.hasGit:
@@ -4104,6 +4114,8 @@ func (s *Server) workspaceSourceControlProfile(workspace workspaces.Workspace) w
 			profile.hasFossil = true
 		case "git":
 			profile.hasGit = true
+		case "p4":
+			profile.hasP4 = true
 		}
 	}
 	return profile
@@ -4179,11 +4191,22 @@ func (s *Server) agentModeSystemMessageWithSourceControl(workspace workspaces.Wo
 }
 
 func sourceControlSystemGuidance(profile workspaceSourceControlProfile, scopes *tools.ToolScopeChecker) string {
-	if !profile.hasFossil && !profile.hasGit {
+	if !profile.hasFossil && !profile.hasGit && !profile.hasP4 {
 		return ""
 	}
 
 	var guidance strings.Builder
+	if profile.hasP4 {
+		guidance.WriteString("Source control: this workspace includes P4 (Perforce)")
+		if profile.hasGit {
+			guidance.WriteString(" and Git")
+		}
+		if profile.hasFossil {
+			guidance.WriteString(" and Fossil")
+		}
+		guidance.WriteString(". Use source_control_inspect with provider p4 for pending/default changelist status and working-copy diffs. Select a repository identity explicitly in mixed-provider workspaces. P4 has no Git staging area. Use structured filesystem tools, including filesystem_move for renames: when automatic tracking is enabled Echo checks out edits and registers direct file changes. Preserve existing changelist assignments. Shell and terminal changes require a reconciliation preview; do not run a top-level reconcile automatically. A pending registration diagnostic means the local file operation succeeded; do not repeat the write. Submit, shelving, sync, and resolve are outside Echo's P4 integration. ")
+		return guidance.String()
+	}
 	switch {
 	case profile.hasFossil && profile.hasGit:
 		guidance.WriteString("Source control: this workspace contains both Fossil and Git repositories. ")

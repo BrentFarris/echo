@@ -7,6 +7,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/brent/echo/internal/mutation"
+	"github.com/brent/echo/internal/workspacefs"
 )
 
 // Service multiplexes provider capabilities behind one repository namespace.
@@ -43,7 +46,48 @@ func (s *Service) Register(provider Provider) error {
 	}
 	s.providers[id] = provider
 	s.providerOrder = append(s.providerOrder, id)
+	if notifier, ok := provider.(NotifyingProvider); ok {
+		notifier.SetNotifier(s.Emit)
+	}
 	return nil
+}
+
+// File events retain their paths for providers that can reconcile incrementally.
+func (s *Service) HandleFileEvent(event workspacefs.WatchEvent) {
+	for _, provider := range s.providerSnapshot() {
+		if receiver, ok := provider.(FileEventProvider); ok {
+			receiver.HandleFileEvent(event)
+		}
+	}
+	s.InvalidateWorkspace(event.WorkspaceID)
+}
+
+func (s *Service) Tracks(workspaceID, path string) bool {
+	for _, provider := range s.providerSnapshot() {
+		if coordinator, ok := provider.(MutationProvider); ok && coordinator.Tracks(workspaceID, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) Run(ctx context.Context, op mutation.Operation, apply func() error) (mutation.Result, error) {
+	for _, provider := range s.providerSnapshot() {
+		coordinator, ok := provider.(MutationProvider)
+		if !ok {
+			continue
+		}
+		handles := coordinator.Tracks(op.WorkspaceID, op.Path)
+		if recovery, ok := provider.(mutation.RecoveryCoordinator); ok {
+			handles = handles || recovery.Handles(op)
+		}
+		if handles {
+			result, err := coordinator.Run(ctx, op, apply)
+			s.InvalidateWorkspace(op.WorkspaceID)
+			return result, err
+		}
+	}
+	return mutation.Apply(op, apply)
 }
 
 func (s *Service) SetNotifier(notify func(Event)) {

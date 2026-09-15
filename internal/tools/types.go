@@ -9,6 +9,7 @@ import (
 
 	"github.com/brent/echo/internal/sandbox"
 	"github.com/brent/echo/internal/sourcecontrol"
+	"github.com/brent/echo/internal/workspacefs"
 )
 
 type Schema map[string]any
@@ -147,7 +148,8 @@ type ExecutionContext struct {
 	// It can scaffold, inspect, and stage, but never approve or execute a stage.
 	PluginAuthoring PluginAuthoringProvider
 	// SourceControl exposes provider-neutral, read-only repository inspection.
-	SourceControl SourceControlInspector
+	SourceControl  SourceControlInspector
+	WorkspaceFiles *workspacefs.Service
 }
 
 type SourceControlInspector interface {

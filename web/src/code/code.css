@@ -863,6 +863,10 @@
   color: #cca700;
 }
 
+.p4-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px; }
+.p4-toolbar label { display: flex; align-items: center; gap: 6px; }
+.p4-description { padding: 4px 12px 8px; white-space: pre-wrap; font-size: 12px; opacity: .8; }
+
 .git-change-group > header {
   justify-content: space-between;
   height: 24px;

@@ -1,0 +1,61 @@
+name: P4 Acceptance
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  p4:
+    name: P4 tracking and shared review (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      ECHO_REQUIRE_P4: "1"
+      ECHO_REQUIRE_FOSSIL: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install verified P4 test binaries
+        run: python scripts/install-p4-test-tools.py
+      - name: Test provider, filesystem, tools, and server
+        run: go test ./internal/sourcecontrol/... ./internal/workspacefs ./internal/tools ./internal/server -timeout 5m
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+      - name: Frontend checks and build
+        working-directory: web
+        run: |
+          npm test
+          npm run build
+      - name: Install browser
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Test all providers in the shared Monaco editor
+        working-directory: web
+        run: npx playwright test diff-hunks.spec.ts p4-diffs.spec.ts
+      - name: Upload acceptance evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p4-acceptance-${{ matrix.os }}
+          path: web/test-results
+          retention-days: 14

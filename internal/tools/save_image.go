@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/brent/echo/internal/mutation"
 )
 
 func init() {
@@ -44,9 +46,10 @@ type saveImageArgs struct {
 }
 
 type saveImageOutput struct {
-	Path         string `json:"path"`
-	BytesWritten int64  `json:"bytesWritten"`
-	Overwritten  bool   `json:"overwritten"`
+	Registration *mutation.Result `json:"registration,omitempty"`
+	Path         string           `json:"path"`
+	BytesWritten int64            `json:"bytesWritten"`
+	Overwritten  bool             `json:"overwritten"`
 }
 
 func saveImage(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
@@ -127,26 +130,9 @@ func saveImage(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
 		return nil, err
 	}
 
-	flag := os.O_WRONLY | os.O_CREATE
-	if args.Overwrite {
-		flag |= os.O_TRUNC
-	} else {
-		flag |= os.O_EXCL
-	}
-	file, err := os.OpenFile(path, flag, 0o600)
+	written, registration, err := writeToolFile(ctx, path, "save_image", imageData, before, args.Overwrite)
 	if err != nil {
-		if os.IsExist(err) {
-			return nil, SafeError{Code: "file_exists", Message: "file already exists"}
-		}
-		return nil, fmt.Errorf("create file: %w", err)
-	}
-	written, err := file.Write(imageData)
-	if err != nil {
-		_ = file.Close()
-		return nil, fmt.Errorf("write file: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return nil, fmt.Errorf("close file: %w", err)
+		return nil, err
 	}
 
 	after, err := snapshotExistingFile(ctx, path)
@@ -156,6 +142,7 @@ func saveImage(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
 	ctx.recordFileChanges(fileChangeForPath(ctx, path, before, after))
 
 	return saveImageOutput{
+		Registration: registration,
 		Path:         relativeWorkspacePath(ctx, path),
 		BytesWritten: int64(written),
 		Overwritten:  overwritten,

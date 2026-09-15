@@ -114,6 +114,15 @@ export async function setParentRepositorySearch(workspaceId: string, enabled: bo
   return api(`/api/workspaces/${encodeURIComponent(workspaceId)}/source-control/settings`, { method: "PUT", body: { searchParentRepositories: enabled } });
 }
 
+export type P4Settings = { roots: Record<string, { server: string; user: string; client: string }>; repositories: Record<string, { tracking: boolean; active: string }> };
+export async function loadP4Settings(workspaceId: string): Promise<P4Settings> {
+  const settings = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/source-control/settings`, { method: "GET" }) as { p4: P4Settings };
+  return settings.p4;
+}
+export async function saveP4Settings(workspaceId: string, p4: P4Settings): Promise<void> {
+  await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/source-control/settings`, { method: "PUT", body: { p4 } });
+}
+
 // Fossil project creation is intentionally deferred; Git keeps its mature
 // initialization and clone endpoints during the compatibility window.
 export async function initializeGitRepository(workspaceId: string, rootId: string, path = ""): Promise<{ repositories: SourceControlRepository[] }> {

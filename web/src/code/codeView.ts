@@ -12,7 +12,7 @@ import { listRepositories as listSourceControlRepositories, loadDiff as loadSour
 import type { SourceControlDiffDocument, SourceControlDiffRequest, SourceControlDiffScope, SourceControlHunkAction, SourceControlRepository } from "./sourceControlTypes";
 import { DiffHunkGutter } from "./diffHunkGutter";
 import { replacementEdit, revertBlockText, type DiffBlock } from "./diffHunks";
-import { normalizePersistedSourceControlRepository, persistedSourceControlGroupId } from "./sourceControlSession";
+import { normalizePersistedSourceControlRepository, persistedSourceControlGroupId, persistedSourceControlPath } from "./sourceControlSession";
 import { SourceControlView } from "./sourceControlView";
 import {
   buildCodeChatEditorContext, formatCodeChatSelectionNotice, runCodeChatSavePreflight,
@@ -2454,7 +2454,7 @@ class CodeView {
     for (const candidate of this.tabs) {
       if (candidate.model !== tab.model) continue;
       candidate.revision = snapshot.revision;
-      candidate.hostPath = snapshot.hostPath;
+      if (!candidate.diff) candidate.hostPath = snapshot.hostPath;
       candidate.hasBom = snapshot.hasBom;
       candidate.eol = snapshot.eol;
       candidate.dirty = false;
@@ -2544,7 +2544,7 @@ class CodeView {
     for (const candidate of sharedTabs) {
       candidate.applying = false;
       candidate.revision = snapshot.revision;
-      candidate.hostPath = snapshot.hostPath;
+      if (!candidate.diff) candidate.hostPath = snapshot.hostPath;
       candidate.hasBom = snapshot.hasBom;
       candidate.eol = snapshot.eol;
       candidate.dirty = false;
@@ -4237,10 +4237,11 @@ class CodeView {
       if (persisted.kind === "diff" && persisted.diff) {
         const repository = await this.resolvePersistedSourceControlRepository(persisted.diff.repository);
         const groupId = persistedSourceControlGroupId(repository, persisted.diff.scope, persisted.diff.groupId);
+        const path = persistedSourceControlPath(repository, persisted.diff.path, persisted.diff.fileRef || persisted.ref);
         await this.openSourceControlDiff(
           repository,
           {
-            ...sourceControlTargetFromLegacy(persisted.diff.scope, persisted.diff.path, persisted.diff.oldPath, persisted.diff.reviewRef, groupId),
+            ...sourceControlTargetFromLegacy(persisted.diff.scope, path, persisted.diff.oldPath, persisted.diff.reviewRef, groupId),
             fileRef: persisted.diff.fileRef,
           },
           true,
@@ -4317,6 +4318,9 @@ class CodeView {
     const repositories = await this.sourceControlRepositoryLookup;
     const exact = repositories.find((candidate) => candidate.id === normalized.id);
     if (exact) return exact;
+    // A P4 identity includes its server, user, and client. A root match can
+    // refer to a different connection and must not silently retarget a tab.
+    if (normalized.providerId === "p4") return normalized;
     const sameProvider = repositories.filter((candidate) => candidate.providerId === normalized.providerId);
     const rootMatch = normalized.rootRef && sameProvider.find((candidate) => candidate.rootRef
       && candidate.rootRef.rootId === normalized.rootRef!.rootId

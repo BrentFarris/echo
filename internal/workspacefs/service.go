@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/brent/echo/internal/mutation"
 	"github.com/brent/echo/internal/workspaces"
 )
 
@@ -103,27 +104,29 @@ type Root struct {
 }
 
 type Entry struct {
-	Ref           FileRef `json:"ref"`
-	Name          string  `json:"name"`
-	HostPath      string  `json:"hostPath"`
-	Kind          string  `json:"kind"`
-	IsSymlink     bool    `json:"isSymlink"`
-	ReadOnly      bool    `json:"readOnly,omitempty"`
-	BlockedReason string  `json:"blockedReason,omitempty"`
-	Size          int64   `json:"size,omitempty"`
-	ModifiedAt    string  `json:"modifiedAt"`
+	Registration  *mutation.Result `json:"registration,omitempty"`
+	Ref           FileRef          `json:"ref"`
+	Name          string           `json:"name"`
+	HostPath      string           `json:"hostPath"`
+	Kind          string           `json:"kind"`
+	IsSymlink     bool             `json:"isSymlink"`
+	ReadOnly      bool             `json:"readOnly,omitempty"`
+	BlockedReason string           `json:"blockedReason,omitempty"`
+	Size          int64            `json:"size,omitempty"`
+	ModifiedAt    string           `json:"modifiedAt"`
 }
 
 type FileSnapshot struct {
-	Ref        FileRef `json:"ref"`
-	HostPath   string  `json:"hostPath"`
-	Content    string  `json:"content"`
-	Revision   string  `json:"revision"`
-	Size       int64   `json:"size"`
-	ModifiedAt string  `json:"modifiedAt"`
-	Encoding   string  `json:"encoding"`
-	EOL        string  `json:"eol"`
-	HasBOM     bool    `json:"hasBom"`
+	Registration *mutation.Result `json:"registration,omitempty"`
+	Ref          FileRef          `json:"ref"`
+	HostPath     string           `json:"hostPath"`
+	Content      string           `json:"content"`
+	Revision     string           `json:"revision"`
+	Size         int64            `json:"size"`
+	ModifiedAt   string           `json:"modifiedAt"`
+	Encoding     string           `json:"encoding"`
+	EOL          string           `json:"eol"`
+	HasBOM       bool             `json:"hasBom"`
 }
 
 type SaveRequest struct {
@@ -155,12 +158,13 @@ type referencedPathLock struct {
 
 // Service owns editor filesystem operations and per-path write locks.
 type Service struct {
-	workspaces *workspaces.Manager
-	dataPath   string
-	locksMu    sync.Mutex
-	locks      map[string]*referencedPathLock
-	index      *Index
-	metadataMu sync.RWMutex
+	coordinator mutation.Coordinator
+	workspaces  *workspaces.Manager
+	dataPath    string
+	locksMu     sync.Mutex
+	locks       map[string]*referencedPathLock
+	index       *Index
+	metadataMu  sync.RWMutex
 	// workspace -> provider -> root/path identities. Providers replace only
 	// their own entries so Git and Fossil metadata can coexist.
 	sourceControlMetadata map[string]map[string]map[string]bool

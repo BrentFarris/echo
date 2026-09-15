@@ -1,6 +1,11 @@
 package sourcecontrol
 
-import "context"
+import (
+	"context"
+
+	"github.com/brent/echo/internal/mutation"
+	"github.com/brent/echo/internal/workspacefs"
+)
 
 // Provider owns discovery and identity for one VCS. Feature interfaces are
 // intentionally separate so providers are never forced into Git semantics.
@@ -48,6 +53,10 @@ type AnnotateProvider interface {
 type ActionProvider interface {
 	Action(context.Context, string, string, ActionRequest) (ActionResult, error)
 }
+
+type MutationProvider interface{ mutation.Coordinator }
+type FileEventProvider interface{ HandleFileEvent(workspacefs.WatchEvent) }
+type NotifyingProvider interface{ SetNotifier(func(Event)) }
 
 type WatchProvider interface {
 	Subscribe(context.Context, string) error

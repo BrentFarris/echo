@@ -416,7 +416,7 @@ func extractWorkspacePaths(ctx ExecutionContext, arguments json.RawMessage) []st
 
 func isPathArgKey(key string) bool {
 	switch key {
-	case "path", "workingDirectory", "repository", "base", "target", "workflowPath", "imagePath":
+	case "path", "destination", "workingDirectory", "repository", "base", "target", "workflowPath", "imagePath":
 		return true
 	default:
 		return false

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/brent/echo/internal/mutation"
 )
 
 func init() {
@@ -42,9 +44,10 @@ type createTextFileArgs struct {
 }
 
 type createTextFileOutput struct {
-	Path         string `json:"path"`
-	BytesWritten int64  `json:"bytesWritten"`
-	Overwritten  bool   `json:"overwritten"`
+	Registration *mutation.Result `json:"registration,omitempty"`
+	Path         string           `json:"path"`
+	BytesWritten int64            `json:"bytesWritten"`
+	Overwritten  bool             `json:"overwritten"`
 }
 
 func createTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
@@ -89,26 +92,9 @@ func createTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error
 	if err := ctx.context().Err(); err != nil {
 		return nil, err
 	}
-	flag := os.O_WRONLY | os.O_CREATE
-	if args.Overwrite {
-		flag |= os.O_TRUNC
-	} else {
-		flag |= os.O_EXCL
-	}
-	file, err := os.OpenFile(path, flag, 0o600)
+	written, registration, err := writeToolFile(ctx, path, "filesystem_create_text", []byte(args.Content), before, args.Overwrite)
 	if err != nil {
-		if os.IsExist(err) {
-			return nil, SafeError{Code: "file_exists", Message: "file already exists"}
-		}
-		return nil, fmt.Errorf("create file: %w", err)
-	}
-	written, err := file.WriteString(args.Content)
-	if err != nil {
-		_ = file.Close()
-		return nil, fmt.Errorf("write file: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return nil, fmt.Errorf("close file: %w", err)
+		return nil, err
 	}
 	after, err := snapshotExistingFile(ctx, path)
 	if err != nil {
@@ -117,6 +103,7 @@ func createTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error
 	ctx.recordFileChanges(fileChangeForPath(ctx, path, before, after))
 
 	return createTextFileOutput{
+		Registration: registration,
 		Path:         relativeWorkspacePath(ctx, path),
 		BytesWritten: int64(written),
 		Overwritten:  overwritten,

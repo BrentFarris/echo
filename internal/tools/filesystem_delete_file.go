@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/brent/echo/internal/mutation"
 )
 
 func init() {
@@ -32,8 +34,10 @@ type deleteFileArgs struct {
 }
 
 type deleteFileOutput struct {
-	Path  string `json:"path"`
-	Bytes int64  `json:"bytes"`
+	Registration *mutation.Result `json:"registration,omitempty"`
+	TrashID      string           `json:"trashId,omitempty"`
+	Path         string           `json:"path"`
+	Bytes        int64            `json:"bytes"`
 }
 
 func deleteFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
@@ -73,7 +77,17 @@ func deleteFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
 	if err := ctx.context().Err(); err != nil {
 		return nil, err
 	}
-	if err := os.Remove(path); err != nil {
+	if ctx.WorkspaceFiles != nil {
+		ref, err := ctx.WorkspaceFiles.ReferenceForHostPath(ctx.WorkspaceID, path)
+		if err != nil {
+			return nil, err
+		}
+		item, err := ctx.WorkspaceFiles.TrashContext(ctx.context(), ctx.WorkspaceID, ref)
+		if err != nil {
+			return nil, err
+		}
+		output.Registration, output.TrashID = item.Registration, item.ID
+	} else if err := os.Remove(path); err != nil {
 		return nil, fmt.Errorf("delete file: %w", err)
 	}
 	ctx.recordFileChanges(fileChangeForPath(ctx, path, before, nil))

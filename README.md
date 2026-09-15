@@ -35,6 +35,7 @@ Connect Echo to a local or remote provider that exposes an OpenAI-compatible `/c
 | **Agent modes** | Built-in General, read-only Plan, and durable autonomous Goal modes plus workspace-defined system instructions, tool allowlists, and path restrictions |
 | **Code** | Monaco editing, generic opt-in LSP and DAP debugging, file tabs, workspace trees, quick open, text and file search, create/rename/save operations, external-change detection, recoverable trash, and browser hot-exit buffers |
 | **Git** | Repository discovery, working-tree status, staged and unstaged diffs, staging, commits, branches, remotes, fetch/pull/push/sync, history, tags, and stashes |
+| **Perforce** | Default and pending changelists, shared diffs, opt-in checkout and file-operation tracking, targeted reconciliation, and recoverable revert; see the [P4 guide](docs/p4-source-control.md) |
 | **Terminal** | Workspace-aware PTY sessions powered by xterm.js, resize, restart, stop, and reusable saved commands |
 | **Linux sandbox** | Optional per-workspace Docker runtime with a shared shell and visible Xfce/Chromium desktop, browser takeover, persistent Linux/browser state, and deny-by-default egress |
 | **Agent tools** | Workspace-scoped file inspection and editing, shell commands, text and file search, image/video reads, web fetch/search, image generation, and reusable workspace skills |

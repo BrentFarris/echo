@@ -181,6 +181,14 @@ const genericPresentation: SourceControlPresentationAdapter = {
 const presentations = new Map<string, SourceControlPresentationAdapter>([
   [gitPresentation.id, gitPresentation],
   [fossilPresentation.id, fossilPresentation],
+  ["p4", {
+    ...genericPresentation, id: "p4", workflow: "p4",
+    groupAction() { return null; },
+    changeAction(_repository, group) {
+      return group.id === "local" ? { action: "reconcile_preview", label: "Reconcile Selected", icon: "checklist", pathSource: "selection" }
+        : { action: "revert", label: "Revert Selected", icon: "discard", pathSource: "selection", confirmation: { title: "Revert P4 files?", message: "Local content will be backed up before P4 reverts these files. Reverting an add leaves the local file present.", confirmLabel: "Revert" } };
+    },
+  }],
 ]);
 
 /** Register a provider-specific presentation without changing the renderer. */

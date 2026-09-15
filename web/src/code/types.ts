@@ -1,5 +1,7 @@
 export type FileRef = { rootId: string; path: string };
 
+export type FileRegistration = { pending: boolean; diagnostic?: string; operationId?: string };
+
 export type WorkspaceRoot = {
   id: string;
   label: string;
@@ -9,6 +11,7 @@ export type WorkspaceRoot = {
 };
 
 export type FsEntry = {
+  registration?: FileRegistration;
   ref: FileRef;
   name: string;
   hostPath: string;
@@ -21,6 +24,7 @@ export type FsEntry = {
 };
 
 export type FileSnapshot = {
+  registration?: FileRegistration;
   ref: FileRef;
   hostPath: string;
   content: string;
@@ -33,6 +37,7 @@ export type FileSnapshot = {
 };
 
 export type TrashItem = {
+  registration?: FileRegistration;
   id: string;
   workspaceId: string;
   ref: FileRef;
@@ -110,6 +115,7 @@ export type TextReplaceTarget = {
 };
 
 export type TextReplaceUpdate = {
+  registration?: FileRegistration;
   ref: FileRef;
   revision: string;
   size: number;

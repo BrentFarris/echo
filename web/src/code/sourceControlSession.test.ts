@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizePersistedSourceControlRepository, persistedSourceControlGroupId } from "./sourceControlSession";
+import { normalizePersistedSourceControlRepository, persistedSourceControlGroupId, persistedSourceControlPath } from "./sourceControlSession";
 
 const legacyRepository = {
   id: "old-git-id",
@@ -10,6 +10,14 @@ const legacyRepository = {
 };
 
 describe("Source Control session migration", () => {
+  it("recovers old absolute diff paths using their saved file scope", () => {
+    const repository = normalizePersistedSourceControlRepository({ ...legacyRepository, scopes: [{ rootId: "root", rootLabel: "Project", repoPrefix: "subtree" }] });
+    const ref = { rootId: "root", path: "src/main.go" };
+    expect(persistedSourceControlPath(repository, "C:\\client\\src\\main.go", ref)).toBe("subtree/src/main.go");
+    expect(persistedSourceControlPath(repository, "/client/src/main.go", ref)).toBe("subtree/src/main.go");
+    expect(persistedSourceControlPath(repository, "subtree/src/main.go", ref)).toBe("subtree/src/main.go");
+    expect(persistedSourceControlGroupId({ ...repository, providerId: "p4" }, "working", "123")).toBe("123");
+  });
   it("assigns Git identity and capabilities to pre-v4 persisted repositories", () => {
     const migrated = normalizePersistedSourceControlRepository(legacyRepository);
     expect(migrated.providerId).toBe("git");

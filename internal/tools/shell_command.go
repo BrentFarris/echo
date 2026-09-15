@@ -122,6 +122,9 @@ func executeShellCommand(ctx ExecutionContext, arguments json.RawMessage) (any, 
 
 	var before workspaceSnapshot
 	trackChanges := ctx.FileChanges != nil
+	if ctx.WorkspaceFiles != nil && ctx.WorkspaceFiles.Tracks(ctx.WorkspaceID, workingDirectory) {
+		trackChanges = false
+	}
 	if trackChanges {
 		before = snapshotShellWorkspaceChanges(ctx, workingDirectory)
 	}

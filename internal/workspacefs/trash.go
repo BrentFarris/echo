@@ -1,6 +1,7 @@
 package workspacefs
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,16 +13,19 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/brent/echo/internal/mutation"
 )
 
 type TrashItem struct {
-	ID          string    `json:"id"`
-	WorkspaceID string    `json:"workspaceId"`
-	Ref         FileRef   `json:"ref"`
-	Name        string    `json:"name"`
-	Kind        string    `json:"kind"`
-	HostPath    string    `json:"hostPath"`
-	DeletedAt   time.Time `json:"deletedAt"`
+	Registration *mutation.Result `json:"registration,omitempty"`
+	ID           string           `json:"id"`
+	WorkspaceID  string           `json:"workspaceId"`
+	Ref          FileRef          `json:"ref"`
+	Name         string           `json:"name"`
+	Kind         string           `json:"kind"`
+	HostPath     string           `json:"hostPath"`
+	DeletedAt    time.Time        `json:"deletedAt"`
 }
 
 type trashMetadata struct {
@@ -30,6 +34,10 @@ type trashMetadata struct {
 }
 
 func (s *Service) Trash(workspaceID string, ref FileRef) (TrashItem, error) {
+	return s.TrashContext(context.Background(), workspaceID, ref)
+}
+
+func (s *Service) TrashContext(ctx context.Context, workspaceID string, ref FileRef) (TrashItem, error) {
 	if s.wouldAffectProtectedMetadata(workspaceID, ref) {
 		return TrashItem{}, protectedMetadataError()
 	}
@@ -73,20 +81,29 @@ func (s *Service) Trash(workspaceID string, ref FileRef) (TrashItem, error) {
 		return TrashItem{}, fmt.Errorf("write trash metadata: %w", err)
 	}
 	payload := filepath.Join(directory, "payload")
-	if err := os.Rename(source, payload); err != nil {
-		if copyErr := copyPath(source, payload); copyErr != nil {
-			return TrashItem{}, fmt.Errorf("move item to trash: %w", copyErr)
+	registration, mutationErr := s.coordinateContext(ctx, mutation.Operation{WorkspaceID: workspaceID, Kind: "delete", Path: source, Origin: "trash", RecoveryID: id}, func() error {
+		if err := os.Rename(source, payload); err != nil {
+			if copyErr := copyPath(source, payload); copyErr != nil {
+				return fmt.Errorf("move item to trash: %w", copyErr)
+			}
+			if err := verifyCopy(source, payload); err != nil {
+				return fmt.Errorf("verify trash copy: %w", err)
+			}
+			// The verified payload must survive even if source cleanup is only
+			// partially successful. This prevents a cross-volume delete failure
+			// from destroying the last complete copy of an item.
+			cleanup = false
+			if err := os.RemoveAll(source); err != nil {
+				return fmt.Errorf("remove original after verified trash copy: %w", err)
+			}
 		}
-		if err := verifyCopy(source, payload); err != nil {
-			return TrashItem{}, fmt.Errorf("verify trash copy: %w", err)
-		}
-		// The verified payload must survive even if source cleanup is only
-		// partially successful. This prevents a cross-volume delete failure
-		// from destroying the last complete copy of an item.
-		cleanup = false
-		if err := os.RemoveAll(source); err != nil {
-			return item, fmt.Errorf("remove original after verified trash copy: %w", err)
-		}
+		return nil
+	})
+	if mutationErr != nil {
+		return item, mutationErr
+	}
+	if registration.Pending {
+		item.Registration = &registration
 	}
 	cleanup = false
 	s.index.ApplyChanges(workspaceID, []Change{{Op: "delete", Ref: ref}})
@@ -120,6 +137,10 @@ func (s *Service) ListTrash(workspaceID string) ([]TrashItem, error) {
 }
 
 func (s *Service) Restore(workspaceID, id string) (Entry, error) {
+	return s.RestoreContext(context.Background(), workspaceID, id)
+}
+
+func (s *Service) RestoreContext(ctx context.Context, workspaceID, id string) (Entry, error) {
 	if !validTrashID(id) {
 		return Entry{}, &Error{Code: "trash_not_found", Message: "trash item not found", Cause: ErrNotFound}
 	}
@@ -143,24 +164,34 @@ func (s *Service) Restore(workspaceID, id string) (Entry, error) {
 	if _, err := os.Lstat(payload); err != nil {
 		return Entry{}, &Error{Code: "trash_not_found", Message: "trash payload is missing", Cause: err}
 	}
-	if err := os.Rename(payload, destination); err != nil {
-		if copyErr := copyPath(payload, destination); copyErr != nil {
-			return Entry{}, fmt.Errorf("restore trash item: %w", copyErr)
+	registration, mutationErr := s.coordinateContext(ctx, mutation.Operation{WorkspaceID: workspaceID, Kind: "restore", Path: destination, Origin: "trash", RecoveryID: id}, func() error {
+		if err := os.Rename(payload, destination); err != nil {
+			if copyErr := copyPath(payload, destination); copyErr != nil {
+				return fmt.Errorf("restore trash item: %w", copyErr)
+			}
+			if err := verifyCopy(payload, destination); err != nil {
+				_ = os.RemoveAll(destination)
+				return fmt.Errorf("verify restored item: %w", err)
+			}
+			if err := os.RemoveAll(payload); err != nil {
+				// The destination has already been verified. Keep that complete copy
+				// and make cleanup best-effort rather than deleting it and risking
+				// data loss after a partially successful payload removal.
+				_ = os.RemoveAll(itemDirectory)
+			}
 		}
-		if err := verifyCopy(payload, destination); err != nil {
-			_ = os.RemoveAll(destination)
-			return Entry{}, fmt.Errorf("verify restored item: %w", err)
-		}
-		if err := os.RemoveAll(payload); err != nil {
-			// The destination has already been verified. Keep that complete copy
-			// and make cleanup best-effort rather than deleting it and risking
-			// data loss after a partially successful payload removal.
-			_ = os.RemoveAll(itemDirectory)
-		}
+		return nil
+	})
+	if mutationErr != nil {
+		return Entry{}, mutationErr
 	}
 	_ = os.RemoveAll(itemDirectory)
 	s.index.ApplyChanges(workspaceID, []Change{{Op: "create", Ref: metadata.Ref}})
-	return s.entryFor(workspaceID, metadata.Ref)
+	entry, err := s.entryFor(workspaceID, metadata.Ref)
+	if registration.Pending {
+		entry.Registration = &registration
+	}
+	return entry, err
 }
 
 func (s *Service) PurgeTrash(workspaceID, id string) error {
