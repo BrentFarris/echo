@@ -16,6 +16,7 @@ var gtkUIFixture []byte
 // authenticated agent, real display, session bus and isolated Docker resources.
 func testNativeUIIntegration(t *testing.T, ctx context.Context, engine *DockerEngine, state MachineState) {
 	t.Helper()
+	t.Run("Xfce Applications menu", func(t *testing.T) { testNativePanelClickIntegration(t, ctx, engine, state) })
 	launch, err := engine.Exec(ctx, state, ExecRequest{Command: []string{"/bin/bash", "-lc", `cat > /tmp/echo-ui-fixture.py
 nohup python3 /tmp/echo-ui-fixture.py >/tmp/echo-ui-fixture.log 2>&1 </dev/null &
 nohup thunar /tmp >/tmp/echo-ui-thunar.log 2>&1 </dev/null &
@@ -131,6 +132,87 @@ nohup thunar /tmp >/tmp/echo-ui-thunar.log 2>&1 </dev/null &
 	time.Sleep(200 * time.Millisecond)
 	if result := call("after-close", "click", nativeTarget(observation, "Save document"), nil); result.Execution != "not_started" {
 		t.Fatalf("defunct native control accepted: %+v", result)
+	}
+}
+
+func testNativePanelClickIntegration(t *testing.T, ctx context.Context, engine *DockerEngine, state MachineState) {
+	observe := func(search string) UIObservation {
+		t.Helper()
+		params, _ := json.Marshal(map[string]any{"search": search, "limit": 200})
+		data, err := engine.NativeUICall(ctx, state, "ui_observe", params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var observation UIObservation
+		if err := json.Unmarshal(data, &observation); err != nil {
+			t.Fatal(err)
+		}
+		return observation
+	}
+	closeMenu := func() {
+		t.Helper()
+		result, err := engine.Exec(ctx, state, ExecRequest{Command: []string{"xdotool", "key", "Escape"}})
+		if err != nil || result.ExitCode != 0 {
+			t.Fatalf("close panel menu: %+v %v", result, err)
+		}
+	}
+	closeMenu()
+	t.Cleanup(closeMenu)
+	var observation UIObservation
+	var button UITarget
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		observation = observe("Applications")
+		for _, target := range observation.Targets {
+			if target.Name == "Applications" && target.Role == "toggle_button" && target.States["visible"] == true {
+				button = target
+			}
+		}
+		if button.Ref != "" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if button.Ref == "" {
+		data, _ := json.Marshal(observe(""))
+		t.Fatalf("Xfce Applications button did not appear: %s", data)
+	}
+	menuVisible := func() bool {
+		for _, target := range observe("Run Program").Targets {
+			if target.Role == "menu_item" && target.States["visible"] == true {
+				return true
+			}
+		}
+		return false
+	}
+	for _, requestID := range []string{"panel-open", "panel-reopen"} {
+		if menuVisible() {
+			t.Fatal("Applications menu was already visible before clicking")
+		}
+		params, _ := json.Marshal(map[string]any{"requestId": requestID, "action": "click", "ref": button.Ref, "epoch": observation.Surface.Epoch})
+		// A transport retry must not send a second click. Reopening also checks
+		// clicking when the pointer is already at the button's center.
+		for range 2 {
+			data, err := engine.NativeUICall(ctx, state, "ui_act", params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result UIResult
+			if err := json.Unmarshal(data, &result); err != nil || result.Execution != "completed" || result.Error != nil {
+				t.Fatalf("panel click failed: %s %v", data, err)
+			}
+			if result.Verification == nil || result.Verification.Status != "unverified" {
+				t.Fatalf("panel click claimed verification without a postcondition: %s", data)
+			}
+		}
+		deadline = time.Now().Add(5 * time.Second)
+		for !menuVisible() {
+			if time.Now().After(deadline) {
+				t.Fatal("Applications click completed but no menu item became visible")
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		closeMenu()
 	}
 }
 

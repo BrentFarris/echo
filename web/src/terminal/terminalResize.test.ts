@@ -11,7 +11,7 @@ vi.mock("../../js/ws.js", () => ({
   on: (type: string, handler: (message: object) => void) => mocks.handlers.set(type, handler),
   onState: vi.fn(), send: vi.fn(),
 }));
-vi.mock("../code/ui", () => ({ toast: mocks.toast }));
+vi.mock("../code/ui", () => ({ toast: mocks.toast, copyText: vi.fn() }));
 vi.mock("./terminalApi", () => ({
   startTerminal: mocks.start, syncTerminal: mocks.sync, resizeTerminal: mocks.resize,
   restartTerminal: mocks.restart, listTerminalSessions: vi.fn(async () => []),
@@ -24,6 +24,7 @@ vi.mock("@xterm/xterm", () => ({
     private resized?: (size: { cols: number; rows: number }) => void;
     loadAddon(addon: { activate?(terminal: unknown): void }) { addon.activate?.(this); }
     onData() {} reset() {} focus() {} write() {} writeln() {} dispose() {}
+    attachCustomKeyEventHandler() {}
     onResize(handler: typeof this.resized) { this.resized = handler; }
     open(host: HTMLElement) { this.element = host; }
     resize(cols: number, rows: number) {

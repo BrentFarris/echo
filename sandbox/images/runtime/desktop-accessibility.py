@@ -293,6 +293,43 @@ def focused_at_point(x, y, connection, deadline):
     return False
 
 
+def panel_click_point(node):
+    # Xfce panel buttons (including Applications) open popups in their mouse
+    # event handlers. GTK's AT-SPI "click" only emits GtkButton::clicked, which
+    # can toggle the button without opening anything. Choose physical input
+    # BEFORE activation; retrying after do_action could execute an action twice.
+    app = node.get_application()
+    if not app or name(app) != "xfce4-panel" or role(node) not in ("push_button", "toggle_button"):
+        return None
+    rectangle = bounds(node)
+    if not rectangle:
+        raise Failure("ui_not_actionable", "Panel control has no display bounds. Observe again.")
+    x = rectangle["x"] + rectangle["width"] // 2
+    y = rectangle["y"] + rectangle["height"] // 2
+    width, height = map(int, subprocess.check_output(["xdotool", "getdisplaygeometry"], timeout=2).split())
+    if not (0 <= x < width and 0 <= y < height):
+        raise Failure("ui_not_actionable", "Panel control is outside the display. Observe again.")
+    return x, y
+
+
+def click_panel(node, point, params, connection, deadline):
+    x, y = point
+    # --sync waits for movement and can hang when the pointer is already here.
+    xdotool(["mousemove", str(x), str(y)], connection, deadline)
+    location = dict(line.split("=", 1) for line in subprocess.check_output(
+        ["xdotool", "getmouselocation", "--shell"], timeout=2).decode().splitlines())
+    pid = int(subprocess.check_output(["xdotool", "getwindowpid", location["WINDOW"]], timeout=2))
+    if pid != node.get_process_id() or (int(location["X"]), int(location["Y"])) != point:
+        raise Failure("ui_not_actionable", "Panel control is covered or the pointer moved. Observe again.")
+    # Hover can reveal/move panels; do not click coordinates that stopped
+    # belonging to the live accessible object after moving the pointer.
+    state = states(node)
+    if state["defunct"] or not state["visible"] or not state["enabled"] or panel_click_point(node) != point:
+        raise Failure("ui_target_changed", "Panel control moved or changed. Observe again.")
+    button = {"left": "1", "middle": "2", "right": "3"}.get(params.get("button", "left"), "1")
+    xdotool(["click", "--repeat", str(min(3, max(1, int(params.get("clickCount", 1))))), button], connection, deadline)
+
+
 def act(params, connection, deadline):
     request_id = params.get("requestId")
     if not request_id:
@@ -358,8 +395,11 @@ def act(params, connection, deadline):
                 if index is None:
                     raise Failure("ui_unsupported_action", "Control exposes no activation action; use visual grounding")
                 if action != "check" or state["checked"] != params.get("checked", True):
+                    point = panel_click_point(node) if action == "click" else None
                     started = True
-                    if not node.get_action_iface().do_action(index):
+                    if point is not None:
+                        click_panel(node, point, params, connection, deadline)
+                    elif not node.get_action_iface().do_action(index):
                         raise Failure("ui_native_failed", "Native action did not acknowledge completion")
             elif action == "fill":
                 editable = node.get_editable_text_iface()

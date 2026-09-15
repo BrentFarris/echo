@@ -9,7 +9,7 @@ vi.mock("../../js/ws.js", () => ({
   on: (type: string, handler: (message: object) => void) => mocks.handlers.set(type, handler),
   onState: vi.fn(), send: vi.fn(),
 }));
-vi.mock("../code/ui", () => ({ toast: vi.fn() }));
+vi.mock("../code/ui", () => ({ toast: vi.fn(), copyText: vi.fn() }));
 vi.mock("./terminalApi", () => ({
   listTerminalSessions: mocks.list, syncTerminal: mocks.sync, startTerminal: mocks.start,
   listSavedCommands: vi.fn(async () => []), resizeTerminal: vi.fn(async () => {}),
@@ -20,6 +20,7 @@ vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     options = {}; cols = 80; rows = 24; element?: HTMLElement;
     loadAddon() {} onData() {} onResize() {} reset() {} focus() {}
+    attachCustomKeyEventHandler() {}
     open(host: HTMLElement) { this.element = host; }
     write = mocks.write; writeln = mocks.write; dispose = mocks.dispose;
   },

@@ -137,6 +137,8 @@ Browser targets use Playwright 1.62.1 AI accessibility references, normalized se
 
 Native controls use a persistent Python GI/AT-SPI helper, started on the session accessibility bus before applications. The helper runs as `echo`, listens on a private Unix socket, and is accessible through the authenticated sandbox agent. It retains accessible object identities rather than tree indexes. It supports activation, editable text, check state, focus and selection when the application exposes those interfaces. A defunct or changed object is rejected. Traversal, stored references, D-Bus calls and request duration are bounded. Unsupported controls return an explicit capability error; canvas/custom widgets can use visual assistance.
 
+Xfce panel buttons use mouse input at their current accessible bounds because GTK accessibility activation can toggle a launcher without running the mouse handlers that open its menu. This path checks the window under the pointer and rechecks the control before clicking. It is selected before activation, never as an automatic second click. To confirm a menu opened, verify visible menu items; the launcher's highlighted or checked state alone is insufficient.
+
 `ui_act` separates input delivery from verification:
 
 | Field | Meaning |
