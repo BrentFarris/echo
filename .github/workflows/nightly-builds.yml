@@ -382,8 +382,29 @@ jobs:
           npm ci
           npm run build
 
+      - name: Set up macOS C coverage toolchains
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew list --versions gcc@15 >/dev/null || brew install gcc@15
+          coverage_bin="$RUNNER_TEMP/echo-c-coverage-bin"
+          mkdir -p "$coverage_bin"
+          gcc_prefix="$(brew --prefix gcc@15)"
+          for tool in gcc gcov; do
+            ln -s "$gcc_prefix/bin/${tool}-15" "$coverage_bin/$tool"
+          done
+          for tool in clang llvm-profdata llvm-cov; do
+            ln -s "$(xcrun --find "$tool")" "$coverage_bin/$tool"
+          done
+          echo "$coverage_bin" >> "$GITHUB_PATH"
+          for tool in gcc gcov clang llvm-profdata llvm-cov; do
+            "$coverage_bin/$tool" --version
+          done
+
       - name: Test Go on target platform
-        run: go test ./...
+        env:
+          ECHO_REQUIRE_C_COVERAGE_TOOLCHAINS: ${{ matrix.target == 'macos' && '1' || '0' }}
+        run: go test ./... -count=1
 
       - name: Build embedded Echo binary
         shell: pwsh

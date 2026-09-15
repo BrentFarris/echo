@@ -1,6 +1,8 @@
 package ctest
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,12 +36,7 @@ int main(void) {
 `
 
 func TestInstalledGcovCoverageWorkflow(t *testing.T) {
-	if _, err := exec.LookPath("gcc"); err != nil {
-		t.Skip("gcc is not installed")
-	}
-	if _, err := exec.LookPath("gcov"); err != nil {
-		t.Skip("gcov is not installed")
-	}
+	requireGcovToolchain(t)
 	service, workspace, root, source, build := newCoverageFixture(t)
 	executable := filepath.Join(build, executableName("gcov-suite"))
 	runIntegrationCommand(t, build, nil, "gcc", "--coverage", "-O0", source, "-o", executable)
@@ -57,10 +54,14 @@ func TestInstalledGcovCoverageWorkflow(t *testing.T) {
 }
 
 func TestInstalledLLVMCoverageWorkflow(t *testing.T) {
-	for _, tool := range []string{"clang", "llvm-profdata", "llvm-cov"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s is not installed", tool)
-		}
+	if version := coverageToolOutput(t, "clang", "--version"); !strings.Contains(version, "clang version") {
+		unavailableCoverageToolchain(t, "clang does not identify itself as a Clang compiler")
+	}
+	if help := coverageToolOutput(t, "llvm-profdata", "--help"); !strings.Contains(help, "merge") {
+		unavailableCoverageToolchain(t, "llvm-profdata does not support profile merging")
+	}
+	if help := coverageToolOutput(t, "llvm-cov", "--help"); !strings.Contains(help, "export") {
+		unavailableCoverageToolchain(t, "llvm-cov does not support coverage export")
 	}
 	service, workspace, root, source, build := newCoverageFixture(t)
 	executable := filepath.Join(build, executableName("llvm-suite"))
@@ -94,11 +95,7 @@ func TestInstalledLLVMCoverageWorkflow(t *testing.T) {
 }
 
 func TestInstalledGcovServiceBuildRunAndCoveragePipeline(t *testing.T) {
-	for _, tool := range []string{"gcc", "gcov"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s is not installed", tool)
-		}
-	}
+	requireGcovToolchain(t)
 	root := t.TempDir()
 	settingsPath := filepath.Join(t.TempDir(), "echo.json")
 	data := appdata.NewStore(settingsPath)
@@ -121,6 +118,38 @@ func TestInstalledGcovServiceBuildRunAndCoveragePipeline(t *testing.T) {
 	}
 	executable := filepath.Join(build, executableName("pipeline-suite"))
 	service := New(manager, fs, terminalService, nil, nil)
+	coverageErrors := make(chan string, 1)
+	service.SetCoverageNotifier(func(event CoverageEvent) {
+		if event.State == "error" {
+			select {
+			case coverageErrors <- event.Message:
+			default:
+			}
+		}
+	})
+	waitForCoverage := func(sessionID string) *CoverageSnapshot {
+		t.Helper()
+		deadline := time.NewTimer(20 * time.Second)
+		defer deadline.Stop()
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			coverage, _, err := service.Coverage(workspace.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if coverage != nil && coverage.SessionID == sessionID {
+				return coverage
+			}
+			select {
+			case message := <-coverageErrors:
+				t.Fatalf("C coverage failed: %s", message)
+			case <-deadline.C:
+				t.Fatalf("C coverage was not published for session %s", sessionID)
+			case <-ticker.C:
+			}
+		}
+	}
 	_, err = service.SetConfig(workspace.ID, gotestconfig.CConfig{Targets: []gotestconfig.CTarget{{
 		ID: "unit", Name: "Unit tests", Entry: gotestconfig.CEntry{File: source, Function: "main"},
 		Build:      &gotestconfig.Command{Command: "gcc", Args: []string{"--coverage", "-O0", source, "-o", executable}, Cwd: build},
@@ -136,6 +165,11 @@ func TestInstalledGcovServiceBuildRunAndCoveragePipeline(t *testing.T) {
 	}
 	deadline := time.Now().Add(20 * time.Second)
 	for {
+		select {
+		case message := <-coverageErrors:
+			t.Fatalf("C coverage failed: %s", message)
+		default:
+		}
 		current, syncErr := terminalService.Sync(workspace.ID, snapshot.ID, 0)
 		if syncErr != nil {
 			t.Fatal(syncErr)
@@ -151,23 +185,11 @@ func TestInstalledGcovServiceBuildRunAndCoveragePipeline(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	for {
-		coverage, _, coverageErr := service.Coverage(workspace.ID)
-		if coverageErr != nil {
-			t.Fatal(coverageErr)
-		}
-		if coverage != nil {
-			if coverage.TargetID != "unit" || coverage.Provider != "gcov" || coverage.SessionID != snapshot.ID {
-				t.Fatalf("coverage = %#v", coverage)
-			}
-			assertCoverageStates(t, coverage.Files)
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("C coverage was not published")
-		}
-		time.Sleep(10 * time.Millisecond)
+	coverage := waitForCoverage(snapshot.ID)
+	if coverage.TargetID != "unit" || coverage.Provider != "gcov" {
+		t.Fatalf("coverage = %#v", coverage)
 	}
+	assertCoverageStates(t, coverage.Files)
 	ref, err := refForHostPath(fs, workspace.ID, source)
 	if err != nil {
 		t.Fatal(err)
@@ -187,25 +209,15 @@ func TestInstalledGcovServiceBuildRunAndCoveragePipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for {
-		coverage, _, coverageErr := service.Coverage(workspace.ID)
-		if coverageErr != nil {
-			t.Fatal(coverageErr)
-		}
-		if coverage != nil && coverage.SessionID == rerun.ID {
-			assertCoverageStates(t, coverage.Files)
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("rerun coverage was not published")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	assertCoverageStates(t, waitForCoverage(rerun.ID).Files)
 }
 
 func newCoverageFixture(t *testing.T) (*Service, workspaces.Workspace, string, string, string) {
 	t.Helper()
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	settingsPath := filepath.Join(t.TempDir(), "echo.json")
 	data := appdata.NewStore(settingsPath)
 	manager := workspaces.NewManagerWithData(data)
@@ -224,6 +236,51 @@ func newCoverageFixture(t *testing.T) (*Service, workspaces.Workspace, string, s
 		t.Fatal(err)
 	}
 	return New(manager, fs, nil, nil, nil), workspace, root, source, build
+}
+
+func requireGcovToolchain(t *testing.T) {
+	t.Helper()
+	if version := coverageToolOutput(t, "gcc", "--version"); !strings.Contains(version, "Free Software Foundation") {
+		unavailableCoverageToolchain(t, "gcc is not GNU GCC (Apple's gcc is a Clang alias)")
+	}
+	release := strings.TrimSpace(coverageToolOutput(t, "gcc", "-dumpfullversion", "-dumpversion"))
+	gcovVersion := coverageToolOutput(t, "gcov", "--version")
+	firstLine, _, _ := strings.Cut(gcovVersion, "\n")
+	if release == "" || !strings.Contains(gcovVersion, "Free Software Foundation") || !strings.Contains(firstLine, release) {
+		unavailableCoverageToolchain(t, fmt.Sprintf("gcov must match GNU GCC %s; found %s", release, firstLine))
+	}
+	if help := coverageToolOutput(t, "gcov", "--help"); !strings.Contains(help, "--json-format") {
+		unavailableCoverageToolchain(t, "gcov does not support --json-format")
+	}
+}
+
+func coverageToolOutput(t *testing.T, name string, args ...string) string {
+	t.Helper()
+	path, err := exec.LookPath(name)
+	if err != nil {
+		unavailableCoverageToolchain(t, fmt.Sprintf("%s is not installed: %v", name, err))
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, path, args...)
+	command.Env = mergeEnvironment(os.Environ(), map[string]string{"LC_ALL": "C"})
+	output, err := command.CombinedOutput()
+	if err != nil {
+		unavailableCoverageToolchain(t, fmt.Sprintf("%s %s failed: %v\n%s", path, strings.Join(args, " "), err, output))
+	}
+	if len(args) == 1 && args[0] == "--version" {
+		firstLine, _, _ := strings.Cut(string(output), "\n")
+		t.Logf("%s: %s", path, firstLine)
+	}
+	return string(output)
+}
+
+func unavailableCoverageToolchain(t *testing.T, reason string) {
+	t.Helper()
+	if os.Getenv("ECHO_REQUIRE_C_COVERAGE_TOOLCHAINS") == "1" {
+		t.Fatalf("C coverage toolchains are required by ECHO_REQUIRE_C_COVERAGE_TOOLCHAINS: %s", reason)
+	}
+	t.Skip(reason)
 }
 
 func runIntegrationCommand(t *testing.T, cwd string, environment map[string]string, command string, args ...string) {

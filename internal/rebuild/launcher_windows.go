@@ -15,7 +15,7 @@ import (
 const (
 	createNoWindow        = 0x08000000
 	createNewProcessGroup = 0x00000200
-	launcherReadyTimeout  = 5 * time.Second
+	launcherReadyTimeout  = 30 * time.Second
 )
 
 func launchDetached(scriptPath string) error {
@@ -36,14 +36,25 @@ func launchDetached(scriptPath string) error {
 	command.Stderr = diagnostic
 	if err := command.Start(); err != nil {
 		_ = diagnostic.Close()
-		return fmt.Errorf("start detached PowerShell launcher: %w", err)
+		return fmt.Errorf("start detached PowerShell launcher %s: %w; see %s", powerShell, err, diagnosticPath)
 	}
 	_ = diagnostic.Close()
+	return waitForLauncherReadiness(command, launcherReadyTimeout)
+}
 
-	readyPath := filepath.Join(filepath.Dir(scriptPath), "rebuild-relaunch.ready")
+func waitForLauncherReadiness(command *exec.Cmd, timeout time.Duration) error {
+	readyPath := filepath.Join(command.Dir, "rebuild-relaunch.ready")
+	diagnosticPath := filepath.Join(command.Dir, "rebuild-launcher.log")
 	exited := make(chan error, 1)
 	go func() { exited <- command.Wait() }()
-	deadline := time.NewTimer(launcherReadyTimeout)
+	stop := func() error {
+		if err := command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return fmt.Errorf("stop detached launcher: %w", err)
+		}
+		<-exited
+		return nil
+	}
+	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
@@ -51,8 +62,7 @@ func launchDetached(scriptPath string) error {
 		if _, err := os.Stat(readyPath); err == nil {
 			return nil
 		} else if !errors.Is(err, os.ErrNotExist) {
-			_ = command.Process.Kill()
-			return fmt.Errorf("check detached launcher readiness: %w", err)
+			return errors.Join(fmt.Errorf("check detached launcher %s readiness: %w; see %s", command.Path, err, diagnosticPath), stop())
 		}
 		select {
 		case err := <-exited:
@@ -62,10 +72,12 @@ func launchDetached(scriptPath string) error {
 			if err == nil {
 				err = errors.New("launcher exited without reporting readiness")
 			}
-			return fmt.Errorf("detached PowerShell launcher exited before readiness: %w; see %s", err, diagnosticPath)
+			return fmt.Errorf("detached PowerShell launcher exited before readiness (%s): %w; see %s", command.Path, err, diagnosticPath)
 		case <-deadline.C:
-			_ = command.Process.Kill()
-			return fmt.Errorf("detached PowerShell launcher did not report readiness within %s; see %s", launcherReadyTimeout, diagnosticPath)
+			if _, err := os.Stat(readyPath); err == nil {
+				return nil
+			}
+			return errors.Join(fmt.Errorf("detached PowerShell launcher %s did not report readiness within %s; see %s", command.Path, timeout, diagnosticPath), stop())
 		case <-ticker.C:
 		}
 	}

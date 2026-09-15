@@ -284,6 +284,10 @@ func TestListExposesOnlyEditableWorkspaceSkillsUnderEcho(t *testing.T) {
 
 func TestResolveProspectiveEntryWithMissingParents(t *testing.T) {
 	service, workspaceID, rootPath, root := newTestService(t)
+	canonicalRoot, err := filepath.EvalSymlinks(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ref := FileRef{RootID: root.ID, Path: "deleted folder/資料/nested file.txt"}
 
 	if _, err := service.ResolveEntryHostPath(workspaceID, ref); err == nil {
@@ -298,7 +302,7 @@ func TestResolveProspectiveEntryWithMissingParents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(rootPath, "deleted folder", "資料", "nested file.txt")
+	want := filepath.Join(canonicalRoot, "deleted folder", "資料", "nested file.txt")
 	if resolved.HostPath != want || resolved.MissingParentCount != 2 {
 		t.Fatalf("prospective path = %#v, want %q with 2 missing parents", resolved, want)
 	}
@@ -310,7 +314,7 @@ func TestResolveProspectiveEntryWithMissingParents(t *testing.T) {
 		t.Fatal(err)
 	}
 	existingParent, err := service.ResolveProspectiveEntryHostPath(workspaceID, FileRef{RootID: root.ID, Path: "existing parent/new.txt"})
-	if err != nil || existingParent.MissingParentCount != 0 || existingParent.HostPath != filepath.Join(rootPath, "existing parent", "new.txt") {
+	if err != nil || existingParent.MissingParentCount != 0 || existingParent.HostPath != filepath.Join(canonicalRoot, "existing parent", "new.txt") {
 		t.Fatalf("existing-parent prospective path = %#v, %v", existingParent, err)
 	}
 }

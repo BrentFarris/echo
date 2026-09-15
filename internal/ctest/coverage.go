@@ -512,12 +512,17 @@ func runtimeReportPath(s *Service, workspaceID, value, compilationDirectory stri
 			guestPath = pathpkg.Join(guestDirectory, guestPath)
 		}
 		if host, err := s.sandbox.GuestToHost(workspaceID, pathpkg.Clean(guestPath)); err == nil {
-			return filepath.Clean(host)
+			value, compilationDirectory = host, ""
 		}
 	}
 	value = filepath.FromSlash(strings.TrimSpace(value))
 	if !filepath.IsAbs(value) && compilationDirectory != "" {
 		value = filepath.Join(filepath.FromSlash(compilationDirectory), value)
+	}
+	if filepath.IsAbs(value) {
+		if canonical, err := canonicalizeForContainment(value); err == nil {
+			return canonical
+		}
 	}
 	return filepath.Clean(value)
 }
