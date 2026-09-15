@@ -263,6 +263,87 @@ def xdotool(arguments, connection, deadline):
             process.wait()
 
 
+def x11_key(key):
+    # ui_act uses Playwright key names. xdotool silently ignores unknown X11
+    # keysyms and adds Shift for capital letters, so passing the string through
+    # can acknowledge Enter without an event or turn Control+K into Ctrl+Shift+K.
+    if not isinstance(key, str) or not key:
+        raise Failure("invalid_arguments", "A keyboard key or chord is required")
+    modifiers = {
+        "control": "Control_L", "ctrl": "Control_L", "controlormeta": "Control_L",
+        "controlleft": "Control_L", "controlright": "Control_R", "control_l": "Control_L", "control_r": "Control_R",
+        "shift": "Shift_L", "shiftleft": "Shift_L", "shiftright": "Shift_R", "shift_l": "Shift_L", "shift_r": "Shift_R",
+        "alt": "Alt_L", "altleft": "Alt_L", "altright": "Alt_R", "alt_l": "Alt_L", "alt_r": "Alt_R",
+        "meta": "Super_L", "metaleft": "Super_L", "metaright": "Super_R", "super": "Super_L",
+        "super_l": "Super_L", "super_r": "Super_R",
+    }
+    named = {
+        "Enter": "Return", "Return": "Return", "Backspace": "BackSpace", "Tab": "Tab",
+        "Escape": "Escape", "Esc": "Escape", "Space": "space", "Spacebar": "space",
+        "ArrowLeft": "Left", "ArrowRight": "Right", "ArrowUp": "Up", "ArrowDown": "Down",
+        "Left": "Left", "Right": "Right", "Up": "Up", "Down": "Down",
+        "Home": "Home", "End": "End", "PageUp": "Prior", "PageDown": "Next",
+        "Prior": "Prior", "Next": "Next", "Insert": "Insert", "Delete": "Delete",
+        "CapsLock": "Caps_Lock", "NumLock": "Num_Lock", "ScrollLock": "Scroll_Lock",
+        "PrintScreen": "Print", "Pause": "Pause", "ContextMenu": "Menu",
+        "Backquote": "grave", "Minus": "minus", "Equal": "equal", "BracketLeft": "bracketleft",
+        "BracketRight": "bracketright", "Backslash": "backslash", "Semicolon": "semicolon",
+        "Quote": "apostrophe", "Comma": "comma", "Period": "period", "Slash": "slash",
+        "NumpadEnter": "KP_Enter", "NumpadAdd": "KP_Add", "NumpadSubtract": "KP_Subtract",
+        "NumpadMultiply": "KP_Multiply", "NumpadDivide": "KP_Divide", "NumpadDecimal": "KP_Decimal",
+    }
+    punctuation = dict(zip(" !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", (
+        "space exclam quotedbl numbersign dollar percent ampersand apostrophe parenleft parenright "
+        "asterisk plus comma minus period slash colon semicolon less equal greater question at "
+        "bracketleft backslash bracketright asciicircum underscore grave braceleft bar braceright asciitilde"
+    ).split()))
+    if key == "+":
+        parts = ["+"]
+    elif key.endswith("++"):
+        parts = key[:-2].split("+") + ["+"]
+    else:
+        parts = key.split("+")
+    chord = []
+    for part in parts[:-1]:
+        modifier = modifiers.get(part.lower())
+        if not modifier or modifier in chord:
+            raise Failure("invalid_arguments", "Unsupported or repeated keyboard modifier: " + part[:80])
+        chord.append(modifier)
+    token = parts[-1]
+    if len(token) == 1 and token.isascii() and token.isalnum():
+        symbol = token.lower() if chord else token
+    elif token in punctuation:
+        symbol = punctuation[token]
+    elif len(token) == 1 and token.isprintable():
+        symbol = f"U{ord(token):04X}"
+    elif len(token) == 4 and token.startswith("Key") and token[3] in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        symbol = token[3].lower()
+    elif len(token) == 6 and token.startswith("Digit") and token[5] in "0123456789":
+        symbol = token[5]
+    elif len(token) == 7 and token.startswith("Numpad") and token[6] in "0123456789":
+        symbol = "KP_" + token[6]
+    elif token in {f"F{index}" for index in range(1, 25)}:
+        symbol = token
+    else:
+        symbol = modifiers.get(token.lower()) or named.get(token)
+        if symbol is None and token in set(named.values()) | set(punctuation.values()):
+            symbol = token
+    if not symbol:
+        raise Failure("invalid_arguments", "Unsupported keyboard key: " + token[:80])
+    return "+".join(chord + [symbol])
+
+
+def wait_for_focus(node, connection, deadline):
+    end = min(deadline, time.monotonic() + 2)
+    while True:
+        active(connection, deadline)
+        if states(node)["focused"]:
+            return
+        if time.monotonic() >= end:
+            raise Failure("ui_native_failed", "Control did not receive focus")
+        select.select([connection], [], [], max(0, min(.02, end - time.monotonic())))
+
+
 def focused_at_point(x, y, connection, deadline):
     # Preserve selection/caret when typing into an already focused control. Also
     # require the active X11 window's PID, because GTK can retain internal focus
@@ -349,6 +430,7 @@ def act(params, connection, deadline):
         action = params.get("action")
         if params.get("epoch") != SESSION:
             raise Failure("ui_stale_target", "Accessibility runtime restarted. Observe again.")
+        key = x11_key(params.get("key")) if action == "press" or (action == "point" and params.get("pointAction") == "press") else None
         if action == "point":
             x, y = params.get("x"), params.get("y")
             if not isinstance(x, (int, float)) or not isinstance(y, (int, float)) or x < 0 or y < 0:
@@ -357,15 +439,15 @@ def act(params, connection, deadline):
             physical = params.get("pointAction", "click")
             if physical not in ("click", "hover", "type", "press", "scroll", "drag"):
                 raise Failure("ui_unsupported_action", "Unsupported physical action")
-            if physical == "press" and not params.get("key"):
-                raise Failure("invalid_arguments", "A keyboard key is required")
             width, height = map(int, subprocess.check_output(["xdotool", "getdisplaygeometry"], timeout=2).split())
             if x >= width or y >= height:
                 raise Failure("invalid_arguments", "Point is outside the desktop display")
             if physical == "drag" and not (0 <= params.get("toX", -1) < width and 0 <= params.get("toY", -1) < height):
                 raise Failure("invalid_arguments", "Drag destination is outside the desktop display")
             started = True
-            xdotool(["mousemove", "--sync", str(round(x)), str(round(y))], connection, deadline)
+            # --sync waits for a movement event even when already at this point,
+            # preventing a press/type action immediately after clicking here.
+            xdotool(["mousemove", str(round(x)), str(round(y))], connection, deadline)
             if physical == "drag":
                 try:
                     xdotool(["mousedown", "1", "mousemove", "--sync", str(round(params["toX"])), str(round(params["toY"])), "mouseup", "1"], connection, deadline)
@@ -382,7 +464,7 @@ def act(params, connection, deadline):
                 if physical == "type":
                     xdotool(["type", "--clearmodifiers", "--", str(params.get("text", ""))], connection, deadline)
                 elif physical == "press":
-                    xdotool(["key", "--clearmodifiers", "--", str(params["key"])], connection, deadline)
+                    xdotool(["key", "--clearmodifiers", "--", key], connection, deadline)
         else:
             node = resolve(params.get("ref"), connection, deadline)
             state = states(node)
@@ -416,9 +498,8 @@ def act(params, connection, deadline):
                 if not component.grab_focus():
                     raise Failure("ui_native_failed", "Native focus request failed")
                 if action == "press":
-                    if not states(node)["focused"]:
-                        raise Failure("ui_native_failed", "Control did not receive focus")
-                    xdotool(["key", "--clearmodifiers", "--", str(params.get("key", ""))], connection, deadline)
+                    wait_for_focus(node, connection, deadline)
+                    xdotool(["key", "--clearmodifiers", "--", key], connection, deadline)
             elif action == "select":
                 child = resolve(params.get("toRef"), connection, deadline)
                 selection = node.get_selection_iface()

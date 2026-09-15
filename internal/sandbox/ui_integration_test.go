@@ -4,6 +4,8 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +110,7 @@ nohup thunar /tmp >/tmp/echo-ui-thunar.log 2>&1 </dev/null &
 		if err != nil || !strings.Contains(string(response), `"status": "passed"`) {
 			t.Fatalf("native physical type result: %s %v", response, err)
 		}
+		testNativeKeyboardIntegration(t, ctx, engine, state, movedObservation, target)
 	}
 	for range 2 {
 		if result := call("submit-once", "click", nativeTarget(observation, "Save document"), nil); result.Execution != "completed" {
@@ -132,6 +135,91 @@ nohup thunar /tmp >/tmp/echo-ui-thunar.log 2>&1 </dev/null &
 	time.Sleep(200 * time.Millisecond)
 	if result := call("after-close", "click", nativeTarget(observation, "Save document"), nil); result.Execution != "not_started" {
 		t.Fatalf("defunct native control accepted: %+v", result)
+	}
+}
+
+func testNativeKeyboardIntegration(t *testing.T, ctx context.Context, engine *DockerEngine, state MachineState, observation UIObservation, entry UITarget) {
+	t.Helper()
+	type keyEvent struct {
+		Key     string `json:"key"`
+		Control bool   `json:"control"`
+		Shift   bool   `json:"shift"`
+	}
+	result, err := engine.Exec(ctx, state, ExecRequest{Command: []string{"/bin/bash", "-lc", `: > /tmp/echo-ui-keys.jsonl
+xdotool search --onlyvisible --name '^Echo UI Keyboard Distractor$' windowactivate --sync`}})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("prepare background keyboard target: %+v %v", result, err)
+	}
+	var expected []keyEvent
+	for index, test := range []struct {
+		key   string
+		point bool
+		event keyEvent
+	}{
+		{"Control+K", false, keyEvent{"k", true, false}},
+		{"Control+Shift+K", false, keyEvent{"K", true, true}},
+		{"Enter", false, keyEvent{"Return", false, false}},
+		{"ArrowLeft", false, keyEvent{"Left", false, false}},
+		{"Shift+ArrowRight", false, keyEvent{"Right", false, true}},
+		{"Backspace", false, keyEvent{"BackSpace", false, false}},
+		{"ControlOrMeta+A", false, keyEvent{"a", true, false}},
+		{"Control+K", true, keyEvent{"k", true, false}},
+		{"Enter", true, keyEvent{"Return", false, false}},
+	} {
+		params := map[string]any{"requestId": "keyboard-" + strconv.Itoa(index), "action": "press", "ref": entry.Ref,
+			"epoch": observation.Surface.Epoch, "key": test.key}
+		if test.point {
+			// The physical type action left the pointer at these coordinates.
+			// Consecutive key actions must not wait for nonexistent mouse motion.
+			params["action"], params["pointAction"] = "point", "press"
+			params["x"], params["y"] = entry.Bounds.X+entry.Bounds.Width/2, entry.Bounds.Y+entry.Bounds.Height/2
+		}
+		body, _ := json.Marshal(params)
+		// Retrying the same request must not deliver the shortcut twice.
+		for range 2 {
+			requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			data, err := engine.NativeUICall(requestCtx, state, "ui_act", body)
+			cancel()
+			var action UIResult
+			if err != nil || json.Unmarshal(data, &action) != nil || action.Execution != "completed" || action.Error != nil {
+				t.Fatalf("native keyboard %s (point=%t): %s %v", test.key, test.point, data, err)
+			}
+		}
+		expected = append(expected, test.event)
+	}
+	for _, key := range []string{"NotARealKey", "UnknownModifier+K", "Control+"} {
+		body, _ := json.Marshal(map[string]any{"requestId": "invalid-key-" + key, "action": "press", "ref": entry.Ref,
+			"epoch": observation.Surface.Epoch, "key": key})
+		data, err := engine.NativeUICall(ctx, state, "ui_act", body)
+		var action UIResult
+		if err != nil || json.Unmarshal(data, &action) != nil || action.Execution != "not_started" || action.Error == nil || action.Error.Code != "invalid_arguments" {
+			t.Fatalf("invalid native key was accepted: %s %v", data, err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		result, err := engine.Exec(ctx, state, ExecRequest{Command: []string{"cat", "/tmp/echo-ui-keys.jsonl"}})
+		if err != nil || result.ExitCode != 0 {
+			t.Fatalf("read native keyboard events: %+v %v", result, err)
+		}
+		var events []keyEvent
+		for _, line := range strings.Split(strings.TrimSpace(string(result.Stdout)), "\n") {
+			if line == "" {
+				continue
+			}
+			var event keyEvent
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				t.Fatalf("decode native keyboard event: %s %v", line, err)
+			}
+			events = append(events, event)
+		}
+		if slices.Equal(events, expected) {
+			break
+		}
+		if len(events) >= len(expected) || time.Now().After(deadline) {
+			t.Fatalf("native keyboard events = %+v, want %+v", events, expected)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

@@ -1,7 +1,7 @@
 import gi
 import json
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk
+from gi.repository import Gtk, Gdk
 
 window = Gtk.Window(title="Echo UI Fixture")
 window.set_default_size(400, 300)
@@ -12,6 +12,20 @@ window.add(box)
 entry = Gtk.Entry()
 entry.get_accessible().set_name("Document title")
 box.pack_start(entry, False, False, 0)
+with open("/tmp/echo-ui-keys.jsonl", "w"):
+    pass
+
+
+def record_key(widget, event):
+    key = Gdk.keyval_name(event.keyval)
+    if key not in ("Control_L", "Control_R", "Shift_L", "Shift_R", "Alt_L", "Alt_R", "Super_L", "Super_R"):
+        with open("/tmp/echo-ui-keys.jsonl", "a") as stream:
+            stream.write(json.dumps({"key": key, "control": bool(event.state & Gdk.ModifierType.CONTROL_MASK),
+                                     "shift": bool(event.state & Gdk.ModifierType.SHIFT_MASK)}) + "\n")
+    return False
+
+
+entry.connect("key-press-event", record_key)
 check = Gtk.CheckButton(label="Ready")
 box.pack_start(check, False, False, 0)
 status = Gtk.Label(label="Unsaved")
@@ -34,4 +48,9 @@ disabled.set_sensitive(False)
 box.pack_start(disabled, False, False, 0)
 box.pack_start(status, False, False, 0)
 window.show_all()
+other_window = Gtk.Window(title="Echo UI Keyboard Distractor")
+other_window.set_default_size(200, 100)
+other_window.move(1000, 650)
+other_window.add(Gtk.Entry())
+other_window.show_all()
 Gtk.main()
