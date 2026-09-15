@@ -1124,16 +1124,15 @@ func (e *DockerEngine) Heartbeat(ctx context.Context, state MachineState) error 
 			joined = errors.Join(joined, err)
 		}
 	}
-	e.mu.Lock()
-	browserToken := e.secret[state.WorkspaceID].BrowserToken
-	e.mu.Unlock()
-	for _, check := range []struct{ port, token string }{{agentPort, e.agentToken(state.WorkspaceID, "runtime")}, {playwrightPort, browserToken}} {
-		data, _, err := e.serviceRequest(ctx, state, "runtime", check.port, http.MethodGet, "/v1/health", check.token, nil, 64<<10)
-		if err == nil {
-			err = validateServiceProtocol("runtime", check.port, data)
-		}
-		joined = errors.Join(joined, err)
+	data, _, err := e.serviceRequest(ctx, state, "runtime", agentPort, http.MethodGet, "/v1/health", e.agentToken(state.WorkspaceID, "runtime"), nil, 64<<10)
+	if err == nil {
+		err = validateServiceProtocol("runtime", agentPort, data)
 	}
+	joined = errors.Join(joined, err)
+	// Browser and native accessibility adapters are independently supervised.
+	// Their request paths report temporary availability directly; an adapter
+	// restart must not poison the whole runtime's liveness state and stop the
+	// management heartbeats which keep the core agent alive.
 	created, err := e.client.ExecCreate(ctx, state.ContainerNames["gateway"], client.ExecCreateOptions{Cmd: []string{"/bin/touch", "/run/echo/heartbeat"}})
 	if err != nil {
 		joined = errors.Join(joined, err)

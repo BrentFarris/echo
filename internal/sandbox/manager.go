@@ -48,6 +48,7 @@ type runtimeState struct {
 	browserGeneration            uint64
 	browserInvalidatedGeneration uint64
 	browserTurn                  string
+	heartbeatFailures            int
 }
 
 type Manager struct {
@@ -453,6 +454,9 @@ func (m *Manager) transition(workspaceID string, state State, code, message stri
 	m.mu.Lock()
 	runtime := m.runtimeFor(workspaceID)
 	runtime.status.State = state
+	if state == StateReady {
+		runtime.heartbeatFailures = 0
+	}
 	if state == StateDisabled {
 		runtime.status.Enabled = false
 	}
@@ -1606,6 +1610,8 @@ func (m *Manager) maintenance() {
 	}
 }
 
+const heartbeatFailureThreshold = 3
+
 func (m *Manager) maintain(now time.Time) {
 	type stopCandidate struct {
 		id      string
@@ -1657,10 +1663,29 @@ func (m *Manager) maintain(now time.Time) {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := m.engine.Heartbeat(ctx, state); err != nil {
-			m.transition(workspaceID, StateError, ErrorCode(err), "Sandbox services are unavailable; restart the sandbox")
-		}
+		heartbeatErr := m.engine.Heartbeat(ctx, state)
 		cancel()
+		m.mu.Lock()
+		runtime := m.runtimeFor(workspaceID)
+		if runtime.status.State != StateReady {
+			runtime.heartbeatFailures = 0
+			m.mu.Unlock()
+			continue
+		}
+		if heartbeatErr == nil {
+			runtime.heartbeatFailures = 0
+			m.mu.Unlock()
+			continue
+		}
+		runtime.heartbeatFailures++
+		failures := runtime.heartbeatFailures
+		m.mu.Unlock()
+		// A supervised UI adapter can be briefly unavailable while it restarts.
+		// Do not turn one missed probe into a permanent error state which stops
+		// all future heartbeats and makes the guest watchdog kill the runtime.
+		if failures >= heartbeatFailureThreshold {
+			m.transition(workspaceID, StateError, ErrorCode(heartbeatErr), "Sandbox services are unavailable; restart the sandbox")
+		}
 	}
 	for _, candidate := range stops {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

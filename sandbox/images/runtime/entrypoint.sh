@@ -106,7 +106,8 @@ start_browser_bridge() {
 
 gosu echo Xvnc :1 -geometry 1440x900 -depth 24 -rfbport 5900 -localhost no \
   -SecurityTypes VncAuth -PasswordFile /run/echo/vnc.passwd -AlwaysShared=1 -DisconnectClients=0 -ac &
-service_pids+=("$!")
+vnc_pid="$!"
+service_pids+=("$vnc_pid")
 
 for _ in $(seq 1 100); do
   [[ -S /tmp/.X11-unix/X1 ]] && break
@@ -115,24 +116,44 @@ done
 
 [[ -S /tmp/.X11-unix/X1 ]] || { echo "X server did not start" >&2; exit 1; }
 gosu echo dbus-daemon --session --nofork --address="$DBUS_SESSION_BUS_ADDRESS" &
-service_pids+=("$!")
+dbus_pid="$!"
+service_pids+=("$dbus_pid")
 for _ in $(seq 1 100); do [[ -S "$XDG_RUNTIME_DIR/bus" ]] && break; sleep 0.1; done
 [[ -S "$XDG_RUNTIME_DIR/bus" ]] || { echo "Session bus did not start" >&2; exit 1; }
 # Start accessibility before applications so GTK controls join the same bus.
 gosu echo dbus-send --session --dest=org.a11y.Bus --type=method_call --print-reply \
   /org/a11y/bus org.a11y.Bus.GetAddress >/dev/null
 supervise_ui_service "desktop accessibility service" start_accessibility &
-service_pids+=("$!")
+accessibility_pid="$!"
+service_pids+=("$accessibility_pid")
 gosu echo startxfce4 &
-service_pids+=("$!")
+xfce_pid="$!"
+service_pids+=("$xfce_pid")
 # The source token stays root-only. The unprivileged bridge inherits a single
 # already-open descriptor and retains the value only in process memory.
 supervise_ui_service "browser bridge" start_browser_bridge &
-service_pids+=("$!")
+browser_pid="$!"
+service_pids+=("$browser_pid")
 
 "$@" &
-service_pids+=("$!")
+agent_pid="$!"
+service_pids+=("$agent_pid")
 # A dead essential service invalidates the shared environment. Exit so Echo
 # reports it unhealthy instead of accepting commands into a partial desktop.
-wait -n "${service_pids[@]}" || true
+exited_pid=""
+if wait -n -p exited_pid "${service_pids[@]}"; then
+  exit_status=0
+else
+  exit_status="$?"
+fi
+exited_name="unknown service"
+case "$exited_pid" in
+  "$vnc_pid") exited_name="Xvnc" ;;
+  "$dbus_pid") exited_name="session D-Bus" ;;
+  "$accessibility_pid") exited_name="desktop accessibility supervisor" ;;
+  "$xfce_pid") exited_name="XFCE session" ;;
+  "$browser_pid") exited_name="browser bridge supervisor" ;;
+  "$agent_pid") exited_name="sandbox agent" ;;
+esac
+echo "essential runtime service $exited_name (pid $exited_pid) exited with status $exit_status; stopping runtime" >&2
 exit 1

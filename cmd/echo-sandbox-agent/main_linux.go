@@ -817,6 +817,11 @@ func (a *agent) watchHeartbeat(server *http.Server) {
 		if time.Now().Before(grace) {
 			continue
 		}
+		if err != nil {
+			log.Printf("echo sandbox heartbeat expired: %v; shutting down", err)
+		} else {
+			log.Printf("echo sandbox heartbeat expired: last update was %s ago; shutting down", time.Since(info.ModTime()).Round(time.Second))
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = server.Shutdown(ctx)
 		cancel()

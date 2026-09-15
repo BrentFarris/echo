@@ -57,6 +57,8 @@ type fakeEngine struct {
 	startCount     atomic.Int32
 	stopCount      atomic.Int32
 	updateCount    atomic.Int32
+	heartbeatCount atomic.Int32
+	heartbeatFails atomic.Int32
 	mu             sync.Mutex
 	deleteScopes   []DeleteScope
 	execRequests   []ExecRequest
@@ -111,7 +113,18 @@ func (e *fakeEngine) Usage(context.Context, MachineState) (ResourceUsage, error)
 func (e *fakeEngine) ApplyNetworkGrants(context.Context, MachineState, []NetworkGrant) error {
 	return nil
 }
-func (e *fakeEngine) Heartbeat(context.Context, MachineState) error { return nil }
+func (e *fakeEngine) Heartbeat(context.Context, MachineState) error {
+	e.heartbeatCount.Add(1)
+	for {
+		remaining := e.heartbeatFails.Load()
+		if remaining <= 0 {
+			return nil
+		}
+		if e.heartbeatFails.CompareAndSwap(remaining, remaining-1) {
+			return &Error{Code: "sandbox_service_unavailable", Message: "temporary heartbeat failure"}
+		}
+	}
+}
 func (e *fakeEngine) OpenDesktop(context.Context, MachineState) (io.ReadWriteCloser, error) {
 	return &fakeStream{}, nil
 }
@@ -281,6 +294,36 @@ func TestManagerStartIsConcurrentAndIdempotent(t *testing.T) {
 	status, err := manager.Status(context.Background(), workspace.ID)
 	if err != nil || status.State != StateReady {
 		t.Fatalf("status = %+v, %v", status, err)
+	}
+}
+
+func TestMaintenanceToleratesTransientHeartbeatFailure(t *testing.T) {
+	engine := &fakeEngine{}
+	manager, workspace, _ := newSandboxManagerForTest(t, engine)
+	if err := manager.Start(context.Background(), workspace.ID); err != nil {
+		t.Fatal(err)
+	}
+	engine.heartbeatFails.Store(2)
+	manager.maintain(time.Now())
+	manager.maintain(time.Now())
+	status, err := manager.Status(context.Background(), workspace.ID)
+	if err != nil || status.State != StateReady {
+		t.Fatalf("transient heartbeat failure poisoned runtime: %+v, %v", status, err)
+	}
+	manager.maintain(time.Now())
+	manager.mu.Lock()
+	failuresAfterRecovery := manager.runtimeFor(workspace.ID).heartbeatFailures
+	manager.mu.Unlock()
+	if failuresAfterRecovery != 0 {
+		t.Fatalf("successful heartbeat did not reset failure count: %d", failuresAfterRecovery)
+	}
+	engine.heartbeatFails.Store(heartbeatFailureThreshold)
+	for range heartbeatFailureThreshold {
+		manager.maintain(time.Now())
+	}
+	status, err = manager.Status(context.Background(), workspace.ID)
+	if err != nil || status.State != StateError {
+		t.Fatalf("persistent heartbeat failure did not mark runtime unhealthy: %+v, %v", status, err)
 	}
 }
 

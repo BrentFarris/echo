@@ -246,6 +246,9 @@ test "$found" = 1`}})
 	}
 	t.Run("browser UI helper restart", func(t *testing.T) {
 		killRuntimeHelper(t, ctx, engine, state, `^node /opt/echo-browser/browser-bridge\.mjs$`)
+		if err := engine.Heartbeat(ctx, state); err != nil {
+			t.Fatalf("a supervised browser restart poisoned core runtime health: %v", err)
+		}
 		if err := waitForUICall(ctx, func() error {
 			_, err := engine.BrowserCall(ctx, state, "ui_observe", json.RawMessage(`{}`))
 			return err
