@@ -37,6 +37,8 @@ import { detachTerminalDock, mountTerminalDock } from "../terminal";
 import { SearchView } from "./searchView";
 import { NavigationModelCache } from "./navigationModelCache";
 import { explorerDiagnosticPresentation, updateExplorerDiagnostic } from "./explorerDiagnostics";
+import { ExplorerDirectoryLoader, needsDirectoryRefresh, preservedTreeScrollTop, reconcileDirectory, type FilesystemChange, type TreeNode } from "./explorerTree";
+import { renderExplorerRows, type ExplorerRow } from "./explorerRows";
 import {
   CodeNavigationHistory, isLargeCodeNavigationJump, type CodeNavigationLocation,
 } from "./codeNavigationHistory";
@@ -47,7 +49,7 @@ import {
   recordRecentCommandId, saveRecentCommandIds,
 } from "./commandHistory";
 import type {
-  FileRef, FileSnapshot, FsEntry, PersistedTab, PersistedWorkspaceSession,
+  FileRef, FileSnapshot, PersistedTab, PersistedWorkspaceSession,
   SearchResult, TextReplaceUpdate, TextSearchMatch, TextSearchOverlay, TrashItem, WorkspaceRoot,
 } from "./types";
 import { isRefWithin, joinRef, refKey } from "./types";
@@ -63,23 +65,6 @@ import { registerCTestCodeLens } from "./cTestCodeLens";
 import { TestOutput } from "./testOutput";
 
 type Workspace = { id: string; name: string; mainPath: string; folders: string[]; iconExt?: string };
-
-type TreeNode = {
-  key: string;
-  ref: FileRef;
-  name: string;
-  hostPath: string;
-  kind: "file" | "directory";
-  isRoot: boolean;
-  isSymlink: boolean;
-  readOnly: boolean;
-  blockedReason?: string;
-  depth: number;
-  parentKey: string | null;
-  loaded: boolean;
-  loading: boolean;
-  children: string[];
-};
 
 type OpenTab = {
   kind: "file" | "diff" | "media";
@@ -152,6 +137,13 @@ class CodeView {
   private nodes = new Map<string, TreeNode>();
   private flatTree: TreeNode[] = [];
   private expanded = new Set<string>();
+  private readonly directoryLoader = new ExplorerDirectoryLoader({
+    isCurrent: (node) => !this.abort.signal.aborted && Boolean(this.workspace) && this.nodes.get(node.key) === node,
+    listEntries: (ref) => editorAPI.listEntries(this.workspace!.id, ref),
+    apply: (node, entries) => reconcileDirectory(this.nodes, this.expanded, node, entries),
+    render: () => this.renderTree(true),
+    onError: (error) => toast(error instanceof Error ? error.message : String(error)),
+  });
   private selectedTreeKey: string | null = null;
   private renamingKey: string | null = null;
   private draggingTreeKey: string | null = null;
@@ -869,40 +861,8 @@ class CodeView {
     await this.loadChildren(this.nodes.get(key)!);
   }
 
-  private async loadChildren(node: TreeNode, force = false): Promise<void> {
-    if (node.kind !== "directory" || node.blockedReason || node.loading || (node.loaded && !force) || !this.workspace) return;
-    node.loading = true;
-    this.renderTree();
-    try {
-      const entries = await editorAPI.listEntries(this.workspace.id, node.ref);
-      for (const childKey of node.children) this.removeNodeBranch(childKey);
-      node.children = entries.map((entry) => {
-        const key = refKey(entry.ref);
-        this.nodes.set(key, this.entryNode(entry, node));
-        return key;
-      });
-      node.loaded = true;
-    } catch (error) {
-      toast(error instanceof Error ? error.message : String(error));
-    } finally {
-      node.loading = false;
-      this.renderTree();
-    }
-  }
-
-  private entryNode(entry: FsEntry, parent: TreeNode): TreeNode {
-    return {
-      key: refKey(entry.ref), ref: entry.ref, name: entry.name, hostPath: entry.hostPath,
-      kind: entry.kind, isRoot: false, isSymlink: entry.isSymlink, readOnly: Boolean(entry.readOnly), blockedReason: entry.blockedReason,
-      depth: parent.depth + 1, parentKey: parent.key, loaded: false, loading: false, children: [],
-    };
-  }
-
-  private removeNodeBranch(key: string): void {
-    const node = this.nodes.get(key);
-    if (!node) return;
-    node.children.forEach((child) => this.removeNodeBranch(child));
-    this.nodes.delete(key);
+  private loadChildren(node: TreeNode, force = false): Promise<void> {
+    return this.directoryLoader.load(node, force);
   }
 
   private rebuildFlatTree(): void {
@@ -923,25 +883,41 @@ class CodeView {
     this.flatTree = result;
   }
 
-  private renderTree(): void {
+  private renderTree(preserveViewport = false): void {
     if (!this.treeVirtualizer) return;
+    const previous = this.flatTree;
+    const scrollTop = this.treeScroller.scrollTop;
     this.rebuildFlatTree();
+    const flatTree = this.flatTree;
     this.treeVirtualizer.setOptions({
       ...this.treeVirtualizer.options,
-      count: this.flatTree.length,
-      getItemKey: (index) => this.flatTree[index]?.key || index,
+      count: flatTree.length,
+      getItemKey: (index) => flatTree[index]?.key || index,
     });
+    if (preserveViewport) {
+      // Set the final height and offset together, before computing the virtual window.
+      // Reading scrollTop here also respects scrolling while the request was in flight.
+      this.updateTreeHeight();
+      const offset = preservedTreeScrollTop(previous, flatTree, scrollTop, this.treeScroller.clientHeight, treeRowHeight);
+      if (this.treeScroller.scrollTop !== offset) this.treeScroller.scrollTop = offset;
+      this.treeVirtualizer.scrollOffset = offset;
+    }
     this.treeVirtualizer._willUpdate();
     this.renderTreeRows();
+  }
+
+  private updateTreeHeight(): void {
+    const height = `${this.treeVirtualizer.getTotalSize()}px`;
+    if (this.treeCanvas.style.height !== height) this.treeCanvas.style.height = height;
   }
 
   private renderTreeRows(): void {
     if (!this.treeCanvas || !this.treeVirtualizer) return;
     const items = this.treeVirtualizer.getVirtualItems();
-    this.treeCanvas.style.height = `${this.treeVirtualizer.getTotalSize()}px`;
-    this.treeCanvas.innerHTML = items.map((virtual) => {
+    this.updateTreeHeight();
+    const rows: ExplorerRow[] = items.flatMap((virtual) => {
       const node = this.flatTree[virtual.index];
-      if (!node) return "";
+      if (!node) return [];
       const selected = node.key === this.selectedTreeKey;
       const expanded = this.expanded.has(node.key);
       const isDirectory = node.kind === "directory";
@@ -951,24 +927,31 @@ class CodeView {
       const icon = isDirectory
         ? (expanded ? "folder-opened" : "folder")
         : this.fileIcon(node.name);
-      const chevron = isDirectory
-        ? `<span class="codicon codicon-${node.loading ? "loading codicon-modifier-spin" : expanded ? "chevron-down" : "chevron-right"}"></span>`
-        : `<span class="code-tree-spacer"></span>`;
-      const label = this.renamingKey === node.key
-        ? `<input class="code-tree-rename" data-rename-input value="${escapeHTML(node.name)}" aria-label="Rename ${escapeHTML(node.name)}">`
-        : `<span class="code-tree-label${diagnosticPresentation.className ? ` ${diagnosticPresentation.className}` : ""}">${escapeHTML(node.name)}</span>`;
       const draggable = !node.isRoot && !node.readOnly && !node.blockedReason;
       const dragging = node.key === this.draggingTreeKey;
       const dropTarget = node.key === this.treeDropTargetKey;
       const ariaLabel = diagnosticPresentation.description ? `${node.name}, ${diagnosticPresentation.description}` : node.name;
       const title = node.blockedReason || (diagnosticPresentation.description ? `${node.hostPath} — ${diagnosticPresentation.description}` : node.hostPath);
-      return `<div class="code-tree-row ${selected ? "is-selected" : ""} ${node.blockedReason ? "is-blocked" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}" role="treeitem" aria-label="${escapeHTML(ariaLabel)}" aria-selected="${selected}" aria-expanded="${isDirectory ? expanded : undefined}" draggable="${draggable}" data-tree-key="${escapeHTML(node.key)}" data-tree-kind="${node.kind}" data-tree-root="${node.isRoot}" style="transform:translateY(${virtual.start}px);padding-left:${indent}px" title="${escapeHTML(title)}">${chevron}<span class="codicon codicon-${icon} code-tree-icon"></span>${label}</div>`;
-    }).join("");
-    if (this.renamingKey) {
+      return [{
+        key: node.key,
+        attributes: {
+          class: `code-tree-row ${selected ? "is-selected" : ""} ${node.blockedReason ? "is-blocked" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}`,
+          role: "treeitem", "aria-label": ariaLabel, "aria-selected": String(selected),
+          ...(isDirectory ? { "aria-expanded": String(expanded) } : {}),
+          draggable: String(draggable), "data-tree-key": node.key, "data-tree-kind": node.kind, "data-tree-root": String(node.isRoot),
+          style: `transform:translateY(${virtual.start}px);padding-left:${indent}px`, title,
+        },
+        chevronClass: isDirectory ? `codicon codicon-${node.loading ? "loading codicon-modifier-spin" : expanded ? "chevron-down" : "chevron-right"}` : "code-tree-spacer",
+        iconClass: `codicon codicon-${icon} code-tree-icon`,
+        labelClass: `code-tree-label${diagnosticPresentation.className ? ` ${diagnosticPresentation.className}` : ""}`,
+        name: node.name, renaming: this.renamingKey === node.key,
+      }];
+    });
+    const input = renderExplorerRows(this.treeCanvas, rows);
+    if (input) {
       requestAnimationFrame(() => {
-        const input = this.treeCanvas.querySelector<HTMLInputElement>("[data-rename-input]");
-        if (!input || document.activeElement === input) return;
-        input.focus();
+        if (!input.isConnected || document.activeElement === input) return;
+        input.focus({ preventScroll: true });
         const dot = input.value.lastIndexOf(".");
         input.setSelectionRange(0, dot > 0 ? dot : input.value.length);
       });
@@ -2820,31 +2803,32 @@ class CodeView {
   }
 
   private async reloadChildrenPreservingExpansion(node: TreeNode): Promise<void> {
-    const descendants = [...this.expanded]
-      .map((key) => {
-        const separator = key.indexOf(":");
-        return separator >= 0 ? { rootId: key.slice(0, separator), path: key.slice(separator + 1) } : null;
-      })
-      .filter((ref): ref is FileRef => Boolean(ref && ref.path && isRefWithin(ref, node.ref)))
-      .sort((left, right) => left.path.split("/").length - right.path.split("/").length);
     await this.loadChildren(node, true);
-    for (const ref of descendants) {
-      await this.expandTo(ref, false);
-      const restored = this.nodes.get(refKey(ref));
-      if (!restored || restored.kind !== "directory") this.expanded.delete(refKey(ref));
+    await this.loadExpandedChildren(node);
+  }
+
+  private async loadExpandedChildren(node: TreeNode): Promise<void> {
+    if (this.abort.signal.aborted || this.nodes.get(node.key) !== node) return;
+    for (const key of node.children) {
+      const child = this.nodes.get(key);
+      if (!child || child.kind !== "directory" || !this.expanded.has(key)) continue;
+      await this.loadChildren(child);
+      await this.loadExpandedChildren(child);
     }
   }
 
   private async refreshExplorer(preservedExpansion?: FileRef[]): Promise<void> {
-    const expandedRefs = preservedExpansion || [...this.expanded].map((key) => this.nodes.get(key)?.ref).filter(Boolean) as FileRef[];
-    this.nodes.clear();
-    this.expanded.clear();
-    await Promise.all(this.roots.map((root) => this.ensureRoot(root)));
-    for (const ref of expandedRefs.sort((a, b) => a.path.split("/").length - b.path.split("/").length)) {
-      if (!ref.path) continue;
-      await this.expandTo(ref, false);
+    for (const ref of preservedExpansion || []) this.expanded.add(refKey(ref));
+    // Refresh cached directories too, so reopening a collapsed branch is current.
+    // Parent-first reconciliation discards requests for branches that were removed.
+    const directories = [...this.nodes.values()].filter((node) => node.kind === "directory" && (node.loaded || node.isRoot))
+      .sort((left, right) => left.depth - right.depth);
+    for (const node of directories) await this.loadChildren(node, true);
+    for (const root of this.roots) {
+      const node = this.nodes.get(refKey({ rootId: root.id, path: "" }));
+      if (node) await this.loadExpandedChildren(node);
+      else if (!this.abort.signal.aborted) await this.ensureRoot(root);
     }
-    this.renderTree();
   }
 
   private async expandTo(ref: FileRef, select = true): Promise<void> {
@@ -4399,7 +4383,6 @@ class CodeView {
       this.sendFilesystemSubscription();
       if (hasOpened) {
         this.lastSequence = 0;
-        void this.refreshExplorer();
         void this.pollOpenTabs();
       }
       hasOpened = true;
@@ -4408,7 +4391,7 @@ class CodeView {
       const event = data as {
         workspaceId: string;
         sequence: number;
-        changes: Array<{ op: string; ref: FileRef }>;
+        changes: FilesystemChange[];
       };
       if (event.workspaceId !== workspaceId) return;
       if (this.lastSequence && event.sequence !== this.lastSequence + 1) {
@@ -4423,7 +4406,6 @@ class CodeView {
       if (event.workspaceId !== workspaceId) return;
       this.lastSequence = event.sequence;
       this.enablePollingFallback();
-      void this.refreshExplorer();
       void this.pollOpenTabs();
     });
     this.abort.signal.addEventListener("abort", () => {
@@ -4453,7 +4435,7 @@ class CodeView {
     sendSocket({ type: "fs_subscribe", workspaceId: this.workspace.id, refs: [...refs.values()] });
   }
 
-  private async applyFilesystemChanges(changes: Array<{ op: string; ref: FileRef }>): Promise<void> {
+  private async applyFilesystemChanges(changes: FilesystemChange[]): Promise<void> {
     for (const repositoryId of new Set(this.tabs.flatMap((tab) => tab.diff && changes.some((change) => tab.diff?.fileRef && isRefWithin(tab.diff.fileRef, change.ref)) ? [tab.diff.repository.id] : []))) {
       this.scheduleSourceControlDiffRefresh(repositoryId);
     }
@@ -4463,9 +4445,11 @@ class CodeView {
         const ref = this.refForFileURI(uri);
         return Boolean(ref && isRefWithin(ref, change.ref));
       });
-      const slash = change.ref.path.lastIndexOf("/");
-      const parent = { rootId: change.ref.rootId, path: slash >= 0 ? change.ref.path.slice(0, slash) : "" };
-      parents.set(refKey(parent), parent);
+      if (needsDirectoryRefresh(change, this.nodes)) {
+        const slash = change.ref.path.lastIndexOf("/");
+        const parent = { rootId: change.ref.rootId, path: slash >= 0 ? change.ref.path.slice(0, slash) : "" };
+        parents.set(refKey(parent), parent);
+      }
       for (const tab of this.tabs) {
         const tabRef = this.worktreeRef(tab);
         if (!tabRef || !isRefWithin(tabRef, change.ref)) continue;
