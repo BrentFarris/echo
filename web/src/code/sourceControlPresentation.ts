@@ -98,8 +98,18 @@ const fossilPresentation: SourceControlPresentationAdapter = {
   supportsOptimisticStatus: false,
   supportsRemoteAdministration: false,
   supportsTagAdministration: false,
-  promotesPendingSync: false,
-  showSync() { return false; },
+  promotesPendingSync: true,
+  showSync(status) {
+    // Fossil status does not report upstream divergence. Keep Sync available
+    // whenever the checkout is clean, including after a local protected commit.
+    if (!status || status.totalChangeCount !== 0 || status.hiddenChangeCount
+      || status.truncated || status.stale || status.detectionIncomplete) return false;
+    return !status.groups.some((group) => group.changes.length > 0 || group.hiddenChangeCount
+      || group.actions.includes("unprotect") || group.diagnostic)
+      && !status.state.mergeInProgress
+      && !status.state.rebaseInProgress
+      && !status.state.cherryPickInProgress;
+  },
   repositoryActions(repository) {
     return supports(repository, "webUI") ? [{ action: "open_ui", label: "Fossil UI", icon: "globe" }] : [];
   },

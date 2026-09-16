@@ -33,6 +33,43 @@ function fossilStatus(groups: SourceControlStatus["groups"]): SourceControlStatu
 }
 
 describe("Source Control presentation adapters", () => {
+  it("offers Fossil Sync for a clean checkout without Git upstream counts", () => {
+    const presentation = presentationFor(fossilRepository);
+    const status = fossilStatus([
+      { id: "protected", label: "Protected Changes", role: "included", actions: [], changes: [] },
+      { id: "working", label: "Changes", role: "working", actions: ["protect", "commit_selected"], changes: [] },
+    ]);
+    expect(presentation.promotesPendingSync).toBe(true);
+    expect(presentation.showSync(status)).toBe(true);
+    expect(presentation.showSync(undefined)).toBe(false);
+  });
+
+  it.each([
+    { role: "included", id: "protected", kind: "modified" },
+    { role: "working", id: "working", kind: "modified" },
+    { role: "untracked", id: "untracked", kind: "untracked" },
+    { role: "conflicts", id: "conflicts", kind: "conflict" },
+  ])("keeps Fossil commit controls while $id changes remain", ({ role, id, kind }) => {
+    const status = fossilStatus([
+      { id, label: id, role, actions: [], changes: [{ path: "changed.txt", status: kind, statusCode: "M", kind, groupId: id }] },
+    ]);
+    expect(presentationFor(fossilRepository).showSync(status)).toBe(false);
+  });
+
+  it.each<[string, Partial<SourceControlStatus>]>([
+    ["hidden changes", { hiddenChangeCount: 1 }],
+    ["unlisted changes", { totalChangeCount: 1 }],
+    ["truncated status", { truncated: true }],
+    ["stale status", { stale: true }],
+    ["incomplete status", { detectionIncomplete: true }],
+    ["a merge", { state: { mergeInProgress: true } }],
+    ["an active checkpoint without visible rows", { groups: [
+      { id: "protected", label: "Protected Changes", role: "included", actions: ["unprotect", "commit_protected"], changes: [] },
+    ] }],
+  ])("does not promote Fossil Sync with %s", (_label, overrides) => {
+    expect(presentationFor(fossilRepository).showSync({ ...fossilStatus([]), ...overrides })).toBe(false);
+  });
+
   it("models Fossil as a native no-staging workflow", () => {
     const status = fossilStatus([
       { id: "working", label: "Changes", role: "working", actions: ["discard", "protect", "commit_selected", "untrack"], changes: [{ path: "edited.txt", status: "Modified", statusCode: "EDITED", kind: "modified", groupId: "working" }] },

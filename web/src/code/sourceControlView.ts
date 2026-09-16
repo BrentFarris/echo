@@ -274,7 +274,7 @@ export class SourceControlView {
           ${status?.branch ? `<span class="git-branch-label" title="${escapeHTML(status.upstream || "No upstream")}"><span class="codicon codicon-git-branch"></span>${escapeHTML(status.branch)}${status.ahead || status.behind ? ` ↑${status.ahead} ↓${status.behind}` : ""}</span>` : ""}
           ${operation ? `<span class="spinner" title="${escapeHTML(operation.action)}"></span>` : ""}
           <button type="button" title="Refresh" data-git-repo-action="refresh"><span class="codicon codicon-refresh"></span></button>
-          ${canOfferCommit || sync ? `<button type="button" title="${sync ? "Sync pending commits" : escapeHTML(commit?.title || "Commit changes")}" data-git-repo-action="${sync ? "sync" : commit?.action || "commit"}" ${operation || !repository.available || (!sync && !commit?.enabled) ? "disabled" : ""} class="${operation?.action === "sync" ? "is-syncing" : ""}><span class="codicon codicon-${sync ? "sync" : "check"}"></span></button>` : ""}
+          ${canOfferCommit || sync ? `<button type="button" title="${sync ? "Sync pending commits" : escapeHTML(commit?.title || "Commit changes")}" data-git-repo-action="${sync ? "sync" : commit?.action || "commit"}" ${operation || !repository.available || (!sync && !commit?.enabled) ? "disabled" : ""} class="${operation?.action === "sync" ? "is-syncing" : ""}"><span class="codicon codicon-${sync ? "sync" : "check"}"></span></button>` : ""}
           <button type="button" title="More Actions" data-git-repo-action="menu"><span class="codicon codicon-ellipsis"></span></button>
         </div>
       </header>

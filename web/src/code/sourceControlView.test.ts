@@ -211,6 +211,63 @@ describe("Source Control Fossil view", () => {
     ));
   });
 
+  it.each([".git-commit-button", ".git-repository-actions [data-git-repo-action='sync']"])(
+    "offers animated Fossil Sync through %s after committing all protected changes", async (selector) => {
+      const cleanStatus = normalizeStatus({
+        ...status, revision: 3, totalChangeCount: 0,
+        groups: status.groups.map((group) => ({ ...group, changes: [] })),
+      });
+      sourceControlAPI.loadStatus
+        .mockResolvedValueOnce(normalizeStatus({ ...protectedStatus, groups: [protectedStatus.groups[0]] }))
+        .mockResolvedValue(cleanStatus);
+      const view = new SourceControlView(host, "workspace", controller.signal, {
+        roots: () => [], openFile: vi.fn(), openDiff: vi.fn(), updateBadge: vi.fn(),
+      });
+      await view.start();
+
+      const primaryButton = () => host.querySelector<HTMLButtonElement>(".git-commit-button")!;
+      const headerButton = () => host.querySelector<HTMLButtonElement>(".git-repository-actions [data-git-repo-action='sync']")!;
+      expect(primaryButton().textContent?.trim()).toBe("Commit Protected");
+      const message = host.querySelector<HTMLTextAreaElement>("[data-git-commit-message]")!;
+      message.value = "Commit protected changes";
+      message.dispatchEvent(new Event("input", { bubbles: true }));
+      primaryButton().click();
+      await vi.waitFor(() => expect(sourceControlAPI.runAction).toHaveBeenCalledWith(
+        "workspace", repository.id,
+        expect.objectContaining({ action: "commit_protected", message: "Commit protected changes", expectedRevision: 2 }),
+      ));
+      await vi.waitFor(() => expect(primaryButton().textContent?.trim()).toBe("Sync"));
+      expect(primaryButton().disabled).toBe(false);
+      expect(headerButton().disabled).toBe(false);
+      expect(host.querySelector<HTMLTextAreaElement>("[data-git-commit-message]")!.value).toBe("");
+      expect(host.querySelector(".git-change-row")).toBeNull();
+
+      let finishSync!: () => void;
+      sourceControlAPI.runAction.mockImplementationOnce(() => new Promise((resolve) => {
+        finishSync = () => resolve({ requestId: "sync", repositoryId: repository.id, revision: 4 });
+      }));
+      host.querySelector<HTMLButtonElement>(selector)!.click();
+      expect(sourceControlAPI.runAction).toHaveBeenLastCalledWith(
+        "workspace", repository.id, expect.objectContaining({ action: "sync", expectedRevision: 3 }),
+      );
+      for (const button of [primaryButton(), headerButton()]) {
+        expect(button.disabled).toBe(true);
+        expect(button.classList.contains("is-syncing")).toBe(true);
+        expect(button.querySelector(".codicon-sync")).not.toBeNull();
+      }
+
+      finishSync();
+      await vi.waitFor(() => expect(primaryButton().disabled).toBe(false));
+      expect(primaryButton().classList.contains("is-syncing")).toBe(false);
+      expect(headerButton().classList.contains("is-syncing")).toBe(false);
+
+      sourceControlAPI.loadStatus.mockResolvedValue({ ...status, revision: 5 });
+      await view.refreshStatus(repository.id);
+      expect(primaryButton().textContent?.trim()).toBe("Commit All");
+      expect(headerButton()).toBeNull();
+    },
+  );
+
   it("renders tagged and untagged commits when history is expanded", async () => {
     sourceControlAPI.loadHistory.mockResolvedValue({
       commits: [
