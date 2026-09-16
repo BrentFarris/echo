@@ -3990,7 +3990,6 @@ func (s *chatSession) toolContext(ctx context.Context, turnID string, scopes *to
 		AgentModes:             agentModeToolProvider{manager: s.manager.server.modes, workspacePath: s.workspace.MainPath},
 		WorkspaceSkills:        s.manager.server.workspaceSkills(s.workspace),
 		PluginAuthoring:        s.manager.server.pluginAuthoring(s.workspace.ID, roots),
-		SourceControl:          s.manager.server.sourceControl,
 		SourceControl:              s.manager.server.sourceControl,
 		WebFetchBinaryEmbedLimit:   webFetchBinaryEmbedLimit,
 		ImageCompressionMaxDimension: imageCompressionMaxDimension,
