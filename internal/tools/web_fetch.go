@@ -24,6 +24,11 @@ const (
 	maxWebFetchRequestBytes       = 256 * 1024
 	defaultWebFetchResponseBytes  = 128 * 1024
 	maxWebFetchResponseBytes      = 512 * 1024
+	// Cap embedded binary payloads to avoid blowing the LLM context window.
+	// A 267 KB PNG would otherwise become ~355 KB of base64 text in the tool result.
+	maxWebFetchBinaryEmbedBytes = 8 * 1024
+	// Number of raw bytes to include as a short preview for truncated binaries.
+	webFetchBinaryPreviewBytes = 64
 )
 
 var webFetchAllowedMethods = []string{
@@ -101,6 +106,7 @@ type webFetchOutput struct {
 	ContentType     string              `json:"contentType,omitempty"`
 	Body            string              `json:"body,omitempty"`
 	BodyBase64      string              `json:"bodyBase64,omitempty"`
+	BodyPreview     string              `json:"bodyPreview,omitempty"`
 	BodyEncoding    string              `json:"bodyEncoding"`
 	BytesRead       int                 `json:"bytesRead"`
 	Truncated       bool                `json:"truncated"`
@@ -183,8 +189,25 @@ func webFetch(ctx ExecutionContext, arguments json.RawMessage) (any, error) {
 		if webFetchBodyIsText(contentType, bodyBytes) {
 			output.Body = string(bodyBytes)
 		} else {
-			output.BodyEncoding = "base64"
-			output.BodyBase64 = base64.StdEncoding.EncodeToString(bodyBytes)
+			limit := maxWebFetchBinaryEmbedBytes // default fallback
+			if ctx.WebFetchBinaryEmbedLimit > 0 {
+				limit = ctx.WebFetchBinaryEmbedLimit
+			}
+			if len(bodyBytes) <= limit {
+				// Small binary: embed as base64
+				output.BodyEncoding = "base64"
+				output.BodyBase64 = base64.StdEncoding.EncodeToString(bodyBytes)
+			} else {
+				// Large binary: return metadata only, don't embed the full body
+				output.BodyEncoding = "base64_truncated"
+				output.BodyBase64 = ""
+				output.Truncated = true
+				previewLen := webFetchBinaryPreviewBytes
+				if len(bodyBytes) < previewLen {
+					previewLen = len(bodyBytes)
+				}
+				output.BodyPreview = base64.StdEncoding.EncodeToString(bodyBytes[:previewLen])
+			}
 		}
 	}
 	return output, nil

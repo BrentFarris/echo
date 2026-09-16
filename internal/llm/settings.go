@@ -66,6 +66,9 @@ type LLMEndpoint struct {
 	ReasoningEffort                    string            `json:"reasoningEffort,omitempty"`
 	ThinkingCorrection                 bool              `json:"thinkingCorrection,omitempty"`
 	SystemPromptAppendage              string            `json:"systemPromptAppendage,omitempty"`
+	WebFetchBinaryEmbedLimit           int               `json:"webFetchBinaryEmbedLimit"` // bytes cap for web_fetch binary embed; 0 = unlimited (legacy)
+	ImageCompressionMaxDimension       int               `json:"imageCompressionMaxDimension"` // max px before resize; 0 = default (1536)
+	ImageCompressionJPEGQuality        int               `json:"imageCompressionJPEGQuality"`  // JPEG quality 1-100; 0 = default (75)
 	Headers                            map[string]string `json:"headers,omitempty"`
 }
 
@@ -462,16 +465,20 @@ func (e LLMEndpoint) Normalized(fallback Settings) LLMEndpoint {
 	e.Endpoint = strings.TrimSpace(e.Endpoint)
 	e.Model = strings.TrimSpace(e.Model)
 	if !e.hasGenerationConfig() {
-		// Preserve per-endpoint headers that would otherwise be overwritten
+		// Preserve per-endpoint values that would otherwise be overwritten
 		// by the fallback settings values.
 		headers := cloneStringMap(e.Headers)
 		systemPromptAppendage := e.SystemPromptAppendage
+		webFetchBinaryEmbedLimit := e.WebFetchBinaryEmbedLimit
 		e = e.WithGenerationFromSettings(fallback)
 		if len(headers) > 0 {
 			e.Headers = headers
 		}
 		if systemPromptAppendage != "" {
 			e.SystemPromptAppendage = systemPromptAppendage
+		}
+		if webFetchBinaryEmbedLimit != 0 {
+			e.WebFetchBinaryEmbedLimit = webFetchBinaryEmbedLimit
 		}
 	}
 	e = normalizeEndpointGeneration(e)
@@ -702,13 +709,18 @@ func applyLegacyEndpointFields(endpoints []LLMEndpoint, selectedID string, setti
 	return output
 }
 
-func endpointByID(endpoints []LLMEndpoint, id string) (LLMEndpoint, bool) {
+func EndpointByID(endpoints []LLMEndpoint, id string) (LLMEndpoint, bool) {
 	for _, endpoint := range endpoints {
 		if endpoint.ID == id {
 			return endpoint, true
 		}
 	}
 	return LLMEndpoint{}, false
+}
+
+// endpointByID is the unexported alias kept for internal callers within this package.
+func endpointByID(endpoints []LLMEndpoint, id string) (LLMEndpoint, bool) {
+	return EndpointByID(endpoints, id)
 }
 
 func (t Theme) Normalized() Theme {

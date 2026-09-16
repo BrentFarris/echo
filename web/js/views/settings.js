@@ -73,7 +73,6 @@ const sections = [
   { id: "external", label: "External Connections", icon: icons.git },
   { id: "messaging", label: "Messaging", icon: icons.mic },
   { id: "editor", label: "Editor", icon: icons.code },
-  { id: "git", label: "Git", icon: icons.git },
   { id: "source-control", label: "Source Control", icon: icons.git },
   { id: "lsp", label: "Language Servers", icon: icons.code },
   { id: "testing", label: "Testing", icon: icons.execute },
@@ -233,6 +232,7 @@ function newEndpoint() {
     thinkingCorrection: false,
     contextCompressionEnabled: true,
     contextCompressionThresholdPercent: 70,
+    webFetchBinaryEmbedLimit: 8192, // 8 KB default truncation for binary fetches
     systemPromptAppendage: "",
     headers: {},
   };
@@ -371,6 +371,12 @@ function renderEndpointEditor(e) {
         <input type="checkbox" ${e.contextCompressionEnabled !== false ? "checked" : ""} data-endpoint-field="contextCompressionEnabled" />
       </label>
       <p class="settings-card-help">At the configured percentage of the model context window, Echo summarizes safe middle exchanges and keeps the latest work verbatim. The threshold must be between 1% and 99%.</p>
+
+      <label class="field">
+        <span>Binary embed limit (KB)</span>
+        <input type="number" min="0" step="1" value="${e.webFetchBinaryEmbedLimit ? Math.round(e.webFetchBinaryEmbedLimit / 1024) : 0}" data-endpoint-field="webFetchBinaryEmbedLimit" />
+      </label>
+      <p class="settings-card-help">Max KB of binary web_fetch responses embedded in context. Set to 0 for unlimited (legacy). Default is 8 KB.</p>
 
       <label class="field">
         <span>System Prompt Appendage</span>
@@ -1144,7 +1150,6 @@ const renderers = {
   plugins: renderPlugins,
   external: renderExternal,
   messaging: renderMessaging,
-  git: renderGit,
   editor: renderEditor,
   "source-control": renderSourceControl,
   lsp: renderLanguageServers,
@@ -1520,6 +1525,10 @@ function bindEvents(root) {
         ep[key] = field.checked;
       } else if (key === "name" || key === "endpoint" || key === "model" || key === "reasoningEffort" || key === "systemPromptAppendage") {
         ep[key] = field.value;
+      } else if (key === "webFetchBinaryEmbedLimit") {
+        const n = Number(field.value);
+        // UI is in KB, backend stores bytes
+        ep[key] = Number.isNaN(n) || n < 0 ? 0 : Math.round(n * 1024);
       } else {
         const n = Number(field.value);
         ep[key] = Number.isNaN(n) ? 0 : n;

@@ -15,7 +15,7 @@ func init() {
 	Register(ToolFunc{
 		Meta: Metadata{
 			Name:        "filesystem_read_image",
-			Description: "Read a PNG, JPEG, WEBP, or GIF image inside the active workspace and make it available to the model as an OpenAI-compatible image_url input.",
+			Description: "Read a PNG, JPEG, WEBP, or GIF image inside the active workspace and make it available to the model as an OpenAI-compatible image_url input. Images are compressed before hitting context.",
 			Parameters: Schema{
 				"type":                 "object",
 				"additionalProperties": false,
@@ -126,7 +126,7 @@ func readImageFile(ctx ExecutionContext, arguments json.RawMessage) (any, error)
 	if len(data) > maxImageFileBytes {
 		return nil, SafeError{Code: "file_too_large", Message: fmt.Sprintf("image is larger than the %d byte limit", maxImageFileBytes)}
 	}
-	mediaType, err := detectImageMediaType(data)
+	_, err = detectImageMediaType(data)
 	if err != nil {
 		return nil, err
 	}
@@ -134,15 +134,22 @@ func readImageFile(ctx ExecutionContext, arguments json.RawMessage) (any, error)
 		return nil, err
 	}
 
+	// Compress image before sending to context. Uses per-endpoint settings
+	// from ExecutionContext, falling back to sensible defaults (1536px, q75).
+	compressed, compressedType, err := compressImageForLLM(data, ctx.ImageCompressionMaxDimension, ctx.ImageCompressionJPEGQuality)
+	if err != nil {
+		return nil, fmt.Errorf("compress image: %w", err)
+	}
+
 	relative := relativeWorkspacePath(ctx, path)
 	return readImageFileOutput{
 		Path:        relative,
 		Name:        filepath.Base(relative),
-		MediaType:   mediaType,
-		Bytes:       int64(len(data)),
+		MediaType:   compressedType,
+		Bytes:       int64(len(compressed)),
 		ContentType: "image_url",
 		Detail:      args.Detail,
-		dataURL:     imageDataURL(mediaType, data),
+		dataURL:     imageDataURL(compressedType, compressed),
 	}, nil
 }
 

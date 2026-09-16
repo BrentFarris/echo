@@ -3909,6 +3909,17 @@ func (s *chatSession) isBusyLocked() bool {
 func (s *chatSession) toolContext(ctx context.Context, turnID string, scopes *tools.ToolScopeChecker, generatedImages map[string]tools.AttachedImage, generatedVideos map[string]tools.AttachedVideo) tools.ExecutionContext {
 	settings := s.manager.server.settings
 	roots := s.manager.server.confinedToolRoots(s.workspace)
+
+	// Resolve per-model limits from the active chat endpoint
+	var webFetchBinaryEmbedLimit int
+	var imageCompressionMaxDimension int
+	var imageCompressionJPEGQuality int
+	if ep, ok := llm.EndpointByID(settings.Endpoints, settings.EndpointSelection.Chat); ok {
+		webFetchBinaryEmbedLimit = ep.WebFetchBinaryEmbedLimit
+		imageCompressionMaxDimension = ep.ImageCompressionMaxDimension
+		imageCompressionJPEGQuality = ep.ImageCompressionJPEGQuality
+	}
+
 	return tools.ExecutionContext{
 		Context: ctx, WorkspaceID: s.workspace.ID, WorkspacePath: s.workspace.MainPath, WorkspaceRoots: roots, SearxngURL: settings.SearxngURL,
 		Sandbox:                   s.manager.server.sandbox,
@@ -3931,6 +3942,9 @@ func (s *chatSession) toolContext(ctx context.Context, turnID string, scopes *to
 		WorkspaceSkills:        s.manager.server.workspaceSkills(s.workspace),
 		PluginAuthoring:        s.manager.server.pluginAuthoring(s.workspace.ID, roots),
 		SourceControl:          s.manager.server.sourceControl,
+		WebFetchBinaryEmbedLimit:     webFetchBinaryEmbedLimit,
+		ImageCompressionMaxDimension: imageCompressionMaxDimension,
+		ImageCompressionJPEGQuality:  imageCompressionJPEGQuality,
 	}
 }
 

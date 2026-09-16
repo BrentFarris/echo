@@ -124,6 +124,50 @@ func TestWebFetchReturnsBinaryAsBase64(t *testing.T) {
 	}
 }
 
+func TestWebFetchTruncatesLargeBinary(t *testing.T) {
+	// Create a binary payload larger than maxWebFetchBinaryEmbedBytes (8 KB)
+	binary := make([]byte, 10*1024)
+	for i := range binary {
+		binary[i] = byte(i % 256)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(binary)
+	}))
+	defer server.Close()
+
+	result := Execute(ExecutionContext{Context: context.Background()}, "web_fetch", mustJSON(t, map[string]any{
+		"url": server.URL,
+	}))
+	if !result.Success {
+		t.Fatalf("expected fetch success, got %#v", result)
+	}
+	output := result.Output.(webFetchOutput)
+
+	// Should NOT embed the full base64 body
+	if output.BodyBase64 != "" {
+		t.Fatalf("expected empty bodyBase64 for large binary, got %d chars", len(output.BodyBase64))
+	}
+	if output.BodyEncoding != "base64_truncated" {
+		t.Fatalf("expected bodyEncoding base64_truncated, got %q", output.BodyEncoding)
+	}
+	if !output.Truncated {
+		t.Fatal("expected truncated to be true")
+	}
+
+	// Should have a short preview of the first 64 bytes
+	expectedPreview := base64.StdEncoding.EncodeToString(binary[:webFetchBinaryPreviewBytes])
+	if output.BodyPreview != expectedPreview {
+		t.Fatalf("unexpected bodyPreview: got %q, want %q", output.BodyPreview, expectedPreview)
+	}
+
+	// Full bytes should still be read (up to maxBytes default)
+	if output.BytesRead != len(binary) {
+		t.Fatalf("expected bytesRead %d, got %d", len(binary), output.BytesRead)
+	}
+}
+
 func TestWebFetchRejectsUnsupportedInputs(t *testing.T) {
 	cases := []struct {
 		name string

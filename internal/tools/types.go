@@ -149,6 +149,15 @@ type ExecutionContext struct {
 	JiraAPIToken string
 	// SourceControl exposes provider-neutral, read-only repository inspection.
 	SourceControl SourceControlInspector
+	// WebFetchBinaryEmbedLimit is the per-model byte cap for embedding binary
+	// responses in web_fetch tool results. Zero means unlimited (legacy behavior).
+	WebFetchBinaryEmbedLimit int
+	// ImageCompressionMaxDimension is the max dimension (px) before resizing
+	// images read by tools. Zero uses a default of 1536.
+	ImageCompressionMaxDimension int
+	// ImageCompressionJPEGQuality is the JPEG quality for re-encoding images
+	// read by tools (1-100). Zero uses a default of 75.
+	ImageCompressionJPEGQuality int
 }
 
 type SourceControlInspector interface {

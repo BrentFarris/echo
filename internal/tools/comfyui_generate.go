@@ -336,9 +336,20 @@ func comfyuiGenerate(ctx ExecutionContext, arguments json.RawMessage) (any, erro
 
 		output.Name = filename
 		output.MediaType = mediaType
-		output.Bytes = int64(len(imgData))
+
+		// Compress before sending to context; fall back to raw on failure.
+		compressed, compressedType, compErr := compressImageForLLM(imgData, ctx.ImageCompressionMaxDimension, ctx.ImageCompressionJPEGQuality)
+		if compErr != nil {
+			// Compression failed (e.g. unusual format). Use raw data so the
+			// tool still succeeds — the image just costs more context tokens.
+			compressed = imgData
+			compressedType = mediaType
+		}
+
+		output.MediaType = compressedType
+		output.Bytes = int64(len(compressed))
 		output.ContentType = "image_url"
-		output.dataURL = fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(imgData))
+		output.dataURL = fmt.Sprintf("data:%s;base64,%s", compressedType, base64.StdEncoding.EncodeToString(compressed))
 		output.ImageID = uuid.New().String()
 	}
 
