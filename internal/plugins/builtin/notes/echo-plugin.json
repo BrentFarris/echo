@@ -1,0 +1,25 @@
+{
+  "manifestVersion": 1,
+  "id": "notes",
+  "name": "Notes",
+  "version": "1.0.0",
+  "description": "Write and preview private Markdown notes for each Echo workspace.",
+  "author": "Echo",
+  "license": "MIT",
+  "echo": { "api": "^1" },
+  "permissions": [],
+  "contributes": {
+    "views": [
+      {
+        "id": "notes",
+        "kind": "page",
+        "title": "Notes",
+        "icon": "assets/notes.svg",
+        "entry": "ui/notes/index.html"
+      }
+    ],
+    "tools": [],
+    "settings": [],
+    "rpc": []
+  }
+}

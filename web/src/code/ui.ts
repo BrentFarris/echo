@@ -180,9 +180,14 @@ export async function copyText(value: string): Promise<void> {
   textarea.value = value;
   textarea.style.position = "fixed";
   textarea.style.opacity = "0";
+  const focused = document.activeElement;
   document.body.appendChild(textarea);
-  textarea.select();
-  const copied = document.execCommand("copy");
-  textarea.remove();
-  if (!copied) throw new Error("Clipboard access was denied");
+  try {
+    textarea.select();
+    if (!document.execCommand("copy")) throw new Error("Clipboard access was denied");
+  } finally {
+    const restoreFocus = document.activeElement === textarea;
+    textarea.remove();
+    if (restoreFocus && focused instanceof HTMLElement && focused.isConnected) focused.focus({ preventScroll: true });
+  }
 }

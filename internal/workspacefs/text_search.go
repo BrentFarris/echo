@@ -13,6 +13,8 @@ import (
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/brent/echo/internal/mutation"
 )
 
 const maximumTextSearchMatches = 10000
@@ -82,13 +84,14 @@ type TextReplaceRequest struct {
 }
 
 type TextReplaceUpdate struct {
-	Ref        FileRef `json:"ref"`
-	Revision   string  `json:"revision"`
-	Size       int64   `json:"size"`
-	ModifiedAt string  `json:"modifiedAt"`
-	EOL        string  `json:"eol"`
-	HasBOM     bool    `json:"hasBom"`
-	Content    string  `json:"content,omitempty"`
+	Registration *mutation.Result `json:"registration,omitempty"`
+	Ref          FileRef          `json:"ref"`
+	Revision     string           `json:"revision"`
+	Size         int64            `json:"size"`
+	ModifiedAt   string           `json:"modifiedAt"`
+	EOL          string           `json:"eol"`
+	HasBOM       bool             `json:"hasBom"`
+	Content      string           `json:"content,omitempty"`
 }
 
 type TextReplaceResponse struct {
@@ -274,7 +277,23 @@ func (s *Service) ReplaceText(ctx context.Context, workspaceID string, request T
 			}
 			return response, err
 		}
-		if writeErr := atomicWrite(item.path, item.data, item.mode); writeErr != nil {
+		registration, writeErr := s.coordinateContext(ctx, mutation.Operation{WorkspaceID: workspaceID, Path: item.path, Kind: "edit", Origin: "find-replace", Validate: func() error {
+			data, err := os.ReadFile(item.path)
+			if err != nil {
+				return err
+			}
+			if contentRevision(data) != item.target.Revision {
+				return searchConflict("a target file changed after the search completed")
+			}
+			return nil
+		}}, func() error {
+			info, err := os.Stat(item.path)
+			if err != nil {
+				return err
+			}
+			return atomicWrite(item.path, item.data, info.Mode().Perm())
+		})
+		if writeErr != nil {
 			if len(changes) > 0 {
 				s.index.ApplyChanges(workspaceID, changes)
 			}
@@ -284,6 +303,9 @@ func (s *Service) ReplaceText(ctx context.Context, workspaceID string, request T
 		update := TextReplaceUpdate{
 			Ref: item.target.Ref, Revision: contentRevision(item.data), Size: int64(len(item.data)),
 			ModifiedAt: time.Now().UTC().Format(time.RFC3339Nano), EOL: detectEOL([]byte(item.content)), HasBOM: item.hasBOM,
+		}
+		if registration.Pending {
+			update.Registration = &registration
 		}
 		if info != nil {
 			update.ModifiedAt = info.ModTime().UTC().Format(time.RFC3339Nano)

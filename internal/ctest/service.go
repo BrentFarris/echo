@@ -497,7 +497,7 @@ func confinedPath(workspace workspaces.Workspace, value string, mustExist, direc
 			return "", fmt.Errorf("C testing path has the wrong kind: %s", absolute)
 		}
 	}
-	return absolute, nil
+	return canonicalizeForContainment(absolute)
 }
 
 func containedInWorkspace(workspace workspaces.Workspace, candidate string) bool {
@@ -541,10 +541,24 @@ func canonicalizeForContainment(value string) (string, error) {
 }
 
 func refForHostPath(fs *workspacefs.Service, workspaceID, hostPath string) (workspacefs.FileRef, error) {
+	hostPath, err := canonicalizeForContainment(hostPath)
+	if err != nil {
+		return workspacefs.FileRef{}, err
+	}
 	roots, err := fs.Roots(workspaceID)
 	if err != nil {
 		return workspacefs.FileRef{}, err
 	}
+	canonicalRoots := make([]workspacefs.Root, 0, len(roots))
+	for _, root := range roots {
+		canonicalRoot, err := canonicalizeForContainment(root.HostPath)
+		if err != nil {
+			continue
+		}
+		root.HostPath = canonicalRoot
+		canonicalRoots = append(canonicalRoots, root)
+	}
+	roots = canonicalRoots
 	sort.SliceStable(roots, func(i, j int) bool { return len(roots[i].HostPath) > len(roots[j].HostPath) })
 	for _, root := range roots {
 		if !pathWithin(root.HostPath, hostPath) {

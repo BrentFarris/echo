@@ -18,7 +18,7 @@ func init() {
 	Register(ToolFunc{
 		Meta: Metadata{
 			Name:        SourceControlInspectToolName,
-			Description: "Inspect a local Git, Fossil, or future source-control repository without changing files, revisions, or remotes. Supports provider-neutral status, history, revision details, per-file diffs, and annotations.",
+			Description: "Inspect Git, Fossil, or P4 without changing files or repository state. Status and working-copy diffs are shared; other inspection operations depend on provider capabilities.",
 			Parameters: Schema{
 				"type":                 "object",
 				"additionalProperties": false,
@@ -26,7 +26,8 @@ func init() {
 				"properties": map[string]any{
 					"operation":  map[string]any{"type": "string", "enum": []any{"status", "history", "show", "diff", "annotate"}},
 					"repository": map[string]any{"type": "string", "description": "Opaque repository ID or visible repository/workspace-folder label."},
-					"provider":   map[string]any{"type": "string", "description": "Optional provider ID, such as git or fossil, used to disambiguate repositories at the same root."},
+					"provider":   map[string]any{"type": "string", "description": "Optional provider ID, such as git, fossil, or p4, used to disambiguate repositories at the same root."},
+					"group":      map[string]any{"type": "string", "description": "Optional change-group ID, such as default or a P4 pending changelist number."},
 					"path":       map[string]any{"type": "string", "description": "Repository-relative file path. Required for diff and annotate; optional for show."},
 					"revision":   map[string]any{"type": "string", "description": "Revision for show or annotate."},
 					"comparison": map[string]any{"type": "string", "description": "For diff: working_tree, included, revision, revisions, or revision_to_worktree.", "enum": []any{"working_tree", "included", "revision", "revisions", "revision_to_worktree"}},
@@ -44,6 +45,7 @@ func init() {
 }
 
 type sourceControlInspectArgs struct {
+	Group      string `json:"group"`
 	Operation  string `json:"operation"`
 	Repository string `json:"repository"`
 	Provider   string `json:"provider"`
@@ -113,6 +115,24 @@ func executeSourceControlInspect(execution ExecutionContext, arguments json.RawM
 			return nil, safeSourceControlInspectError(statusErr)
 		}
 		result.Status = &status
+		if args.Group != "" {
+			filtered := []sourcecontrol.ChangeGroup{}
+			for _, group := range status.Groups {
+				if group.ID == args.Group {
+					filtered = append(filtered, group)
+				}
+			}
+			status.Groups = filtered
+			if len(filtered) == 0 {
+				return nil, SafeError{Code: "source_control_group_not_found", Message: "The requested change group is not present in this status snapshot; refresh status and choose a listed group."}
+			}
+			status.TotalChangeCount = 0
+			status.HiddenChangeCount = 0
+			for _, group := range filtered {
+				status.TotalChangeCount += len(group.Changes) + group.HiddenChangeCount
+				status.HiddenChangeCount += group.HiddenChangeCount
+			}
+		}
 	case "history":
 		limit := args.MaxResults
 		if limit <= 0 {
@@ -140,6 +160,9 @@ func executeSourceControlInspect(execution ExecutionContext, arguments json.RawM
 		target, targetErr := sourceControlInspectionDiffTarget(repository.ProviderID, args)
 		if targetErr != nil {
 			return nil, targetErr
+		}
+		if args.Group != "" {
+			target.GroupID = args.Group
 		}
 		if strings.EqualFold(strings.TrimSpace(args.Comparison), "included") {
 			status, statusErr := execution.SourceControl.Status(ctx, execution.WorkspaceID, repository.ID)
@@ -192,7 +215,7 @@ func validateSourceControlInspectArgs(args sourceControlInspectArgs) error {
 	switch args.Operation {
 	case "status":
 		if args.Path != "" || args.Revision != "" || args.Comparison != "" || args.Base != "" || args.Target != "" || args.Offset != 0 || args.MaxResults != 0 || args.StartLine != 0 || args.EndLine != 0 {
-			return invalid("status only accepts operation, repository, and provider")
+			return invalid("status only accepts operation, repository, provider, and group")
 		}
 	case "history":
 		if args.Path != "" || args.Revision != "" || args.Comparison != "" || args.Base != "" || args.Target != "" || args.StartLine != 0 || args.EndLine != 0 {
@@ -264,10 +287,13 @@ func selectSourceControlRepository(repositories []sourcecontrol.Repository, requ
 	return sourcecontrol.Repository{}, SafeError{Code: "ambiguous_repository", Message: "repository matches multiple providers; pass provider: " + strings.Join(labels, ", ")}
 }
 
-func sourceControlInspectionDiffTarget(_ string, args sourceControlInspectArgs) (sourcecontrol.DiffTarget, error) {
+func sourceControlInspectionDiffTarget(provider string, args sourceControlInspectArgs) (sourcecontrol.DiffTarget, error) {
 	comparison := strings.ToLower(strings.TrimSpace(args.Comparison))
 	if comparison == "" {
 		comparison = "working_tree"
+	}
+	if provider == "p4" && comparison != "working_tree" {
+		return sourcecontrol.DiffTarget{}, SafeError{Code: "unsupported_source_control_capability", Message: "P4 supports working-copy diff inspection only"}
 	}
 	target := sourcecontrol.DiffTarget{Path: args.Path}
 	switch comparison {
@@ -276,6 +302,9 @@ func sourceControlInspectionDiffTarget(_ string, args sourceControlInspectArgs) 
 			return target, SafeError{Code: "invalid_arguments", Message: "working_tree diff does not accept base or target"}
 		}
 		target.Kind, target.GroupID = "change", "working"
+		if provider == "p4" {
+			target.GroupID = ""
+		}
 	case "included":
 		if args.Base != "" || args.Target != "" {
 			return target, SafeError{Code: "invalid_arguments", Message: "included diff does not accept base or target"}

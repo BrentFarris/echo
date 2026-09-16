@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/brent/echo/internal/appdata"
 	"github.com/brent/echo/internal/debugconfig"
+	"github.com/brent/echo/internal/workspaces"
 )
 
 func TestInspectionResponseIsRejectedAfterContinue(t *testing.T) {
@@ -61,6 +64,86 @@ func TestConcurrentControlsSerializeOnRevision(t *testing.T) {
 	}
 	if !errors.Is(stale, ErrStaleSession) {
 		t.Fatalf("losing control error = %v, want ErrStaleSession", stale)
+	}
+}
+
+func TestStopInterruptsNativeRestart(t *testing.T) {
+	service, current, adapter, cleanup := stoppedPipeSession(t, 10, 2)
+	defer cleanup()
+	service.workspaces = staticWorkspaceResolver{workspace: workspaces.Workspace{ID: "workspace"}}
+	service.state = debugconfig.NewStateStore(appdata.NewStore(filepath.Join(t.TempDir(), "echo.json")))
+	current.status = StatusRunning
+	current.configuration.Request = "launch"
+	current.capabilities["supportsRestartRequest"] = true
+	events := make(chan string, 8)
+	service.SetNotifier(func(event Event) { events <- event.Event })
+
+	restartReceived := make(chan struct{})
+	adapterDone := make(chan struct{})
+	go func() {
+		defer close(adapterDone)
+		restart := readTestDAPRequest(t, adapter)
+		if restart.Command != "restart" {
+			t.Errorf("first DAP command = %q, want restart", restart.Command)
+			return
+		}
+		close(restartReceived)
+		disconnect := readTestDAPRequest(t, adapter)
+		if disconnect.Command != "disconnect" {
+			t.Errorf("second DAP command = %q, want disconnect", disconnect.Command)
+			return
+		}
+		writeTestDAPResponse(t, adapter, disconnect, nil)
+	}()
+
+	type restartResult struct {
+		snapshot Snapshot
+		err      error
+	}
+	restartDone := make(chan restartResult, 1)
+	go func() {
+		snapshot, err := service.RestartChecked(context.Background(), "workspace", current.id, 10)
+		restartDone <- restartResult{snapshot: snapshot, err: err}
+	}()
+
+	select {
+	case <-restartReceived:
+	case <-time.After(2 * time.Second):
+		t.Fatal("native restart request did not reach the adapter")
+	}
+
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- service.StopChecked("workspace", current.id, 11, nil) }()
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("StopChecked error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("StopChecked remained blocked behind the native restart")
+	}
+	select {
+	case result := <-restartDone:
+		if result.err != nil {
+			t.Fatalf("RestartChecked error after stop = %v", result.err)
+		}
+		if session := snapshotSession(result.snapshot, current.id); session == nil || (session.Status != StatusTerminating && session.Status != StatusTerminated) {
+			t.Fatalf("restart snapshot session = %#v, want terminating or terminated", session)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RestartChecked did not return after stop")
+	}
+	<-adapterDone
+	service.mu.Lock()
+	status := current.status
+	service.mu.Unlock()
+	if status != StatusTerminated {
+		t.Fatalf("session status = %q, want terminated", status)
+	}
+	for len(events) > 0 {
+		if event := <-events; event == "restart_failed" {
+			t.Fatal("explicit stop published restart_failed")
+		}
 	}
 }
 
@@ -138,4 +221,27 @@ func writeTestDAPResponse(t *testing.T, connection net.Conn, request dapEnvelope
 	}, 7, 3); err != nil {
 		t.Errorf("write DAP response: %v", err)
 	}
+}
+
+type staticWorkspaceResolver struct{ workspace workspaces.Workspace }
+
+func (r staticWorkspaceResolver) Get(id string) (workspaces.Workspace, bool, error) {
+	return r.workspace, id == r.workspace.ID, nil
+}
+func (r staticWorkspaceResolver) List() ([]workspaces.Workspace, error) {
+	return []workspaces.Workspace{r.workspace}, nil
+}
+func (r staticWorkspaceResolver) SetDebugConfig(_ string, config debugconfig.WorkspaceConfig) (workspaces.Workspace, error) {
+	workspace := r.workspace
+	workspace.Debug = config
+	return workspace, nil
+}
+
+func snapshotSession(snapshot Snapshot, id string) *SessionSnapshot {
+	for index := range snapshot.Sessions {
+		if snapshot.Sessions[index].ID == id {
+			return &snapshot.Sessions[index]
+		}
+	}
+	return nil
 }

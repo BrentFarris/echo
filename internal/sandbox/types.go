@@ -27,23 +27,24 @@ var ProtocolVersion = sandboxprotocol.Version
 // so the one-click installers can pull compatible images without requiring a
 // local Docker build.
 var (
-	WorkbenchImage string
-	DesktopImage   string
-	GatewayImage   string
+	RuntimeImage string
+	GatewayImage string
 )
 
 type State string
 
 const (
-	StateDisabled    State = "disabled"
-	StateUnavailable State = "unavailable"
-	StatePulling     State = "pulling"
-	StateCreating    State = "creating"
-	StateStarting    State = "starting"
-	StateReady       State = "ready"
-	StateStopping    State = "stopping"
-	StateStopped     State = "stopped"
-	StateError       State = "error"
+	StateDisabled        State = "disabled"
+	StateUnavailable     State = "unavailable"
+	StatePulling         State = "pulling"
+	StateCreating        State = "creating"
+	StateStarting        State = "starting"
+	StateReady           State = "ready"
+	StateStopping        State = "stopping"
+	StateStopped         State = "stopped"
+	StateError           State = "error"
+	StateUpgradeRequired State = "upgrade_required"
+	StateUpgrading       State = "upgrading"
 )
 
 type LeaseOwner string
@@ -55,13 +56,15 @@ const (
 )
 
 var (
-	ErrDisabled          = &Error{Code: "sandbox_disabled", Message: "the workspace sandbox is disabled"}
-	ErrUnavailable       = &Error{Code: "sandbox_unavailable", Message: "Docker is unavailable or incompatible"}
-	ErrProtocolMismatch  = &Error{Code: "sandbox_protocol_mismatch", Message: "sandbox images are incompatible with this Echo build; recreate the sandbox"}
-	ErrUserControlActive = &Error{Code: "user_control_active", Message: "desktop control belongs to the user"}
-	ErrControlConflict   = &Error{Code: "desktop_control_conflict", Message: "desktop control belongs to another session"}
-	ErrSetupApproval     = &Error{Code: "setup_approval_required", Message: "the changed sandbox setup recipe requires owner approval"}
-	ErrPolicyTransition  = &Error{Code: "sandbox_transitioning", Message: "the workspace execution target is changing; retry after the transition completes"}
+	ErrDisabled            = &Error{Code: "sandbox_disabled", Message: "the workspace sandbox is disabled"}
+	ErrUnavailable         = &Error{Code: "sandbox_unavailable", Message: "Docker is unavailable or incompatible"}
+	ErrProtocolMismatch    = &Error{Code: "sandbox_protocol_mismatch", Message: "sandbox images are incompatible with this Echo build; recreate the sandbox"}
+	ErrUserControlActive   = &Error{Code: "user_control_active", Message: "desktop control belongs to the user"}
+	ErrControlConflict     = &Error{Code: "desktop_control_conflict", Message: "desktop control belongs to another session"}
+	ErrSetupApproval       = &Error{Code: "setup_approval_required", Message: "the changed sandbox setup recipe requires owner approval"}
+	ErrPolicyTransition    = &Error{Code: "sandbox_transitioning", Message: "the workspace execution target is changing; retry after the transition completes"}
+	ErrUpgradeRequired     = &Error{Code: "sandbox_upgrade_required", Message: "upgrade this sandbox to the unified environment before starting it"}
+	ErrAIActionInterrupted = &Error{Code: "user_control_interrupted", Message: "the user took control; discard this pending action and refresh the affected context before continuing"}
 )
 
 // Error carries a stable public failure code without leaking daemon details.
@@ -96,8 +99,10 @@ func ErrorCode(err error) string {
 }
 
 type ImageSet struct {
-	Workbench string `json:"workbench"`
-	Desktop   string `json:"desktop"`
+	Runtime string `json:"runtime,omitempty"`
+	// Legacy image references are retained only for upgrade recovery.
+	Workbench string `json:"workbench,omitempty"`
+	Desktop   string `json:"desktop,omitempty"`
 	Gateway   string `json:"gateway"`
 }
 
@@ -108,11 +113,11 @@ func BuildImages() ImageSet {
 		}
 		return "ghcr.io/brentfarris/echo-sandbox-" + name + ":protocol-" + ProtocolVersion
 	}
-	return ImageSet{Workbench: image(WorkbenchImage, "workbench"), Desktop: image(DesktopImage, "desktop"), Gateway: image(GatewayImage, "egress")}
+	return ImageSet{Runtime: image(RuntimeImage, "runtime"), Gateway: image(GatewayImage, "egress")}
 }
 
 func (images ImageSet) Roles() map[string]string {
-	return map[string]string{"workbench": images.Workbench, "desktop": images.Desktop, "gateway": images.Gateway}
+	return map[string]string{"runtime": images.Runtime, "gateway": images.Gateway}
 }
 
 func (images ImageSet) Immutable() bool {
@@ -171,18 +176,20 @@ type DesktopLease struct {
 }
 
 type SandboxStatus struct {
-	State           State         `json:"state"`
-	Enabled         bool          `json:"enabled"`
-	ErrorCode       string        `json:"errorCode,omitempty"`
-	Message         string        `json:"message,omitempty"`
-	ImageVersion    ImageSet      `json:"imageVersion"`
-	ProtocolVersion string        `json:"protocolVersion"`
-	Resources       ResourceUsage `json:"resources"`
-	Setup           SetupStatus   `json:"setup"`
-	ActiveViewers   int           `json:"activeViewers"`
-	ControlOwner    LeaseOwner    `json:"controlOwner"`
-	DesktopLease    DesktopLease  `json:"desktopLease"`
-	UpdatedAt       time.Time     `json:"updatedAt"`
+	State             State            `json:"state"`
+	Enabled           bool             `json:"enabled"`
+	ErrorCode         string           `json:"errorCode,omitempty"`
+	Message           string           `json:"message,omitempty"`
+	ImageVersion      ImageSet         `json:"imageVersion"`
+	ProtocolVersion   string           `json:"protocolVersion"`
+	Resources         ResourceUsage    `json:"resources"`
+	Setup             SetupStatus      `json:"setup"`
+	ActiveViewers     int              `json:"activeViewers"`
+	ControlOwner      LeaseOwner       `json:"controlOwner"`
+	DesktopLease      DesktopLease     `json:"desktopLease"`
+	UpdatedAt         time.Time        `json:"updatedAt"`
+	Migration         *MigrationStatus `json:"migration,omitempty"`
+	ControlGeneration uint64           `json:"controlGeneration"`
 }
 
 type NetworkGrant struct {
@@ -232,25 +239,42 @@ type WorkspaceSpec struct {
 }
 
 type MachineState struct {
-	Version             int               `json:"version"`
-	WorkspaceID         string            `json:"workspaceId"`
-	ProtocolVersion     string            `json:"protocolVersion"`
-	Images              ImageSet          `json:"images"`
-	ApprovedSetupDigest string            `json:"approvedSetupDigest,omitempty"`
-	LastSetup           SetupStatus       `json:"lastSetup,omitempty"`
-	NetworkGrants       []NetworkGrant    `json:"networkGrants,omitempty"`
-	VolumeNames         map[string]string `json:"volumeNames"`
-	ContainerNames      map[string]string `json:"containerNames"`
-	NetworkName         string            `json:"networkName"`
-	UpdatedAt           time.Time         `json:"updatedAt"`
+	Version               int               `json:"version"`
+	WorkspaceID           string            `json:"workspaceId"`
+	ProtocolVersion       string            `json:"protocolVersion"`
+	Images                ImageSet          `json:"images"`
+	ApprovedSetupDigest   string            `json:"approvedSetupDigest,omitempty"`
+	ApprovedSetupProtocol string            `json:"approvedSetupProtocol,omitempty"`
+	LastSetup             SetupStatus       `json:"lastSetup,omitempty"`
+	NetworkGrants         []NetworkGrant    `json:"networkGrants,omitempty"`
+	VolumeNames           map[string]string `json:"volumeNames"`
+	ContainerNames        map[string]string `json:"containerNames"`
+	NetworkName           string            `json:"networkName"`
+	UpdatedAt             time.Time         `json:"updatedAt"`
+	// Recovery resources are never touched by ordinary start/reset/recreate.
+	Recovery []MachineState `json:"recovery,omitempty"`
+}
+
+func (state MachineState) NeedsUpgrade() bool {
+	return state.Version < 2 || state.ContainerNames["workbench"] != "" || state.ContainerNames["desktop"] != ""
+}
+
+type MigrationStatus struct {
+	Stage   string `json:"stage"`
+	Message string `json:"message,omitempty"`
+}
+
+type MigrationJournal struct {
+	Original  MachineState    `json:"original"`
+	Candidate MachineState    `json:"candidate"`
+	Status    MigrationStatus `json:"status"`
 }
 
 type RuntimeSecrets struct {
-	WorkbenchAgentToken string
-	DesktopAgentToken   string
-	VNCToken            string
-	ProxyToken          string
-	BrowserToken        string
+	RuntimeAgentToken string
+	VNCToken          string
+	ProxyToken        string
+	BrowserToken      string
 }
 
 type ExecRequest struct {
@@ -305,6 +329,7 @@ type DAPRequest struct {
 type DeleteScope struct {
 	Containers bool
 	Network    bool
+	Runtime    bool
 	Workbench  bool
 	Desktop    bool
 	Browser    bool
@@ -439,7 +464,7 @@ func ValidateNetworkGrant(grant NetworkGrant) error {
 			return fmt.Errorf("sandboxAlias is not a valid hostname")
 		}
 		reserved := strings.ToLower(strings.TrimSuffix(alias, "."))
-		if reserved == "gateway" || reserved == "workbench" || reserved == "desktop" || reserved == "localhost" || strings.HasSuffix(reserved, ".echo.internal") {
+		if reserved == "runtime" || reserved == "gateway" || reserved == "workbench" || reserved == "desktop" || reserved == "localhost" || strings.HasSuffix(reserved, ".echo.internal") {
 			return fmt.Errorf("sandboxAlias conflicts with a reserved sandbox hostname")
 		}
 	}

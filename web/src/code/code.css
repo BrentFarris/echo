@@ -873,6 +873,10 @@
   color: #cca700;
 }
 
+.p4-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px; }
+.p4-toolbar label { display: flex; align-items: center; gap: 6px; }
+.p4-description { padding: 4px 12px 8px; white-space: pre-wrap; font-size: 12px; opacity: .8; }
+
 .git-change-group > header {
   justify-content: space-between;
   height: 24px;
@@ -1182,6 +1186,38 @@
   inset: 0;
 }
 
+.code-diff-hunk-gutter {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  overflow: hidden;
+  pointer-events: none;
+}
+.code-diff-hunk-actions {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  width: 20px;
+  pointer-events: auto;
+  border-radius: 3px;
+  background: var(--code-hover);
+}
+.code-diff-hunk-actions[hidden] { display: none; }
+.code-diff-hunk-actions button {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 17px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  color: var(--code-fg);
+  background: transparent;
+  cursor: pointer;
+}
+.code-diff-hunk-actions button:hover { background: var(--code-selected); }
+.code-diff-hunk-actions button:focus-visible { outline: 1px solid var(--code-accent); outline-offset: 1px; }
+.code-diff-hunk-actions button:disabled { opacity: .4; cursor: default; }
 .code-monaco-diff-host[hidden],
 .code-diff-toolbar[hidden],
 .code-diff-unavailable[hidden] {
@@ -1717,7 +1753,7 @@
 
 .code-chat-surface {
   display: grid;
-  grid-template-rows: 35px minmax(0, 1fr) auto;
+  grid-template-rows: 35px minmax(0, 1fr) auto auto;
   width: 100%;
   height: 100%;
   gap: 0;
@@ -1727,6 +1763,36 @@
   background: var(--code-editor-surface);
   box-shadow: none;
   color: var(--code-fg);
+}
+
+.code-chat-surface > .code-chat-header { grid-row: 1; }
+.code-chat-surface > .chat-log { grid-row: 2; }
+.code-chat-surface > .chat-goal-bar { grid-row: 3; }
+.code-chat-surface > .chat-composer { grid-row: 4; }
+
+.code-chat-surface .chat-goal-bar {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.code-chat-surface .chat-goal-main,
+.code-chat-surface .chat-goal-actions {
+  flex-wrap: wrap;
+}
+
+.code-chat-surface .chat-goal-objective {
+  flex: 1 1 100%;
+  min-width: 0;
+  order: 3;
+}
+
+.code-chat-surface .chat-goal-stats {
+  flex-shrink: 1;
+  overflow-wrap: anywhere;
+}
+
+.code-chat-surface .chat-goal-actions button {
+  flex: 0 0 auto;
 }
 
 .code-chat-header {

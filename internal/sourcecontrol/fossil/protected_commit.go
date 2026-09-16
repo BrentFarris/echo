@@ -88,6 +88,11 @@ func (p *Provider) commitProtected(ctx context.Context, state *repositoryState, 
 	if err := p.verifyMaterialized(state, manifest.Entries); err != nil {
 		return rollback(err)
 	}
+	// A block can replace text with the same byte length within one timestamp
+	// tick. Refresh Fossil's cached file signatures after materializing it.
+	if _, err := p.rawStatus(ctx, state); err != nil {
+		return rollback(err)
+	}
 	if faultErr := p.injectProtectedCommitFault("before_commit"); faultErr != nil {
 		return nil, nil, interruptedProtectedCommit(faultErr)
 	}

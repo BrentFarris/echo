@@ -15,8 +15,9 @@ import (
 const maximumWatchedDirectories = 8192
 
 type Change struct {
-	Op  string  `json:"op"`
-	Ref FileRef `json:"ref"`
+	IsDirectory bool    `json:"isDirectory,omitempty"`
+	Op          string  `json:"op"`
+	Ref         FileRef `json:"ref"`
 }
 
 type WatchEvent struct {
@@ -28,21 +29,23 @@ type WatchEvent struct {
 }
 
 type watchedWorkspace struct {
-	id         string
-	watcher    *fsnotify.Watcher
-	roots      []resolvedRoot
-	matchers   map[string]*ignore.GitIgnore
-	references int
-	sequence   uint64
-	stop       chan struct{}
-	done       chan struct{}
-	mu         sync.Mutex
-	pending    map[string]Change
-	watchCount int
-	watched    map[string]bool
-	overflowed bool
-	onEvent    func(WatchEvent)
-	applyIndex func(string, []Change)
+	trackingReferences int
+	includeIgnored     bool
+	id                 string
+	watcher            *fsnotify.Watcher
+	roots              []resolvedRoot
+	matchers           map[string]*ignore.GitIgnore
+	references         int
+	sequence           uint64
+	stop               chan struct{}
+	done               chan struct{}
+	mu                 sync.Mutex
+	pending            map[string]Change
+	watchCount         int
+	watched            map[string]bool
+	overflowed         bool
+	onEvent            func(WatchEvent)
+	applyIndex         func(string, []Change)
 }
 
 // WatchManager reference-counts recursive directory watchers by workspace.
@@ -58,10 +61,39 @@ func NewWatchManager(service *Service, onEvent func(WatchEvent)) *WatchManager {
 }
 
 func (m *WatchManager) Subscribe(workspaceID string) error {
+	return m.subscribe(workspaceID, false)
+}
+
+// SubscribeTracking installs directory watches without starting the editor's
+// recursive file index. P4 filters additions with its own ignore rules.
+func (m *WatchManager) SubscribeTracking(workspaceID string) error {
+	return m.subscribe(workspaceID, true)
+}
+func (m *WatchManager) subscribe(workspaceID string, tracking bool) error {
 	m.mu.Lock()
 	if existing := m.workspaces[workspaceID]; existing != nil {
+		startIndex := !tracking && existing.references == existing.trackingReferences
 		existing.references++
+		if tracking {
+			existing.trackingReferences++
+		}
 		m.mu.Unlock()
+		if tracking {
+			existing.mu.Lock()
+			changed := !existing.includeIgnored
+			existing.includeIgnored = true
+			existing.mu.Unlock()
+			if changed {
+				for _, root := range existing.roots {
+					if err := existing.addTree(root, root.realPath, false); err != nil {
+						existing.emitResync()
+					}
+				}
+			}
+		}
+		if startIndex {
+			m.service.StartIndex(workspaceID)
+		}
 		return nil
 	}
 	roots, err := m.service.resolvedRoots(workspaceID)
@@ -76,10 +108,14 @@ func (m *WatchManager) Subscribe(workspaceID string) error {
 	}
 	roots = availableResolvedRoots(roots)
 	workspace := &watchedWorkspace{
-		id: workspaceID, watcher: watcher, roots: roots, references: 1,
+		includeIgnored: tracking,
+		id:             workspaceID, watcher: watcher, roots: roots, references: 1,
 		stop: make(chan struct{}), done: make(chan struct{}), pending: make(map[string]Change),
 		matchers: make(map[string]*ignore.GitIgnore), watched: make(map[string]bool),
 		onEvent: m.onEvent, applyIndex: m.service.index.ApplyChanges,
+	}
+	if tracking {
+		workspace.trackingReferences = 1
 	}
 	m.workspaces[workspaceID] = workspace
 	m.mu.Unlock()
@@ -92,7 +128,9 @@ func (m *WatchManager) Subscribe(workspaceID string) error {
 			workspace.emitResync()
 		}
 	}
-	m.service.StartIndex(workspaceID)
+	if !tracking {
+		m.service.StartIndex(workspaceID)
+	}
 	go workspace.run()
 	return nil
 }
@@ -125,6 +163,14 @@ func (m *WatchManager) AddReferences(workspaceID string, refs []FileRef) {
 }
 
 func (m *WatchManager) Unsubscribe(workspaceID string) {
+	m.unsubscribe(workspaceID, false)
+}
+
+func (m *WatchManager) UnsubscribeTracking(workspaceID string) {
+	m.unsubscribe(workspaceID, true)
+}
+
+func (m *WatchManager) unsubscribe(workspaceID string, tracking bool) {
 	m.mu.Lock()
 	workspace := m.workspaces[workspaceID]
 	if workspace == nil {
@@ -132,6 +178,12 @@ func (m *WatchManager) Unsubscribe(workspaceID string) {
 		return
 	}
 	workspace.references--
+	if tracking && workspace.trackingReferences > 0 {
+		workspace.trackingReferences--
+	}
+	workspace.mu.Lock()
+	workspace.includeIgnored = workspace.trackingReferences > 0
+	workspace.mu.Unlock()
 	if workspace.references > 0 {
 		m.mu.Unlock()
 		return
@@ -152,12 +204,13 @@ func (m *WatchManager) Refresh(workspaceID string) {
 		return
 	}
 	references := workspace.references
+	trackingReferences := workspace.trackingReferences
 	delete(m.workspaces, workspaceID)
 	close(workspace.stop)
 	m.mu.Unlock()
 	<-workspace.done
 	for index := 0; index < references; index++ {
-		if err := m.Subscribe(workspaceID); err != nil {
+		if err := m.subscribe(workspaceID, index < trackingReferences); err != nil {
 			return
 		}
 	}
@@ -196,7 +249,7 @@ func (m *WatchManager) Close() {
 func (w *watchedWorkspace) addTree(root resolvedRoot, start string, forceStart bool) error {
 	return filepath.WalkDir(start, func(current string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return nil
+			return walkErr
 		}
 		if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 			return nil
@@ -209,7 +262,10 @@ func (w *watchedWorkspace) addTree(root resolvedRoot, start string, forceStart b
 		if (relative == ".echo" || strings.HasPrefix(relative, ".echo/")) && (current != start || !forceStart) {
 			return filepath.SkipDir
 		}
-		if matcher := w.matchers[root.ID]; current != start || !forceStart {
+		w.mu.Lock()
+		includeIgnored := w.includeIgnored
+		w.mu.Unlock()
+		if matcher := w.matchers[root.ID]; !includeIgnored && (current != start || !forceStart) {
 			if relative != "." && matcher != nil && matcher.MatchesPath(relative+"/") {
 				return filepath.SkipDir
 			}
@@ -217,7 +273,7 @@ func (w *watchedWorkspace) addTree(root resolvedRoot, start string, forceStart b
 		w.mu.Lock()
 		if w.watched[current] {
 			w.mu.Unlock()
-			return filepath.SkipDir
+			return nil
 		}
 		if w.watchCount >= maximumWatchedDirectories {
 			w.overflowed = true
@@ -270,10 +326,14 @@ func (w *watchedWorkspace) handle(event fsnotify.Event) {
 		return
 	}
 	op := "write"
+	w.mu.Lock()
+	isDirectory := w.watched[event.Name]
+	w.mu.Unlock()
 	switch {
 	case event.Op&fsnotify.Create != 0:
 		op = "create"
 		if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+			isDirectory = true
 			for _, root := range w.roots {
 				if ensureWithin(root.realPath, event.Name) == nil {
 					_ = w.addTree(root, event.Name, false)
@@ -289,7 +349,7 @@ func (w *watchedWorkspace) handle(event fsnotify.Event) {
 		op = "metadata"
 	}
 	w.mu.Lock()
-	w.pending[ref.RootID+"\x00"+ref.Path] = Change{Op: op, Ref: ref}
+	w.pending[ref.RootID+"\x00"+ref.Path] = Change{Op: op, Ref: ref, IsDirectory: isDirectory}
 	w.mu.Unlock()
 	if op == "delete" || op == "rename" {
 		w.removeWatchedTree(event.Name)

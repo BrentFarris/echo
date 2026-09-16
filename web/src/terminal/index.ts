@@ -5,7 +5,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import { icons } from "../../js/icons.js";
 import { on as onSocket, onState as onSocketState, send as sendSocket } from "../../js/ws.js";
-import { toast } from "../code/ui";
+import { copyText, toast } from "../code/ui";
 import {
   createSavedCommand, deleteSavedCommand, listSavedCommands, listTerminalSessions, resizeTerminal,
   restartTerminal as restartTerminalAPI, startTerminal, stopTerminal as stopTerminalAPI,
@@ -112,6 +112,14 @@ class TerminalController {
     this.fitAddon = new FitAddon();
     this.terminal.loadAddon(this.fitAddon);
     this.terminal.loadAddon(new WebLinksAddon());
+    this.terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown" || !event.ctrlKey || event.altKey || event.metaKey || event.shiftKey
+        || event.key.toLowerCase() !== "c" || !this.terminal.hasSelection()) return true;
+      event.preventDefault();
+      event.stopPropagation();
+      void this.copySelection();
+      return false;
+    });
     this.terminal.onData((data) => {
       const current = meta.get(this.key);
       if (current?.status === "exited") {
@@ -121,6 +129,20 @@ class TerminalController {
       this.queueInput(data);
     });
     this.terminal.onResize(({ cols, rows }) => this.queueResize(cols, rows));
+  }
+
+  private async copySelection(): Promise<void> {
+    const selection = this.terminal.getSelection();
+    let selectionChanged = false;
+    const listener = this.terminal.onSelectionChange(() => { selectionChanged = true; });
+    try {
+      await copyText(selection);
+      if (!this.disposed && !selectionChanged) this.terminal.clearSelection();
+    } catch (error) {
+      if (!this.disposed) toast(`Could not copy terminal selection: ${errorMessage(error)}`);
+    } finally {
+      listener.dispose();
+    }
   }
 
   mount(viewport: HTMLElement): void {

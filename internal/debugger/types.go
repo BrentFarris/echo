@@ -20,10 +20,8 @@ const (
 	StatusTerminated  = "terminated"
 	StatusFailed      = "failed"
 
-	requestTimeout     = 15 * time.Second
-	launchTimeout      = 2 * time.Minute
-	initializedTimeout = 30 * time.Second
-	outputReplayBytes  = 2 << 20
+	requestTimeout    = 15 * time.Second
+	outputReplayBytes = 2 << 20
 )
 
 var (
@@ -43,6 +41,7 @@ type OutputEntry struct {
 }
 
 type SourceLocation struct {
+	EchoSourceID    string                 `json:"echoSourceId,omitempty"`
 	Name            string                 `json:"name,omitempty"`
 	Path            string                 `json:"path,omitempty"`
 	Ref             *debugconfig.SourceRef `json:"ref,omitempty"`

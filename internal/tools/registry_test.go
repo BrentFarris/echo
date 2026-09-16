@@ -3,8 +3,35 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
+
+func TestSandboxShellSchemaUsesBashWithoutChangingHostSchema(t *testing.T) {
+	registry := NewRegistry()
+	for _, tool := range Registered() {
+		MustRegister(registry, tool)
+	}
+	for _, enabled := range []bool{true, false} {
+		found := false
+		for _, tool := range registry.ChatLLMSchemaForScopes(nil, ChatSchemaOptions{SandboxGUI: enabled}) {
+			if tool.Function.Name != "shell_command" {
+				continue
+			}
+			found = true
+			data, _ := json.Marshal(tool.Function.Parameters)
+			if enabled && (strings.Contains(string(data), "PowerShell") || !strings.Contains(string(data), "Linux Bash")) {
+				t.Fatalf("sandbox shell guidance: %s", data)
+			}
+			if !enabled && !strings.Contains(string(data), "PowerShell") {
+				t.Fatal("sandbox schema changed the host schema")
+			}
+		}
+		if !found {
+			t.Fatal("shell schema missing")
+		}
+	}
+}
 
 func TestFilesystemListSelfRegisters(t *testing.T) {
 	found := false

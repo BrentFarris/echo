@@ -2,10 +2,28 @@ package debugger
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/brent/echo/internal/debugconfig"
 )
+
+func TestSandboxDelvePermitsAuthenticatedAgentConnection(t *testing.T) {
+	profile := debugconfig.AdapterProfile{AdapterID: "go", Transport: debugconfig.Transport{Kind: "server"}}
+	args := []string{"dap", "--listen=127.0.0.1:${debugAdapterPort}"}
+	if got := sandboxAdapterArguments(profile, args); !reflect.DeepEqual(got, append(args, "--only-same-user=false")) {
+		t.Fatalf("sandbox arguments = %v", got)
+	}
+	for _, args := range [][]string{{"dap", "--only-same-user=true"}, {"dap", "--only-same-user=false"}, {"custom-adapter.js"}} {
+		if got := sandboxAdapterArguments(profile, args); !reflect.DeepEqual(got, args) {
+			t.Fatalf("changed explicit policy: %v", got)
+		}
+	}
+	profile.AdapterID = "lldb"
+	if got := sandboxAdapterArguments(profile, args); !reflect.DeepEqual(got, args) {
+		t.Fatalf("changed another adapter: %v", got)
+	}
+}
 
 func TestPrepareLaunchArgumentsNormalizesVSCodeGoAutoMode(t *testing.T) {
 	profile := debugconfig.AdapterProfile{AdapterID: "go"}

@@ -57,7 +57,7 @@ func (s *Service) runSession(current *session) {
 	}
 	s.mu.Lock()
 	active, activeErr := s.sessionLocked(current.workspaceID, current.id)
-	if activeErr != nil || active != current || isTerminalStatus(current.status) {
+	if activeErr != nil || active != current || isStoppingOrTerminal(current.status) {
 		s.mu.Unlock()
 		handle.stop()
 		return
@@ -72,7 +72,7 @@ func (s *Service) runSession(current *session) {
 	})
 	s.mu.Lock()
 	active, activeErr = s.sessionLocked(current.workspaceID, current.id)
-	if activeErr != nil || active != current || isTerminalStatus(current.status) {
+	if activeErr != nil || active != current || isStoppingOrTerminal(current.status) {
 		s.mu.Unlock()
 		_ = connection.Close()
 		handle.stop()
@@ -103,15 +103,11 @@ func (s *Service) runSession(current *session) {
 	s.mu.Unlock()
 	s.publishSession(current.workspaceID, current.id, "session_configuring", initialize.Body, "")
 
-	launchCtx, launchCancel := context.WithTimeout(current.ctx, launchTimeout)
-	defer launchCancel()
 	launchResult := make(chan error, 1)
 	go func() {
-		_, callErr := connection.request(launchCtx, current.configuration.Request, launchArguments)
+		_, callErr := connection.request(current.ctx, current.configuration.Request, launchArguments)
 		launchResult <- callErr
 	}()
-	initializedTimer := time.NewTimer(initializedTimeout)
-	defer initializedTimer.Stop()
 	launchFinished := false
 	waitingForInitialized := true
 	for waitingForInitialized {
@@ -125,9 +121,6 @@ func (s *Service) runSession(current *session) {
 				return
 			}
 			launchResult = nil
-		case <-initializedTimer.C:
-			s.failSession(current.workspaceID, current.id, fmt.Errorf("timed out waiting for debugger initialization"))
-			return
 		case <-current.ctx.Done():
 			return
 		}
@@ -152,25 +145,31 @@ func (s *Service) runSession(current *session) {
 				s.failSession(current.workspaceID, current.id, fmt.Errorf("%s debugger: %w", current.configuration.Request, launchErr))
 				return
 			}
-		case <-launchCtx.Done():
-			s.failSession(current.workspaceID, current.id, launchCtx.Err())
+		case <-current.ctx.Done():
 			return
 		}
 	}
 	s.mu.Lock()
-	if active, _ := s.sessionLocked(current.workspaceID, current.id); active == current && !isTerminalStatus(current.status) && current.status != StatusStopped {
+	running := false
+	if active, _ := s.sessionLocked(current.workspaceID, current.id); active == current && !isStoppingOrTerminal(current.status) && current.status != StatusStopped {
 		current.status = StatusRunning
 		current.revision++
+		running = true
 	}
 	s.mu.Unlock()
-	s.publishSession(current.workspaceID, current.id, "session_running", nil, "")
+	if running {
+		s.publishSession(current.workspaceID, current.id, "session_running", nil, "")
+	}
 }
 
 func (s *Service) handleDAPEvent(workspaceID, sessionID string, event dapEnvelope) {
+	if s.routeStepEvent(workspaceID, sessionID, event) {
+		return
+	}
 	switch event.Event {
 	case "initialized":
 		s.mu.Lock()
-		if current, err := s.sessionLocked(workspaceID, sessionID); err == nil {
+		if current, err := s.sessionLocked(workspaceID, sessionID); err == nil && !isStoppingOrTerminal(current.status) {
 			current.initializedOnce.Do(func() { close(current.initialized) })
 		}
 		s.mu.Unlock()
@@ -185,7 +184,8 @@ func (s *Service) handleDAPEvent(workspaceID, sessionID string, event dapEnvelop
 		}
 		_ = json.Unmarshal(event.Body, &body)
 		s.mu.Lock()
-		if current, err := s.sessionLocked(workspaceID, sessionID); err == nil {
+		updated := false
+		if current, err := s.sessionLocked(workspaceID, sessionID); err == nil && !isStoppingOrTerminal(current.status) {
 			current.status = StatusStopped
 			current.stoppedReason = body.Reason
 			current.stoppedText = firstNonEmpty(body.Description, body.Text)
@@ -194,8 +194,13 @@ func (s *Service) handleDAPEvent(workspaceID, sessionID string, event dapEnvelop
 			current.stopGeneration++
 			current.revision++
 			current.location = nil
+			current.cFrames = nil
+			updated = true
 		}
 		s.mu.Unlock()
+		if !updated {
+			return
+		}
 		s.publishSession(workspaceID, sessionID, "stopped", event.Body, "")
 		go s.hydrateLocation(workspaceID, sessionID)
 	case "continued":
@@ -208,7 +213,7 @@ func (s *Service) handleDAPEvent(workspaceID, sessionID string, event dapEnvelop
 		}
 		_ = json.Unmarshal(event.Body, &body)
 		metadata := map[string]any{}
-		if translated := s.translateDAPBody(workspaceID, event.Body); json.Unmarshal(translated, &metadata) == nil {
+		if translated := s.translateEventBody(workspaceID, sessionID, event.Body); json.Unmarshal(translated, &metadata) == nil {
 			delete(metadata, "category")
 			delete(metadata, "output")
 			delete(metadata, "data")
@@ -249,13 +254,13 @@ func (s *Service) handleDAPEvent(workspaceID, sessionID string, event dapEnvelop
 		s.publishSession(workspaceID, sessionID, event.Event, event.Body, "")
 	case "breakpoint":
 		s.updateBreakpointEvent(workspaceID, sessionID, event.Body)
-		s.publishSession(workspaceID, sessionID, event.Event, s.translateDAPBody(workspaceID, event.Body), "")
+		s.publishSession(workspaceID, sessionID, event.Event, s.translateEventBody(workspaceID, sessionID, event.Body), "")
 	case "thread", "process", "module", "loadedSource", "memory", "progressStart", "progressUpdate", "progressEnd":
-		s.publishRaw(workspaceID, sessionID, event.Event, s.translateDAPBody(workspaceID, event.Body))
+		s.publishRaw(workspaceID, sessionID, event.Event, s.translateEventBody(workspaceID, sessionID, event.Body))
 	case "debugpyAttach":
 		go s.startDebugpyChild(workspaceID, sessionID, event.Body)
 	default:
-		s.publishRaw(workspaceID, sessionID, event.Event, s.translateDAPBody(workspaceID, event.Body))
+		s.publishRaw(workspaceID, sessionID, event.Event, s.translateEventBody(workspaceID, sessionID, event.Body))
 	}
 }
 
@@ -342,6 +347,13 @@ func (s *Service) failSession(workspaceID, sessionID string, failure error) {
 	if failure == nil {
 		return
 	}
+	s.mu.Lock()
+	current, err := s.sessionLocked(workspaceID, sessionID)
+	stopping := err == nil && isStoppingOrTerminal(current.status)
+	s.mu.Unlock()
+	if stopping {
+		return
+	}
 	s.finishSession(workspaceID, sessionID, StatusFailed, failure.Error(), 0)
 }
 
@@ -366,6 +378,8 @@ func (s *Service) finishSession(workspaceID, sessionID, status, message string, 
 	stopTerminals := s.stopTerminals
 	current.conn = nil
 	current.handle = nil
+	current.step = nil
+	current.cFrames = nil
 	runPost := !current.postStarted
 	current.postStarted = true
 	configuration := current.configuration
@@ -521,23 +535,30 @@ func redactDAPValue(value any) {
 }
 
 func (s *Service) markRunning(workspaceID, sessionID, reason string) {
+	s.markRunningIfGeneration(workspaceID, sessionID, reason, 0)
+}
+
+func setSessionRunning(current *session) {
+	current.status = StatusRunning
+	current.threadID = 0
+	current.location = nil
+	current.stoppedReason = ""
+	current.stoppedText = ""
+	current.allThreadsStopped = false
+	current.cFrames = nil
+	current.stopGeneration++
+	current.revision++
+}
+
+func (s *Service) markRunningIfGeneration(workspaceID, sessionID, reason string, generation uint64) {
 	s.mu.Lock()
 	current, err := s.sessionLocked(workspaceID, sessionID)
-	if err == nil && !isTerminalStatus(current.status) {
-		changed := current.status != StatusRunning
-		current.status = StatusRunning
-		current.threadID = 0
-		current.location = nil
-		current.stoppedReason = ""
-		current.stoppedText = ""
-		current.allThreadsStopped = false
-		if changed {
-			current.stopGeneration++
-			current.revision++
-		}
+	changed := err == nil && !isStoppingOrTerminal(current.status) && current.status != StatusRunning && (generation == 0 || current.stopGeneration == generation)
+	if changed {
+		setSessionRunning(current)
 	}
 	s.mu.Unlock()
-	if err == nil {
+	if changed {
 		s.publishSession(workspaceID, sessionID, "continued", nil, reason)
 	}
 }
@@ -564,24 +585,14 @@ func (s *Service) hydrateLocation(workspaceID, sessionID string) {
 		return
 	}
 	var body struct {
-		StackFrames []struct {
-			ID     int    `json:"id"`
-			Name   string `json:"name"`
-			Line   int    `json:"line"`
-			Column int    `json:"column"`
-			Source struct {
-				Name            string `json:"name"`
-				Path            string `json:"path"`
-				SourceReference int    `json:"sourceReference"`
-			} `json:"source"`
-		} `json:"stackFrames"`
+		StackFrames []stepFrame `json:"stackFrames"`
 	}
 	if json.Unmarshal(response.Body, &body) != nil || len(body.StackFrames) == 0 {
 		return
 	}
 	frame := body.StackFrames[0]
 	path := s.adapterPathToHost(workspaceID, frame.Source.Path)
-	location := &SourceLocation{Name: firstNonEmpty(frame.Source.Name, frame.Name), Path: path, Ref: s.fileRefForPath(workspaceID, path), SourceReference: frame.Source.SourceReference, Line: frame.Line, Column: frame.Column}
+	location := &SourceLocation{EchoSourceID: s.registerSource(current, frame.Source), Name: firstNonEmpty(frame.Source.Name, frame.Name), Path: path, Ref: s.fileRefForPath(workspaceID, path), SourceReference: frame.Source.Reference, Line: frame.Line, Column: frame.Column}
 	s.mu.Lock()
 	if current, err := s.sessionLocked(workspaceID, sessionID); err == nil && current.stopGeneration == generation && current.status == StatusStopped {
 		current.location = location

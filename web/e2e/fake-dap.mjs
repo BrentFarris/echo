@@ -5,6 +5,9 @@ let sequence = 1;
 let program = "main.go";
 let variableValue = "42";
 let stoppedLine = 4;
+let cgo = false;
+let cgoPhase = 0;
+let nativeSource = "";
 
 function send(message) {
   const body = Buffer.from(JSON.stringify({ seq: sequence++, ...message }), "utf8");
@@ -71,11 +74,14 @@ function handle(request) {
         supportsExceptionInfoRequest: true,
         supportsInlineValues: true,
         supportsCancelRequest: true,
+        supportsSteppingGranularity: true,
       });
       break;
     case "launch":
     case "attach":
       program = String(args.program || args.path || program);
+      cgo = args.testCGO === true;
+      nativeSource = String(args.nativeSource || "");
       respond(request);
       break;
     case "setBreakpoints":
@@ -102,6 +108,14 @@ function handle(request) {
         { id: 10, name: "main", source: { name: "main.go", path: program }, line: stoppedLine, column: 1 },
         { id: 11, name: "runtime", source: { name: "main.go", path: program }, line: 1, column: 1 },
       ];
+      if (cgo && cgoPhase > 0) {
+        frames[0] = {
+          id: 10, name: ["", "main._Cfunc_native_add", "runtime.asmcgocall", "C.native_add"][cgoPhase],
+          source: cgoPhase === 3 ? { name: "native.c", path: nativeSource } : { name: "_cgo_gotypes.go", path: "_cgo_gotypes.go" },
+          line: cgoPhase === 3 ? stoppedLine : 1, column: 5,
+        };
+        frames[1] = { id: 11, name: "main.main", source: { name: "main.go", path: program }, line: 4, column: 1 };
+      }
       const start = Number(args.startFrame || 0);
       const levels = Number(args.levels || frames.length);
       respond(request, { stackFrames: frames.slice(start, start + levels), totalFrames: frames.length });
@@ -123,6 +137,10 @@ function handle(request) {
       break;
     }
     case "evaluate":
+      if (cgo && args.expression === "ptr.items[1]") {
+        respond(request, { result: "2", type: "int", variablesReference: 0 });
+        break;
+      }
       respond(request, { result: args.expression === "x" ? variableValue : `evaluated(${String(args.expression || "")})`, type: args.expression === "x" ? "number" : "string", variablesReference: 0 });
       break;
     case "setVariable":
@@ -137,6 +155,15 @@ function handle(request) {
     case "stepBack":
     case "reverseContinue":
     case "goto":
+      if (cgo) {
+        if (request.command === "stepOut") { cgoPhase = 0; stoppedLine = 4; }
+        else if (cgoPhase < 3) { cgoPhase++; stoppedLine = 23; }
+        else stoppedLine++;
+        event("continued", { threadId: 1, allThreadsContinued: true });
+        stop("step"); // Exercise a stop arriving before its ACK.
+        respond(request);
+        break;
+      }
       respond(request, { allThreadsContinued: true });
       event("continued", { threadId: 1, allThreadsContinued: true });
       stoppedLine = request.command === "continue" ? 4 : Math.min(stoppedLine + 1, 8);

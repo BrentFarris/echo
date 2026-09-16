@@ -126,7 +126,13 @@ func (i *Index) ApplyChanges(workspaceID string, changes []Change) {
 	}
 	i.mu.RLock()
 	state := i.states[workspaceID]
-	if state == nil || state.building {
+	if state == nil {
+		// Filesystem/SCM tracking can run without an editor view. A mutation must
+		// not start an unrelated whole-workspace filename scan in that case.
+		i.mu.RUnlock()
+		return
+	}
+	if state.building {
 		i.mu.RUnlock()
 		i.Invalidate(workspaceID)
 		return

@@ -8,9 +8,11 @@ import type { APIError } from "./editorApi";
 import { languageForPath, monaco, initVimMode, VimMode } from "./language";
 import { EchoLSPClient, fromLSPRange, type LSPDiagnosticSeverity, type LSPDocumentState } from "./lspClient";
 import type { LSPProfile, LSPStatus, LSPWorkspaceEdit, WorkspaceLSPResponse } from "./lspTypes";
-import { listRepositories as listSourceControlRepositories, loadDiff as loadSourceControlDiff } from "./sourceControlApi";
-import type { SourceControlDiffRequest, SourceControlDiffScope, SourceControlRepository } from "./sourceControlTypes";
-import { normalizePersistedSourceControlRepository, persistedSourceControlGroupId } from "./sourceControlSession";
+import { listRepositories as listSourceControlRepositories, loadDiff as loadSourceControlDiff, runAction as runSourceControlAction } from "./sourceControlApi";
+import type { SourceControlDiffDocument, SourceControlDiffRequest, SourceControlDiffScope, SourceControlHunkAction, SourceControlRepository } from "./sourceControlTypes";
+import { DiffHunkGutter } from "./diffHunkGutter";
+import { replacementEdit, revertBlockText, type DiffBlock } from "./diffHunks";
+import { normalizePersistedSourceControlRepository, persistedSourceControlGroupId, persistedSourceControlPath } from "./sourceControlSession";
 import { SourceControlView } from "./sourceControlView";
 import {
   buildCodeChatEditorContext, formatCodeChatSelectionNotice, runCodeChatSavePreflight,
@@ -55,7 +57,7 @@ import {
 } from "./ui";
 import { attachVideoVolumeControl } from "../mediaVolume";
 import { DebugView } from "../debug/debugView";
-import type { DebugSource } from "../debug/types";
+import type { DebugSource, DebugSourceNavigation } from "../debug/types";
 import { registerGoTestCodeLens } from "./goTestCodeLens";
 import { registerCTestCodeLens } from "./cTestCodeLens";
 import { TestOutput } from "./testOutput";
@@ -98,8 +100,13 @@ type OpenTab = {
   applying: boolean;
 	readOnly?: boolean;
 	transient?: boolean;
+  debugSourceKey?: string;
   media?: { kind: PreviewKind; url: string };
   diff?: {
+    document?: SourceControlDiffDocument;
+    target?: SourceControlDiffRequest;
+    refreshing?: boolean;
+    refreshGeneration?: number;
     repository: SourceControlRepository;
     scope: SourceControlDiffScope;
     groupId?: string;
@@ -167,6 +174,9 @@ class CodeView {
   private untitledCounter = 1;
   private editor!: MonacoEditor.IStandaloneCodeEditor;
   private diffEditor!: MonacoEditor.IStandaloneDiffEditor;
+  private diffHunkGutter: DiffHunkGutter | null = null;
+  private diffBusyRepositories = new Set<string>();
+  private diffRefreshTimers = new Map<string, number>();
   private sourceControlView: SourceControlView | null = null;
   private searchView: SearchView | null = null;
   private debugView: DebugView | null = null;
@@ -485,6 +495,12 @@ class CodeView {
         await this.recordCodeNavigation(() => this.openSourceControlDiff(repository, target, pin));
       },
       updateBadge: (count) => setSourceControlBadgeCount(this.root, count),
+      statusChanged: (repositoryId) => this.scheduleSourceControlDiffRefresh(repositoryId),
+      operationChanged: (repositoryId, busy) => {
+        if (busy) this.diffBusyRepositories.add(repositoryId);
+        else { this.diffBusyRepositories.delete(repositoryId); this.scheduleSourceControlDiffRefresh(repositoryId); }
+        this.diffHunkGutter?.refresh();
+      },
     });
     void this.sourceControlView.start();
   }
@@ -526,8 +542,9 @@ class CodeView {
       },
       saveAll: () => this.saveAllForDebug(),
       showSidebar: () => this.setSidebar("debug"),
-      openSource: (source, line, column) => this.openDebugSource(source, line, column),
-      openVirtualSource: (title, content, mimeType) => this.openVirtualDebugSource(title, content, mimeType),
+      openSource: (source, line, column, isCurrent) => this.openDebugSource(source, line, column, isCurrent),
+      openVirtualSource: (title, content, mimeType, navigation) => this.openVirtualDebugSource(title, content, mimeType, navigation),
+      activeDebugSourceKey: () => this.activeTab()?.debugSourceKey,
     });
     void this.debugView.start();
   }
@@ -795,6 +812,9 @@ class CodeView {
       readOnly: false,
       diffAlgorithm: "advanced",
       renderIndicators: true,
+      renderMarginRevertIcon: false,
+      renderGutterMenu: false,
+      lineDecorationsWidth: 24,
       renderOverviewRuler: true,
       selectionHighlight: true,
       selectionHighlightMultiline: false,
@@ -816,6 +836,14 @@ class CodeView {
         alternativeDeclarationCommand: "editor.action.referenceSearch.trigger",
       },
     });
+    this.diffHunkGutter = new DiffHunkGutter(this.diffEditor, () => {
+      const tab = this.activeTab();
+      return {
+        actions: tab?.diff?.document?.hunkToken && !tab.diff.unavailableReason ? tab.diff.document.hunkActions || [] : [],
+        dirty: Boolean(tab?.dirty),
+        busy: Boolean(tab?.diff?.refreshing || (tab?.diff && this.diffBusyRepositories.has(tab.diff.repository.id))),
+      };
+    }, (action, block) => { void this.runDiffHunk(action, block); });
     const originalDiffEditor = this.diffEditor.getOriginalEditor();
     const modifiedDiffEditor = this.diffEditor.getModifiedEditor();
     originalDiffEditor.onDidFocusEditorText(() => this.setActiveDiffSelectionSide("original"));
@@ -1303,8 +1331,8 @@ class CodeView {
     model.dispose();
   }
 
-  private async openFile(ref: FileRef, pin: boolean, focusEditor = true, showErrors = true, activate = true): Promise<boolean> {
-    if (!this.workspace) return false;
+  private async openFile(ref: FileRef, pin: boolean, focusEditor = true, showErrors = true, activate = true, isCurrent?: () => boolean): Promise<boolean> {
+    if (!this.workspace || isCurrent?.() === false) return false;
     const previewKind = previewKindForPath(ref.path);
     if (previewKind) {
       await this.openMedia(ref, pin, focusEditor);
@@ -1320,6 +1348,7 @@ class CodeView {
     }
     try {
       const snapshot = await editorAPI.readFile(this.workspace.id, ref);
+      if (isCurrent?.() === false) return false;
       // A double-click emits both click and dblclick handlers. Their reads can
       // overlap, so check again after I/O before creating a second tab for the
       // same file. The pinned request wins regardless of completion order.
@@ -1351,7 +1380,7 @@ class CodeView {
       this.sendFilesystemSubscription();
       return true;
     } catch (error) {
-      if (!showErrors) return false;
+      if (!showErrors || isCurrent?.() === false) return false;
       const apiError = error as APIError;
       const message = apiError.payload?.code === "file_too_large"
         ? "This file is larger than Echo Code's 10 MiB editor limit."
@@ -1366,7 +1395,7 @@ class CodeView {
           { id: "reveal", label: "Reveal on Echo host", primary: true },
         ],
       });
-      if (choice === "reload") return await this.openFile(ref, pin, focusEditor, showErrors, activate);
+      if (choice === "reload") return await this.openFile(ref, pin, focusEditor, showErrors, activate, isCurrent);
       if (choice === "reveal") await this.reveal(ref);
       return false;
     }
@@ -1541,6 +1570,15 @@ class CodeView {
         ...target, scope,
       });
       if (this.abort.signal.aborted) return;
+      // Click and double-click may load the same diff concurrently. Reuse the
+      // tab created by the first response before allocating any shared models.
+      const opened = this.tabs.find((candidate) => candidate.kind === "diff" && candidate.id === identity);
+      if (opened) {
+        if (pin) opened.pinned = true;
+        this.activateTab(opened.id);
+        this.renderTabs();
+        return;
+      }
       const language = languageForPath(document.path, this.lspProfiles);
       const originalURI = monaco.Uri.from({
         scheme: "echo-source-control", authority: repository.id,
@@ -1579,6 +1617,7 @@ class CodeView {
         hasBom: shared?.hasBom ?? Boolean(document.modified.hasBom), eol: shared?.eol || document.modified.eol,
         model: modifiedModel, viewState: null, changeDisposable: { dispose() {} }, applying: false,
         diff: {
+          document, target: { ...target, scope },
           repository, scope, groupId: target.groupId, reviewRef, fileRef: document.ref, oldPath: document.oldPath,
           originalModel, viewState: null, editable: document.editable && document.kind === "text",
           unavailableReason: document.kind === "text" ? undefined : document.unavailableReason || `This ${repository.providerLabel} object cannot be shown as text.`,
@@ -1604,6 +1643,111 @@ class CodeView {
       this.openUnavailableSourceControlDiff(identity, repository, target, scope, reviewRef, pin, message);
       toast(message, { sticky: true });
     }
+  }
+
+  private async runDiffHunk(action: SourceControlHunkAction, block: DiffBlock): Promise<void> {
+    const tab = this.activeTab();
+    const diff = tab?.diff;
+    const document = diff?.document;
+    if (!this.workspace || !tab || !diff || !document?.hunkToken || !document.hunkActions?.includes(action)
+      || diff.refreshing || this.diffBusyRepositories.has(diff.repository.id)) return;
+    if (action === "revert_hunk") {
+      if (!diff.editable) return;
+      const before = tab.model.getValue();
+      const after = revertBlockText(diff.originalModel.getValue(), before, block, tab.model.getEOL());
+      if (before === after) return;
+      const edit = replacementEdit(before, after);
+      const start = tab.model.getPositionAt(edit.start), end = tab.model.getPositionAt(edit.end);
+      const editor = this.diffEditor.getModifiedEditor();
+      editor.pushUndoStop();
+      editor.executeEdits("echo.revertChange", [{ range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column), text: edit.text }]);
+      editor.pushUndoStop();
+      editor.focus();
+      return;
+    }
+    if (tab.dirty && (action === "stage_hunk" || action === "protect_hunk")) return;
+    const repositoryId = diff.repository.id;
+    this.diffBusyRepositories.add(repositoryId);
+    this.diffHunkGutter?.refresh();
+    try {
+      await runSourceControlAction(this.workspace.id, repositoryId, {
+        requestId: randomUUID(), action, expectedRevision: document.revision,
+        hunk: { ...block, token: document.hunkToken, target: document.target || diff.target! },
+      });
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), { sticky: true });
+    } finally {
+      await this.refreshSourceControlDiffs(repositoryId);
+      await this.sourceControlView?.refreshStatus(repositoryId);
+      this.diffBusyRepositories.delete(repositoryId);
+      this.diffHunkGutter?.refresh();
+    }
+  }
+
+  private scheduleSourceControlDiffRefresh(repositoryId: string): void {
+    if (this.abort.signal.aborted) return;
+    for (const tab of this.tabs) {
+      if (tab.diff?.repository.id === repositoryId && tab.diff.target?.kind === "change") tab.diff.refreshing = true;
+    }
+    this.diffHunkGutter?.refresh();
+    const pending = this.diffRefreshTimers.get(repositoryId);
+    if (pending) clearTimeout(pending);
+    this.diffRefreshTimers.set(repositoryId, window.setTimeout(() => {
+      this.diffRefreshTimers.delete(repositoryId);
+      void this.refreshSourceControlDiffs(repositoryId);
+    }, 80));
+  }
+
+  private async refreshSourceControlDiffs(repositoryId: string): Promise<void> {
+    if (!this.workspace || this.abort.signal.aborted) return;
+    const pending = this.diffRefreshTimers.get(repositoryId);
+    if (pending) { clearTimeout(pending); this.diffRefreshTimers.delete(repositoryId); }
+    const workspaceId = this.workspace.id;
+    await Promise.all(this.tabs.filter((tab) => tab.diff?.repository.id === repositoryId && tab.diff.target?.kind === "change").map(async (tab) => {
+      const diff = tab.diff!;
+      const generation = diff.refreshGeneration = (diff.refreshGeneration || 0) + 1;
+      diff.refreshing = true;
+      try {
+        const document = await loadSourceControlDiff(workspaceId, repositoryId, diff.target!, this.abort.signal);
+        if (this.abort.signal.aborted || !this.tabs.includes(tab) || diff.refreshGeneration !== generation) return;
+        const view = tab.id === this.activeTabId ? this.diffEditor.saveViewState() : null;
+        diff.document = document;
+        diff.editable = document.editable && document.kind === "text";
+        diff.unavailableReason = document.kind === "text" ? undefined : document.unavailableReason || "This diff cannot be displayed as text.";
+        const eolContent = (content: string, eol: string) => content.replace(/\r\n/g, "\n").replace(/\n/g, eol === "crlf" ? "\r\n" : "\n");
+        const original = eolContent(document.original.content, document.original.eol);
+        if (diff.originalModel.getValue() !== original) diff.originalModel.setValue(original);
+        diff.originalModel.setEOL(document.original.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+        const shared = this.tabs.filter((candidate) => candidate.model === tab.model);
+        if (!shared.some((candidate) => candidate.dirty)) {
+          shared.forEach((candidate) => { candidate.applying = true; });
+          try {
+            const modified = eolContent(document.modified.content, document.modified.eol);
+            if (tab.model.getValue() !== modified) tab.model.setValue(modified);
+            tab.model.setEOL(document.modified.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+            shared.forEach((candidate) => {
+              candidate.revision = document.modifiedRevision || candidate.revision;
+              candidate.deleted = !document.modified.exists;
+              candidate.hasBom = Boolean(document.modified.hasBom);
+              candidate.eol = document.modified.eol;
+              candidate.conflict = false;
+            });
+          } finally { shared.forEach((candidate) => { candidate.applying = false; }); }
+        }
+        if (view && tab.id === this.activeTabId) {
+          this.diffEditor.updateOptions({ readOnly: !diff.editable });
+          this.diffEditor.restoreViewState(view);
+        }
+      } catch (error) {
+        if (!this.abort.signal.aborted && diff.refreshGeneration === generation) {
+          if (diff.document) diff.document = { ...diff.document, hunkActions: [], hunkToken: undefined };
+          toast(error instanceof Error ? error.message : String(error));
+        }
+      } finally {
+        if (diff.refreshGeneration === generation) diff.refreshing = false;
+      }
+    }));
+    if (!this.abort.signal.aborted) { this.renderTabs(); this.updateEditorSurface(); this.diffHunkGutter?.refresh(); }
   }
 
   private openUnavailableSourceControlDiff(
@@ -1658,6 +1802,7 @@ class CodeView {
     this.renderTabs();
     this.renderStatus();
     this.schedulePersist();
+    this.diffHunkGutter?.refresh();
   }
 
   private activateTab(id: string, focusEditor = true, mru = true): void {
@@ -1984,6 +2129,7 @@ class CodeView {
   }
 
   private updateEditorSurface(): void {
+    this.diffHunkGutter?.refresh();
     const placeholder = this.root.querySelector<HTMLElement>("[data-editor-placeholder]");
     const host = this.root.querySelector<HTMLElement>("[data-monaco-host]");
     const diffHost = this.root.querySelector<HTMLElement>("[data-monaco-diff-host]");
@@ -2184,13 +2330,13 @@ class CodeView {
     });
   }
 
-  private async openDebugSource(source: DebugSource, line: number, column: number): Promise<void> {
+  private async openDebugSource(source: DebugSource, line: number, column: number, isCurrent?: () => boolean): Promise<void> {
     const ref = source.echoRef;
     if (!ref) {
       toast("The adapter source is outside this workspace. Open it from Loaded Sources to request its contents.");
       return;
     }
-    if (!(await this.openFile(ref, true, false))) return;
+    if (!(await this.openFile(ref, true, false, true, true, isCurrent)) || isCurrent?.() === false) return;
     const tab = this.tabs.find((candidate) => candidate.ref && refKey(candidate.ref) === refKey(ref));
     if (!tab) return;
     this.activateTab(tab.id, false);
@@ -2200,13 +2346,22 @@ class CodeView {
     this.debugView?.onEditorContextChanged();
   }
 
-  private async openVirtualDebugSource(title: string, content: string, mimeType?: string): Promise<void> {
-    const existing = this.tabs.find((tab) => tab.transient && tab.title === title);
+  private async openVirtualDebugSource(title: string, content: string, mimeType?: string, navigation?: DebugSourceNavigation): Promise<void> {
+    const reveal = () => {
+      if (navigation) {
+        const position = { lineNumber: Math.max(1, navigation.line), column: Math.max(1, navigation.column) };
+        this.editor.setPosition(position);
+        this.editor.revealPositionInCenter(position);
+      }
+      this.debugView?.onEditorContextChanged();
+    };
+    const existing = this.tabs.find((tab) => tab.transient && (navigation ? tab.debugSourceKey === navigation.key : !tab.debugSourceKey && tab.title === title));
     if (existing) {
       existing.applying = true;
       existing.model.setValue(content);
       existing.applying = false;
       this.activateTab(existing.id);
+      reveal();
       return;
     }
     const id = randomUUID();
@@ -2218,10 +2373,12 @@ class CodeView {
       kind: "file", id, ref: null, title, hostPath: uri.toString(), pinned: true, dirty: false,
       deleted: false, conflict: false, revision: "", hasBom: false, eol: "lf", model,
       viewState: null, changeDisposable: { dispose() {} }, applying: false, readOnly: true, transient: true,
+      debugSourceKey: navigation?.key,
     };
     this.tabs.push(tab);
     this.activateTab(tab.id);
     this.renderTabs();
+    reveal();
   }
 
   private async saveTab(tab = this.activeTab()): Promise<boolean> {
@@ -2325,7 +2482,7 @@ class CodeView {
     for (const candidate of this.tabs) {
       if (candidate.model !== tab.model) continue;
       candidate.revision = snapshot.revision;
-      candidate.hostPath = snapshot.hostPath;
+      if (!candidate.diff) candidate.hostPath = snapshot.hostPath;
       candidate.hasBom = snapshot.hasBom;
       candidate.eol = snapshot.eol;
       candidate.dirty = false;
@@ -2336,6 +2493,9 @@ class CodeView {
     this.renderTabs();
     this.renderStatus();
     this.schedulePersist();
+    for (const candidate of this.tabs) {
+      if (candidate.model === tab.model && candidate.diff) this.scheduleSourceControlDiffRefresh(candidate.diff.repository.id);
+    }
   }
 
   private async resolveSaveConflict(tab: OpenTab, disk: FileSnapshot): Promise<boolean> {
@@ -2412,7 +2572,7 @@ class CodeView {
     for (const candidate of sharedTabs) {
       candidate.applying = false;
       candidate.revision = snapshot.revision;
-      candidate.hostPath = snapshot.hostPath;
+      if (!candidate.diff) candidate.hostPath = snapshot.hostPath;
       candidate.hasBom = snapshot.hasBom;
       candidate.eol = snapshot.eol;
       candidate.dirty = false;
@@ -4174,10 +4334,11 @@ class CodeView {
       if (persisted.kind === "diff" && persisted.diff) {
         const repository = await this.resolvePersistedSourceControlRepository(persisted.diff.repository);
         const groupId = persistedSourceControlGroupId(repository, persisted.diff.scope, persisted.diff.groupId);
+        const path = persistedSourceControlPath(repository, persisted.diff.path, persisted.diff.fileRef || persisted.ref);
         await this.openSourceControlDiff(
           repository,
           {
-            ...sourceControlTargetFromLegacy(persisted.diff.scope, persisted.diff.path, persisted.diff.oldPath, persisted.diff.reviewRef, groupId),
+            ...sourceControlTargetFromLegacy(persisted.diff.scope, path, persisted.diff.oldPath, persisted.diff.reviewRef, groupId),
             fileRef: persisted.diff.fileRef,
           },
           true,
@@ -4254,6 +4415,9 @@ class CodeView {
     const repositories = await this.sourceControlRepositoryLookup;
     const exact = repositories.find((candidate) => candidate.id === normalized.id);
     if (exact) return exact;
+    // A P4 identity includes its server, user, and client. A root match can
+    // refer to a different connection and must not silently retarget a tab.
+    if (normalized.providerId === "p4") return normalized;
     const sameProvider = repositories.filter((candidate) => candidate.providerId === normalized.providerId);
     const rootMatch = normalized.rootRef && sameProvider.find((candidate) => candidate.rootRef
       && candidate.rootRef.rootId === normalized.rootRef!.rootId
@@ -4387,6 +4551,9 @@ class CodeView {
   }
 
   private async applyFilesystemChanges(changes: Array<{ op: string; ref: FileRef }>): Promise<void> {
+    for (const repositoryId of new Set(this.tabs.flatMap((tab) => tab.diff && changes.some((change) => tab.diff?.fileRef && isRefWithin(tab.diff.fileRef, change.ref)) ? [tab.diff.repository.id] : []))) {
+      this.scheduleSourceControlDiffRefresh(repositoryId);
+    }
     const parents = new Map<string, FileRef>();
     for (const change of changes) {
       this.navigationModels.invalidate((uri) => {
@@ -4468,9 +4635,14 @@ class CodeView {
     }
     await this.refreshExplorer();
     this.renderTabs();
+    for (const repositoryId of new Set(this.tabs.flatMap((tab) => tab.diff ? [tab.diff.repository.id] : []))) this.scheduleSourceControlDiffRefresh(repositoryId);
   }
 
   dispose(): void {
+    this.diffHunkGutter?.dispose();
+    this.diffHunkGutter = null;
+    this.diffRefreshTimers.forEach((timer) => clearTimeout(timer));
+    this.diffRefreshTimers.clear();
     this.closeIndentationPopover?.();
     if (this.editorFontSizeSaveTimer) {
       window.clearTimeout(this.editorFontSizeSaveTimer);

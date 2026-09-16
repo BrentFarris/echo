@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/brent/echo/internal/sourcecontrol"
+	p4provider "github.com/brent/echo/internal/sourcecontrol/p4"
 	"github.com/brent/echo/internal/workspacefs"
 )
 
@@ -117,20 +118,35 @@ func (s *Server) handleSourceControlSettings(w http.ResponseWriter, r *http.Requ
 		}
 		writeData(w, http.StatusOK, map[string]any{
 			"searchParentRepositories": workspace.SearchParentRepositories || workspace.SearchParentGitRepositories,
+			"p4":                       s.p4.Settings(workspace.ID),
 		})
 		return
 	}
 	var body struct {
-		SearchParentRepositories bool `json:"searchParentRepositories"`
+		SearchParentRepositories *bool                `json:"searchParentRepositories"`
+		P4                       *p4provider.Settings `json:"p4"`
 	}
 	if err := decodeLimitedJSON(w, r, &body, 64<<10); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	workspace, err := s.workspaces.SetSearchParentRepositories(r.PathValue("id"), body.SearchParentRepositories)
+	workspace, ok, err := s.workspaces.Get(r.PathValue("id"))
+	if err != nil || !ok {
+		writeCodedError(w, http.StatusNotFound, "workspace_not_found", "workspace not found", nil)
+		return
+	}
+	if body.SearchParentRepositories != nil {
+		workspace, err = s.workspaces.SetSearchParentRepositories(workspace.ID, *body.SearchParentRepositories)
+	}
 	if err != nil {
 		writeCodedError(w, http.StatusNotFound, "workspace_not_found", "workspace not found", nil)
 		return
+	}
+	if body.P4 != nil {
+		if err := s.p4.Configure(workspace.ID, *body.P4); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	repositories, err := s.sourceControl.Repositories(r.Context(), workspace.ID)
 	if err != nil {
@@ -157,7 +173,7 @@ func writeSourceControlError(w http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	case "path_outside_workspace":
 		status = http.StatusForbidden
-	case "hidden_changes", "hidden_staged_changes", "stale_source_control_revision", "clone_destination_exists":
+	case "hidden_changes", "hidden_staged_changes", "stale_source_control_revision", "stale_diff", "clone_destination_exists":
 		status = http.StatusConflict
 	case "git_authentication_failed", "fossil_authentication_failed":
 		status = http.StatusUnauthorized

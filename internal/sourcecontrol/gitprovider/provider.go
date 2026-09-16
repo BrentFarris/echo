@@ -150,6 +150,7 @@ func (p *Provider) Diff(ctx context.Context, workspaceID, repositoryID string, t
 		Revision: document.Revision, ModifiedRevision: document.ModifiedRevision,
 		Original: sourcecontrol.DiffSide(document.Original), Modified: sourcecontrol.DiffSide(document.Modified),
 		Editable: document.Editable, Kind: document.Kind, UnavailableReason: document.UnavailableReason,
+		HunkActions: document.HunkActions, HunkToken: document.HunkToken,
 	}, nil
 }
 
@@ -190,14 +191,22 @@ func (p *Provider) History(ctx context.Context, workspaceID, repositoryID string
 	if err != nil {
 		return sourcecontrol.History{}, convertError(err)
 	}
-	result := sourcecontrol.History{NextOffset: history.NextOffset, HasMore: history.HasMore}
+	return historyFromGit(history), nil
+}
+
+func historyFromGit(history gitservice.History) sourcecontrol.History {
+	result := sourcecontrol.History{
+		Commits:    make([]sourcecontrol.Commit, 0, len(history.Commits)),
+		NextOffset: history.NextOffset,
+		HasMore:    history.HasMore,
+	}
 	for _, commit := range history.Commits {
 		result.Commits = append(result.Commits, sourcecontrol.Commit{
-			Hash: commit.Hash, Parents: append([]string(nil), commit.Parents...), Author: commit.Author,
-			AuthoredAt: commit.AuthoredAt, Refs: append([]string(nil), commit.Refs...), Subject: commit.Subject,
+			Hash: commit.Hash, Parents: append([]string{}, commit.Parents...), Author: commit.Author,
+			AuthoredAt: commit.AuthoredAt, Refs: append([]string{}, commit.Refs...), Subject: commit.Subject,
 		})
 	}
-	return result, nil
+	return result
 }
 
 func (p *Provider) RevisionDetail(ctx context.Context, workspaceID, repositoryID, ref, kind string) (sourcecontrol.RevisionDetail, error) {
@@ -215,6 +224,7 @@ func (p *Provider) RevisionDetail(ctx context.Context, workspaceID, repositoryID
 func (p *Provider) Action(ctx context.Context, workspaceID, repositoryID string, request sourcecontrol.ActionRequest) (sourcecontrol.ActionResult, error) {
 	result, err := p.service.Action(ctx, workspaceID, repositoryID, gitservice.ActionRequest{
 		RequestID: request.RequestID, Action: request.Action, ExpectedRevision: request.ExpectedRevision,
+		Hunk:  request.Hunk,
 		Paths: request.Paths, Message: request.Message,
 		Ref: request.Ref, StartPoint: request.StartPoint, Name: request.Name, Remote: request.Remote,
 		Branch: request.Branch, URL: request.URL, Confirmed: request.Confirmed,

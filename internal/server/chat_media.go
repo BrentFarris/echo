@@ -228,6 +228,9 @@ func chatMediaContentParts(text string, images, videos []sessions.MediaAttachmen
 	}
 	parts := []llm.MessageContentPart{llm.TextContentPart(text)}
 	for _, attachment := range images {
+		if attachment.Purpose == "gui_preview" {
+			continue
+		}
 		parts = append(parts, llm.ImageURLContentPart(attachment.DataURL))
 	}
 	for _, attachment := range videos {

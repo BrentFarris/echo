@@ -64,21 +64,41 @@ func testUIManifest(id string) Manifest {
 	}
 }
 
-func TestBuiltinCalculatorPackageValidates(t *testing.T) {
-	destination := filepath.Join(localTestDir(t), "calculator")
-	if err := copyFS(BuiltinPackages()["calculator"], ".", destination); err != nil {
-		t.Fatal(err)
+func TestBuiltinPackagesValidate(t *testing.T) {
+	tests := []struct {
+		id       string
+		viewID   string
+		viewKind string
+	}{
+		{id: "calculator", viewID: "calculator", viewKind: "floating"},
+		{id: "notes", viewID: "notes", viewKind: "page"},
 	}
-	validation, err := ValidatePackage(destination, map[string]bool{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if validation.Manifest.ID != "calculator" || !validation.Compatible || len(validation.Digest) != 64 {
-		t.Fatalf("unexpected validation: %#v", validation)
-	}
-	view, ok := validation.Manifest.View("calculator")
-	if !ok || view.Kind != "floating" {
-		t.Fatalf("calculator floating view missing: %#v", view)
+	packages := BuiltinPackages()
+	for _, test := range tests {
+		t.Run(test.id, func(t *testing.T) {
+			plugin := packages[test.id]
+			if plugin == nil {
+				t.Fatalf("built-in %s package missing", test.id)
+			}
+			destination := filepath.Join(localTestDir(t), test.id)
+			if err := copyFS(plugin, ".", destination); err != nil {
+				t.Fatal(err)
+			}
+			validation, err := ValidatePackage(destination, map[string]bool{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if validation.Manifest.ID != test.id || !validation.Compatible || len(validation.Digest) != 64 {
+				t.Fatalf("unexpected validation: %#v", validation)
+			}
+			view, ok := validation.Manifest.View(test.viewID)
+			if !ok || view.Kind != test.viewKind {
+				t.Fatalf("%s %s view missing: %#v", test.id, test.viewKind, view)
+			}
+			if validation.Manifest.Runtime != nil || len(validation.Manifest.Permissions) != 0 || len(validation.Manifest.Contributes.Tools) != 0 {
+				t.Fatalf("built-in %s must remain UI-only and permission-free: %#v", test.id, validation.Manifest)
+			}
+		})
 	}
 }
 

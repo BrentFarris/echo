@@ -89,9 +89,32 @@ func (s *Service) startAdapter(ctx context.Context, workspace workspaces.Workspa
 		workingDirectory = options.WorkspaceFolder
 	}
 	if workspace.Sandbox.Enabled {
+		args = sandboxAdapterArguments(profile, args)
 		return s.startSandboxAdapter(ctx, workspace.ID, commandName, args, environment, workingDirectory, profile.Transport, port, logOutput)
 	}
 	return startHostAdapter(ctx, commandName, args, environment, workingDirectory, profile.Transport, port, logOutput)
+}
+
+func sandboxAdapterArguments(profile debugconfig.AdapterProfile, args []string) []string {
+	if !strings.EqualFold(profile.AdapterID, "go") || profile.Transport.Kind != "server" {
+		return args
+	}
+	delveDAP := false
+	for _, arg := range args {
+		if arg == "--only-same-user" || strings.HasPrefix(arg, "--only-same-user=") {
+			return args // Preserve an explicitly configured policy.
+		}
+		if arg == "dap" {
+			delveDAP = true
+		}
+	}
+	if !delveDAP {
+		return args
+	}
+	// The authenticated sandbox agent dials as root, while Delve runs as the
+	// workspace user. This spawned server stays on private guest loopback and
+	// has no published port. Host adapters retain Delve's same-user restriction.
+	return append(args, "--only-same-user=false")
 }
 
 func startHostAdapter(ctx context.Context, name string, args []string, environment map[string]string, workingDirectory string, transport debugconfig.Transport, port int, logOutput func(string, string)) (*adapterHandle, error) {
@@ -161,7 +184,7 @@ func (s *Service) startSandboxAdapter(ctx context.Context, workspaceID, name str
 		go streamLog(process.Stderr(), "adapter", logOutput)
 		return &adapterHandle{transport: &stdioTransport{reader: process.Stdout(), writer: process.Stdin(), closeFn: stop}, stop: stop}, nil
 	}
-	process, err := manager.OpenProcess(ctx, workspaceID, sandbox.ExecRequest{Role: "workbench", Command: append([]string{name}, args...), WorkingDirectory: workingDirectory, Environment: environmentList(environment)})
+	process, err := manager.OpenProcess(ctx, workspaceID, sandbox.ExecRequest{Role: "runtime", Command: append([]string{name}, args...), WorkingDirectory: workingDirectory, Environment: environmentList(environment)})
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +225,7 @@ func (s *Service) runHook(ctx context.Context, workspace workspaces.Workspace, h
 		if manager == nil {
 			return fmt.Errorf("sandbox lifecycle runtime is unavailable")
 		}
-		result, err := manager.Execute(hookCtx, workspace.ID, sandbox.ExecRequest{Role: "workbench", Command: append([]string{name}, args...), WorkingDirectory: cwd, Environment: environmentList(environment), OutputLimit: 4 << 20})
+		result, err := manager.Execute(hookCtx, workspace.ID, sandbox.ExecRequest{Role: "runtime", Command: append([]string{name}, args...), WorkingDirectory: cwd, Environment: environmentList(environment), OutputLimit: 4 << 20})
 		if len(result.Stdout) > 0 {
 			logOutput(category, string(result.Stdout))
 		}

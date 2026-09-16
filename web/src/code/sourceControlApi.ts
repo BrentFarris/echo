@@ -12,6 +12,24 @@ import { normalizeStatus } from "./sourceControlTypes";
 // retried after an arbitrary failure, which prevents duplicate Git actions.
 const legacyGitWorkspaces = new Set<string>();
 
+type SourceControlHistoryWire = Omit<SourceControlHistory, "commits"> & {
+  commits?: Array<Omit<SourceControlHistory["commits"][number], "parents" | "refs"> & {
+    parents?: string[] | null;
+    refs?: string[] | null;
+  }> | null;
+};
+
+function normalizeHistory(history: SourceControlHistoryWire): SourceControlHistory {
+  return {
+    ...history,
+    commits: Array.isArray(history.commits) ? history.commits.map((commit) => ({
+      ...commit,
+      parents: Array.isArray(commit.parents) ? commit.parents : [],
+      refs: Array.isArray(commit.refs) ? commit.refs : [],
+    })) : [],
+  };
+}
+
 function legacyEndpointUnavailable(error: unknown): boolean {
   const candidate = error as { status?: number; message?: string } | null;
   return candidate?.status === 404 || candidate?.status === 405
@@ -71,8 +89,9 @@ export async function loadMetadata(workspaceId: string, repositoryId: string): P
 }
 
 export async function loadHistory(workspaceId: string, repositoryId: string, offset = 0): Promise<SourceControlHistory> {
-  if (legacyGitWorkspaces.has(workspaceId)) return gitAPI.loadHistory(workspaceId, repositoryId, offset);
-  return api(`${repositoryBase(workspaceId, repositoryId)}/history`, { method: "GET", query: { offset, limit: 100 } });
+  if (legacyGitWorkspaces.has(workspaceId)) return normalizeHistory(await gitAPI.loadHistory(workspaceId, repositoryId, offset));
+  const history = await api(`${repositoryBase(workspaceId, repositoryId)}/history`, { method: "GET", query: { offset, limit: 100 } }) as SourceControlHistoryWire;
+  return normalizeHistory(history);
 }
 
 export async function loadRevisionDetail(workspaceId: string, repositoryId: string, ref: string, kind: "commit" | "stash" = "commit"): Promise<SourceControlRevisionDetail> {
@@ -93,6 +112,15 @@ export async function setParentRepositorySearch(workspaceId: string, enabled: bo
     return { repositories: (response.repositories || []).map(gitRepository) };
   }
   return api(`/api/workspaces/${encodeURIComponent(workspaceId)}/source-control/settings`, { method: "PUT", body: { searchParentRepositories: enabled } });
+}
+
+export type P4Settings = { roots: Record<string, { server: string; user: string; client: string }>; repositories: Record<string, { tracking: boolean; active: string }> };
+export async function loadP4Settings(workspaceId: string): Promise<P4Settings> {
+  const settings = await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/source-control/settings`, { method: "GET" }) as { p4: P4Settings };
+  return settings.p4;
+}
+export async function saveP4Settings(workspaceId: string, p4: P4Settings): Promise<void> {
+  await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/source-control/settings`, { method: "PUT", body: { p4 } });
 }
 
 // Fossil project creation is intentionally deferred; Git keeps its mature

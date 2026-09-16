@@ -795,6 +795,9 @@ func summarizeCompressionChunk(ctx context.Context, completer chatCompleter, set
 		if err != nil {
 			return "", nil, err
 		}
+		if err := admitSandboxModelRequest(ctx); err != nil {
+			return "", nil, err
+		}
 		response, err := completer.Complete(ctx, request)
 		if err != nil {
 			return "", nil, fmt.Errorf("generate context summary: %w", err)

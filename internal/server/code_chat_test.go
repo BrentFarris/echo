@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -20,6 +21,137 @@ func subscribeCodeChat(t *testing.T, conn *websocket.Conn, workspaceID string) m
 		t.Fatalf("unexpected code-chat snapshot: %v", snapshot)
 	}
 	return snapshot
+}
+
+func TestCodeChatGoalReset(t *testing.T) {
+	for _, scenario := range []struct {
+		name           string
+		status         sessions.GoalStatus
+		busy           bool
+		activeTurn     bool
+		mainChat       bool
+		persistFailure bool
+		wantError      string
+	}{
+		{name: "provider error", status: sessions.GoalStatusPaused},
+		{name: "blocked", status: sessions.GoalStatusBlocked},
+		{name: "active goal", status: sessions.GoalStatusActive, wantError: "goal_transcript_locked"},
+		{name: "background compression", status: sessions.GoalStatusPaused, busy: true, wantError: "session_busy"},
+		{name: "paused response still stopping", status: sessions.GoalStatusPaused, activeTurn: true, wantError: "session_busy"},
+		{name: "main paused goal remains protected", status: sessions.GoalStatusPaused, mainChat: true, wantError: "goal_transcript_locked"},
+		{name: "main blocked goal remains protected", status: sessions.GoalStatusBlocked, mainChat: true, wantError: "goal_transcript_locked"},
+		{name: "persistence failure", status: sessions.GoalStatusPaused, persistFailure: true, wantError: "session_clear_failed"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			s, _ := newTestServer(t)
+			workspace := createChatWorkspace(t, s, "code-goal-reset")
+			s.llm = errorStreamer{}
+			url := startWebSocketTestServer(t, s)
+			conn := dialSharedClient(t, url)
+			surface := chatSurfaceCode
+			if scenario.mainChat {
+				surface = chatSurfaceMain
+			}
+			if err := conn.WriteJSON(map[string]any{"type": "session_subscribe", "workspaceId": workspace.ID, "surface": surface}); err != nil {
+				t.Fatal(err)
+			}
+			snapshot := readChatSnapshot(t, conn)
+			chatID := snapshot["activeChatId"].(string)
+			if err := conn.WriteJSON(map[string]any{
+				"type": "goal_start", "surface": surface, "workspaceId": workspace.ID, "chatId": chatID,
+				"requestId": "failed-goal", "message": "Finish despite a missing model",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			finished := readUntilSessionEvent(t, conn, "turn_finished")
+			if finished["status"] != "error" {
+				t.Fatalf("expected provider failure: %v", finished)
+			}
+			readUntilMessageType(t, conn, "goal_attention")
+			parent, err := s.sessions.get(workspace.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, _, err := parent.resolveSurfaceTab(chatID, surface)
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.mu.Lock()
+			goal, _ := session.currentGoalLocked()
+			if goal == nil || goal.Status != sessions.GoalStatusPaused {
+				session.mu.Unlock()
+				t.Fatal("provider failure did not pause goal")
+			}
+			goal.Status = scenario.status
+			goal.PendingSteering = []sessions.GoalSteering{{ID: "queued", Content: "Keep compatibility"}}
+			before := cloneTabTranscript(session.transcript)
+			if err := parent.persistTabLocked(before); err != nil {
+				session.mu.Unlock()
+				t.Fatal(err)
+			}
+			session.idleCompressionRunning = scenario.busy
+			if scenario.activeTurn {
+				session.active = &sessions.Turn{ID: "stopping", Status: "streaming"}
+			}
+			store := parent.store
+			if scenario.persistFailure {
+				// A store without this Code Chat cannot persist the replacement.
+				parent.store = sessions.NewWorkspaceStore(t.TempDir())
+			}
+			session.mu.Unlock()
+			storedBefore, err := store.Load(workspace.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := conn.WriteJSON(map[string]any{
+				"type": "chat_clear", "surface": surface, "workspaceId": workspace.ID, "chatId": chatID,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if scenario.wantError != "" {
+				failure := readUntilMessageType(t, conn, "command_error")
+				if failure["code"] != scenario.wantError {
+					t.Fatalf("unexpected rejection: %v", failure)
+				}
+				session.mu.Lock()
+				unchanged := reflect.DeepEqual(before, session.transcript)
+				session.idleCompressionRunning = false
+				session.active = nil
+				parent.store = store
+				session.mu.Unlock()
+				if !unchanged {
+					t.Fatal("rejected reset changed live transcript")
+				}
+			} else {
+				cleared := readChatSnapshot(t, conn)
+				if cleared["goal"] != nil || len(cleared["turns"].([]any)) != 0 {
+					t.Fatalf("reset left goal or history: %v", cleared)
+				}
+				// A new subscriber must see the reset, too.
+				reconnected := subscribeCodeChat(t, dialSharedClient(t, url), workspace.ID)
+				if reconnected["goal"] != nil || len(reconnected["turns"].([]any)) != 0 {
+					t.Fatalf("reset lost on reconnect: %v", reconnected)
+				}
+			}
+			storedAfter, err := sessions.NewWorkspaceStore(workspace.MainPath).Load(workspace.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(storedBefore.Tabs, storedAfter.Tabs) || storedBefore.ActiveChatID != storedAfter.ActiveChatID {
+				t.Fatal("reset changed main chat")
+			}
+			if scenario.wantError != "" {
+				if !reflect.DeepEqual(storedBefore.CodeChat, storedAfter.CodeChat) {
+					t.Fatal("rejected reset changed persisted transcript")
+				}
+			} else {
+				cleared := storedAfter.CodeChat
+				if cleared == nil || cleared.ChatID != chatID || cleared.CurrentGoalID != "" || len(cleared.Goals) != 0 || len(cleared.Turns) != 0 || len(cleared.Messages) != 0 {
+					t.Fatalf("reset was not durable: %#v", cleared)
+				}
+			}
+		})
+	}
 }
 
 func TestCodeChatIsPersistentAndIndependentFromMainTabs(t *testing.T) {

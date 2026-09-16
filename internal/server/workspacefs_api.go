@@ -53,7 +53,7 @@ func (s *Server) handleFSSaveFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	snapshot, err := s.fs.Save(r.PathValue("id"), workspacefs.SaveRequest{
+	snapshot, err := s.fs.SaveContext(r.Context(), r.PathValue("id"), workspacefs.SaveRequest{
 		Ref: body.Ref, Content: body.Content, ExpectedRevision: body.ExpectedRevision,
 		CreateOnly: body.CreateOnly, HasBOM: body.HasBOM,
 	})
@@ -76,7 +76,7 @@ func (s *Server) handleFSCreateEntry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	entry, snapshot, err := s.fs.Create(r.PathValue("id"), workspacefs.CreateRequest{
+	entry, snapshot, err := s.fs.CreateContext(r.Context(), r.PathValue("id"), workspacefs.CreateRequest{
 		Parent: body.Parent, Name: body.Name, Kind: body.Kind, Content: body.Content, HasBOM: body.HasBOM,
 	})
 	if err != nil {
@@ -99,9 +99,9 @@ func (s *Server) handleFSRenameEntry(w http.ResponseWriter, r *http.Request) {
 	var entry workspacefs.Entry
 	var err error
 	if body.DestinationParent != nil {
-		entry, err = s.fs.Move(r.PathValue("id"), body.Ref, *body.DestinationParent)
+		entry, err = s.fs.MoveContext(r.Context(), r.PathValue("id"), body.Ref, *body.DestinationParent)
 	} else {
-		entry, err = s.fs.Rename(r.PathValue("id"), body.Ref, body.NewName)
+		entry, err = s.fs.RenameContext(r.Context(), r.PathValue("id"), body.Ref, body.NewName)
 	}
 	if err != nil {
 		writeWorkspaceFSError(w, err)
@@ -118,7 +118,7 @@ func (s *Server) handleFSTrashEntry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	item, err := s.fs.Trash(r.PathValue("id"), body.Ref)
+	item, err := s.fs.TrashContext(r.Context(), r.PathValue("id"), body.Ref)
 	if err != nil {
 		writeWorkspaceFSError(w, err)
 		return
@@ -136,7 +136,7 @@ func (s *Server) handleFSListTrash(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFSRestoreTrash(w http.ResponseWriter, r *http.Request) {
-	entry, err := s.fs.Restore(r.PathValue("id"), r.PathValue("trashId"))
+	entry, err := s.fs.RestoreContext(r.Context(), r.PathValue("id"), r.PathValue("trashId"))
 	if err != nil {
 		writeWorkspaceFSError(w, err)
 		return

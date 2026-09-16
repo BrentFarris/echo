@@ -27,7 +27,7 @@ func (s *Service) Processes(ctx context.Context, workspaceID string) ([]ProcessI
 		return nil, err
 	}
 	result, err := manager.Execute(ctx, workspaceID, sandbox.ExecRequest{
-		Role: "workbench", Command: []string{"ps", "-eo", "pid=,comm=,args="},
+		Role: "runtime", Command: []string{"ps", "-eo", "pid=,comm=,args="},
 		WorkingDirectory: options.WorkspaceFolder, OutputLimit: 4 << 20,
 	})
 	if err != nil {

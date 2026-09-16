@@ -72,6 +72,9 @@ func (p *Provider) executeAction(ctx context.Context, state *repositoryState, re
 		}
 	}
 	switch request.Action {
+	case "protect_hunk", "unprotect_hunk":
+		paths, err := p.applyHunk(ctx, state, request)
+		return paths, nil, err
 	case "protect", "protect_all":
 		paths, err := p.protect(ctx, state, request)
 		return paths, nil, err

@@ -9,6 +9,7 @@ import (
 
 	"github.com/brent/echo/internal/sandbox"
 	"github.com/brent/echo/internal/sourcecontrol"
+	"github.com/brent/echo/internal/workspacefs"
 )
 
 type Schema map[string]any
@@ -91,7 +92,12 @@ type ExecutionContext struct {
 	// began. It keeps execution fail-closed if workspace.json becomes
 	// temporarily unreadable instead of silently selecting the host.
 	SandboxEnabled bool
-	TurnID         string
+	// AIGeneration is captured when the model request starts. User-initiated
+	// filesystem/terminal operations omit it and do not use the AI hold.
+	AIGeneration *uint64
+	TurnID       string
+	ToolCallID   string
+	UIVision     sandbox.UIVision
 	// ResolveWorkspacePath and ResolveWorkspaceChildPath let the host route
 	// tools through its canonical workspace confinement service. Tests and
 	// standalone callers retain the local fallback when these are nil.
@@ -148,10 +154,11 @@ type ExecutionContext struct {
 	// JiraAPIToken is the Atlassian API token. Falls back to ATLASSIAN_AUTH_TOKEN env var if empty.
 	JiraAPIToken string
 	// SourceControl exposes provider-neutral, read-only repository inspection.
-	SourceControl SourceControlInspector
+	SourceControl              SourceControlInspector
+	WorkspaceFiles             *workspacefs.Service
 	// WebFetchBinaryEmbedLimit is the per-model byte cap for embedding binary
 	// responses in web_fetch tool results. Zero means unlimited (legacy behavior).
-	WebFetchBinaryEmbedLimit int
+	WebFetchBinaryEmbedLimit   int
 	// ImageCompressionMaxDimension is the max dimension (px) before resizing
 	// images read by tools. Zero uses a default of 1536.
 	ImageCompressionMaxDimension int

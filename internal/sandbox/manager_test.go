@@ -57,6 +57,8 @@ type fakeEngine struct {
 	startCount     atomic.Int32
 	stopCount      atomic.Int32
 	updateCount    atomic.Int32
+	heartbeatCount atomic.Int32
+	heartbeatFails atomic.Int32
 	mu             sync.Mutex
 	deleteScopes   []DeleteScope
 	execRequests   []ExecRequest
@@ -111,7 +113,18 @@ func (e *fakeEngine) Usage(context.Context, MachineState) (ResourceUsage, error)
 func (e *fakeEngine) ApplyNetworkGrants(context.Context, MachineState, []NetworkGrant) error {
 	return nil
 }
-func (e *fakeEngine) Heartbeat(context.Context, MachineState) error { return nil }
+func (e *fakeEngine) Heartbeat(context.Context, MachineState) error {
+	e.heartbeatCount.Add(1)
+	for {
+		remaining := e.heartbeatFails.Load()
+		if remaining <= 0 {
+			return nil
+		}
+		if e.heartbeatFails.CompareAndSwap(remaining, remaining-1) {
+			return &Error{Code: "sandbox_service_unavailable", Message: "temporary heartbeat failure"}
+		}
+	}
+}
 func (e *fakeEngine) OpenDesktop(context.Context, MachineState) (io.ReadWriteCloser, error) {
 	return &fakeStream{}, nil
 }
@@ -239,7 +252,7 @@ func TestHTTPActivityTracksResponseBodyLifetime(t *testing.T) {
 	}
 }
 
-func newSandboxManagerForTest(t *testing.T, engine *fakeEngine) (*Manager, workspaces.Workspace, string) {
+func newSandboxManagerForTest(t *testing.T, engine Engine) (*Manager, workspaces.Workspace, string) {
 	t.Helper()
 	root := t.TempDir()
 	main := filepath.Join(root, "workspace with spaces Ω")
@@ -284,6 +297,36 @@ func TestManagerStartIsConcurrentAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestMaintenanceToleratesTransientHeartbeatFailure(t *testing.T) {
+	engine := &fakeEngine{}
+	manager, workspace, _ := newSandboxManagerForTest(t, engine)
+	if err := manager.Start(context.Background(), workspace.ID); err != nil {
+		t.Fatal(err)
+	}
+	engine.heartbeatFails.Store(2)
+	manager.maintain(time.Now())
+	manager.maintain(time.Now())
+	status, err := manager.Status(context.Background(), workspace.ID)
+	if err != nil || status.State != StateReady {
+		t.Fatalf("transient heartbeat failure poisoned runtime: %+v, %v", status, err)
+	}
+	manager.maintain(time.Now())
+	manager.mu.Lock()
+	failuresAfterRecovery := manager.runtimeFor(workspace.ID).heartbeatFailures
+	manager.mu.Unlock()
+	if failuresAfterRecovery != 0 {
+		t.Fatalf("successful heartbeat did not reset failure count: %d", failuresAfterRecovery)
+	}
+	engine.heartbeatFails.Store(heartbeatFailureThreshold)
+	for range heartbeatFailureThreshold {
+		manager.maintain(time.Now())
+	}
+	status, err = manager.Status(context.Background(), workspace.ID)
+	if err != nil || status.State != StateError {
+		t.Fatalf("persistent heartbeat failure did not mark runtime unhealthy: %+v, %v", status, err)
+	}
+}
+
 func TestReadyManagerAppliesResourceChanges(t *testing.T) {
 	engine := &fakeEngine{}
 	manager, workspace, _ := newSandboxManagerForTest(t, engine)
@@ -320,7 +363,7 @@ func TestManagerResetAndDeleteBoundariesRetainWorkspaceFiles(t *testing.T) {
 	engine.mu.Lock()
 	scopes := append([]DeleteScope(nil), engine.deleteScopes...)
 	engine.mu.Unlock()
-	if len(scopes) != 2 || !scopes[0].Containers || !scopes[0].Workbench || scopes[0].Browser || !scopes[1].Browser || scopes[1].Workbench {
+	if len(scopes) != 2 || !scopes[0].Containers || !scopes[0].Runtime || scopes[0].Browser || !scopes[1].Browser || scopes[1].Runtime {
 		t.Fatalf("unexpected reset scopes: %+v", scopes)
 	}
 	if _, err := os.Stat(sentinel); err != nil {
@@ -361,7 +404,7 @@ func TestSetupRecipeRequiresDigestApprovalAndRunsOnlyApprovedRecipeAsRoot(t *tes
 	engine.mu.Lock()
 	requests := append([]ExecRequest(nil), engine.execRequests...)
 	engine.mu.Unlock()
-	if len(requests) != 2 || requests[0].Role != "workbench" || requests[1].Role != "desktop" {
+	if len(requests) != 1 || requests[0].Role != "runtime" {
 		t.Fatalf("setup roles: %+v", requests)
 	}
 	for _, request := range requests {
@@ -379,7 +422,7 @@ func TestSetupRecipeRequiresDigestApprovalAndRunsOnlyApprovedRecipeAsRoot(t *tes
 	engine.mu.Lock()
 	requests = append([]ExecRequest(nil), engine.execRequests...)
 	engine.mu.Unlock()
-	if len(requests) != 4 || requests[2].Role != "workbench" || requests[3].Role != "desktop" {
+	if len(requests) != 2 || requests[1].Role != "runtime" {
 		t.Fatalf("approved setup was not reapplied after recreation: %+v", requests)
 	}
 
@@ -392,7 +435,7 @@ func TestSetupRecipeRequiresDigestApprovalAndRunsOnlyApprovedRecipeAsRoot(t *tes
 	engine.mu.Lock()
 	requests = append([]ExecRequest(nil), engine.execRequests...)
 	engine.mu.Unlock()
-	if len(requests) != 4 {
+	if len(requests) != 2 {
 		t.Fatalf("changed setup ran without renewed approval: %+v", requests)
 	}
 	status, err := manager.Status(context.Background(), workspace.ID)
@@ -482,7 +525,7 @@ func TestGeneratedRuntimeCredentialsAreIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	values := []string{secret.WorkbenchAgentToken, secret.DesktopAgentToken, secret.ProxyToken, secret.BrowserToken, secret.VNCToken}
+	values := []string{secret.RuntimeAgentToken, secret.ProxyToken, secret.BrowserToken, secret.VNCToken}
 	seen := map[string]bool{}
 	for _, value := range values {
 		if len(value) < 20 || seen[value] {

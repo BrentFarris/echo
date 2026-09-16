@@ -73,6 +73,9 @@ type session struct {
 	postDone             chan struct{}
 	traceDAP             bool
 	controlMu            sync.Mutex
+	step                 *stepOperation
+	sources              map[string]adapterSource
+	cFrames              map[int]bool
 }
 
 // Service owns every active debug adapter. Browser clients are observers of
@@ -429,7 +432,7 @@ func (s *Service) Request(ctx context.Context, workspaceID, sessionID, command s
 		}
 		return RequestResponse{}, ErrSessionNotFound
 	}
-	if request.ExpectedRevision != 0 && request.ExpectedRevision != current.revision {
+	if request.ExpectedRevision != 0 && request.ExpectedRevision != current.revision && (isSerializedCommand(command) || request.StopGeneration == 0) {
 		actual := current.revision
 		s.mu.Unlock()
 		return RequestResponse{}, &RevisionError{Expected: request.ExpectedRevision, Actual: actual}
@@ -446,11 +449,34 @@ func (s *Service) Request(ctx context.Context, workspaceID, sessionID, command s
 	connection := current.conn
 	sessionContext := current.ctx
 	threadID := current.threadID
+	generation := current.stopGeneration
+	if command == "pause" && current.step != nil {
+		current.step.cancel()
+		result := RequestResponse{WorkspaceID: workspaceID, SessionID: sessionID, Revision: current.revision, StopGeneration: current.stopGeneration}
+		s.mu.Unlock()
+		return result, nil
+	}
+	if current.step != nil && isSerializedCommand(command) {
+		s.mu.Unlock()
+		return RequestResponse{}, fmt.Errorf("a debug step is in progress; pause or stop it first")
+	}
 	s.mu.Unlock()
 	if connection == nil {
 		return RequestResponse{}, fmt.Errorf("debug adapter is not connected")
 	}
 	arguments := cloneMap(request.Arguments)
+	if command == "source" {
+		return s.sourceRequest(ctx, current, request)
+	}
+	if command == "evaluate" {
+		s.mu.Lock()
+		if strings.EqualFold(current.profile.AdapterID, "go") && current.cFrames[intValue(arguments["frameId"])] {
+			if expression, ok := arguments["expression"].(string); ok {
+				arguments["expression"] = delveCExpression(expression)
+			}
+		}
+		s.mu.Unlock()
+	}
 	translatedArguments, translateErr := s.translateDAPArguments(workspaceID, arguments)
 	if translateErr != nil {
 		return RequestResponse{}, translateErr
@@ -458,6 +484,9 @@ func (s *Service) Request(ctx context.Context, workspaceID, sessionID, command s
 	arguments, _ = translatedArguments.(map[string]any)
 	if usesThread(command) && arguments["threadId"] == nil && threadID != 0 {
 		arguments["threadId"] = threadID
+	}
+	if result, started := s.startSourceStep(current, command, arguments); started {
+		return result, nil
 	}
 	callCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
@@ -473,8 +502,9 @@ func (s *Service) Request(ctx context.Context, workspaceID, sessionID, command s
 		return RequestResponse{}, err
 	}
 	if command == "continue" || command == "next" || command == "stepIn" || command == "stepOut" || command == "stepBack" || command == "reverseContinue" {
-		s.markRunning(workspaceID, sessionID, command)
+		s.markRunningIfGeneration(workspaceID, sessionID, command, generation)
 	}
+	body := s.translateSessionBody(current, response.Body)
 	s.mu.Lock()
 	current, err = s.sessionLocked(workspaceID, sessionID)
 	if err != nil {
@@ -486,7 +516,21 @@ func (s *Service) Request(ctx context.Context, workspaceID, sessionID, command s
 		s.mu.Unlock()
 		return RequestResponse{}, &RevisionError{Expected: request.StopGeneration, Actual: actual, Stop: true}
 	}
-	body := s.translateDAPBody(workspaceID, response.Body)
+	// Frame IDs may be reused after a stop. A late stack response must not
+	// change how expressions in the new stop's selected frame are parsed.
+	if command == "stackTrace" && generation == current.stopGeneration {
+		var stack struct {
+			Frames []stepFrame `json:"stackFrames"`
+		}
+		if json.Unmarshal(response.Body, &stack) == nil {
+			if current.cFrames == nil {
+				current.cFrames = map[int]bool{}
+			}
+			for _, frame := range stack.Frames {
+				current.cFrames[frame.ID] = strings.HasPrefix(frame.Name, "C.")
+			}
+		}
+	}
 	result := RequestResponse{WorkspaceID: workspaceID, SessionID: sessionID, Revision: current.revision, StopGeneration: current.stopGeneration, Body: body}
 	s.mu.Unlock()
 	return result, nil
@@ -524,24 +568,12 @@ func (s *Service) stopWithMode(workspaceID, sessionID string, expectedRevision u
 		s.mu.Unlock()
 		return err
 	}
-	s.mu.Unlock()
-	current.controlMu.Lock()
-	defer current.controlMu.Unlock()
-	s.mu.Lock()
-	active, err := s.sessionLocked(workspaceID, sessionID)
-	if err != nil || active != current {
-		s.mu.Unlock()
-		if err != nil {
-			return err
-		}
-		return ErrSessionNotFound
-	}
 	if expectedRevision != 0 && current.revision != expectedRevision {
 		actual := current.revision
 		s.mu.Unlock()
 		return &RevisionError{Expected: expectedRevision, Actual: actual}
 	}
-	if current.status == StatusTerminated || current.status == StatusFailed {
+	if isStoppingOrTerminal(current.status) {
 		s.mu.Unlock()
 		return nil
 	}
@@ -554,8 +586,15 @@ func (s *Service) stopWithMode(workspaceID, sessionID string, expectedRevision u
 		shouldTerminate = *terminate
 	}
 	revision := current.revision
+	cancel := current.cancel
 	s.mu.Unlock()
 	s.publishSession(workspaceID, sessionID, "session_terminating", nil, "")
+	// Stop is the escape hatch for every debugger lifecycle phase. Cancel the
+	// session before entering the serialized control lane so an unbounded launch
+	// or restart request cannot prevent the developer from stopping it.
+	cancel()
+	current.controlMu.Lock()
+	defer current.controlMu.Unlock()
 	if connection != nil {
 		if preferTerminateRequest && supportsTerminate {
 			terminateContext, terminateCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -589,7 +628,7 @@ func (s *Service) RestartChecked(ctx context.Context, workspaceID, sessionID str
 		s.mu.Unlock()
 		return Snapshot{}, &RevisionError{Expected: expectedRevision, Actual: actual}
 	}
-	nativeRestart := current.conn != nil && boolCapability(current.capabilities, "supportsRestartRequest") && !isTerminalStatus(current.status)
+	nativeRestart := current.conn != nil && current.step == nil && boolCapability(current.capabilities, "supportsRestartRequest") && !isTerminalStatus(current.status)
 	s.mu.Unlock()
 	if nativeRestart {
 		return s.restartInAdapter(ctx, workspaceID, sessionID, expectedRevision, current)
@@ -653,34 +692,42 @@ func (s *Service) restartInAdapter(ctx context.Context, workspaceID, sessionID s
 	s.mu.Unlock()
 	s.publishSession(workspaceID, sessionID, "session_restarting", nil, "")
 
-	requestContext, cancel := context.WithTimeout(ctx, launchTimeout)
+	requestContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go func() {
-		select {
-		case <-sessionContext.Done():
-			cancel()
-		case <-requestContext.Done():
-		}
-	}()
+	stopSessionCancel := context.AfterFunc(sessionContext, cancel)
+	defer stopSessionCancel()
 	if _, err := connection.request(requestContext, "restart", map[string]any{}); err != nil {
 		s.mu.Lock()
-		if active, lookupErr := s.sessionLocked(workspaceID, sessionID); lookupErr == nil && active == current && current.status == StatusConfiguring {
+		active, lookupErr := s.sessionLocked(workspaceID, sessionID)
+		stopping := lookupErr == nil && active == current && isStoppingOrTerminal(current.status)
+		restored := false
+		if lookupErr == nil && active == current && current.status == StatusConfiguring {
 			current.status = previousStatus
 			current.revision++
+			restored = true
 		}
 		s.mu.Unlock()
-		s.publishSession(workspaceID, sessionID, "restart_failed", nil, err.Error())
+		if stopping && errors.Is(err, context.Canceled) {
+			return s.Snapshot(workspaceID)
+		}
+		if restored {
+			s.publishSession(workspaceID, sessionID, "restart_failed", nil, err.Error())
+		}
 		return Snapshot{}, err
 	}
 	s.mu.Lock()
+	restarted := false
 	if active, lookupErr := s.sessionLocked(workspaceID, sessionID); lookupErr == nil && active == current && current.status == StatusConfiguring {
 		current.status = StatusRunning
 		current.stopGeneration++
 		current.revision++
+		restarted = true
 	}
 	s.mu.Unlock()
-	go s.applyWorkspaceBreakpoints(workspaceID)
-	s.publishSession(workspaceID, sessionID, "session_restarted", nil, "")
+	if restarted {
+		go s.applyWorkspaceBreakpoints(workspaceID)
+		s.publishSession(workspaceID, sessionID, "session_restarted", nil, "")
+	}
 	return s.Snapshot(workspaceID)
 }
 
@@ -1010,6 +1057,9 @@ func boolCapability(values map[string]any, key string) bool {
 }
 func isTerminalStatus(status string) bool {
 	return status == StatusTerminated || status == StatusFailed
+}
+func isStoppingOrTerminal(status string) bool {
+	return status == StatusTerminating || isTerminalStatus(status)
 }
 func errorIsStale(err error) bool {
 	return errors.Is(err, ErrStaleSession) || errors.Is(err, ErrStaleStop)

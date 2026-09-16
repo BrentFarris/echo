@@ -7,6 +7,7 @@ package sourcecontrol
 import (
 	"errors"
 
+	"github.com/brent/echo/internal/sourcecontrol/hunk"
 	"github.com/brent/echo/internal/workspacefs"
 )
 
@@ -55,6 +56,10 @@ const (
 	CapabilityWebUI          Capability = "webUI"
 	CapabilityInitialize     Capability = "initialize"
 	CapabilityClone          Capability = "clone"
+	CapabilityChangelists    Capability = "changelists"
+	CapabilityOpenForEdit    Capability = "openForEdit"
+	CapabilityReconcile      Capability = "reconcile"
+	CapabilityRevert         Capability = "revert"
 )
 
 // ActionAvailability lets providers explain why an otherwise supported
@@ -96,23 +101,28 @@ type Repository struct {
 }
 
 type Change struct {
-	Path       string               `json:"path"`
-	OldPath    string               `json:"oldPath,omitempty"`
-	Ref        *workspacefs.FileRef `json:"ref,omitempty"`
-	Status     string               `json:"status"`
-	StatusCode string               `json:"statusCode"`
-	Kind       string               `json:"kind,omitempty"`
-	GroupID    string               `json:"groupId"`
-	Submodule  bool                 `json:"submodule,omitempty"`
+	Diagnostic   string               `json:"diagnostic,omitempty"`
+	NeedsResolve bool                 `json:"needsResolve,omitempty"`
+	Path         string               `json:"path"`
+	OldPath      string               `json:"oldPath,omitempty"`
+	Ref          *workspacefs.FileRef `json:"ref,omitempty"`
+	Status       string               `json:"status"`
+	StatusCode   string               `json:"statusCode"`
+	Kind         string               `json:"kind,omitempty"`
+	GroupID      string               `json:"groupId"`
+	Submodule    bool                 `json:"submodule,omitempty"`
 }
 
 type ChangeGroup struct {
-	ID         string   `json:"id"`
-	Label      string   `json:"label"`
-	Role       string   `json:"role"`
-	Changes    []Change `json:"changes"`
-	Actions    []string `json:"actions"`
-	Diagnostic string   `json:"diagnostic,omitempty"`
+	KeepEmpty         bool     `json:"keepEmpty,omitempty"`
+	Description       string   `json:"description,omitempty"`
+	HiddenChangeCount int      `json:"hiddenChangeCount,omitempty"`
+	ID                string   `json:"id"`
+	Label             string   `json:"label"`
+	Role              string   `json:"role"`
+	Changes           []Change `json:"changes"`
+	Actions           []string `json:"actions"`
+	Diagnostic        string   `json:"diagnostic,omitempty"`
 }
 
 type RepositoryState struct {
@@ -122,22 +132,27 @@ type RepositoryState struct {
 }
 
 type StatusSnapshot struct {
-	WorkspaceID       string          `json:"workspaceId"`
-	RepositoryID      string          `json:"repositoryId"`
-	ProviderID        string          `json:"providerId"`
-	Revision          uint64          `json:"revision"`
-	Branch            string          `json:"branch"`
-	Head              string          `json:"head,omitempty"`
-	Detached          bool            `json:"detached"`
-	Upstream          string          `json:"upstream,omitempty"`
-	Ahead             int             `json:"ahead,omitempty"`
-	Behind            int             `json:"behind,omitempty"`
-	StashCount        int             `json:"stashCount,omitempty"`
-	Groups            []ChangeGroup   `json:"groups"`
-	HiddenChangeCount int             `json:"hiddenChangeCount,omitempty"`
-	Truncated         bool            `json:"truncated,omitempty"`
-	TotalChangeCount  int             `json:"totalChangeCount"`
-	State             RepositoryState `json:"state"`
+	ActiveGroupID       string          `json:"activeGroupId,omitempty"`
+	TrackingEnabled     bool            `json:"trackingEnabled,omitempty"`
+	Stale               bool            `json:"stale,omitempty"`
+	Diagnostic          string          `json:"diagnostic,omitempty"`
+	DetectionIncomplete bool            `json:"detectionIncomplete,omitempty"`
+	WorkspaceID         string          `json:"workspaceId"`
+	RepositoryID        string          `json:"repositoryId"`
+	ProviderID          string          `json:"providerId"`
+	Revision            uint64          `json:"revision"`
+	Branch              string          `json:"branch"`
+	Head                string          `json:"head,omitempty"`
+	Detached            bool            `json:"detached"`
+	Upstream            string          `json:"upstream,omitempty"`
+	Ahead               int             `json:"ahead,omitempty"`
+	Behind              int             `json:"behind,omitempty"`
+	StashCount          int             `json:"stashCount,omitempty"`
+	Groups              []ChangeGroup   `json:"groups"`
+	HiddenChangeCount   int             `json:"hiddenChangeCount,omitempty"`
+	Truncated           bool            `json:"truncated,omitempty"`
+	TotalChangeCount    int             `json:"totalChangeCount"`
+	State               RepositoryState `json:"state"`
 }
 
 type DiffSide struct {
@@ -158,6 +173,8 @@ type DiffTarget struct {
 }
 
 type DiffDocument struct {
+	HunkActions       []string             `json:"hunkActions,omitempty"`
+	HunkToken         string               `json:"hunkToken,omitempty"`
 	RepositoryID      string               `json:"repositoryId"`
 	ProviderID        string               `json:"providerId"`
 	Target            DiffTarget           `json:"target"`
@@ -297,26 +314,41 @@ type Annotation struct {
 // ActionRequest deliberately has a small common envelope. Each provider
 // validates the fields used by its registered action IDs.
 type ActionRequest struct {
-	RequestID        string   `json:"requestId"`
-	Action           string   `json:"action"`
-	ExpectedRevision uint64   `json:"expectedRevision,omitempty"`
-	Paths            []string `json:"paths,omitempty"`
-	Message          string   `json:"message,omitempty"`
-	Ref              string   `json:"ref,omitempty"`
-	StartPoint       string   `json:"startPoint,omitempty"`
-	Name             string   `json:"name,omitempty"`
-	Remote           string   `json:"remote,omitempty"`
-	Branch           string   `json:"branch,omitempty"`
-	URL              string   `json:"url,omitempty"`
-	Confirmed        bool     `json:"confirmed,omitempty"`
+	GroupID          string        `json:"groupId,omitempty"`
+	TargetGroupID    string        `json:"targetGroupId,omitempty"`
+	PreviewToken     string        `json:"previewToken,omitempty"`
+	Hunk             *hunk.Request `json:"hunk,omitempty"`
+	RequestID        string        `json:"requestId"`
+	Action           string        `json:"action"`
+	ExpectedRevision uint64        `json:"expectedRevision,omitempty"`
+	Paths            []string      `json:"paths,omitempty"`
+	Message          string        `json:"message,omitempty"`
+	Ref              string        `json:"ref,omitempty"`
+	StartPoint       string        `json:"startPoint,omitempty"`
+	Name             string        `json:"name,omitempty"`
+	Remote           string        `json:"remote,omitempty"`
+	Branch           string        `json:"branch,omitempty"`
+	URL              string        `json:"url,omitempty"`
+	Confirmed        bool          `json:"confirmed,omitempty"`
 }
 
 type ActionResult struct {
-	RequestID     string   `json:"requestId"`
-	RepositoryID  string   `json:"repositoryId"`
-	Revision      uint64   `json:"revision"`
-	AffectedPaths []string `json:"affectedPaths,omitempty"`
-	TrashIDs      []string `json:"trashIds,omitempty"`
+	Preview       *ReconcilePreview `json:"preview,omitempty"`
+	Diagnostic    string            `json:"diagnostic,omitempty"`
+	GroupID       string            `json:"groupId,omitempty"`
+	RequestID     string            `json:"requestId"`
+	RepositoryID  string            `json:"repositoryId"`
+	Revision      uint64            `json:"revision"`
+	AffectedPaths []string          `json:"affectedPaths,omitempty"`
+	TrashIDs      []string          `json:"trashIds,omitempty"`
+}
+
+type ReconcilePreview struct {
+	Paths      []string `json:"paths,omitempty"`
+	Token      string   `json:"token"`
+	Changes    []Change `json:"changes"`
+	Truncated  bool     `json:"truncated,omitempty"`
+	Diagnostic string   `json:"diagnostic,omitempty"`
 }
 
 type Operation struct {

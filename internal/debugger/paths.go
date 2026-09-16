@@ -14,6 +14,9 @@ func (s *Service) resolveSource(workspaceID string, ref debugconfig.SourceRef) (
 }
 
 func (s *Service) fileRefForPath(workspaceID, path string) *debugconfig.SourceRef {
+	if s.fs == nil || !filepath.IsAbs(path) {
+		return nil
+	}
 	roots, err := s.fs.Roots(workspaceID)
 	if err != nil {
 		return nil
@@ -99,6 +102,9 @@ func (s *Service) translateDAPArguments(workspaceID string, value any) (any, err
 	case map[string]any:
 		result := make(map[string]any, len(current))
 		for key, item := range current {
+			if key == "echoSourceId" {
+				continue
+			}
 			result[key] = item
 		}
 		if rawRef, ok := result["echoRef"].(map[string]any); ok {

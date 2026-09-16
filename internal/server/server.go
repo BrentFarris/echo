@@ -34,6 +34,7 @@ import (
 	"github.com/brent/echo/internal/sourcecontrol"
 	fossilprovider "github.com/brent/echo/internal/sourcecontrol/fossil"
 	"github.com/brent/echo/internal/sourcecontrol/gitprovider"
+	p4provider "github.com/brent/echo/internal/sourcecontrol/p4"
 	terminalruntime "github.com/brent/echo/internal/terminal"
 	"github.com/brent/echo/internal/tools"
 	"github.com/brent/echo/internal/workspacefs"
@@ -60,6 +61,7 @@ type Server struct {
 	watcher          *workspacefs.WatchManager
 	git              *gitservice.Service
 	sourceControl    *sourcecontrol.Service
+	p4               *p4provider.Provider
 	terminal         *terminalruntime.Service
 	lsp              *lspruntime.Service
 	lspProfiles      *lspconfig.Store
@@ -182,6 +184,9 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	)
 	s.sandbox.SetNotifier(func(event sandbox.Event) {
 		s.hub.BroadcastWorkspaceSandbox(event.WorkspaceID, event)
+		if event.Event == "desktop_lease" && s.sessions != nil {
+			s.sessions.sandboxControlChanged(event.WorkspaceID)
+		}
 	})
 	s.lspProfiles = lspconfig.NewStore(s.data)
 	s.lsp = lspruntime.NewService(s.lspProfiles, s.workspaces)
@@ -220,6 +225,11 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	s.sourceControl.SetNotifier(func(event sourcecontrol.Event) {
 		s.hub.BroadcastWorkspaceSourceControl(event.WorkspaceID, event)
 	})
+	s.p4 = p4provider.New(s.fs, s.sandbox, filepath.Join(filepath.Dir(settingsPath), "source-control", "p4"))
+	if err := s.sourceControl.Register(s.p4); err != nil {
+		logf("register P4 source control provider: %v", err)
+	}
+	s.fs.SetMutationCoordinator(s.sourceControl)
 	s.git.SetNotifier(func(event gitservice.Event) {
 		s.hub.BroadcastWorkspaceGit(event.WorkspaceID, event)
 		if event.Status != nil {
@@ -233,7 +243,14 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 		s.goTests.HandleWorkspaceChanges(event.WorkspaceID, event.Changes)
 		s.cTests.HandleWorkspaceChanges(event.WorkspaceID, event.Changes)
 		s.hub.BroadcastWorkspaceFS(event.WorkspaceID, event)
-		s.sourceControl.InvalidateWorkspace(event.WorkspaceID)
+		s.sourceControl.HandleFileEvent(event)
+	})
+	s.p4.SetWatcher(func(workspace string, enabled bool) error {
+		if enabled {
+			return s.watcher.SubscribeTracking(workspace)
+		}
+		s.watcher.UnsubscribeTracking(workspace)
+		return nil
 	})
 	coreToolNames := map[string]bool{}
 	for _, tool := range s.tools.Registered() {

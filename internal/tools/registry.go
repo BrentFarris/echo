@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/brent/echo/internal/sandbox"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -252,8 +253,19 @@ func (r *Registry) chatLLMSchemaForScopes(scopes *ToolScopeChecker, options Chat
 		if sandboxGUIToolNames[metadata.Name] && (options.PlanMode || !options.SandboxGUI) {
 			continue
 		}
+		if legacyUITools[metadata.Name] && (scopes == nil || scopes.allowAll) {
+			continue
+		}
 		if scopes != nil && !scopes.HasTool(metadata.Name) {
 			continue
+		}
+		if metadata.Name == "shell_command" && options.SandboxGUI {
+			metadata.Parameters = cloneSchema(metadata.Parameters)
+			if properties, ok := metadata.Parameters["properties"].(map[string]any); ok {
+				if command, ok := properties["command"].(map[string]any); ok {
+					command["description"] = "Linux Bash command executed in the same runtime and desktop session as the visible sandbox. Use workingDirectory for labeled workspace paths. DISPLAY and session D-Bus are already configured."
+				}
+			}
 		}
 		schema = append(schema, llm.Tool{
 			Type: "function",
@@ -331,6 +343,22 @@ func (r *Registry) Execute(ctx ExecutionContext, name string, arguments json.Raw
 		return result
 	}
 
+	if ctx.AIGeneration != nil && ctx.Sandbox != nil {
+		if err := ctx.Sandbox.AdmitAIAction(ctx.WorkspaceID, *ctx.AIGeneration); err != nil {
+			result.Error = &ExecutionError{Code: "user_control_interrupted", Message: err.Error()}
+			return result
+		}
+	}
+	if ctx.AIGeneration != nil {
+		ctx.Context = sandbox.WithAIControlGeneration(ctx.context(), *ctx.AIGeneration)
+	}
+	switch name {
+	case "filesystem_edit_text", "filesystem_create_text", "filesystem_delete_file":
+		if err := requireFreshSandboxFile(ctx, arguments); err != nil {
+			result.Error = safeError("tool_error", err)
+			return result
+		}
+	}
 	output, err := registration.tool.Execute(ctx, arguments)
 	if err != nil {
 		if ctxErr := ctx.context().Err(); ctxErr != nil {
@@ -341,8 +369,17 @@ func (r *Registry) Execute(ctx ExecutionContext, name string, arguments json.Raw
 		return result
 	}
 	if err := ctx.context().Err(); err != nil {
+		if name == "ui_act" {
+			if ui, ok := output.(uiOutput); ok && ui.UIResult != nil && ui.Execution != "" {
+				result.Success, result.Output = true, output
+				return result
+			}
+		}
 		result.Error = &ExecutionError{Code: "canceled", Message: "tool execution was canceled"}
 		return result
+	}
+	if name == "filesystem_read_text" {
+		recordSandboxFileRead(ctx, arguments)
 	}
 	result.Success = true
 	result.Output = output
@@ -379,7 +416,7 @@ func extractWorkspacePaths(ctx ExecutionContext, arguments json.RawMessage) []st
 
 func isPathArgKey(key string) bool {
 	switch key {
-	case "path", "workingDirectory", "repository", "base", "target", "workflowPath", "imagePath":
+	case "path", "destination", "workingDirectory", "repository", "base", "target", "workflowPath", "imagePath":
 		return true
 	default:
 		return false

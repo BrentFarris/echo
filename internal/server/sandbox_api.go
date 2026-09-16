@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -120,6 +121,22 @@ func (s *Server) handleWorkspaceSandboxAction(w http.ResponseWriter, r *http.Req
 	var result any = map[string]any{"action": body.Action}
 	var err error
 	switch strings.TrimSpace(body.Action) {
+	case "upgrade":
+		started, startErr := s.sandbox.BeginUpgrade(workspaceID)
+		if startErr != nil {
+			writeSandboxError(w, startErr)
+			return
+		}
+		if started {
+			s.stopSandboxWorkspaceProcesses(workspaceID)
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+				defer cancel()
+				_ = s.sandbox.Upgrade(ctx, workspaceID)
+			}()
+		}
+		writeData(w, http.StatusAccepted, map[string]any{"started": started})
+		return
 	case "start":
 		err = s.sandbox.Start(r.Context(), workspaceID)
 	case "stop":
@@ -130,9 +147,9 @@ func (s *Server) handleWorkspaceSandboxAction(w http.ResponseWriter, r *http.Req
 	case "recreate":
 		s.stopSandboxWorkspaceProcesses(workspaceID)
 		err = s.sandbox.Recreate(r.Context(), workspaceID)
-	case "reset_workbench":
+	case "reset_environment", "reset_workbench":
 		s.stopSandboxWorkspaceProcesses(workspaceID)
-		err = s.sandbox.Reset(r.Context(), workspaceID, "workbench")
+		err = s.sandbox.Reset(r.Context(), workspaceID, "runtime")
 	case "reset_browser":
 		s.stopSandboxWorkspaceProcesses(workspaceID)
 		err = s.sandbox.Reset(r.Context(), workspaceID, "browser")
@@ -345,7 +362,7 @@ func writeSandboxError(w http.ResponseWriter, err error) {
 		status = http.StatusUnauthorized
 	case "sandbox_disabled", "invalid_sandbox_config", "invalid_network_grant", "invalid_sandbox_action", "network_grant_id_required", "desktop_session_id_required":
 		status = http.StatusBadRequest
-	case "setup_approval_required", "desktop_control_conflict", "user_control_active", "network_grant_exists", "network_alias_conflict", "sandbox_transitioning", "sandbox_protocol_mismatch":
+	case "sandbox_upgrade_required", "setup_approval_required", "desktop_control_conflict", "user_control_active", "network_grant_exists", "network_alias_conflict", "sandbox_transitioning", "sandbox_protocol_mismatch":
 		status = http.StatusConflict
 	case "sandbox_unavailable", "docker_unavailable", "docker_linux_engine_required", "docker_architecture_unsupported", "sandbox_images_missing", "image_pull_failed", "desktop_unavailable", "sandbox_agent_unavailable", "sandbox_service_unavailable", "egress_unavailable":
 		status = http.StatusServiceUnavailable

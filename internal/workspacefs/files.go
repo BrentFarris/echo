@@ -2,6 +2,7 @@ package workspacefs
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/brent/echo/internal/mutation"
 )
 
 var utf8BOM = []byte{0xef, 0xbb, 0xbf}
@@ -58,6 +61,10 @@ func (s *Service) Read(workspaceID string, ref FileRef) (FileSnapshot, error) {
 }
 
 func (s *Service) Save(workspaceID string, request SaveRequest) (FileSnapshot, error) {
+	return s.SaveContext(context.Background(), workspaceID, request)
+}
+
+func (s *Service) SaveContext(ctx context.Context, workspaceID string, request SaveRequest) (FileSnapshot, error) {
 	if s.isProtectedMetadata(workspaceID, request.Ref) {
 		return FileSnapshot{}, protectedMetadataError()
 	}
@@ -106,7 +113,29 @@ func (s *Service) Save(workspaceID string, request SaveRequest) (FileSnapshot, e
 	if request.CreateOnly {
 		write = atomicCreate
 	}
-	if err := write(resolved, data, mode); err != nil {
+	kind := "edit"
+	if os.IsNotExist(statErr) {
+		kind = "create"
+	}
+	registration, writeErr := s.coordinateContext(ctx, mutation.Operation{WorkspaceID: workspaceID, Kind: kind, Path: resolved, Origin: "editor", Validate: func() error {
+		if statErr == nil {
+			current, err := os.ReadFile(resolved)
+			if err != nil {
+				return err
+			}
+			if contentRevision(current) != request.ExpectedRevision {
+				return &Error{Code: "revision_conflict", Message: "file changed on disk", Cause: ErrConflict}
+			}
+		}
+		return nil
+	}}, func() error {
+		// Checkout changes readonly permissions. Capture mode after checkout.
+		if info, err := os.Stat(resolved); err == nil {
+			mode = info.Mode().Perm()
+		}
+		return write(resolved, data, mode)
+	})
+	if err := writeErr; err != nil {
 		if request.CreateOnly && os.IsExist(err) {
 			return FileSnapshot{}, &Error{Code: "already_exists", Message: "a file or folder already exists at that path", Cause: ErrAlreadyExists}
 		}
@@ -117,10 +146,18 @@ func (s *Service) Save(workspaceID string, request SaveRequest) (FileSnapshot, e
 		op = "create"
 	}
 	s.index.ApplyChanges(workspaceID, []Change{{Op: op, Ref: request.Ref}})
-	return s.Read(workspaceID, request.Ref)
+	snapshot, err := s.Read(workspaceID, request.Ref)
+	if registration.Pending {
+		snapshot.Registration = &registration
+	}
+	return snapshot, err
 }
 
 func (s *Service) Create(workspaceID string, request CreateRequest) (Entry, *FileSnapshot, error) {
+	return s.CreateContext(context.Background(), workspaceID, request)
+}
+
+func (s *Service) CreateContext(ctx context.Context, workspaceID string, request CreateRequest) (Entry, *FileSnapshot, error) {
 	if err := validateName(strings.TrimSpace(request.Name)); err != nil {
 		return Entry{}, nil, err
 	}
@@ -133,7 +170,7 @@ func (s *Service) Create(workspaceID string, request CreateRequest) (Entry, *Fil
 		return Entry{}, nil, protectedMetadataError()
 	}
 	if request.Kind == "file" {
-		snapshot, err := s.Save(workspaceID, SaveRequest{Ref: child, Content: request.Content, CreateOnly: true, HasBOM: request.HasBOM})
+		snapshot, err := s.SaveContext(ctx, workspaceID, SaveRequest{Ref: child, Content: request.Content, CreateOnly: true, HasBOM: request.HasBOM})
 		if err != nil {
 			return Entry{}, nil, err
 		}
@@ -171,6 +208,10 @@ func (s *Service) Create(workspaceID string, request CreateRequest) (Entry, *Fil
 }
 
 func (s *Service) Rename(workspaceID string, ref FileRef, newName string) (Entry, error) {
+	return s.RenameContext(context.Background(), workspaceID, ref, newName)
+}
+
+func (s *Service) RenameContext(ctx context.Context, workspaceID string, ref FileRef, newName string) (Entry, error) {
 	newName = strings.TrimSpace(newName)
 	if err := validateName(newName); err != nil {
 		return Entry{}, err
@@ -183,21 +224,25 @@ func (s *Service) Rename(workspaceID string, ref FileRef, newName string) (Entry
 	if parentPath == "." {
 		parentPath = ""
 	}
-	return s.moveEntry(workspaceID, ref, FileRef{RootID: ref.RootID, Path: parentPath}, newName)
+	return s.moveEntry(ctx, workspaceID, ref, FileRef{RootID: ref.RootID, Path: parentPath}, newName)
 }
 
 // Move relocates an entry to another directory in the same workspace root.
 // The entry keeps its current name; Rename uses the same confined operation
 // with a different name and its existing parent.
 func (s *Service) Move(workspaceID string, ref, destinationParent FileRef) (Entry, error) {
+	return s.MoveContext(context.Background(), workspaceID, ref, destinationParent)
+}
+
+func (s *Service) MoveContext(ctx context.Context, workspaceID string, ref, destinationParent FileRef) (Entry, error) {
 	relative, err := normalizeRelative(ref.Path, false)
 	if err != nil {
 		return Entry{}, err
 	}
-	return s.moveEntry(workspaceID, ref, destinationParent, path.Base(relative))
+	return s.moveEntry(ctx, workspaceID, ref, destinationParent, path.Base(relative))
 }
 
-func (s *Service) moveEntry(workspaceID string, ref, destinationParent FileRef, newName string) (Entry, error) {
+func (s *Service) moveEntry(ctx context.Context, workspaceID string, ref, destinationParent FileRef, newName string) (Entry, error) {
 	if s.wouldAffectProtectedMetadata(workspaceID, ref) {
 		return Entry{}, protectedMetadataError()
 	}
@@ -256,14 +301,33 @@ func (s *Service) moveEntry(workspaceID string, ref, destinationParent FileRef, 
 	} else if !os.IsNotExist(statErr) {
 		return Entry{}, statErr
 	}
-	if err := renameCaseSafe(source, destination); err != nil {
+	registration, moveErr := s.coordinateContext(ctx, mutation.Operation{WorkspaceID: workspaceID, Kind: "move", Path: source, Destination: destination, Origin: "explorer", Validate: func() error {
+		current, err := os.Lstat(source)
+		if err != nil {
+			return err
+		}
+		if !os.SameFile(sourceInfo, current) {
+			return &Error{Code: "revision_conflict", Message: "move source changed on disk", Cause: ErrConflict}
+		}
+		if _, err := os.Lstat(destination); err == nil && !sameFilesystemName(source, destination) {
+			return &Error{Code: "already_exists", Message: "move destination was created concurrently", Cause: ErrAlreadyExists}
+		} else if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}}, func() error { return renameCaseSafe(source, destination) })
+	if err := moveErr; err != nil {
 		return Entry{}, fmt.Errorf("move entry: %w", err)
 	}
 	s.index.ApplyChanges(workspaceID, []Change{
 		{Op: "rename", Ref: ref},
 		{Op: "create", Ref: newRef},
 	})
-	return s.entryFor(workspaceID, newRef)
+	entry, err := s.entryFor(workspaceID, newRef)
+	if registration.Pending {
+		entry.Registration = &registration
+	}
+	return entry, err
 }
 
 func (s *Service) entryFor(workspaceID string, ref FileRef) (Entry, error) {

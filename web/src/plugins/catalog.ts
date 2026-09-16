@@ -59,10 +59,13 @@ function escapeHTML(value: string): string {
   return value.replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
 }
 
-function icon(view: PluginView): string {
-  return view.icon
-    ? `<img class="plugin-nav-icon" src="${escapeHTML(view.icon)}" alt="" draggable="false">`
-    : '<span class="codicon codicon-extensions" aria-hidden="true"></span>';
+export function renderPluginIcon(plugin: CatalogPlugin, view: PluginView): string {
+  if (!view.icon) return '<span class="codicon codicon-extensions" aria-hidden="true"></span>';
+  // Built-in icons are monochrome SVGs. Masks inherit the button's theme and interaction colors.
+  if (plugin.source.type === "builtin") {
+    return `<span class="plugin-nav-icon plugin-nav-icon-mask" style="mask-image: url(${escapeHTML(JSON.stringify(view.icon))})" aria-hidden="true"></span>`;
+  }
+  return `<img class="plugin-nav-icon" src="${escapeHTML(view.icon)}" alt="" draggable="false">`;
 }
 
 function isActive(pluginId: string, viewId: string): boolean {
@@ -74,7 +77,7 @@ export function renderDesktopPluginButtons(): string {
   return getEffectivePluginViews().map(({ plugin, view }) => `
     <button class="nav-icon-button plugin-nav-button${isActive(plugin.id, view.id) ? " is-active" : ""}" type="button"
       title="${escapeHTML(view.title)}" aria-label="${escapeHTML(view.title)}" data-plugin-id="${escapeHTML(plugin.id)}"
-      data-plugin-view-id="${escapeHTML(view.id)}" data-plugin-view-kind="${view.kind}">${icon(view)}</button>
+      data-plugin-view-id="${escapeHTML(view.id)}" data-plugin-view-kind="${view.kind}">${renderPluginIcon(plugin, view)}</button>
   `).join("");
 }
 

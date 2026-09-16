@@ -3,6 +3,7 @@ import type { FileRef } from "./types";
 export type SourceControlCapability =
   | "status" | "diff" | "history" | "stage" | "track" | "commitAll" | "commitSelected"
   | "protect"
+  | "changelists" | "openForEdit" | "reconcile" | "revert"
   | "update" | "sync" | "pull" | "push" | "branches" | "merge" | "stashes" | "webUI" | "initialize" | "clone";
 
 export type SourceControlProvider = {
@@ -30,6 +31,8 @@ export type SourceControlRepository = {
 };
 
 export type SourceControlChange = {
+  needsResolve?: boolean;
+  diagnostic?: string;
   path: string;
   oldPath?: string;
   ref?: FileRef;
@@ -44,6 +47,9 @@ export type SourceControlChange = {
 };
 
 export type SourceControlChangeGroup = {
+  keepEmpty?: boolean;
+  description?: string;
+  hiddenChangeCount?: number;
   id: string;
   label: string;
   role: "conflicts" | "included" | "working" | "untracked" | string;
@@ -53,6 +59,11 @@ export type SourceControlChangeGroup = {
 };
 
 export type SourceControlStatus = {
+  activeGroupId?: string;
+  trackingEnabled?: boolean;
+  stale?: boolean;
+  diagnostic?: string;
+  detectionIncomplete?: boolean;
   workspaceId: string;
   repositoryId: string;
   providerId: string;
@@ -96,7 +107,18 @@ export type SourceControlDiffScope = "included" | "working" | "commit" | "stash"
 
 export type SourceControlDiffRequest = SourceControlDiffTarget & { fileRef?: FileRef; scope?: SourceControlDiffScope };
 
+export type SourceControlHunkAction = "stage_hunk" | "unstage_hunk" | "protect_hunk" | "unprotect_hunk" | "revert_hunk";
+export type SourceControlHunkRange = { start: number; end: number };
+export type SourceControlHunk = {
+  target: SourceControlDiffTarget;
+  token: string;
+  original: SourceControlHunkRange;
+  modified: SourceControlHunkRange;
+};
+
 export type SourceControlDiffDocument = {
+  hunkActions?: SourceControlHunkAction[];
+  hunkToken?: string;
   repositoryId: string;
   providerId: string;
   target: SourceControlDiffTarget;
@@ -139,6 +161,10 @@ export type SourceControlRevisionDetail = { ref: string; files: Array<{ path: st
 // common envelope stays extensible without adding provider fields to the core
 // renderer every time another VCS is registered.
 export type SourceControlActionRequest = {
+  groupId?: string;
+  targetGroupId?: string;
+  previewToken?: string;
+  hunk?: SourceControlHunk;
   requestId: string;
   action: string;
   expectedRevision?: number;
@@ -154,6 +180,9 @@ export type SourceControlActionRequest = {
 };
 
 export type SourceControlActionResult = {
+  preview?: { token: string; paths?: string[]; changes: Array<Omit<SourceControlChange,"scope">>; truncated?: boolean; diagnostic?: string };
+  diagnostic?: string;
+  groupId?: string;
   requestId: string;
   repositoryId: string;
   revision: number;

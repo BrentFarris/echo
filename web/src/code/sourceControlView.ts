@@ -19,6 +19,8 @@ type SourceControlViewCallbacks = {
   openFile(ref: FileRef, pin: boolean): Promise<void>;
   openDiff(repository: SourceControlRepository, target: SourceControlDiffRequest, pin: boolean): Promise<void>;
   updateBadge(count: number): void;
+  statusChanged?(repositoryId: string): void;
+  operationChanged?(repositoryId: string, busy: boolean): void;
 };
 
 type Review = { ref: string; kind: "commit" | "stash"; detail: SourceControlRevisionDetail };
@@ -44,7 +46,7 @@ export class SourceControlView {
   private selections = new Map<string, SelectionState>();
   private drafts = new Map<string, string>();
   private expandedRepositories = new Set<string>();
-  private expandedGroups = new Set<string>();
+  private expandedGroups = new Map<string, boolean>();
   private busyRepositories = new Map<string, SourceControlOperationEvent>();
   private metadata = new Map<string, SourceControlMetadata>();
   private history = new Map<string, SourceControlHistory>();
@@ -96,6 +98,7 @@ export class SourceControlView {
       if (event.workspaceId !== this.workspaceId || !event.operation) return;
       if (event.operation.state === "running") this.busyRepositories.set(event.operation.repositoryId, event.operation);
       else this.busyRepositories.delete(event.operation.repositoryId);
+      this.callbacks.operationChanged?.(event.operation.repositoryId, event.operation.state === "running");
       this.render();
     });
     const unsubscribeResync = onSocket("source_control_resync_required", (data: object) => {
@@ -132,7 +135,7 @@ export class SourceControlView {
     }
   }
 
-  private async refreshStatus(repositoryId: string): Promise<void> {
+  async refreshStatus(repositoryId: string): Promise<void> {
     try {
       this.acceptStatus(await sourceControlAPI.loadStatus(this.workspaceId, repositoryId));
     } catch (error) {
@@ -145,6 +148,7 @@ export class SourceControlView {
     const current = this.statuses.get(status.repositoryId);
     if (current && status.revision < current.revision) return;
     this.statuses.set(status.repositoryId, status);
+    if (!current || current.revision !== status.revision || !sameStatusContent(current, status)) this.callbacks.statusChanged?.(status.repositoryId);
     if (current && sameStatusContent(current, status)) return;
     this.render();
   }
@@ -288,40 +292,44 @@ export class SourceControlView {
     const commit = presentationFor(repository).commit(repository, status, selected);
     const canOfferCommit = supports(repository, "commitAll") || supports(repository, "commitSelected");
     return `<div class="git-repository-body">
+    ${supports(repository, "changelists") ? `<div class="p4-toolbar"><label>Active changelist <select data-p4-active ${busy ? "disabled" : ""}>${status.groups.filter((group) => group.role === "pending").map((group) => `<option value="${escapeHTML(group.id)}" ${group.id === status.activeGroupId ? "selected" : ""}>${escapeHTML(group.label)}</option>`).join("")}</select></label><button type="button" data-p4-action="create_change" ${busy ? "disabled" : ""}>New changelist</button><button type="button" data-p4-action="menu">P4 actions…</button><button type="button" data-p4-action="set_tracking" ${busy ? "disabled" : ""}>${status.trackingEnabled ? "Disable" : "Enable"} automatic tracking</button></div>` : ""}
+    ${status.diagnostic ? `<div class="git-warning">${escapeHTML(status.diagnostic)}</div>` : ""}
       ${canOfferCommit ? `<label class="git-commit-input"><span class="sr-only">Commit message</span><textarea rows="2" data-git-commit-message placeholder="${escapeHTML(commit.placeholder)}" ${busy ? "disabled" : ""}>${escapeHTML(draft)}</textarea></label>
       <button type="button" class="git-commit-button ${busy && operation?.action === "sync" ? "is-syncing" : ""}" data-git-repo-action="${sync ? "sync" : commit.action}" ${busy || (!sync && (!draft.trim() || !commit.enabled)) ? "disabled" : ""}><span class="codicon codicon-${sync ? "sync" : "check"}"></span> ${sync ? "Sync" : escapeHTML(commit.label)}</button>` : ""}
       ${status.hiddenChangeCount ? `<div class="git-warning"><span class="codicon codicon-warning"></span>${status.hiddenChangeCount} tracked change${status.hiddenChangeCount === 1 ? " is" : "s are"} outside this workspace; Commit All is blocked.</div>` : ""}
       ${status.truncated ? `<div class="git-warning"><span class="codicon codicon-warning"></span>Showing the first 10,000 changed files.</div>` : ""}
       ${status.groups.map((group) => this.renderGroup(repository, group, this.groupChanges(status, group))).join("")}
-      ${status.totalChangeCount === 0 ? `<div class="git-empty compact"><span class="codicon codicon-check-all"></span>No changes</div>` : ""}
+      ${status.totalChangeCount === 0 && !status.stale && !status.detectionIncomplete ? `<div class="git-empty compact"><span class="codicon codicon-check-all"></span>No changes</div>` : ""}
       ${supports(repository, "history") ? this.renderHistory(repository) : ""}
     </div>`;
   }
 
   private renderGroup(repository: SourceControlRepository, group: SourceControlChangeGroup, changes: SourceControlChange[]): string {
-    if (changes.length === 0) return "";
+    if (changes.length === 0 && !group.keepEmpty) return "";
     const scope = changes[0]?.scope || group.id;
     const key = `${repository.id}:${scope}`;
-    if (!this.expandedGroups.has(key)) this.expandedGroups.add(key);
-    const expanded = this.expandedGroups.has(key);
+    const expanded = this.expandedGroups.get(key) ?? !supports(repository, "changelists");
     const groupAction = presentationFor(repository).groupAction(repository, group);
     const busy = this.busyRepositories.has(repository.id);
     return `<section class="git-change-group" data-git-group="${escapeHTML(scope)}" data-git-group-id="${escapeHTML(group.id)}">
       <header>
         <button type="button" data-git-group-toggle="${escapeHTML(scope)}" aria-expanded="${expanded}"><span class="codicon codicon-chevron-${expanded ? "down" : "right"}"></span><span>${escapeHTML(group.label)}</span><b>${changes.length}</b></button>
         ${groupAction ? `<button type="button" title="${escapeHTML(groupAction.label)}" aria-label="${escapeHTML(groupAction.label)}" data-git-group-action="${escapeHTML(groupAction.action)}" ${busy ? "disabled" : ""}><span class="codicon codicon-${escapeHTML(groupAction.icon)}"></span></button>` : ""}
+        ${supports(repository, "changelists") ? `<button type="button" data-p4-action="group_menu" data-p4-group="${escapeHTML(group.id)}" title="Changelist actions" aria-label="Changelist actions"><span class="codicon codicon-ellipsis"></span></button>` : ""}
       </header>
+      ${expanded && group.description ? `<div class="p4-description">${escapeHTML(group.description)}</div>` : ""}
       ${group.diagnostic ? `<div class="git-warning"><span class="codicon codicon-warning"></span>${escapeHTML(group.diagnostic)}</div>` : ""}
       ${expanded ? `<div class="git-change-list" data-git-scroll-key="${escapeHTML(key)}" data-git-list-key="${escapeHTML(key)}" data-git-list-repository="${escapeHTML(repository.id)}" data-git-list-scope="${escapeHTML(scope)}" role="listbox" aria-multiselectable="true"><div class="git-change-canvas"></div></div>` : ""}
     </section>`;
   }
 
   private groupChanges(status: SourceControlStatus, group: SourceControlChangeGroup): SourceControlChange[] {
-    return [...status.conflicts, ...status.staged, ...status.unstaged].filter((change) => change.groupId === group.id);
+    const scope = status.providerId === "git" ? group.role === "included" ? "staged" : group.role === "conflicts" ? "conflict" : "unstaged" : group.id;
+    return group.changes.map((change) => ({ ...change, groupId: group.id, scope }));
   }
 
   private selectedChanges(repositoryId: string, status: SourceControlStatus): SourceControlChange[] {
-    const changes = [...status.conflicts, ...status.staged, ...status.unstaged];
+    const changes = status.groups.flatMap((group) => this.groupChanges(status, group));
     return changes.filter((change) => this.selection(repositoryId, change.scope).selected.has(this.changeKey(change)));
   }
 
@@ -407,15 +415,23 @@ export class SourceControlView {
         ${canDiscard ? `<button type="button" title="Revert Changes" aria-label="Revert Changes" data-git-file-action="discard" ${busy ? "disabled" : ""}><span class="codicon codicon-discard"></span></button>` : ""}
         ${changeAction ? `<button type="button" title="${changeAction.label}" aria-label="${changeAction.label}" data-git-file-action="${changeAction.action}" ${busy ? "disabled" : ""}><span class="codicon codicon-${changeAction.icon}"></span></button>` : ""}
       </div>
+      ${change.needsResolve ? `<span title="Resolve needed in P4" class="codicon codicon-warning"></span>` : ""}
+      ${change.diagnostic ? `<span title="${escapeHTML(change.diagnostic)}" class="codicon codicon-warning"></span>` : ""}
       <b class="git-status-code git-status-${statusClass(change.statusCode)}" title="${escapeHTML(change.status)}">${escapeHTML(change.statusCode)}</b>
     </div>`;
   }
 
   private changesForScope(status: SourceControlStatus, scope: string): SourceControlChange[] {
-    return [...status.conflicts, ...status.staged, ...status.unstaged].filter((change) => change.scope === scope);
+    return status.groups.flatMap((group) => this.groupChanges(status, group)).filter((change) => change.scope === scope);
   }
 
   private installEvents(): void {
+    this.host.addEventListener("change", (event) => {
+      const select = (event.target as Element).closest<HTMLSelectElement>("[data-p4-active]");
+      const id = select?.closest<HTMLElement>("[data-git-repository]")?.dataset.gitRepository;
+      const repository = this.repositories.find((item) => item.id === id);
+      if (repository && select) void this.run(repository, { requestId: randomUUID(), action: "set_active", targetGroupId: select.value });
+    }, { signal: this.signal });
     this.host.addEventListener("input", (event) => {
       const input = (event.target as Element).closest<HTMLTextAreaElement>("[data-git-commit-message]");
       const repository = input?.closest<HTMLElement>("[data-git-repository]");
@@ -460,6 +476,13 @@ export class SourceControlView {
     const repositoryId = repositoryElement?.dataset.gitRepository || target.closest<HTMLElement>("[data-git-repository-toggle]")?.dataset.gitRepositoryToggle || "";
     const repository = this.repositories.find((candidate) => candidate.id === repositoryId);
     if (!repository) return;
+    const p4Action = target.closest<HTMLElement>("[data-p4-action]");
+    if (p4Action) {
+      if (p4Action.dataset.p4Action === "menu" || p4Action.dataset.p4Action === "group_menu") this.showP4Menu(repository, event.clientX, event.clientY, p4Action.dataset.p4Group);
+      else if (p4Action.dataset.p4Action === "create_change") await this.p4Description(repository);
+      else if (p4Action.dataset.p4Action === "set_tracking") await this.run(repository, { requestId: randomUUID(), action: "set_tracking", confirmed: !this.statuses.get(repository.id)?.trackingEnabled });
+      return;
+    }
     const repositoryToggle = target.closest<HTMLElement>("[data-git-repository-toggle]");
     if (repositoryToggle) {
       if (repositoryToggle.classList.contains("git-repository-selector")) {
@@ -485,7 +508,8 @@ export class SourceControlView {
     const groupToggle = target.closest<HTMLElement>("[data-git-group-toggle]");
     if (groupToggle) {
       const key = `${repository.id}:${groupToggle.dataset.gitGroupToggle}`;
-      if (this.expandedGroups.has(key)) this.expandedGroups.delete(key); else this.expandedGroups.add(key);
+      const expanded = this.expandedGroups.get(key) ?? !supports(repository, "changelists");
+      this.expandedGroups.set(key, !expanded);
       this.render();
       return;
     }
@@ -498,7 +522,7 @@ export class SourceControlView {
       const presented = group ? presentationFor(repository).groupAction(repository, group) : null;
       if (group && presented && presented.action === groupAction.dataset.gitGroupAction) {
         const groupPaths = this.groupChanges(status!, group).map((change) => change.path);
-        await this.runPresentedAction(repository, presented, [], [], groupPaths);
+        await this.runPresentedAction(repository, presented, [], [], groupPaths, group.id);
       }
       return;
     }
@@ -595,7 +619,7 @@ export class SourceControlView {
     const presented = group ? presentationFor(repository).changeAction(repository, group, change) : null;
     if (presented && presented.action === action) {
       const groupPaths = group ? this.groupChanges(this.statuses.get(repository.id)!, group).map((candidate) => candidate.path) : [];
-      await this.runPresentedAction(repository, presented, [change.path], paths, groupPaths);
+      await this.runPresentedAction(repository, presented, [change.path], paths, groupPaths, group?.id);
     }
   }
 
@@ -605,6 +629,7 @@ export class SourceControlView {
     rowPaths: string[],
     selectedPaths: string[],
     groupPaths: string[],
+    groupId?: string,
   ): Promise<void> {
     if (presentation.confirmation) {
       const answer = await choiceDialog({
@@ -623,6 +648,7 @@ export class SourceControlView {
     if (presentation.pathSource !== "none" && !paths?.length) return;
     await this.run(repository, {
       requestId: randomUUID(), action: presentation.action, paths,
+      groupId,
       confirmed: presentation.confirmation ? true : undefined,
     });
   }
@@ -654,12 +680,22 @@ export class SourceControlView {
   private async run(repository: SourceControlRepository, request: SourceControlActionRequest): Promise<void> {
     const operation: SourceControlOperationEvent = { workspaceId: this.workspaceId, repositoryId: repository.id, providerId: repository.providerId, requestId: request.requestId, action: request.action, state: "running" };
     this.busyRepositories.set(repository.id, operation);
+    this.callbacks.operationChanged?.(repository.id, true);
     this.render();
     try {
       const status = this.statuses.get(repository.id);
       const actionRequest = { ...request, expectedRevision: status?.revision } as SourceControlActionRequest;
       const result = await sourceControlAPI.runAction(this.workspaceId, repository.id, actionRequest);
       this.applyPrediction(repository.id, request, result);
+      if (result.diagnostic) toast(result.diagnostic, { sticky: true });
+      if (result.preview) {
+        const preview = result.preview;
+        if (!preview.changes.length && !preview.token) toast("No P4 registration changes are needed for these paths.");
+        else {
+          const choice = await choiceDialog({ title: "Review P4 reconciliation", message: preview.diagnostic || `Review ${preview.changes.length} file actions.`, detail: preview.changes.length ? preview.changes.map((change) => `${change.kind || change.status}: ${change.oldPath ? `${change.oldPath} → ` : ""}${change.path}`).join("\n") : (preview.paths || []).join("\n"), choices: [{ id: "cancel", label: "Cancel" }, ...(!preview.truncated && preview.token ? [{ id: "apply", label: preview.changes.length ? "Apply Reviewed Changes" : "Confirm Reviewed Paths", primary: true }] : [])] });
+          if (choice === "apply") await this.run(repository, { requestId: randomUUID(), action: "reconcile_apply", previewToken: preview.token, confirmed: true });
+        }
+      }
       if (!["stage", "stage_all", "unstage", "unstage_all", "protect", "protect_all", "unprotect", "unprotect_all", "discard", "discard_all", "open_ui"].includes(request.action)) {
         this.metadata.delete(repository.id);
         this.history.delete(repository.id);
@@ -681,6 +717,7 @@ export class SourceControlView {
       void this.refreshStatus(repository.id);
     } finally {
       this.busyRepositories.delete(repository.id);
+      this.callbacks.operationChanged?.(repository.id, false);
       this.render();
     }
   }
@@ -711,11 +748,13 @@ export class SourceControlView {
       { label: "Refresh", icon: "refresh", run: () => this.reloadRepositories() },
       { label: "Initialize Git Repository…", icon: "repo-create", run: () => this.initialize() },
       { label: "Clone Git Repository…", icon: "repo-clone", run: () => this.clone() },
+      { label: "P4 Connection Settings…", icon: "settings-gear", run: () => this.configureP4() },
       { label: this.searchParents ? "Stop Searching Parent Repositories" : "Search Parent Repositories", icon: this.searchParents ? "check" : "blank", separatorBefore: true, run: () => this.toggleParentSearch() },
     ]);
   }
 
   private showRepositoryMenu(repository: SourceControlRepository, x: number, y: number): void {
+    if (supports(repository, "changelists")) { this.showP4Menu(repository, x, y); return; }
     const presentation = presentationFor(repository);
     const actions: Parameters<typeof showContextMenu>[2] = [
       { label: "Refresh", icon: "refresh", run: () => this.refreshStatus(repository.id) },
@@ -1084,6 +1123,67 @@ export class SourceControlView {
   private async toggleParentSearch(): Promise<void> {
     try { await sourceControlAPI.setParentRepositorySearch(this.workspaceId, !this.searchParents); this.searchParents = !this.searchParents; await this.reloadRepositories(); }
     catch (error) { toast(error instanceof Error ? error.message : String(error)); }
+  }
+
+  private showP4Menu(repository: SourceControlRepository, x: number, y: number, groupId?: string): void {
+    const status = this.statuses.get(repository.id);
+    if (!status) return;
+    const group = status.groups.find((candidate) => candidate.id === groupId);
+    const selected = this.selectedChanges(repository.id, status).filter((change) => !groupId || change.groupId === groupId);
+    const paths = selected.map((change) => change.path);
+    const busy = this.busyRepositories.has(repository.id) || !repository.available;
+    const wholeBlocked = busy || status.stale || status.truncated || Boolean(group?.hiddenChangeCount);
+    const run = (action: string, extra: Partial<SourceControlActionRequest> = {}) => this.run(repository, { requestId: randomUUID(), action, paths, groupId, ...extra });
+    const actions: Parameters<typeof showContextMenu>[2] = [
+      { label: "Create Changelist…", icon: "add", disabled: busy, run: () => this.p4Description(repository) },
+      { label: "Move Selected to Changelist…", icon: "arrow-right", disabled: busy || !paths.length, run: async () => {
+        const groups = status.groups.filter((item) => item.role === "pending");
+        const targetGroupId = await choose("Destination Changelist", groups.map((item) => item.id), groups.map((item) => item.label));
+        if (targetGroupId) await run("reopen", { targetGroupId });
+      } },
+      { label: "Checkout Selected", icon: "edit", disabled: busy || !paths.length, run: () => run("checkout") },
+      { label: "Reconcile Selected…", icon: "checklist", disabled: busy || !paths.length, run: () => run("reconcile_preview") },
+      { label: "Reconcile Echo Changes…", icon: "checklist", disabled: busy || !status.groups.find((item) => item.id === "local")?.changes.length, run: () => run("reconcile_preview", { groupId: "local", paths: status.groups.find((item) => item.id === "local")?.changes.map((change) => change.path) || [] }) },
+      { label: "Scan Folder…", icon: "folder", disabled: busy, run: async () => {
+        const path = await promptDialog({ title: "Scan Folder for P4 Changes", label: "Folder path relative to this P4 client (use . for its root)", initial: repository.scopes[0]?.repoPrefix || ".", confirmLabel: "Preview", required: true });
+        if (path) await run("scan_folder", { paths: [path], groupId: undefined });
+      } },
+      { label: "Retry Selected Registrations", icon: "refresh", disabled: busy || !paths.length, run: () => run("retry_registration") },
+      { label: "Revert Selected…", icon: "discard", danger: true, disabled: busy || !paths.length || selected.some((change) => change.groupId === "local"), run: () => this.revertP4(repository, "revert", paths, groupId) },
+      { label: "Revert Unchanged Selected…", icon: "discard", disabled: busy || !paths.length, run: () => this.revertP4(repository, "revert_unchanged", paths, groupId) },
+    ];
+    if (group && group.role === "pending") actions.unshift(
+      { label: "Make Active Changelist", icon: "check", disabled: busy, run: () => run("set_active", { paths: [], targetGroupId: group.id }) },
+      { label: "Edit Description…", icon: "edit", disabled: busy || group.id === "default", run: () => this.p4Description(repository, group) },
+      { label: "Revert Changelist…", icon: "discard", danger: true, disabled: wholeBlocked || !group.changes.length, run: () => this.revertP4(repository, "revert", [], group.id) },
+      { label: "Revert Unchanged in Changelist…", icon: "discard", disabled: wholeBlocked || !group.changes.length, run: () => this.revertP4(repository, "revert_unchanged", [], group.id) },
+    );
+    actions.push({ label: "P4 Connection Settings…", icon: "settings-gear", run: () => this.configureP4() });
+    showContextMenu(x, y, actions);
+  }
+
+  private async p4Description(repository: SourceControlRepository, group?: SourceControlChangeGroup): Promise<void> {
+    const message = await promptDialog({ title: group ? "Edit Changelist Description" : "Create Changelist", label: "Description", initial: group?.description || "", confirmLabel: group ? "Save" : "Create" });
+    if (message) await this.run(repository, { requestId: randomUUID(), action: group ? "edit_change" : "create_change", groupId: group?.id, message });
+  }
+
+  private async revertP4(repository: SourceControlRepository, action: string, paths: string[], groupId?: string): Promise<void> {
+    const choice = await choiceDialog({ title: "Revert P4 changes?", message: paths.length ? `Revert ${paths.length} selected files?` : `Revert changelist ${groupId}?`, detail: "Echo saves a backup of local content first. P4 restores the synced version; reverting an add leaves the file on disk.", choices: [{ id: "cancel", label: "Cancel" }, { id: "revert", label: "Revert", danger: true, primary: true }] });
+    if (choice === "revert") await this.run(repository, { requestId: randomUUID(), action, paths, groupId, confirmed: true });
+  }
+
+  private async configureP4(): Promise<void> {
+    const root = await this.chooseRoot("P4 Workspace Folder"); if (!root) return;
+    try {
+      const settings = await sourceControlAPI.loadP4Settings(this.workspaceId);
+      const current = settings.roots[root.id];
+      const server = await promptDialog({ title: "P4 Connection Settings", label: "Server (blank uses existing P4 configuration)", initial: current?.server || "", required: false, confirmLabel: "Next" }); if (server === null) return;
+      const user = await promptDialog({ title: "P4 Connection Settings", label: "User (blank uses existing P4 configuration)", initial: current?.user || "", required: false, confirmLabel: "Next" }); if (user === null) return;
+      const client = await promptDialog({ title: "P4 Connection Settings", label: "Client (blank uses existing P4 configuration)", initial: current?.client || "", required: false, confirmLabel: "Save" }); if (client === null) return;
+      settings.roots[root.id] = { server, user, client };
+      await sourceControlAPI.saveP4Settings(this.workspaceId, settings);
+      await this.reloadRepositories();
+    } catch (error) { toast(error instanceof Error ? error.message : String(error), { sticky: true }); }
   }
 }
 

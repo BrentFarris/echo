@@ -207,6 +207,7 @@ type FileReference struct {
 // persisted transcript contains a single copy of each potentially large
 // payload. The server rehydrates LLM content parts from these values.
 type MediaAttachment struct {
+	Purpose   string `json:"purpose,omitempty"`
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	MediaType string `json:"mediaType"`

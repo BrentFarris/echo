@@ -7,6 +7,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/brent/echo/internal/mutation"
 )
 
 func init() {
@@ -45,9 +47,10 @@ type editTextFileArgs struct {
 }
 
 type editTextFileOutput struct {
-	Path         string `json:"path"`
-	Replacements int    `json:"replacements"`
-	BytesWritten int64  `json:"bytesWritten"`
+	Registration *mutation.Result `json:"registration,omitempty"`
+	Path         string           `json:"path"`
+	Replacements int              `json:"replacements"`
+	BytesWritten int64            `json:"bytesWritten"`
 }
 
 const maxAmbiguousMatchCandidates = 5
@@ -136,7 +139,8 @@ func editTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) 
 	}
 	match := matches[0]
 	updated := content[:match.start] + newText + content[match.end:]
-	if err := os.WriteFile(path, []byte(updated), info.Mode().Perm()); err != nil {
+	_, registration, writeErr := writeToolFile(ctx, path, "filesystem_edit_text", []byte(updated), before, true)
+	if err := writeErr; err != nil {
 		return nil, fmt.Errorf("write file: %w", err)
 	}
 	after, err := snapshotExistingFile(ctx, path)
@@ -145,6 +149,7 @@ func editTextFile(ctx ExecutionContext, arguments json.RawMessage) (any, error) 
 	}
 	ctx.recordFileChanges(fileChangeForPath(ctx, path, before, after))
 	return editTextFileOutput{
+		Registration: registration,
 		Path:         relativeWorkspacePath(ctx, path),
 		Replacements: 1,
 		BytesWritten: int64(len(updated)),

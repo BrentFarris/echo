@@ -81,4 +81,14 @@ describe("plugin settings", () => {
       { scope: "workspace", workspaceId: "ws-1234567890abcdef", enable: true },
     ));
   });
+
+  it("stages the built-in Notes package for review", async () => {
+    const button = root.querySelector<HTMLButtonElement>('[data-plugin-action="stage-notes"]')!;
+    expect(button.textContent).toContain("Try built-in Notes");
+    button.click();
+    await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith(
+      "/api/plugins/stages",
+      { source: { type: "builtin", builtin: "notes" } },
+    ));
+  });
 });

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Notes</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="notes-app" aria-label="Workspace notes">
+    <aside class="notes-sidebar">
+      <header class="sidebar-header">
+        <div>
+          <p class="eyebrow">Workspace</p>
+          <h1>Notes</h1>
+        </div>
+        <button id="new-note" class="primary-button" type="button" disabled>New note</button>
+      </header>
+      <label class="filter-field">
+        <span class="sr-only">Filter notes</span>
+        <input id="note-filter" type="search" placeholder="Filter notes" autocomplete="off" disabled>
+      </label>
+      <ol id="note-list" class="note-list" aria-label="Notes"></ol>
+      <p id="sidebar-summary" class="sidebar-summary">Waiting for Echo…</p>
+    </aside>
+
+    <section class="notes-workspace">
+      <div id="workspace-required" class="empty-state" hidden>
+        <div class="empty-icon" aria-hidden="true">#</div>
+        <h2>Open a workspace to use Notes</h2>
+        <p>Notes are private to each Echo workspace and are unavailable in global context.</p>
+      </div>
+
+      <div id="notes-empty" class="empty-state" hidden>
+        <div class="empty-icon" aria-hidden="true">+</div>
+        <h2>Create your first note</h2>
+        <p>Write Markdown without adding files to your repository.</p>
+        <button id="empty-new-note" class="primary-button" type="button">New note</button>
+      </div>
+
+      <div id="fatal-state" class="empty-state is-error" hidden>
+        <div class="empty-icon" aria-hidden="true">!</div>
+        <h2>Notes could not be loaded</h2>
+        <p id="fatal-message">Stored note metadata is invalid. Echo left it unchanged.</p>
+      </div>
+
+      <div id="editor-shell" class="editor-shell" hidden>
+        <header class="editor-header">
+          <div class="title-field">
+            <label class="sr-only" for="note-title">Note title</label>
+            <input id="note-title" type="text" maxlength="120" autocomplete="off" spellcheck="true">
+            <span id="note-filename" class="note-filename"></span>
+          </div>
+          <button id="delete-note" class="icon-button danger-button" type="button" aria-label="Delete note" title="Delete note">Delete</button>
+        </header>
+
+        <div class="editor-toolbar">
+          <div class="tabs" role="tablist" aria-label="Note view">
+            <button id="source-tab" class="tab is-active" type="button" role="tab" aria-selected="true" aria-controls="source-panel">Source</button>
+            <button id="preview-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="preview-panel">Preview</button>
+          </div>
+          <div class="save-controls">
+            <span id="save-status" class="save-status" role="status" aria-live="polite">Saved</span>
+            <button id="save-note" class="secondary-button" type="button">Save</button>
+          </div>
+        </div>
+
+        <div id="source-panel" class="editor-panel" role="tabpanel" aria-labelledby="source-tab">
+          <label class="sr-only" for="note-body">Markdown source</label>
+          <textarea id="note-body" spellcheck="true" aria-describedby="note-limit"></textarea>
+          <span id="note-limit" class="note-limit">Markdown · 60 KiB per note</span>
+        </div>
+        <article id="preview-panel" class="editor-panel markdown-preview" role="tabpanel" aria-labelledby="preview-tab" hidden></article>
+      </div>
+    </section>
+  </main>
+
+  <div id="delete-modal" class="modal-backdrop" role="presentation" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-title" aria-describedby="delete-description">
+      <h2 id="delete-title">Delete this note?</h2>
+      <p id="delete-description">This permanently removes the note from Echo's plugin storage and cannot be undone.</p>
+      <div class="modal-actions">
+        <button id="cancel-delete" class="secondary-button" type="button">Cancel</button>
+        <button id="confirm-delete" class="primary-button is-danger" type="button">Delete permanently</button>
+      </div>
+    </section>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
