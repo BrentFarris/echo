@@ -37,6 +37,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -50,6 +51,59 @@ describe("LSP Monaco conversions", () => {
     const lsp = toLSPRange(range);
     expect(lsp).toEqual({ start: { line: 1, character: 2 }, end: { line: 4, character: 7 } });
     expect(fromLSPRange(lsp)).toMatchObject(range);
+  });
+});
+
+describe("LSP server messages", () => {
+  function createClient(onMessage = vi.fn()): EchoLSPClient {
+    return new EchoLSPClient({
+      workspaceId: "workspace", initial: { config: {}, profiles: [], statuses: [] },
+      prepareWorkspaceEdit: vi.fn(), applyWorkspaceEdit: vi.fn(async () => true),
+      isURIAllowed: () => true, diagnosticKey: (candidate) => candidate, prepareURI: async () => true,
+      onDocumentState: vi.fn(), onDiagnosticsChange: vi.fn(), onMessage,
+    });
+  }
+
+  function notify(client: EchoLSPClient, method: string, params: unknown): void {
+    (client as any).receive(JSON.stringify({ type: "lsp_notification", profileId: "gopls", method, params }));
+  }
+
+  it("keeps repeated import-fix parse failures in the console without showing toasts", () => {
+    const onMessage = vi.fn();
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const client = createClient(onMessage);
+    const message = "imports fixes: allImportsFixes: main.go:39:1: expected 'IDENT', found 'type' (and 30 more errors)";
+
+    for (let index = 0; index < 3; index++) notify(client, "window/logMessage", { type: 1, message });
+
+    expect(onMessage).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledTimes(3);
+    expect(log).toHaveBeenLastCalledWith("[LSP:gopls]", message);
+    client.dispose();
+  });
+
+  it.each([
+    [2, "warn"], [3, "info"], [4, "debug"], [5, "debug"], [undefined, "debug"],
+  ] as const)("routes log message type %s to the console", (type, level) => {
+    const onMessage = vi.fn();
+    const log = vi.spyOn(console, level).mockImplementation(() => {});
+    const client = createClient(onMessage);
+
+    notify(client, "window/logMessage", { type, message: "Server log entry" });
+
+    expect(onMessage).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("[LSP:gopls]", "Server log entry");
+    client.dispose();
+  });
+
+  it.each([[1, true], [2, true], [3, false]] as const)("still displays intentional server messages of type %s", (type, sticky) => {
+    const onMessage = vi.fn();
+    const client = createClient(onMessage);
+
+    notify(client, "window/showMessage", { type, message: "Server needs attention" });
+
+    expect(onMessage).toHaveBeenCalledExactlyOnceWith("Server needs attention", sticky);
+    client.dispose();
   });
 });
 

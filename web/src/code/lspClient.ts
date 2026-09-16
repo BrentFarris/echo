@@ -502,7 +502,11 @@ export class EchoLSPClient {
       return;
     }
     if (method === "window/logMessage") {
-      if (Number(params?.type || 4) <= 2) this.options.onMessage(String(params?.message || "Language server error"));
+      // Logs can include expected failures against incomplete code while typing.
+      // Only window/showMessage is intended to interrupt the user with a toast.
+      const type = Number(params?.type || 4);
+      const level = type === 1 ? "error" : type === 2 ? "warn" : type === 3 ? "info" : "debug";
+      console[level](`[LSP:${profileId}]`, String(params?.message || "Language server message"));
       return;
     }
     if (method !== "textDocument/publishDiagnostics") return;
