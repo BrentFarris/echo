@@ -70,6 +70,7 @@ function handle(message) {
       referencesProvider: true,
       renameProvider: { prepareProvider: true },
       documentFormattingProvider: true,
+      documentSymbolProvider: true,
       workspaceSymbolProvider: true,
     } });
     return;
@@ -98,13 +99,39 @@ function handle(message) {
   }
   if (method === "textDocument/didChange") {
     const changes = params.contentChanges || [];
-    const full = changes.find((change) => !change.range);
-    if (full) documents.set(params.textDocument.uri, full.text);
+    let text = documents.get(params.textDocument.uri) || "";
+    for (const change of changes) {
+      if (!change.range) { text = change.text; continue; }
+      const offset = (position) => {
+        const lines = text.split("\n");
+        return lines.slice(0, position.line).reduce((sum, line) => sum + line.length + 1, 0) + position.character;
+      };
+      text = text.slice(0, offset(change.range.start)) + change.text + text.slice(offset(change.range.end));
+    }
+    documents.set(params.textDocument.uri, text);
+    return;
+  }
+  if (method === "textDocument/didClose") {
+    documents.delete(params.textDocument.uri);
     return;
   }
   if (message.id === undefined) return;
   const uri = params.textDocument?.uri;
-  if (method === "textDocument/completion") {
+  if (method === "textDocument/documentSymbol") {
+    const symbols = String(documents.get(uri) || "").split(/\r?\n/).flatMap((text, line) => {
+      const match = /^func\s+(?:\([^)]*\)\s+)?(\w+)\s*\(/.exec(text);
+      if (!match) return [];
+      const character = text.indexOf(match[1]);
+      return [{ name: match[1], detail: "func()", kind: 12,
+        range: { start: { line, character: 0 }, end: { line, character: text.length } },
+        selectionRange: { start: { line, character }, end: { line, character: character + match[1].length } },
+      }];
+    });
+    const result = uri.endsWith("flat.go") ? symbols.map((symbol) => ({ name: symbol.name, kind: symbol.kind, location: { uri, range: symbol.selectionRange } })) : symbols;
+    const delay = uri.endsWith("slow.go") ? Number(process.env.ECHO_FAKE_LSP_SYMBOL_DELAY_MS || 0) : 0;
+    if (delay) setTimeout(() => response(message, result), delay);
+    else response(message, result);
+  } else if (method === "textDocument/completion") {
     response(message, { isIncomplete: false, items: [{ label: "fakeCompletion", kind: 3, insertText: "fakeCompletion", detail: "Echo fake completion" }] });
   } else if (method === "completionItem/resolve") {
     response(message, { ...params, documentation: { kind: "markdown", value: "Resolved by the Echo fake server." } });

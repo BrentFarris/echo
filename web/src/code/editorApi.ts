@@ -20,15 +20,15 @@ export async function getRoots(workspaceId: string): Promise<WorkspaceRoot[]> {
   return result.roots || [];
 }
 
-export async function listEntries(workspaceId: string, ref: FileRef): Promise<FsEntry[]> {
+export async function listEntries(workspaceId: string, ref: FileRef, signal?: AbortSignal): Promise<FsEntry[]> {
   const query = new URLSearchParams({ rootId: ref.rootId, path: ref.path });
-  const result = await api(`${base(workspaceId)}/entries?${query}`, { method: "GET" });
+  const result = await api(`${base(workspaceId)}/entries?${query}`, { method: "GET", signal });
   return result.entries || [];
 }
 
-export async function readFile(workspaceId: string, ref: FileRef): Promise<FileSnapshot> {
+export async function readFile(workspaceId: string, ref: FileRef, signal?: AbortSignal): Promise<FileSnapshot> {
   const query = new URLSearchParams({ rootId: ref.rootId, path: ref.path });
-  return api(`${base(workspaceId)}/file?${query}`, { method: "GET" });
+  return api(`${base(workspaceId)}/file?${query}`, { method: "GET", signal });
 }
 
 // mediaURL points at the raw image/video/audio stream used by the preview surface.

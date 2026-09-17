@@ -18,6 +18,7 @@ type TrackedModel = {
   profileId: string;
   leased: boolean;
   denied: boolean;
+  claiming?: boolean;
   change: Monaco.IDisposable;
   dispose: Monaco.IDisposable;
 };
@@ -60,6 +61,7 @@ export class EchoLSPClient {
   private providerDisposables: Monaco.IDisposable[] = [];
   private commandDisposable: Monaco.IDisposable | null = null;
   private codeLensListeners = new Set<(provider: Monaco.languages.CodeLensProvider) => unknown>();
+  private documentWaiters = new Set<() => void>();
 
   constructor(options: LSPClientOptions) {
     this.options = options;
@@ -73,6 +75,7 @@ export class EchoLSPClient {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.notifyDocumentWaiters();
     window.clearTimeout(this.reconnectTimer);
     this.socket?.close();
     this.socket = null;
@@ -117,6 +120,7 @@ export class EchoLSPClient {
       this.send({ type: "lsp_close", profileId: tracked.profileId, uri });
       tracked.change.dispose();
       this.tracked.delete(uri);
+      this.notifyDocumentWaiters();
       if (this.activeURI === uri) {
         this.activeURI = "";
         this.options.onDocumentState("none");
@@ -151,6 +155,45 @@ export class EchoLSPClient {
 
   owns(model: Monaco.editor.ITextModel): boolean {
     return this.tracked.get(model.uri.toString())?.leased === true;
+  }
+
+  /** Prepare an inactive document without changing editor activation or taking another browser's lease. */
+  prepareDocumentSymbols(model: Monaco.editor.ITextModel, token: Monaco.CancellationToken, timeoutMS = 15000): Promise<boolean> {
+    if (token.isCancellationRequested) return Promise.reject(new Error("Outline loading cancelled"));
+    if (!this.profileForModel(model)) return Promise.resolve(false);
+    this.trackModel(model);
+    return new Promise((resolve, reject) => {
+      let finished = false;
+      let cancellation: Monaco.IDisposable | undefined;
+      const finish = (error?: Error, supported = false) => {
+        if (finished) return;
+        finished = true;
+        window.clearTimeout(timer);
+        cancellation?.dispose();
+        this.documentWaiters.delete(check);
+        if (error) reject(error); else resolve(supported);
+      };
+      const check = () => {
+        const tracked = this.tracked.get(model.uri.toString());
+        if (this.disposed || !tracked || model.isDisposed()) return finish(new Error("Document is no longer available"));
+        if (token.isCancellationRequested) return finish(new Error("Outline loading cancelled"));
+        const status = this.statuses.get(tracked.profileId);
+        if (status?.state === "failed" || status?.state === "stopped") return finish(new Error(status.message || "Language server is unavailable"));
+        if (status?.state !== "running" || this.socket?.readyState !== WebSocket.OPEN) return;
+        if (!this.supports(tracked.profileId, "documentSymbolProvider")) return finish();
+        if (tracked.denied) return finish(new Error("Another browser owns language-server access to this file."));
+        if (tracked.leased) return finish(undefined, true);
+        this.claim(tracked, false);
+      };
+      const timer = window.setTimeout(() => finish(new Error("Language server did not become ready in time.")), timeoutMS);
+      this.documentWaiters.add(check);
+      cancellation = token.onCancellationRequested(() => finish(new Error("Outline loading cancelled")));
+      check();
+    });
+  }
+
+  private notifyDocumentWaiters(): void {
+    for (const check of [...this.documentWaiters]) check();
   }
 
   profileForModel(model: Monaco.editor.ITextModel): LSPProfile | undefined {
@@ -200,6 +243,7 @@ export class EchoLSPClient {
   }
 
   async request<T>(profileId: string, method: string, params: unknown, token?: Monaco.CancellationToken, timeoutMS = 15000): Promise<T> {
+    if (token?.isCancellationRequested) throw new Error("Language server request was cancelled");
     if (this.socket?.readyState !== WebSocket.OPEN) throw new Error("Language server connection is not open");
     const id = `browser-${++this.requestSequence}`;
     return new Promise<T>((resolve, reject) => {
@@ -207,6 +251,7 @@ export class EchoLSPClient {
       if (timeoutMS > 0) {
         pending.timer = window.setTimeout(() => {
           this.pending.delete(id);
+          pending.cancellation?.dispose();
           this.send({ type: "lsp_cancel", id });
           reject(new Error(`Language server request timed out after ${timeoutMS} ms`));
         }, timeoutMS);
@@ -215,6 +260,7 @@ export class EchoLSPClient {
         pending.cancellation = token.onCancellationRequested(() => {
           this.pending.delete(id);
           pending.timer && window.clearTimeout(pending.timer);
+          pending.cancellation?.dispose();
           this.send({ type: "lsp_cancel", id });
           reject(new Error("Language server request was cancelled"));
         });
@@ -340,6 +386,7 @@ export class EchoLSPClient {
     this.socket.onopen = () => {
       this.reconnectDelay = 500;
       if (this.activeURI) this.options.onDocumentState("connecting");
+      this.notifyDocumentWaiters();
     };
     this.socket.onmessage = (event) => this.receive(event.data);
     this.socket.onerror = () => {};
@@ -348,9 +395,10 @@ export class EchoLSPClient {
       for (const tracked of this.tracked.values()) {
         tracked.leased = false;
         tracked.denied = false;
+        tracked.claiming = false;
       }
-      for (const request of this.pending.values()) request.reject(new Error("Language server connection closed"));
-      this.pending.clear();
+      for (const id of [...this.pending.keys()]) this.finishRequest(id, undefined, new Error("Language server connection closed"));
+      this.notifyDocumentWaiters();
       if (this.activeURI) this.options.onDocumentState("connecting");
       this.reconnectTimer = window.setTimeout(() => this.connect(), this.reconnectDelay);
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, 15000);
@@ -393,6 +441,7 @@ export class EchoLSPClient {
         const tracked = this.tracked.get(message.uri);
         if (tracked && tracked.profileId === message.profileId) {
           tracked.leased = true;
+          tracked.claiming = false;
           tracked.denied = false;
           if (this.activeURI === message.uri) this.options.onDocumentState("owned", this.statuses.get(tracked.profileId));
         }
@@ -402,6 +451,7 @@ export class EchoLSPClient {
         const tracked = this.tracked.get(message.uri);
         if (tracked && tracked.profileId === message.profileId) {
           tracked.leased = false;
+          tracked.claiming = false;
           tracked.denied = true;
           this.clearDocumentDiagnostics(tracked.profileId, message.uri);
           if (this.activeURI === message.uri) this.options.onDocumentState("denied", this.statuses.get(tracked.profileId));
@@ -412,6 +462,7 @@ export class EchoLSPClient {
         const tracked = this.tracked.get(message.uri);
         if (tracked && tracked.profileId === message.profileId) {
           tracked.leased = false;
+          tracked.claiming = false;
           tracked.denied = true;
           this.clearDocumentDiagnostics(tracked.profileId, message.uri);
           if (this.activeURI === message.uri) {
@@ -428,6 +479,7 @@ export class EchoLSPClient {
         void this.handleServerRequest(message);
         break;
     }
+    this.notifyDocumentWaiters();
   }
 
   private finishRequest(id: string, result: unknown, error: Error | null): void {
@@ -441,16 +493,19 @@ export class EchoLSPClient {
   }
 
   private claim(tracked: TrackedModel, takeOver: boolean): void {
+    if (tracked.claiming && !takeOver) return;
+    const active = this.activeURI === tracked.model.uri.toString();
     const status = this.statuses.get(tracked.profileId);
     if (status?.state !== "running") {
-      this.options.onDocumentState(status?.state === "failed" ? "failed" : "starting", status);
+      if (active) this.options.onDocumentState(status?.state === "failed" ? "failed" : "starting", status);
       return;
     }
     if (this.socket?.readyState !== WebSocket.OPEN) {
-      this.options.onDocumentState("connecting", status);
+      if (active) this.options.onDocumentState("connecting", status);
       return;
     }
-    this.options.onDocumentState("starting", status);
+    if (active) this.options.onDocumentState("starting", status);
+    tracked.claiming = true;
     this.send({
       type: "lsp_claim", profileId: tracked.profileId, takeOver,
       document: {
@@ -484,7 +539,7 @@ export class EchoLSPClient {
     }
     if (status.state !== "running") {
       for (const tracked of this.tracked.values()) {
-        if (tracked.profileId === status.profileId) tracked.leased = false;
+        if (tracked.profileId === status.profileId) { tracked.leased = false; tracked.claiming = false; }
       }
       this.clearDiagnostics(status.profileId);
     }
@@ -494,6 +549,7 @@ export class EchoLSPClient {
       else if (status.state === "failed") this.options.onDocumentState("failed", status);
       else if (!active.leased) this.options.onDocumentState("starting", status);
     }
+    this.notifyDocumentWaiters();
   }
 
   private handleNotification(profileId: string, method: string, params: any): void {
@@ -573,6 +629,7 @@ export class EchoLSPClient {
         tracked.profileId = profile.id;
         tracked.leased = false;
         tracked.denied = false;
+        tracked.claiming = false;
       }
     }
   }

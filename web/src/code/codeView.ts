@@ -45,6 +45,10 @@ import type { Bookmark } from "./bookmarkTypes";
 import { bookmarksEnabled, getPluginWorkspaceId, refreshPluginCatalog } from "../plugins/catalog";
 import "./bookmarks.css";
 import { NavigationModelCache } from "./navigationModelCache";
+import { OutlineView } from "./outlineView";
+import { resolveOutlineSymbols } from "./outlineProviders";
+import type { OutlineResult } from "./outlineTypes";
+import "./outline.css";
 import { explorerDiagnosticPresentation, updateExplorerDiagnostic } from "./explorerDiagnostics";
 import { ExplorerDirectoryLoader, needsDirectoryRefresh, preservedTreeScrollTop, reconcileDirectory, type FilesystemChange, type TreeNode } from "./explorerTree";
 import { renderExplorerRows, type ExplorerRow } from "./explorerRows";
@@ -164,6 +168,7 @@ class CodeView {
   private selectedTreeKey: string | null = null;
   private treeSelection: SelectionState = { selected: new Set(), anchor: null };
   private treeSelectionVersion = 0;
+  private outlineView: OutlineView | null = null;
   private treeMutationBusy = false;
   private pendingTreeChanges: FilesystemChange[] = [];
   private renamingKey: string | null = null;
@@ -325,6 +330,7 @@ class CodeView {
         onMessage: (message, sticky) => toast(message, { sticky }),
       });
       this.initializeTree();
+      this.initializeOutline();
       this.registerCommands();
       this.installEvents();
       this.initializeSourceControlView();
@@ -408,6 +414,7 @@ class CodeView {
             <div class="code-tree" role="tree" aria-label="Workspace files" aria-multiselectable="true" tabindex="0" data-code-tree>
               <div class="code-tree-canvas" data-tree-canvas></div>
             </div>
+            <section aria-label="Outline" data-code-outline></section>
           </aside>
           <aside class="code-search-view" aria-label="Search" data-sidebar-view="search"${this.activeSidebar === "search" ? "" : " hidden"}></aside>
           <aside class="code-bookmarks-view" aria-label="Bookmarks" data-sidebar-view="bookmarks"${this.activeSidebar === "bookmarks" ? "" : " hidden"}></aside>
@@ -887,6 +894,7 @@ class CodeView {
     }
     try {
       await api("/api/workspaces/active", { method: "PUT", body: { id: workspaceId } });
+      this.outlineView?.collapse();
       await this.bookmarks?.flush();
       window.location.reload();
     } catch (error) {
@@ -1223,6 +1231,48 @@ class CodeView {
       const node = this.nodes.get(key);
       return node ? [{ ...node, ref: { ...node.ref } }] : [];
     });
+  }
+
+  private initializeOutline(): void {
+    const host = this.root.querySelector<HTMLElement>("[data-code-outline]");
+    if (!host || !this.workspace) return;
+    const workspaceId = this.workspace.id;
+    this.outlineView = new OutlineView(host, {
+      selection: () => this.selectedTreeNodes(),
+      list: (ref, signal) => editorAPI.listEntries(workspaceId, ref, signal),
+      resolve: (ref, signal) => this.resolveFileOutline(ref, signal),
+      label: (ref) => this.roots.length > 1
+        ? `${this.roots.find((root) => root.id === ref.rootId)?.label || ref.rootId}/${ref.path}` : ref.path || this.workspace!.name,
+      navigate: async (ref, range) => {
+        if (!await this.openNavigationTarget(this.modelURI(ref), range)) throw new Error("This outline file is no longer available. Reopen Outline to refresh.");
+        if (window.innerWidth <= 720) this.setMobileExplorer(false);
+      },
+      saveSize: () => this.schedulePersist(),
+    });
+  }
+
+  private async resolveFileOutline(ref: FileRef, signal: AbortSignal): Promise<OutlineResult> {
+    if (previewKindForPath(ref.path)) return { status: "unsupported", symbols: [], message: "Media files do not have a code outline." };
+    signal.throwIfAborted();
+    const uri = this.modelURI(ref);
+    let model = monaco.editor.getModel(uri);
+    if (!model) {
+      const snapshot = await editorAPI.readFile(this.workspace!.id, ref, signal);
+      signal.throwIfAborted();
+      if (this.abort.signal.aborted) throw new Error("Editor closed");
+      // A tab or another navigation request may have created this model during the read.
+      model = monaco.editor.getModel(uri);
+      if (!model) {
+        model = this.createEditorModel(snapshot.content, languageForPath(ref.path, this.lspProfiles), uri);
+        model.setEOL(snapshot.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+      }
+    }
+    // Transfer any navigation-cache ownership into the shared reference count. Tabs opened
+    // during the request retain the same model, so releasing Outline cannot dispose their buffer.
+    for (const [key, cached] of this.navigationModels.entries()) if (cached === model) this.navigationModels.take(key);
+    this.retainModel(model);
+    try { return await resolveOutlineSymbols(model, this.lsp, signal); }
+    finally { this.releaseModel(model); }
   }
 
   private collapseTreeNode(node: TreeNode): void {
@@ -4611,6 +4661,7 @@ class CodeView {
       return;
     }
     this.explorerWidth = Math.max(220, Math.min(520, saved.explorerWidth || 280));
+    this.outlineView?.restoreSize(saved.outlineSizeRatio);
     this.applyCodeChatWidth(saved.codeChatWidth || 360);
     const shell = this.root.querySelector<HTMLElement>(".code-app-shell");
     shell?.style.setProperty("--explorer-width", `${this.explorerWidth}px`);
@@ -4813,6 +4864,7 @@ class CodeView {
         selectedTreeKey: this.selectedTreeKey && this.treeSelection.selected.has(this.selectedTreeKey)
           ? this.selectedTreeKey : this.treeSelection.selected.values().next().value || null,
         explorerWidth: this.explorerWidth, codeChatWidth: this.codeChatWidth,
+        outlineSizeRatio: this.outlineView?.sizeRatio,
         treeScrollTop: this.treeScroller?.scrollTop || 0,
       });
       this.persistenceFailed = false;
@@ -4999,6 +5051,7 @@ class CodeView {
     this.clearTabDragState();
     detachTerminalDock(this.root.querySelector<HTMLElement>("[data-region=terminal]"));
     void this.persistNow();
+    this.outlineView?.dispose();
     this.markdownPreview?.dispose();
     this.markdownPreview = null;
     this.codeNavigation?.dispose(this.captureNavigationLocation());

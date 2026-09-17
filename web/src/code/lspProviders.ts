@@ -10,6 +10,11 @@ type ProviderCompletion = Monaco.languages.CompletionItem & { lsp?: LSPCompletio
 type ProviderCodeAction = Monaco.languages.CodeAction & { lsp?: LSPCodeAction; profileId?: string };
 type ProviderCodeLens = Monaco.languages.CodeLens & { lsp?: LSPCodeLens; profileId?: string };
 
+const documentSymbolProviders = new WeakSet<Monaco.languages.DocumentSymbolProvider>();
+export function isLSPDocumentSymbolProvider(provider: Monaco.languages.DocumentSymbolProvider): boolean {
+  return documentSymbolProviders.has(provider);
+}
+
 export function registerLSPProviders(client: EchoLSPClient): Monaco.IDisposable[] {
   const disposables: Monaco.IDisposable[] = [];
   const languageIds = new Set(client.effectiveProfiles().flatMap((profile) => profile.selectors.map((selector) => selector.languageId)));
@@ -101,14 +106,16 @@ function registerLanguage(client: EchoLSPClient, languageId: string, out: Monaco
     },
   }));
 
-  out.push(monaco.languages.registerDocumentSymbolProvider(languageId, {
+  const symbolProvider: Monaco.languages.DocumentSymbolProvider = {
     displayName: "Language Server",
     async provideDocumentSymbols(model, token) {
       if (!can(model, "documentSymbolProvider")) return [];
       const symbols = await client.requestForModel<any[] | null>(model, "textDocument/documentSymbol", { textDocument: { uri: model.uri.toString() } }, token);
       return (symbols || []).map((symbol) => documentSymbol(symbol)).filter(Boolean) as Monaco.languages.DocumentSymbol[];
     },
-  }));
+  };
+  documentSymbolProviders.add(symbolProvider);
+  out.push(monaco.languages.registerDocumentSymbolProvider(languageId, symbolProvider));
 
   out.push(monaco.languages.registerRenameProvider(languageId, {
     async resolveRenameLocation(model, position, token) {
