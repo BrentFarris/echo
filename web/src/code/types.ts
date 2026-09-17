@@ -127,7 +127,15 @@ export type TextReplaceUpdate = {
 
 export type TextReplaceResponse = { updated: TextReplaceUpdate[] };
 
-export type PersistedTab = {
+export type MarkdownViewMode = "source" | "split" | "preview";
+
+export type MarkdownViewState = {
+  markdownViewMode?: MarkdownViewMode;
+  markdownSplitRatio?: number;
+  markdownPreviewScrollTop?: number;
+};
+
+export type PersistedTab = MarkdownViewState & {
   kind?: "file" | "diff" | "media";
   id: string;
   ref: FileRef | null;

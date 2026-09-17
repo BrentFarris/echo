@@ -21,6 +21,8 @@ import { loadSession, saveSession } from "./persistence";
 import { editorSettingsWriter, indentationDefaults, indentationLabel, openIndentationPopover, type Indentation } from "./indentation";
 import { columnGuideRulers, type ColumnGuideSettings } from "./columnGuides";
 import { previewKindForPath, type PreviewKind } from "./preview";
+import { isMarkdownPath, MarkdownPreview, restoreMarkdownViewState } from "./markdownPreview";
+import "./markdownPreview.css";
 import {
   CODE_ROUTE, chatCompletionTargetFromHash, chatTargetRouteHash, codeOpenTargetFromHash, codeRouteHash,
   codeSidebarFromHash, routePathFromHash, type ChatCompletionTarget, type ChatTarget, type CodeSidebar,
@@ -58,7 +60,7 @@ import {
   recordRecentCommandId, saveRecentCommandIds,
 } from "./commandHistory";
 import type {
-  FileRef, FileSnapshot, PersistedTab, PersistedWorkspaceSession,
+  FileRef, FileSnapshot, MarkdownViewMode, MarkdownViewState, PersistedTab, PersistedWorkspaceSession,
   SearchResult, TextReplaceUpdate, TextSearchMatch, TextSearchOverlay, TrashItem, WorkspaceRoot,
 } from "./types";
 import { isRefWithin, joinRef, refKey } from "./types";
@@ -75,7 +77,7 @@ import { TestOutput } from "./testOutput";
 
 type Workspace = { id: string; name: string; mainPath: string; folders: string[]; iconExt?: string };
 
-type OpenTab = {
+type OpenTab = MarkdownViewState & {
   kind: "file" | "diff" | "media";
   id: string;
   ref: FileRef | null;
@@ -183,6 +185,7 @@ class CodeView {
   private mruSwitcherOverlay: HTMLElement | null = null;
   private untitledCounter = 1;
   private editor!: MonacoEditor.IStandaloneCodeEditor;
+  private markdownPreview: MarkdownPreview | null = null;
   private diffEditor!: MonacoEditor.IStandaloneDiffEditor;
   private diffHunkGutter: DiffHunkGutter | null = null;
   private diffBusyRepositories = new Set<string>();
@@ -415,6 +418,11 @@ class CodeView {
               <div class="code-editor-pane">
                 <nav class="code-breadcrumbs" aria-label="Breadcrumb" data-breadcrumbs>
                   <span class="code-breadcrumb-path" data-breadcrumb-path></span>
+                  <div class="code-markdown-modes" role="group" aria-label="Markdown view" data-markdown-modes hidden>
+                    <button type="button" data-markdown-mode="source" aria-pressed="true" title="Show Markdown source">Source</button>
+                    <button type="button" data-markdown-mode="split" aria-pressed="false" title="Show source and Markdown preview">Split</button>
+                    <button type="button" data-markdown-mode="preview" aria-pressed="false" title="Show Markdown preview">Preview</button>
+                  </div>
                   <button type="button" class="code-chat-toggle" title="Open Code Chat" aria-label="Open code assistant" aria-expanded="false" aria-controls="code-chat-dock" data-code-chat-toggle><span class="codicon codicon-comment-discussion"></span></button>
                 </nav>
                 <section class="code-editor-area">
@@ -424,7 +432,11 @@ class CodeView {
                     <h2>Echo Code</h2>
                     <p>Open a file from Explorer or press <kbd>Ctrl+P</kbd>.</p>
                   </div>
-                  <div class="code-monaco-host" data-monaco-host></div>
+                  <div class="code-file-surface" data-file-surface hidden>
+                    <div class="code-monaco-host" data-monaco-host></div>
+                    <div class="code-markdown-resizer" data-markdown-resizer role="separator" aria-label="Resize Markdown source" aria-orientation="vertical" aria-valuemin="20" aria-valuemax="80" aria-valuenow="50" tabindex="0" hidden></div>
+                    <section class="code-markdown-preview" data-markdown-preview aria-label="Markdown preview" tabindex="0" hidden></section>
+                  </div>
                   <div class="code-diff-toolbar" data-diff-toolbar hidden>
                     <span data-diff-label></span>
                     <button type="button" title="Previous Change" aria-label="Previous Change" data-diff-action="previous"><span class="codicon codicon-arrow-up"></span></button>
@@ -623,6 +635,7 @@ class CodeView {
   private async openBookmark(mark: Bookmark): Promise<void> {
     await this.recordCodeNavigation(async () => {
       if (!await this.openFile(mark.ref, true)) return;
+      this.revealMarkdownSource();
       const editor = this.activeCodeEditor();
       const model = editor?.getModel();
       if (!editor || !model) return;
@@ -704,6 +717,7 @@ class CodeView {
       });
       if (!tab) return;
       this.activateTab(tab.id, false);
+      this.revealMarkdownSource();
       const target = tab.kind === "diff" ? this.diffEditor.getModifiedEditor() : this.editor;
       target.setSelection({
         startLineNumber: match.line, startColumn: match.column,
@@ -769,7 +783,82 @@ class CodeView {
   private focusActiveEditor(): void {
     const tab = this.activeTab();
     if (tab?.kind === "diff") this.diffEditor.getModifiedEditor().focus();
+    else if (this.markdownMode(tab) === "preview") this.root.querySelector<HTMLElement>("[data-markdown-preview]")?.focus({ preventScroll: true });
     else this.editor?.focus();
+  }
+
+  private markdownMode(tab = this.activeTab()): MarkdownViewMode {
+    return isMarkdownTab(tab) ? restoreMarkdownViewState(tab).markdownViewMode : "source";
+  }
+
+  private setMarkdownMode(mode: MarkdownViewMode, focus = true): void {
+    const tab = this.activeTab();
+    if (!isMarkdownTab(tab)) return;
+    if (this.markdownMode(tab) !== "preview") tab.viewState = this.editor.saveViewState();
+    this.markdownPreview?.captureScroll();
+    tab.markdownViewMode = mode;
+    this.updateEditorSurface();
+    if (mode !== "preview" && tab.viewState) this.editor.restoreViewState(tab.viewState);
+    if (focus) this.focusActiveEditor();
+    this.schedulePersist();
+  }
+
+  private revealMarkdownSource(): void {
+    if (this.markdownMode() === "preview") this.setMarkdownMode("split", false);
+  }
+
+  private initializeMarkdownPreview(): void {
+    this.markdownPreview = new MarkdownPreview(this.root.querySelector<HTMLElement>("[data-markdown-preview]")!, {
+      mediaURL: ref => editorAPI.mediaURL(this.workspace!.id, ref),
+      changed: () => this.schedulePersist(),
+      openFile: (ref, fragment) => {
+        void this.recordCodeNavigation(async () => {
+          if (!await this.openFile(ref, true) || !fragment || !isMarkdownTab(this.activeTab())) return;
+          if (this.markdownMode() === "source") this.setMarkdownMode("split", false);
+          this.markdownPreview?.scrollToAnchor(fragment);
+        });
+      },
+    });
+    const signal = this.abort.signal;
+    this.root.querySelectorAll<HTMLButtonElement>("[data-markdown-mode]").forEach(button => {
+      button.addEventListener("click", () => this.setMarkdownMode(button.dataset.markdownMode as MarkdownViewMode), { signal });
+    });
+    const divider = this.root.querySelector<HTMLElement>("[data-markdown-resizer]")!;
+    const surface = this.root.querySelector<HTMLElement>("[data-file-surface]")!;
+    let dragging: OpenTab | null = null;
+    const resize = (ratio: number) => {
+      const tab = this.activeTab();
+      if (!isMarkdownTab(tab) || this.markdownMode(tab) !== "split") return;
+      tab.markdownSplitRatio = restoreMarkdownViewState({ markdownSplitRatio: ratio }).markdownSplitRatio;
+      this.updateEditorSurface();
+      this.schedulePersist();
+    };
+    divider.addEventListener("pointerdown", event => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      dragging = this.activeTab() || null;
+      divider.setPointerCapture(event.pointerId);
+      divider.focus();
+    }, { signal });
+    divider.addEventListener("pointermove", event => {
+      if (!dragging || dragging !== this.activeTab()) return;
+      const bounds = surface.getBoundingClientRect();
+      if (bounds.width > 4) resize((event.clientX - bounds.left - 2) / (bounds.width - 4));
+    }, { signal });
+    divider.addEventListener("pointerup", event => {
+      dragging = null;
+      if (divider.hasPointerCapture(event.pointerId)) divider.releasePointerCapture(event.pointerId);
+    }, { signal });
+    divider.addEventListener("lostpointercapture", () => { dragging = null; }, { signal });
+    divider.addEventListener("keydown", event => {
+      const ratio = restoreMarkdownViewState(this.activeTab()).markdownSplitRatio;
+      const next = event.key === "ArrowLeft" ? ratio - 0.05 : event.key === "ArrowRight" ? ratio + 0.05
+        : event.key === "Home" ? 0.2 : event.key === "End" ? 0.8 : null;
+      if (next === null) return;
+      event.preventDefault();
+      resize(next);
+    }, { signal });
+    divider.addEventListener("dblclick", () => resize(0.5), { signal });
   }
 
   private showWorkspaceSearch(replace = false): void {
@@ -834,6 +923,7 @@ class CodeView {
   }
 
   private initializeEditor(): void {
+    this.initializeMarkdownPreview();
     const host = this.root.querySelector<HTMLElement>("[data-monaco-host]")!;
     this.editor = monaco.editor.create(host, {
       model: null,
@@ -1330,6 +1420,7 @@ class CodeView {
       });
       if (!tab) return false;
       this.activateTab(tab.id, false);
+      this.revealMarkdownSource();
       const editor = this.activeCodeEditor();
       if (!editor) return false;
       if (selectionOrPosition) {
@@ -1974,8 +2065,7 @@ class CodeView {
       this.syncActiveTabState();
       if (revealInExplorer && !this.treeMutationBusy) this.revealTabInExplorer(next);
       if (focusEditor) {
-        if (next.kind === "diff") this.diffEditor.getModifiedEditor().focus();
-        else if (next.kind !== "media") this.editor.focus();
+        if (next.kind !== "media") this.focusActiveEditor();
       }
       this.updateCodeChatSelectionNotice();
       this.schedulePersist();
@@ -1983,7 +2073,7 @@ class CodeView {
     }
     if (active && active.id !== next.id) {
       if (active.kind === "diff" && active.diff) active.diff.viewState = this.diffEditor.saveViewState();
-      else active.viewState = this.editor.saveViewState();
+      else if (this.markdownMode(active) !== "preview") active.viewState = this.editor.saveViewState();
     }
     this.activeTabId = id;
     this.syncActiveTabState();
@@ -2001,11 +2091,11 @@ class CodeView {
       this.diffEditor.setModel(null);
 		this.editor.updateOptions({ readOnly: Boolean(next.readOnly) });
       this.editor.setModel(next.model);
-      if (next.viewState) this.editor.restoreViewState(next.viewState);
-      if (focusEditor) this.editor.focus();
     }
 	this.lsp?.activateModel(next.readOnly ? null : next.model);
     this.updateEditorSurface();
+    if (next.kind === "file" && next.viewState && this.markdownMode(next) !== "preview") this.editor.restoreViewState(next.viewState);
+    if (focusEditor && next.kind !== "media") this.focusActiveEditor();
     this.renderBreadcrumbs();
     this.renderStatus();
     if (revealInExplorer && !this.treeMutationBusy) this.revealTabInExplorer(next);
@@ -2263,7 +2353,8 @@ class CodeView {
 
   private renderStatus(): void {
     const tab = this.activeTab();
-    const position = tab?.kind === "diff" ? this.diffEditor?.getModifiedEditor().getPosition() : tab && tab.kind !== "media" ? this.editor?.getPosition() : undefined;
+    const position = this.markdownMode(tab) === "preview" ? tab?.viewState?.cursorState[0]?.position
+      : tab?.kind === "diff" ? this.diffEditor?.getModifiedEditor().getPosition() : tab && tab.kind !== "media" ? this.editor?.getPosition() : undefined;
     const cursor = this.root.querySelector<HTMLElement>("[data-status=cursor]");
     const eol = this.root.querySelector<HTMLElement>("[data-status=eol]");
     const language = this.root.querySelector<HTMLElement>("[data-status=language]");
@@ -2300,8 +2391,32 @@ class CodeView {
     const isDiff = tab?.kind === "diff" && Boolean(tab.diff);
     const isMedia = tab?.kind === "media" && Boolean(tab.media);
     const diffUnavailable = isDiff && Boolean(tab?.diff?.unavailableReason);
+    const mode = this.markdownMode(tab);
+    const fileSurface = this.root.querySelector<HTMLElement>("[data-file-surface]");
+    const modes = this.root.querySelector<HTMLElement>("[data-markdown-modes]");
+    const divider = this.root.querySelector<HTMLElement>("[data-markdown-resizer]");
+    // Detach before hiding the surface so its scroll position can be captured.
+    const previewDocument = isMarkdownTab(tab) && mode !== "source" ? { model: tab.model, ref: tab.ref, state: tab } : null;
+    if (!previewDocument) this.markdownPreview?.show(null);
+    if (fileSurface) {
+      fileSurface.hidden = !hasTab || isDiff || isMedia;
+      const ratio = restoreMarkdownViewState(tab).markdownSplitRatio;
+      fileSurface.style.gridTemplateColumns = mode === "split" ? `minmax(0, ${ratio}fr) 4px minmax(0, ${1 - ratio}fr)` : "minmax(0, 1fr)";
+      if (divider) {
+        divider.hidden = mode !== "split";
+        divider.setAttribute("aria-valuenow", String(Math.round(ratio * 100)));
+        divider.setAttribute("aria-valuetext", `${Math.round(ratio * 100)}% source`);
+      }
+    }
+    if (modes) {
+      modes.hidden = !isMarkdownTab(tab);
+      modes.querySelectorAll<HTMLButtonElement>("[data-markdown-mode]").forEach(button => {
+        button.setAttribute("aria-pressed", String(button.dataset.markdownMode === mode));
+      });
+    }
     if (placeholder) placeholder.hidden = hasTab;
-    if (host) host.hidden = !hasTab || isDiff || isMedia;
+    if (host) host.hidden = !hasTab || isDiff || isMedia || mode === "preview";
+    if (previewDocument) this.markdownPreview?.show(previewDocument);
     if (diffHost) diffHost.hidden = !isDiff || diffUnavailable;
     if (mediaHost) mediaHost.hidden = !isMedia;
     if (toolbar) toolbar.hidden = !isDiff || diffUnavailable;
@@ -2367,6 +2482,7 @@ class CodeView {
   }
 
   private disposeTab(tab: OpenTab): void {
+    if (tab.id === this.activeTabId) this.markdownPreview?.show(null);
     tab.changeDisposable.dispose();
     this.releaseModel(tab.model);
     if (tab.diff) this.releaseModel(tab.diff.originalModel);
@@ -2813,7 +2929,7 @@ class CodeView {
   private adoptFile(tab: OpenTab, snapshot: FileSnapshot): void {
     const content = tab.model.getValue();
     const language = languageForPath(snapshot.ref.path, this.lspProfiles);
-    const viewState = tab.id === this.activeTabId ? this.editor.saveViewState() : tab.viewState;
+    const viewState = tab.id === this.activeTabId && this.markdownMode(tab) !== "preview" ? this.editor.saveViewState() : tab.viewState;
     tab.changeDisposable.dispose();
     this.releaseModel(tab.model);
     tab.ref = snapshot.ref;
@@ -2835,6 +2951,7 @@ class CodeView {
     if (tab.id === this.activeTabId) {
       this.editor.setModel(tab.model);
       this.lsp?.activateModel(tab.model);
+      this.updateEditorSurface();
       if (viewState) this.editor.restoreViewState(viewState);
     }
     this.renderBreadcrumbs();
@@ -2912,7 +3029,7 @@ class CodeView {
       const nextRef = { rootId: next.rootId, path: suffix ? `${next.path}/${suffix}` : next.path };
       const content = tab.model.getValue();
       const language = languageForPath(nextRef.path, this.lspProfiles);
-      const viewState = tab.id === this.activeTabId ? this.editor.saveViewState() : tab.viewState;
+      const viewState = tab.id === this.activeTabId && this.markdownMode(tab) !== "preview" ? this.editor.saveViewState() : tab.viewState;
       tab.changeDisposable.dispose();
       this.releaseModel(tab.model);
       tab.ref = nextRef;
@@ -2932,6 +3049,7 @@ class CodeView {
       if (tab.id === this.activeTabId) {
         this.editor.setModel(tab.model);
         this.lsp?.activateModel(tab.model);
+        this.updateEditorSurface();
         if (viewState) this.editor.restoreViewState(viewState);
       }
     }
@@ -3346,6 +3464,7 @@ class CodeView {
   }
 
   private showGoToLine(): void {
+    this.revealMarkdownSource();
     const tab = this.activeTab();
     const editor = this.activeCodeEditor();
     if (!tab || tab.kind === "media" || !editor?.getModel()) return;
@@ -3354,6 +3473,7 @@ class CodeView {
   }
 
   private runCaseTransform(actionId: string): void {
+    this.revealMarkdownSource();
     const editor = this.activeCodeEditor();
     if (!editor) return;
     editor.trigger("echo", actionId, null);
@@ -3431,6 +3551,9 @@ class CodeView {
          location deliberately stores no source-control snapshot payload. */
       if (tab.kind === "media" || (tab.kind === "diff" && !tab.diff?.editable)) return false;
       this.activateTab(tab.id, false);
+      // Startup restores the tab's chosen reading mode. Explicit history
+      // traversal reveals source before applying a code location.
+      if (this.navigationReady) this.revealMarkdownSource();
       const editor = this.activeCodeEditor();
       const model = editor?.getModel();
       if (!editor || !model) return false;
@@ -3452,7 +3575,7 @@ class CodeView {
       });
       if (selections.length) editor.setSelections(selections);
       editor.setScrollPosition({ scrollTop: Math.max(0, location.scrollTop), scrollLeft: Math.max(0, location.scrollLeft) });
-      editor.focus();
+      this.focusActiveEditor();
       const restored = this.captureNavigationLocation() || location;
       this.codeNavigation?.finishTraversal(restored);
       this.lastNavigationLocation = restored;
@@ -3480,12 +3603,14 @@ class CodeView {
   }
 
   private showEditorFind(replace = false): void {
+    this.revealMarkdownSource();
     const editor = this.activeCodeEditor();
     if (!editor?.getModel()) return;
     editor.trigger("echo", replace ? "editor.action.startFindReplaceAction" : "actions.find", null);
   }
 
   private async formatActiveDocument(selectionOnly: boolean): Promise<void> {
+    this.revealMarkdownSource();
     const editor = this.activeCodeEditor();
     const model = editor?.getModel();
     if (!editor || !model || !this.lsp) return;
@@ -3628,6 +3753,7 @@ class CodeView {
       if (!command) return;
       this.recentCommandIds = recordRecentCommandId(this.recentCommandIds, command.id);
       saveRecentCommandIds(this.recentCommandIds);
+      if (command.id.startsWith("editor.")) this.revealMarkdownSource();
       void command.run();
     };
     input.addEventListener("input", render);
@@ -4046,6 +4172,7 @@ class CodeView {
       activeEditor.trigger("echo", event.shiftKey ? "outdent" : "tab", null);
     } else if (modifier && event.shiftKey && key === "f") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(); }
     else if (modifier && !event.shiftKey && key === "f" && activeEditor?.getModel()) { event.preventDefault(); event.stopPropagation(); this.showEditorFind(); }
+    else if (modifier && !event.shiftKey && key === "g" && activeEditor?.getModel()) { event.preventDefault(); event.stopPropagation(); this.showGoToLine(); }
     else if (modifier && event.shiftKey && key === "o") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSymbols(); }
     else if (modifier && event.shiftKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.peekImplementation", null); }
     else if (modifier && !event.shiftKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.goToImplementation", null); }
@@ -4345,6 +4472,7 @@ class CodeView {
         this.activateTab(tab.id, false);
       }
       if (!tab || tab.kind === "media") return;
+      this.revealMarkdownSource();
       const side = tab.kind === "diff" ? resource.selection?.side || "modified" : undefined;
       const editor = tab.kind === "diff" && side === "original"
         ? this.diffEditor.getOriginalEditor()
@@ -4555,6 +4683,7 @@ class CodeView {
       }
       const tab = this.createModel(snapshot, persisted.id);
       Object.assign(tab, restoreTabOpenState(persisted));
+      if (isMarkdownTab(tab)) Object.assign(tab, restoreMarkdownViewState(persisted));
       tab.dirty = persisted.dirty;
       tab.deleted = !disk || persisted.deleted;
       tab.conflict = Boolean(disk && persisted.dirty && disk.revision !== persisted.revision);
@@ -4623,19 +4752,21 @@ class CodeView {
     window.clearTimeout(this.persistTimer);
     const active = this.activeTab();
     if (active?.kind === "diff" && active.diff) active.diff.viewState = this.diffEditor.saveViewState();
-    else if (active) active.viewState = this.editor.saveViewState();
+    else if (active && this.markdownMode(active) !== "preview") active.viewState = this.editor.saveViewState();
+    this.markdownPreview?.captureScroll();
     const tabs: PersistedTab[] = this.tabs.filter((tab) => !tab.transient).map((tab) => {
       const diffState = tab.diff?.viewState?.modified;
-      const position = tab.id === this.activeTabId
+      const position = tab.id === this.activeTabId && this.markdownMode(tab) !== "preview"
         ? (tab.kind === "diff" ? this.diffEditor.getModifiedEditor().getPosition() : this.editor.getPosition()) || undefined
         : tab.kind === "diff" ? diffState?.cursorState[0]?.position : tab.viewState?.cursorState[0]?.position;
       return {
         kind: tab.kind, id: tab.id, ref: tab.ref, title: tab.title, hostPath: tab.hostPath, pinned: tab.keepOpen, closeProtected: tab.pinned,
         preview: !tab.keepOpen, dirty: tab.dirty, deleted: tab.deleted, revision: tab.revision,
         hasBom: tab.hasBom, eol: tab.eol,
+        ...(isMarkdownTab(tab) ? restoreMarkdownViewState(tab) : {}),
         ...(tab.dirty || (tab.kind === "file" && !tab.ref) ? { content: tab.model.getValue() } : {}),
         cursor: position ? { lineNumber: position.lineNumber, column: position.column } : undefined,
-        scrollTop: tab.id === this.activeTabId
+        scrollTop: tab.id === this.activeTabId && this.markdownMode(tab) !== "preview"
           ? (tab.kind === "diff" ? this.diffEditor.getModifiedEditor().getScrollTop() : this.editor.getScrollTop())
           : tab.kind === "diff" ? diffState?.viewState.scrollTop : tab.viewState?.viewState.scrollTop,
         diff: tab.diff ? {
@@ -4837,6 +4968,8 @@ class CodeView {
     this.clearTabDragState();
     detachTerminalDock(this.root.querySelector<HTMLElement>("[data-region=terminal]"));
     void this.persistNow();
+    this.markdownPreview?.dispose();
+    this.markdownPreview = null;
     this.codeNavigation?.dispose(this.captureNavigationLocation());
     this.codeNavigation = null;
     this.closeWorkspaceDropdown?.();
@@ -4870,6 +5003,10 @@ class CodeView {
     this.editor?.dispose();
     this.diffEditor?.dispose();
   }
+}
+
+function isMarkdownTab(tab: OpenTab | undefined): tab is OpenTab & { ref: FileRef } {
+  return tab?.kind === "file" && Boolean(tab.ref && isMarkdownPath(tab.ref.path));
 }
 
 function sourceControlTabScope(target: SourceControlDiffRequest): SourceControlDiffScope {
