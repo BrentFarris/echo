@@ -107,6 +107,7 @@ type Settings struct {
 	EditorFontSize                     float64           `json:"editorFontSize"`
 	EditorInsertSpaces                 bool              `json:"editorInsertSpaces"`
 	EditorTabSize                      int               `json:"editorTabSize"`
+	EditorLineEndingsOnSave            string            `json:"editorLineEndingsOnSave"`
 	EditorColumnGuidesEnabled          bool              `json:"editorColumnGuidesEnabled"`
 	EditorColumnGuides                 []int             `json:"editorColumnGuides"`
 	DisableNotificationSounds          bool              `json:"disableNotificationSounds,omitempty"`
@@ -160,6 +161,7 @@ func DefaultSettings() Settings {
 		SearxngURL:                         DefaultSearxngURL,
 		EditorFontSize:                     DefaultEditorFontSize,
 		EditorTabSize:                      4,
+		EditorLineEndingsOnSave:            "unchanged",
 		EditorColumnGuides:                 []int{80, 90},
 		ThinkingTokenBudget:                -1,
 		ResearchAgentConcurrency:           DefaultResearchAgentConcurrency,
@@ -213,6 +215,9 @@ func (s Settings) normalized(endpointProfilesAuthoritative bool) Settings {
 	}
 	if s.EditorTabSize == 0 {
 		s.EditorTabSize = 4
+	}
+	if s.EditorLineEndingsOnSave == "" {
+		s.EditorLineEndingsOnSave = "unchanged"
 	}
 	if s.EditorFontSize <= 0 {
 		s.EditorFontSize = DefaultEditorFontSize
@@ -296,6 +301,11 @@ func (s Settings) ForInteraction(interaction Interaction) Settings {
 }
 
 func (s Settings) Validate() error {
+	switch s.EditorLineEndingsOnSave {
+	case "", "unchanged", "crlf", "lf":
+	default:
+		return fmt.Errorf("editor line endings on save must be unchanged, crlf, or lf")
+	}
 	for _, column := range s.EditorColumnGuides {
 		if column < 1 || column > MaxEditorColumnGuide {
 			return fmt.Errorf("editor guide columns must be integers between 1 and %d", MaxEditorColumnGuide)

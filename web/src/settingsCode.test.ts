@@ -56,11 +56,36 @@ describe("Code settings", () => {
     expect(field("[data-editor-font-size]").value).toBe("17");
     expect(field("[data-editor-indent-style]").value).toBe("spaces");
     expect(field("[data-editor-tab-size]").value).toBe("2");
+    expect(field("[data-editor-line-endings-on-save]").value).toBe("unchanged");
+    expect([...root.querySelectorAll("[data-editor-line-endings-on-save] option")].map((option) => option.textContent)).toEqual(["Not changed", "CRLF", "LF"]);
     expect(field("[data-editor-column-guides-enabled]").checked).toBe(false);
     expect(field("[data-editor-column-guides]").value).toBe("80, 90");
     expect(field("[data-editor-column-guides]").disabled).toBe(true);
     root.querySelector<HTMLButtonElement>("[data-section=theme]")!.click();
     expect(root.querySelector("[data-editor-font-size]")).toBeNull();
+  });
+
+  it("persists each line-ending preference across remounts and other editor settings", async () => {
+    for (const value of ["crlf", "lf", "unchanged"]) {
+      await change("[data-editor-line-endings-on-save]", value);
+      expect(fixture.settings.editorLineEndingsOnSave).toBe(value);
+      await change("[data-editor-font-size]", "18");
+      expect(fixture.settings).toEqual(expect.objectContaining({
+        editorLineEndingsOnSave: value, editorTabSize: 2, headers: { retained: "yes" },
+      }));
+      unmount();
+      mount(root);
+      await vi.waitFor(() => expect(field("[data-editor-line-endings-on-save]").disabled).toBe(false));
+      expect(field("[data-editor-line-endings-on-save]").value).toBe(value);
+    }
+  });
+
+  it("defaults empty legacy line endings to Not changed", async () => {
+    unmount();
+    fixture.settings.editorLineEndingsOnSave = "";
+    mount(root);
+    await vi.waitFor(() => expect(field("[data-editor-line-endings-on-save]").disabled).toBe(false));
+    expect(field("[data-editor-line-endings-on-save]").value).toBe("unchanged");
   });
 
   it("saves sorted guides, retains them while disabled, and restores them after remount", async () => {

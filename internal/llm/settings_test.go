@@ -6,6 +6,48 @@ import (
 	"testing"
 )
 
+func TestEditorLineEndingsOnSave(t *testing.T) {
+	if DefaultSettings().EditorLineEndingsOnSave != "unchanged" {
+		t.Fatal("new settings must leave line endings unchanged")
+	}
+	for _, value := range []string{"", "unchanged", "crlf", "lf"} {
+		settings := DefaultSettings()
+		settings.EditorLineEndingsOnSave = value
+		if err := settings.Validate(); err != nil {
+			t.Fatalf("valid line endings %q rejected: %v", value, err)
+		}
+		data, err := json.Marshal(settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restored Settings
+		if err := json.Unmarshal(data, &restored); err != nil {
+			t.Fatal(err)
+		}
+		want := value
+		if want == "" {
+			want = "unchanged"
+		}
+		if got := restored.NormalizedEndpointProfiles().EditorLineEndingsOnSave; got != want {
+			t.Fatalf("line endings did not survive serialization: got %q, want %q", got, want)
+		}
+	}
+	var legacy Settings
+	if err := json.Unmarshal([]byte(`{}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Normalized().EditorLineEndingsOnSave != "unchanged" {
+		t.Fatal("legacy settings must leave line endings unchanged")
+	}
+	for _, value := range []string{"CRLF", "LF", "cr", "invalid", " "} {
+		settings := DefaultSettings()
+		settings.EditorLineEndingsOnSave = value
+		if err := settings.Validate(); err == nil {
+			t.Fatalf("invalid line endings %q accepted", value)
+		}
+	}
+}
+
 func TestEditorColumnGuides(t *testing.T) {
 	for _, settings := range []Settings{DefaultSettings(), {}, {EditorColumnGuides: []int{}}} {
 		normalized := settings.NormalizedEndpointProfiles()

@@ -11,6 +11,7 @@ import { del, get, post, put } from "../api.js";
 import { logout } from "../../src/auth/authGate.ts";
 import { hasDirtySessions } from "../../src/code/persistence.ts";
 import { indentationDefaults } from "../../src/code/indentation.ts";
+import { lineEndingsOnSave } from "../../src/code/lineEndings.ts";
 import { columnGuideSettings, guideColumnsError, parseGuideColumns } from "../../src/code/columnGuides.ts";
 import { installChatMap } from "../../src/chatMap.ts";
 import { getEchoUpdateSnapshot, refreshEchoUpdateStatus, syncEchoUpdateBadges } from "../../src/echoUpdate.ts";
@@ -108,6 +109,7 @@ const state = {
   themePalette: "light",
   editorFontSize: 13.5,
   indentation: indentationDefaults({}),
+  editorLineEndingsOnSave: lineEndingsOnSave({}),
   columnGuides: columnGuideSettings({}),
   guideColumnsText: "80, 90",
   guideColumnsError: "",
@@ -572,7 +574,13 @@ function renderCode() {
           <label class="field"><span>Editor Font Size</span>
             <input type="number" min="${minEditorFontSize}" max="${maxEditorFontSize}" step="1" value="${state.editorFontSize}" data-editor-font-size aria-label="Code editor font size" ${disabled} />
           </label>
+          <label class="field"><span>Line endings on save</span>
+            <select data-editor-line-endings-on-save aria-describedby="editor-line-endings-help" ${disabled}>
+              ${[["unchanged", "Not changed"], ["crlf", "CRLF"], ["lf", "LF"]].map(([value, label]) => `<option value="${value}" ${state.editorLineEndingsOnSave === value ? "selected" : ""}>${label}</option>`).join("")}
+            </select>
+          </label>
         </div>
+        <p class="settings-card-help" id="editor-line-endings-help">Applies after formatting when saving. Not changed keeps the file's current line-ending style.</p>
         <h3 class="settings-card-title">Indentation defaults</h3>
         <p class="settings-card-help">Defaults for files without detected indentation. Change the current file's indentation from the editor status bar.</p>
         <div class="settings-grid">
@@ -1619,6 +1627,10 @@ function bindEvents(root) {
     state.indentation.tabSize = Number(event.target.value);
     saveSettings();
   });
+  root.querySelector("[data-editor-line-endings-on-save]")?.addEventListener("change", (event) => {
+    state.editorLineEndingsOnSave = event.target.value;
+    saveSettings();
+  });
   root.querySelector("[data-editor-column-guides-enabled]")?.addEventListener("change", (event) => {
     state.columnGuides.editorColumnGuidesEnabled = event.target.checked;
     root.querySelector("[data-editor-column-guides]").disabled = !event.target.checked;
@@ -2298,6 +2310,7 @@ function applySettings(cfg) {
   };
   state.editorFontSize = clampEditorFontSize(Number(s.editorFontSize) || 13.5);
   state.indentation = indentationDefaults(s);
+  state.editorLineEndingsOnSave = lineEndingsOnSave(s);
   state.columnGuides = columnGuideSettings(s);
   if (!state.guideColumnsError) state.guideColumnsText = state.columnGuides.editorColumnGuides.join(", ");
   state.researchAgentConcurrency = Math.max(0, Math.min(8, Number(s.researchAgentConcurrency ?? 4) || 0));
@@ -2427,6 +2440,7 @@ function buildSettings() {
     editorFontSize: state.editorFontSize,
     editorInsertSpaces: state.indentation.insertSpaces,
     editorTabSize: state.indentation.tabSize,
+    editorLineEndingsOnSave: state.editorLineEndingsOnSave,
     ...state.columnGuides,
     researchAgentConcurrency: state.researchAgentConcurrency,
   };

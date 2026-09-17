@@ -20,6 +20,7 @@ import {
 import { loadSession, saveSession } from "./persistence";
 import { editorSettingsWriter, indentationDefaults, indentationLabel, openIndentationPopover, type Indentation } from "./indentation";
 import { columnGuideRulers, type ColumnGuideSettings } from "./columnGuides";
+import { lineEndingsOnSave, type LineEndingsOnSave } from "./lineEndings";
 import { previewKindForPath, type PreviewKind } from "./preview";
 import { isMarkdownPath, MarkdownPreview, restoreMarkdownViewState } from "./markdownPreview";
 import "./markdownPreview.css";
@@ -205,6 +206,7 @@ class CodeView {
   private editorFontSize = 13.5;
   private editorRulers: number[] = [];
   private indentation: Indentation = indentationDefaults({});
+  private editorLineEndingsOnSave: LineEndingsOnSave = "unchanged";
   private closeIndentationPopover: (() => void) | null = null;
   private saveEditorSettings = editorSettingsWriter(
     async () => (await api("/api/settings", { method: "GET" })).settings,
@@ -286,7 +288,7 @@ class CodeView {
       }
       const [roots, settingsData, lspData] = await Promise.all([
         editorAPI.getRoots(this.workspace.id),
-        api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: ColumnGuideSettings & { disableSourceControlSplitDiffView?: boolean; disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean; editorFontSize?: number; editorInsertSpaces?: boolean; editorTabSize?: number } } | null>,
+        api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: ColumnGuideSettings & { disableSourceControlSplitDiffView?: boolean; disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean; editorFontSize?: number; editorInsertSpaces?: boolean; editorTabSize?: number; editorLineEndingsOnSave?: LineEndingsOnSave } } | null>,
         editorAPI.getWorkspaceLSPConfig(this.workspace.id).catch(() => ({ config: {}, profiles: [], statuses: [] } as WorkspaceLSPResponse)),
       ]);
       if (this.abort.signal.aborted) return;
@@ -296,6 +298,7 @@ class CodeView {
       this.splitGitDiff = disableSplitDiff !== true;
       this.leadingWhitespaceIndicators = settingsData?.settings?.hideLeadingWhitespaceIndicators !== true;
       this.indentation = indentationDefaults(settingsData?.settings || {});
+      this.editorLineEndingsOnSave = lineEndingsOnSave(settingsData?.settings || {});
       this.editorRulers = columnGuideRulers(settingsData?.settings || {});
       this.editorFontSize = this.clampEditorFontSize((settingsData?.settings?.editorFontSize as number | undefined) || 13.5);
       this.lspProfiles = lspData.profiles || [];
@@ -2543,9 +2546,7 @@ class CodeView {
     };
     tab.changeDisposable = model.onDidChangeContent(() => {
       if (tab.applying) return;
-      tab.dirty = true;
-      this.renderTabs();
-      this.schedulePersist();
+      this.markModelDirty(model);
     });
     this.tabs.push(tab);
     this.activateTab(tab.id);
@@ -2665,6 +2666,19 @@ class CodeView {
     reveal();
   }
 
+  private setModelLineEndings(model: MonacoEditor.ITextModel, eol: FileSnapshot["eol"]): void {
+    if (model.getEOL() === (eol === "crlf" ? "\r\n" : "\n")) return;
+    model.pushStackElement();
+    model.pushEOL(eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+    model.pushStackElement();
+  }
+
+  // Call after any formatter and immediately before each write, including retries.
+  private contentForSave(tab: OpenTab): string {
+    if (this.editorLineEndingsOnSave !== "unchanged") this.setModelLineEndings(tab.model, this.editorLineEndingsOnSave);
+    return tab.model.getValue();
+  }
+
   private async saveTab(tab = this.activeTab()): Promise<boolean> {
     if (!tab || !this.workspace) return false;
 	if (tab.readOnly) {
@@ -2688,7 +2702,7 @@ class CodeView {
         const parentPath = tab.ref.path.includes("/") ? tab.ref.path.slice(0, tab.ref.path.lastIndexOf("/")) : "";
         const result = await editorAPI.createEntry(this.workspace.id, {
           parent: { rootId: tab.ref.rootId, path: parentPath }, name: tab.title, kind: "file",
-          content: tab.model.getValue(), hasBom: tab.hasBom,
+          content: this.contentForSave(tab), hasBom: tab.hasBom,
         });
         if (result.file) this.applySavedSnapshot(tab, result.file);
         tab.deleted = false;
@@ -2702,7 +2716,7 @@ class CodeView {
     try {
       await this.lsp?.formatBeforeSave(tab.model);
       const snapshot = await editorAPI.saveFile(this.workspace.id, {
-        ref: tab.ref, content: tab.model.getValue(), expectedRevision: tab.revision, hasBom: tab.hasBom,
+        ref: tab.ref, content: this.contentForSave(tab), expectedRevision: tab.revision, hasBom: tab.hasBom,
       });
       this.applySavedSnapshot(tab, snapshot);
       this.lsp?.didSave(tab.model);
@@ -2730,13 +2744,13 @@ class CodeView {
         const parentPath = ref.path.includes("/") ? ref.path.slice(0, ref.path.lastIndexOf("/")) : "";
         const result = await editorAPI.createEntry(this.workspace.id, {
           parent: { rootId: ref.rootId, path: parentPath }, name: ref.path.split("/").pop() || tab.title,
-          kind: "file", content: tab.model.getValue(), hasBom: tab.hasBom,
+          kind: "file", content: this.contentForSave(tab), hasBom: tab.hasBom,
         });
         if (!result.file) return false;
         snapshot = result.file;
       } else {
         snapshot = await editorAPI.saveFile(this.workspace.id, {
-          ref, content: tab.model.getValue(), expectedRevision: tab.revision, hasBom: tab.hasBom,
+          ref, content: this.contentForSave(tab), expectedRevision: tab.revision, hasBom: tab.hasBom,
         });
       }
       this.applySavedSnapshot(tab, snapshot);
@@ -2768,7 +2782,7 @@ class CodeView {
       candidate.revision = snapshot.revision;
       if (!candidate.diff) candidate.hostPath = snapshot.hostPath;
       candidate.hasBom = snapshot.hasBom;
-      candidate.eol = snapshot.eol;
+      candidate.eol = tab.model.getEOL() === "\r\n" ? "crlf" : "lf";
       candidate.dirty = false;
       candidate.conflict = false;
       candidate.deleted = false;
@@ -2804,7 +2818,7 @@ class CodeView {
     if (choice === "overwrite" && tab.ref && this.workspace) {
       try {
         const snapshot = await editorAPI.saveFile(this.workspace.id, {
-          ref: tab.ref, content: tab.model.getValue(), expectedRevision: disk.revision, hasBom: tab.hasBom,
+          ref: tab.ref, content: this.contentForSave(tab), expectedRevision: disk.revision, hasBom: tab.hasBom,
         });
         this.applySavedSnapshot(tab, snapshot);
         this.lsp?.didSave(tab.model);
@@ -2893,7 +2907,7 @@ class CodeView {
     };
     try {
       const result = await editorAPI.createEntry(this.workspace.id, {
-        parent, name: destination.name, kind: "file", content: tab.model.getValue(), hasBom: tab.hasBom,
+        parent, name: destination.name, kind: "file", content: this.contentForSave(tab), hasBom: tab.hasBom,
       });
       if (!result.file) throw new Error("The server did not return the new file");
       removeDuplicate();
@@ -2911,7 +2925,7 @@ class CodeView {
         try {
           const current = await editorAPI.readFile(this.workspace.id, destinationRef);
           const saved = await editorAPI.saveFile(this.workspace.id, {
-            ref: destinationRef, content: tab.model.getValue(), expectedRevision: current.revision, hasBom: tab.hasBom,
+            ref: destinationRef, content: this.contentForSave(tab), expectedRevision: current.revision, hasBom: tab.hasBom,
           });
           removeDuplicate();
           this.adoptFile(tab, saved);
@@ -2928,6 +2942,7 @@ class CodeView {
 
   private adoptFile(tab: OpenTab, snapshot: FileSnapshot): void {
     const content = tab.model.getValue();
+    const eol = tab.model.getEndOfLineSequence();
     const language = languageForPath(snapshot.ref.path, this.lspProfiles);
     const viewState = tab.id === this.activeTabId && this.markdownMode(tab) !== "preview" ? this.editor.saveViewState() : tab.viewState;
     tab.changeDisposable.dispose();
@@ -2936,14 +2951,12 @@ class CodeView {
     tab.title = snapshot.ref.path.split("/").pop() || snapshot.ref.path;
     tab.hostPath = snapshot.hostPath;
     tab.model = this.createEditorModel(content, language, this.modelURI(snapshot.ref, snapshot.hostPath));
+    tab.model.setEOL(eol);
     this.retainModel(tab.model);
     this.lsp?.trackModel(tab.model);
     tab.changeDisposable = tab.model.onDidChangeContent(() => {
       if (tab.applying) return;
-      tab.dirty = true;
-      tab.keepOpen = true;
-      this.renderTabs();
-      this.schedulePersist();
+      this.markModelDirty(tab.model);
     });
     tab.viewState = viewState;
     this.applySavedSnapshot(tab, snapshot);
@@ -3028,6 +3041,7 @@ class CodeView {
       const suffix = tab.ref.path.slice(previous.path.length).replace(/^\//, "");
       const nextRef = { rootId: next.rootId, path: suffix ? `${next.path}/${suffix}` : next.path };
       const content = tab.model.getValue();
+      const eol = tab.model.getEndOfLineSequence();
       const language = languageForPath(nextRef.path, this.lspProfiles);
       const viewState = tab.id === this.activeTabId && this.markdownMode(tab) !== "preview" ? this.editor.saveViewState() : tab.viewState;
       tab.changeDisposable.dispose();
@@ -3036,14 +3050,12 @@ class CodeView {
       tab.title = nextRef.path.split("/").pop() || nextRef.path;
       tab.hostPath = tab.hostPath.startsWith(previousHost) ? nextHost + tab.hostPath.slice(previousHost.length) : nextHost;
       tab.model = this.createEditorModel(content, language, this.modelURI(nextRef, tab.hostPath));
+      tab.model.setEOL(eol);
       this.retainModel(tab.model);
       this.lsp?.trackModel(tab.model);
       tab.changeDisposable = tab.model.onDidChangeContent(() => {
         if (tab.applying) return;
-        tab.dirty = true;
-        tab.keepOpen = true;
-        this.renderTabs();
-        this.schedulePersist();
+        this.markModelDirty(tab.model);
       });
       tab.viewState = viewState;
       if (tab.id === this.activeTabId) {
@@ -3447,8 +3459,12 @@ class CodeView {
       { id: "editor.format", label: "Editor: Format Document", keybinding: "Shift+Alt+F", run: () => this.formatActiveDocument(false) },
       { id: "editor.formatSelection", label: "Editor: Format Selection", keybinding: "Ctrl+K Ctrl+F", run: () => this.formatActiveDocument(true) },
       { id: "editor.workspaceSymbols", label: "Go to Symbol in Workspace…", keybinding: "Ctrl+Shift+O", run: () => this.showWorkspaceSymbols() },
-      { id: "editor.undo", label: "Editor: Undo", keybinding: "Ctrl+Z", run: () => this.editor.trigger("echo", "undo", null) },
-      { id: "editor.redo", label: "Editor: Redo", keybinding: "Ctrl+Shift+Z", run: () => this.editor.trigger("echo", "redo", null) },
+      { id: "editor.action.indentationToSpaces", label: "Convert tabs to spaces", run: () => this.runEditorAction("editor.action.indentationToSpaces") },
+      { id: "editor.action.indentationToTabs", label: "Convert spaces to tabs", run: () => this.runEditorAction("editor.action.indentationToTabs") },
+      { id: "editor.convertLineEndingsToLF", label: "Convert line endings to LF", run: () => this.runEditorEdit((editor) => this.setModelLineEndings(editor.getModel()!, "lf")) },
+      { id: "editor.convertLineEndingsToCRLF", label: "Convert line endings to CRLF", run: () => this.runEditorEdit((editor) => this.setModelLineEndings(editor.getModel()!, "crlf")) },
+      { id: "editor.undo", label: "Editor: Undo", keybinding: "Ctrl+Z", run: () => this.runEditorAction("undo") },
+      { id: "editor.redo", label: "Editor: Redo", keybinding: "Ctrl+Shift+Z", run: () => this.runEditorAction("redo") },
       { id: "editor.cursorBelow", label: "Editor: Add Cursor Below", keybinding: "Ctrl+Alt+Down", run: () => this.editor.trigger("echo", "editor.action.insertCursorBelow", null) },
       { id: "editor.fold", label: "Editor: Fold", run: () => this.editor.trigger("echo", "editor.fold", null) },
       { id: "editor.unfold", label: "Editor: Unfold", run: () => this.editor.trigger("echo", "editor.unfold", null) },
@@ -3473,10 +3489,20 @@ class CodeView {
   }
 
   private runCaseTransform(actionId: string): void {
+    this.runEditorAction(actionId);
+  }
+
+  private runEditorAction(actionId: string): void {
+    this.runEditorEdit((editor) => editor.trigger("echo", actionId, null));
+  }
+
+  private runEditorEdit(edit: (editor: MonacoEditor.ICodeEditor) => void): void {
+    const tab = this.activeTab();
+    if (!tab || tab.kind === "media" || tab.readOnly || (tab.kind === "diff" && !tab.diff?.editable)) return;
     this.revealMarkdownSource();
     const editor = this.activeCodeEditor();
-    if (!editor) return;
-    editor.trigger("echo", actionId, null);
+    if (!editor || editor.getModel() !== tab.model) return;
+    edit(editor);
     requestAnimationFrame(() => {
       if (!this.abort.signal.aborted && editor === this.activeCodeEditor()) editor.focus();
     });
@@ -3637,20 +3663,23 @@ class CodeView {
       await this.saveUntitled(active);
       return;
     }
-    const duplicate = this.newUntitledFrom(active.model.getValue(), active.title);
+    const duplicate = this.newUntitledFrom(active.model.getValue(), active.title, undefined, active.model.getEOL() === "\r\n" ? "crlf" : "lf");
     duplicate.hasBom = active.hasBom;
     await this.saveUntitled(duplicate);
   }
 
-  private newUntitledFrom(content: string, title: string, id: string = randomUUID()): OpenTab {
+  private newUntitledFrom(content: string, title: string, id: string = randomUUID(), eol?: FileSnapshot["eol"]): OpenTab {
     const model = this.createEditorModel(content, languageForPath(title, this.lspProfiles), monaco.Uri.from({ scheme: "untitled", authority: this.workspace?.id || "workspace", path: `/${id}` }));
+    if (eol) model.setEOL(eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
     this.retainModel(model);
     const tab: OpenTab = {
       kind: "file", id, ref: null, title, hostPath: "", keepOpen: true, pinned: false, dirty: true,
       deleted: false, conflict: false, revision: "", hasBom: false, eol: model.getEOL() === "\r\n" ? "crlf" : "lf",
       model, viewState: null, changeDisposable: { dispose() {} }, applying: false,
     };
-    tab.changeDisposable = model.onDidChangeContent(() => { tab.dirty = true; this.renderTabs(); this.schedulePersist(); });
+    tab.changeDisposable = model.onDidChangeContent(() => {
+      if (!tab.applying) this.markModelDirty(model);
+    });
     this.tabs.push(tab);
     this.activateTab(tab.id);
     this.renderTabs();
@@ -4652,6 +4681,7 @@ class CodeView {
         if (persisted.dirty && persisted.content !== undefined && tab.diff?.editable) {
           tab.applying = true;
           tab.model.setValue(persisted.content);
+          tab.model.setEOL(persisted.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
           tab.model.detectIndentation(this.indentation.insertSpaces, this.indentation.tabSize);
           tab.applying = false;
           this.markModelDirty(tab.model);
@@ -4662,7 +4692,8 @@ class CodeView {
         return;
       }
       if (!persisted.ref) {
-        const tab = this.newUntitledFrom(persisted.content || "", persisted.title, persisted.id);
+        const tab = this.newUntitledFrom(persisted.content || "", persisted.title, persisted.id, persisted.eol);
+        tab.hasBom = persisted.hasBom;
         Object.assign(tab, restoreTabOpenState(persisted));
         tab.dirty = persisted.dirty;
         this.captureRestoredViewState(tab, persisted);
@@ -4762,7 +4793,7 @@ class CodeView {
       return {
         kind: tab.kind, id: tab.id, ref: tab.ref, title: tab.title, hostPath: tab.hostPath, pinned: tab.keepOpen, closeProtected: tab.pinned,
         preview: !tab.keepOpen, dirty: tab.dirty, deleted: tab.deleted, revision: tab.revision,
-        hasBom: tab.hasBom, eol: tab.eol,
+        hasBom: tab.hasBom, eol: tab.model.getEOL() === "\r\n" ? "crlf" : "lf",
         ...(isMarkdownTab(tab) ? restoreMarkdownViewState(tab) : {}),
         ...(tab.dirty || (tab.kind === "file" && !tab.ref) ? { content: tab.model.getValue() } : {}),
         cursor: position ? { lineNumber: position.lineNumber, column: position.column } : undefined,
