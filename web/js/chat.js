@@ -627,7 +627,7 @@ function createMessageEl(role, text, images = [], videos = [], options = {}) {
     body.appendChild(timeline);
     const content = document.createElement("div");
     content.className = "chat-message-content chat-final-content markdown-body";
-    patchMarkdownElement(content, text);
+    renderFinalMarkdown(content, text);
     content.hidden = text === "";
     body.appendChild(content);
   } else {
@@ -639,6 +639,47 @@ function createMessageEl(role, text, images = [], videos = [], options = {}) {
     appendPromptResources(body, options.references, options.editorContext);
   }
   return el;
+}
+
+function renderFinalMarkdown(content, text) {
+  patchMarkdownElement(content, text);
+  for (const code of content.querySelectorAll("pre > code")) {
+    const pre = code.parentElement;
+    if (pre.parentElement.classList.contains("chat-code-block")) continue;
+    const block = document.createElement("div");
+    block.className = "chat-code-block";
+    const footer = document.createElement("div");
+    footer.className = "chat-code-footer";
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "icon-button chat-code-copy";
+    copy.title = "Copy code";
+    copy.setAttribute("aria-label", "Copy code");
+    copy.innerHTML = icons.copy;
+    let resetCopyState = 0;
+    copy.addEventListener("click", async () => {
+      try {
+        await copyText(code.textContent || "");
+        copy.innerHTML = icons.check;
+        copy.classList.add("is-copied");
+        copy.title = "Copied";
+        copy.setAttribute("aria-label", "Copied");
+        window.clearTimeout(resetCopyState);
+        resetCopyState = window.setTimeout(() => {
+          copy.innerHTML = icons.copy;
+          copy.classList.remove("is-copied");
+          copy.title = "Copy code";
+          copy.setAttribute("aria-label", "Copy code");
+        }, 1600);
+        toast("Code copied.");
+      } catch (error) {
+        toast(error instanceof Error ? error.message : "Could not copy the code.", { sticky: true });
+      }
+    });
+    pre.replaceWith(block);
+    footer.appendChild(copy);
+    block.append(pre, footer);
+  }
 }
 
 function goalMessagePayload(type, text, options = {}) {
@@ -1491,7 +1532,7 @@ function endTurn(stream, turnNumber, hasToolCalls, goalCheckpoint = false) {
 
 function promoteFinalText(stream, turn) {
   stream.el.dataset.copyText = turn.text;
-  patchMarkdownElement(stream.content, turn.text);
+  renderFinalMarkdown(stream.content, turn.text);
   stream.content.hidden = turn.text === "";
   for (const block of turn.el.querySelectorAll(":scope > .chat-progress-text")) {
     cancelMarkdownPatch(block);

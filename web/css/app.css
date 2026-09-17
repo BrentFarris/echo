@@ -1766,6 +1766,59 @@ button.chat-prompt-resource-row:focus-visible {
   white-space: inherit;
 }
 
+.chat-code-block {
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+}
+
+.markdown-body .chat-code-block > pre {
+  border: 0;
+  border-radius: 8px 8px 0 0;
+}
+
+.chat-code-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--space-xs);
+}
+
+.chat-code-copy.icon-button {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  opacity: 0.75;
+  transition: opacity 120ms ease;
+}
+
+.chat-code-block:hover .chat-code-copy,
+.chat-code-copy:focus-visible {
+  opacity: 1;
+}
+
+.chat-code-copy:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.chat-code-copy.is-copied {
+  color: var(--color-success);
+}
+
+@media (hover: none), (pointer: coarse) {
+  .chat-code-copy.icon-button {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-code-copy.icon-button {
+    transition: none;
+  }
+}
+
 .markdown-body table {
   display: block;
   width: max-content;
