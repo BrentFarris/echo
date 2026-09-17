@@ -45,6 +45,8 @@ import { NavigationModelCache } from "./navigationModelCache";
 import { explorerDiagnosticPresentation, updateExplorerDiagnostic } from "./explorerDiagnostics";
 import { ExplorerDirectoryLoader, needsDirectoryRefresh, preservedTreeScrollTop, reconcileDirectory, type FilesystemChange, type TreeNode } from "./explorerTree";
 import { renderExplorerRows, type ExplorerRow } from "./explorerRows";
+import { updateSelection, type SelectionState } from "./sourceControlSelection";
+import { canDeleteTreeNodes, runTreeOperation, topLevelTreeNodes, treeMoveDestination } from "./explorerSelection";
 import {
   CodeNavigationHistory, isLargeCodeNavigationJump, type CodeNavigationLocation,
 } from "./codeNavigationHistory";
@@ -148,13 +150,21 @@ class CodeView {
   private readonly directoryLoader = new ExplorerDirectoryLoader({
     isCurrent: (node) => !this.abort.signal.aborted && Boolean(this.workspace) && this.nodes.get(node.key) === node,
     listEntries: (ref) => editorAPI.listEntries(this.workspace!.id, ref),
-    apply: (node, entries) => reconcileDirectory(this.nodes, this.expanded, node, entries),
+    apply: (node, entries) => {
+      const previousKeys = new Set(this.nodes.keys());
+      reconcileDirectory(this.nodes, this.expanded, node, entries);
+      if (!this.treeMutationBusy) this.pruneTreeSelection(new Set([...previousKeys].filter((key) => !this.nodes.has(key))));
+    },
     render: () => this.renderTree(true),
     onError: (error) => toast(error instanceof Error ? error.message : String(error)),
   });
   private selectedTreeKey: string | null = null;
+  private treeSelection: SelectionState = { selected: new Set(), anchor: null };
+  private treeSelectionVersion = 0;
+  private treeMutationBusy = false;
+  private pendingTreeChanges: FilesystemChange[] = [];
   private renamingKey: string | null = null;
-  private draggingTreeKey: string | null = null;
+  private draggingTreeNodes: TreeNode[] = [];
   private treeDropTargetKey: string | null = null;
   private treeDropExpandKey: string | null = null;
   private treeDropExpandTimer = 0;
@@ -389,7 +399,7 @@ class CodeView {
               </div>
             </header>
             <div class="code-workspace-title" title="${escapeHTML(workspaceName)}"><span class="codicon codicon-chevron-down"></span><strong>${escapeHTML(workspaceName)}</strong></div>
-            <div class="code-tree" role="tree" aria-label="Workspace files" tabindex="0" data-code-tree>
+            <div class="code-tree" role="tree" aria-label="Workspace files" aria-multiselectable="true" tabindex="0" data-code-tree>
               <div class="code-tree-canvas" data-tree-canvas></div>
             </div>
           </aside>
@@ -1024,7 +1034,7 @@ class CodeView {
     const rows: ExplorerRow[] = items.flatMap((virtual) => {
       const node = this.flatTree[virtual.index];
       if (!node) return [];
-      const selected = node.key === this.selectedTreeKey;
+      const selected = this.treeSelection.selected.has(node.key);
       const expanded = this.expanded.has(node.key);
       const isDirectory = node.kind === "directory";
       const diagnostic = isDirectory ? undefined : this.fileDiagnostics.get(node.key);
@@ -1034,7 +1044,7 @@ class CodeView {
         ? (expanded ? "folder-opened" : "folder")
         : this.fileIcon(node.name);
       const draggable = !node.isRoot && !node.readOnly && !node.blockedReason;
-      const dragging = node.key === this.draggingTreeKey;
+      const dragging = this.draggingTreeNodes.some((candidate) => candidate.key === node.key);
       const dropTarget = node.key === this.treeDropTargetKey;
       const ariaLabel = diagnosticPresentation.description ? `${node.name}, ${diagnosticPresentation.description}` : node.name;
       const title = node.blockedReason || (diagnosticPresentation.description ? `${node.hostPath} — ${diagnosticPresentation.description}` : node.hostPath);
@@ -1083,13 +1093,57 @@ class CodeView {
   private syncTreeSelectionState(): void {
     if (!this.treeCanvas) return;
     this.treeCanvas.querySelectorAll<HTMLElement>("[data-tree-key]").forEach((element) => {
-      const selected = element.dataset.treeKey === this.selectedTreeKey;
+      const selected = this.treeSelection.selected.has(element.dataset.treeKey || "");
       element.classList.toggle("is-selected", selected);
       element.setAttribute("aria-selected", String(selected));
     });
   }
 
+  private setTreeSelection(selection: SelectionState, focusedKey: string | null): void {
+    this.treeSelection = selection;
+    this.selectedTreeKey = focusedKey;
+    this.treeSelectionVersion++;
+    this.explorerRevealGeneration++;
+    this.syncTreeSelectionState();
+    this.schedulePersist();
+  }
+
+  private selectTreeKey(key: string | null, options = { toggle: false, range: false }): void {
+    const ordered = this.flatTree.map((node) => node.key);
+    if (options.range && (!this.treeSelection.anchor || !ordered.includes(this.treeSelection.anchor))) options = { toggle: false, range: false };
+    this.setTreeSelection(key === null ? { selected: new Set(), anchor: null }
+      : updateSelection(this.treeSelection, ordered, key, options), key);
+  }
+
+  private pruneTreeSelection(removed: Set<string>): void {
+    const selected = new Set([...this.treeSelection.selected].filter((key) => !removed.has(key)));
+    const focusRemoved = this.selectedTreeKey !== null && removed.has(this.selectedTreeKey);
+    const anchorRemoved = this.treeSelection.anchor !== null && removed.has(this.treeSelection.anchor);
+    if (selected.size === this.treeSelection.selected.size && !focusRemoved && !anchorRemoved) return;
+    this.setTreeSelection({ selected, anchor: anchorRemoved ? null : this.treeSelection.anchor },
+      focusRemoved ? selected.values().next().value || null : this.selectedTreeKey);
+  }
+
+  private selectedTreeNodes(): TreeNode[] {
+    // Snapshot references: directory refreshes may replace nodes while a dialog or request is open.
+    return [...this.treeSelection.selected].flatMap((key) => {
+      const node = this.nodes.get(key);
+      return node ? [{ ...node, ref: { ...node.ref } }] : [];
+    });
+  }
+
+  private collapseTreeNode(node: TreeNode): void {
+    this.expanded.delete(node.key);
+    const hidden = (key: string | null) => key !== null && key !== node.key
+      && Boolean(this.nodes.get(key) && isRefWithin(this.nodes.get(key)!.ref, node.ref));
+    this.setTreeSelection({
+      selected: new Set([...this.treeSelection.selected].filter((key) => !hidden(key))),
+      anchor: hidden(this.treeSelection.anchor) ? node.key : this.treeSelection.anchor,
+    }, hidden(this.selectedTreeKey) ? node.key : this.selectedTreeKey);
+  }
+
   private collapseAll(): void {
+    this.selectTreeKey(null);
     this.expanded.clear();
     this.renderTree();
     this.schedulePersist();
@@ -1148,10 +1202,9 @@ class CodeView {
   }
 
   private async toggleNode(node: TreeNode): Promise<void> {
-    this.selectedTreeKey = node.key;
-    this.syncTreeSelectionState();
+    this.selectTreeKey(node.key);
     if (node.kind === "directory" && !node.blockedReason) {
-      if (this.expanded.has(node.key)) this.expanded.delete(node.key);
+      if (this.expanded.has(node.key)) this.collapseTreeNode(node);
       else {
         this.expanded.add(node.key);
         await this.loadChildren(node);
@@ -1394,6 +1447,7 @@ class CodeView {
 
   private async openFile(ref: FileRef, keepOpen: boolean, focusEditor = true, showErrors = true, activate = true, isCurrent?: () => boolean): Promise<boolean> {
     if (!this.workspace || isCurrent?.() === false) return false;
+    const selectionVersion = this.treeSelectionVersion;
     const previewKind = previewKindForPath(ref.path);
     if (previewKind) {
       await this.openMedia(ref, keepOpen, focusEditor);
@@ -1402,7 +1456,7 @@ class CodeView {
     const existing = this.tabs.find((tab) => tab.ref && refKey(tab.ref) === refKey(ref));
     if (existing) {
       if (keepOpen) existing.keepOpen = true;
-      if (activate) this.activateTab(existing.id, focusEditor);
+      if (activate) this.activateTab(existing.id, focusEditor, true, selectionVersion === this.treeSelectionVersion);
       this.renderTabs();
       this.sendFilesystemSubscription();
       return true;
@@ -1416,7 +1470,7 @@ class CodeView {
       const concurrentlyOpened = this.tabs.find((tab) => tab.ref && refKey(tab.ref) === refKey(ref));
       if (concurrentlyOpened) {
         if (keepOpen) concurrentlyOpened.keepOpen = true;
-        if (activate) this.activateTab(concurrentlyOpened.id, focusEditor);
+        if (activate) this.activateTab(concurrentlyOpened.id, focusEditor, true, selectionVersion === this.treeSelectionVersion);
         this.renderTabs();
         this.schedulePersist();
         this.sendFilesystemSubscription();
@@ -1435,7 +1489,7 @@ class CodeView {
       } else {
         this.tabs.push(tab);
       }
-      if (activate) this.activateTab(tab.id, focusEditor);
+      if (activate) this.activateTab(tab.id, focusEditor, true, selectionVersion === this.treeSelectionVersion);
       this.renderTabs();
       this.schedulePersist();
       this.sendFilesystemSubscription();
@@ -1460,12 +1514,6 @@ class CodeView {
       if (choice === "reveal") await this.reveal(ref);
       return false;
     }
-  }
-
-  private treeMoveDestination(source: TreeNode | undefined, target: TreeNode | undefined): TreeNode | null {
-    if (!source || source.isRoot || source.readOnly || source.blockedReason || !target || target.kind !== "directory" || target.readOnly || target.blockedReason) return null;
-    if (source.ref.rootId !== target.ref.rootId || source.parentKey === target.key || isRefWithin(target.ref, source.ref)) return null;
-    return target;
   }
 
   private setTreeDropTarget(key: string | null): void {
@@ -1505,7 +1553,7 @@ class CodeView {
     this.treeDragScrollActive = false;
     this.treeCanvas.querySelectorAll(".code-tree-row.is-dragging, .code-tree-row.is-drop-target")
       .forEach((row) => row.classList.remove("is-dragging", "is-drop-target"));
-    this.draggingTreeKey = null;
+    this.draggingTreeNodes = [];
     this.treeDropTargetKey = null;
   }
 
@@ -1538,28 +1586,74 @@ class CodeView {
     return { rootId: next.rootId, path: suffix ? `${next.path}/${suffix}` : next.path };
   }
 
-  private async moveTreeNode(node: TreeNode, destination: TreeNode): Promise<void> {
-    if (!this.workspace || !this.treeMoveDestination(node, destination)) return;
-    const previousRef = { ...node.ref };
-    const expandedRefs = [...this.expanded]
-      .map((key) => this.nodes.get(key)?.ref)
-      .filter((ref): ref is FileRef => Boolean(ref));
+  private async moveTreeNodes(selection: TreeNode[], destination: TreeNode): Promise<void> {
+    if (!this.workspace || this.treeMutationBusy || !treeMoveDestination(selection, destination)) return;
+    const workspaceId = this.workspace.id;
+    const references = new Map([...this.nodes].map(([key, node]) => [key, node.ref]));
+    let expandedRefs = [...this.expanded].flatMap((key) => references.get(key) ? [references.get(key)!] : []);
+    this.treeMutationBusy = true;
+    this.treeSelectionVersion++;
+    this.explorerRevealGeneration++;
     try {
-      const result = await editorAPI.moveEntry(this.workspace.id, previousRef, destination.ref);
-      const restoredExpansion = expandedRefs.map((ref) => this.rewrittenTreeRef(ref, previousRef, result.entry.ref));
-      await this.bookmarks?.remap(previousRef, result.entry.ref);
-      this.codeNavigation?.remapRef(previousRef, result.entry.ref);
-      this.rewriteOpenRefs(previousRef, result.entry.ref, node.hostPath, result.entry.hostPath);
-      this.rewriteExpandedRefs(previousRef, result.entry.ref);
-      await this.refreshExplorer(restoredExpansion);
-      await this.expandTo(result.entry.ref);
-      this.schedulePersist();
-      this.searchView?.refresh();
-      this.sendFilesystemSubscription();
+      const result = await runTreeOperation(topLevelTreeNodes(selection), async (node) => {
+        if (this.abort.signal.aborted) throw new Error("Workspace closed");
+        return editorAPI.moveEntry(workspaceId, node.ref, destination.ref);
+      });
+      if (this.abort.signal.aborted) return;
+      for (const { item: node, value } of result.succeeded) {
+        expandedRefs = expandedRefs.map((ref) => this.rewrittenTreeRef(ref, node.ref, value.entry.ref));
+        const rewriteKey = (key: string | null): string | null => {
+          const ref = key ? references.get(key) : undefined;
+          return ref ? refKey(this.rewrittenTreeRef(ref, node.ref, value.entry.ref)) : key;
+        };
+        this.setTreeSelection({ selected: new Set([...this.treeSelection.selected].map((key) => rewriteKey(key)!)),
+          anchor: rewriteKey(this.treeSelection.anchor) }, rewriteKey(this.selectedTreeKey));
+        this.codeNavigation?.remapRef(node.ref, value.entry.ref);
+        this.rewriteOpenRefs(node.ref, value.entry.ref, node.hostPath, value.entry.hostPath);
+        await this.bookmarks?.remap(node.ref, value.entry.ref);
+      }
+      if (result.succeeded.length) {
+        this.expanded = new Set(expandedRefs.map(refKey));
+        this.expanded.add(destination.key);
+        const parents = selection.flatMap((node) => node.parentKey && references.get(node.parentKey) ? [references.get(node.parentKey)!] : []);
+        await this.refreshTreeParents([...parents, destination.ref]);
+        const index = this.flatTree.findIndex((node) => node.key === this.selectedTreeKey);
+        if (index >= 0) this.treeVirtualizer.scrollToIndex(index, { align: "auto" });
+      }
+      this.reportTreeOperation(`Moved ${result.succeeded.length} item${result.succeeded.length === 1 ? "" : "s"}`, result.failed);
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), { sticky: true });
-      this.renderTreeRows();
+    } finally {
+      this.finishTreeMutation();
     }
+  }
+
+  private async refreshTreeParents(refs: FileRef[]): Promise<void> {
+    for (const ref of new Map(refs.map((ref) => [refKey(ref), ref])).values()) {
+      const node = this.nodes.get(refKey(ref));
+      if (node?.kind === "directory") await this.reloadChildrenPreservingExpansion(node);
+    }
+  }
+
+  private finishTreeMutation(): void {
+    this.treeMutationBusy = false;
+    if (this.abort.signal.aborted) return;
+    const keys = [...this.treeSelection.selected, this.selectedTreeKey, this.treeSelection.anchor];
+    this.pruneTreeSelection(new Set(keys.filter((key): key is string => key !== null && !this.nodes.has(key))));
+    this.renderTree(true);
+    this.schedulePersist();
+    this.searchView?.refresh();
+    this.sendFilesystemSubscription();
+    const changes = this.pendingTreeChanges.splice(0);
+    if (changes.length) void this.applyFilesystemChanges(changes);
+  }
+
+  private reportTreeOperation(message: string, failures: Array<{ item: { ref: FileRef }; error: string }>, undo?: () => Promise<void>): void {
+    const detail = failures.map(({ item, error }) => `${item.ref.path}: ${error}`).join("; ");
+    toast(detail ? `${message}. Failed: ${detail}` : message, {
+      sticky: failures.length > 0,
+      ...(undo ? { actionLabel: "Undo", action: undo } : {}),
+    });
   }
 
   // Media tabs carry a placeholder text model so the shared tab machinery
@@ -1867,7 +1961,7 @@ class CodeView {
     this.diffHunkGutter?.refresh();
   }
 
-  private activateTab(id: string, focusEditor = true, mru = true): void {
+  private activateTab(id: string, focusEditor = true, mru = true, revealInExplorer = true): void {
     const next = this.tabs.find((tab) => tab.id === id);
     if (!next) return;
     if (mru) this.touchMru(id);
@@ -1878,6 +1972,7 @@ class CodeView {
     // and selection to an older editing position.
     if (active?.id === next.id) {
       this.syncActiveTabState();
+      if (revealInExplorer && !this.treeMutationBusy) this.revealTabInExplorer(next);
       if (focusEditor) {
         if (next.kind === "diff") this.diffEditor.getModifiedEditor().focus();
         else if (next.kind !== "media") this.editor.focus();
@@ -1913,7 +2008,7 @@ class CodeView {
     this.updateEditorSurface();
     this.renderBreadcrumbs();
     this.renderStatus();
-    this.revealTabInExplorer(next);
+    if (revealInExplorer && !this.treeMutationBusy) this.revealTabInExplorer(next);
     this.updateCodeChatSelectionNotice();
     this.schedulePersist();
 	this.debugView?.onEditorContextChanged();
@@ -2774,16 +2869,21 @@ class CodeView {
   }
 
   private async beginRename(node: TreeNode): Promise<void> {
-    if (node.isRoot || node.readOnly) return;
-    this.selectedTreeKey = node.key;
+    if (this.treeMutationBusy || this.treeSelection.selected.size !== 1 || !this.treeSelection.selected.has(node.key) || node.isRoot || node.readOnly) return;
+    this.selectTreeKey(node.key);
     this.renamingKey = node.key;
     this.renderTreeRows();
+  }
+
+  private renameTreeSelection(): void {
+    const selection = this.selectedTreeNodes();
+    if (selection.length === 1) void this.beginRename(selection[0]);
   }
 
   private async commitRename(node: TreeNode, newName: string): Promise<void> {
     this.renamingKey = null;
     newName = newName.trim();
-    if (!newName || newName === node.name || !this.workspace) {
+    if (!newName || newName === node.name || !this.workspace || this.treeMutationBusy) {
       this.renderTreeRows();
       return;
     }
@@ -2796,7 +2896,7 @@ class CodeView {
       this.rewriteExpandedRefs(previousRef, result.entry.ref);
       const parent = node.parentKey ? this.nodes.get(node.parentKey) : null;
       if (parent) await this.reloadChildrenPreservingExpansion(parent);
-      this.selectedTreeKey = refKey(result.entry.ref);
+      this.selectTreeKey(refKey(result.entry.ref));
       this.renderTree();
       this.schedulePersist();
     } catch (error) {
@@ -2852,51 +2952,73 @@ class CodeView {
     this.expanded = rewritten;
   }
 
-  private async deleteNode(node: TreeNode): Promise<void> {
-    if (node.isRoot || node.readOnly || !this.workspace) return;
-    const affected = this.tabs.filter((tab) => tab.ref && isRefWithin(tab.ref, node.ref));
-    if (affected.some((tab) => tab.dirty)) {
+  private async deleteTreeSelection(selection = this.selectedTreeNodes()): Promise<void> {
+    if (!this.workspace || this.treeMutationBusy || !canDeleteTreeNodes(selection)) return;
+    const workspaceId = this.workspace.id;
+    const nodes = topLevelTreeNodes(selection);
+    const parents = nodes.flatMap((node) => {
+      const parent = node.parentKey ? this.nodes.get(node.parentKey) : undefined;
+      return parent ? [parent.ref] : [];
+    });
+    const affected = this.tabs.filter((tab) => tab.ref && nodes.some((node) => isRefWithin(tab.ref!, node.ref)));
+    const label = nodes.length === 1 ? nodes[0].name : `${nodes.length} items`;
+    this.treeMutationBusy = true;
+    this.treeSelectionVersion++;
+    this.explorerRevealGeneration++;
+    try {
+      const dirty = affected.filter((tab) => tab.dirty);
       const choice = await choiceDialog({
-        title: `Delete ${node.name}?`, message: "One or more open files inside this item have unsaved changes.",
-        choices: [
+        title: `Delete ${label}?`,
+        message: dirty.length ? "One or more selected files or files inside selected folders have unsaved changes."
+          : "The selected items and their contents will move to Echo Trash.",
+        detail: nodes.map((node) => node.ref.path).join(", "),
+        choices: dirty.length ? [
           { id: "cancel", label: "Cancel" },
           { id: "discard", label: "Discard changes and delete", danger: true },
           { id: "save", label: "Save All, Then Delete", primary: true },
-        ],
+        ] : [{ id: "cancel", label: "Cancel" }, { id: "delete", label: "Move to Trash", danger: true, primary: true }],
       });
+      if (!choice || choice === "cancel" || this.abort.signal.aborted) return;
       if (choice === "save") {
-        for (const tab of affected.filter((candidate) => candidate.dirty)) {
-          if (!(await this.saveTab(tab))) return;
+        for (const tab of dirty) if (!(await this.saveTab(tab))) return;
+      }
+      const result = await runTreeOperation(nodes, async (node) => {
+        if (this.abort.signal.aborted) throw new Error("Workspace closed");
+        const item = await editorAPI.trashEntry(workspaceId, node.ref);
+        if (!this.abort.signal.aborted) {
+          for (const tab of [...this.tabs]) if (tab.ref && isRefWithin(tab.ref, node.ref)) this.removeTab(tab);
         }
-      } else if (choice !== "discard") return;
-    } else {
-      const choice = await choiceDialog({
-        title: `Delete ${node.name}?`, message: node.kind === "directory" ? "The folder and its contents will move to Echo Trash." : "The file will move to Echo Trash.",
-        choices: [{ id: "cancel", label: "Cancel" }, { id: "delete", label: "Move to Trash", danger: true, primary: true }],
+        return item;
       });
-      if (choice !== "delete") return;
-    }
-    try {
-      const item = await editorAPI.trashEntry(this.workspace.id, node.ref);
-      for (const tab of [...affected]) this.removeTab(tab);
-      const parent = node.parentKey ? this.nodes.get(node.parentKey) : null;
-      if (parent) await this.reloadChildrenPreservingExpansion(parent);
-      toast(`Moved ${node.name} to Echo Trash`, {
-        actionLabel: "Undo",
-        action: async () => {
-          await editorAPI.restoreTrash(this.workspace!.id, item.id);
-          if (parent) await this.reloadChildrenPreservingExpansion(parent);
-          toast(`Restored ${node.name}`);
-        },
-      });
+      if (this.abort.signal.aborted) return;
+      await this.refreshTreeParents(parents);
+      const trashed = result.succeeded.map(({ value }) => value);
+      this.reportTreeOperation(`Moved ${trashed.length === nodes.length ? label : `${trashed.length} items`} to Echo Trash`, result.failed,
+        trashed.length ? () => this.restoreTreeItems(workspaceId, trashed, parents) : undefined);
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), { sticky: true });
+    } finally {
+      this.finishTreeMutation();
     }
   }
 
-  private async createUnderSelection(kind: "file" | "directory"): Promise<void> {
-    if (!this.workspace || !this.roots.length) return;
-    const selected = this.selectedTreeKey ? this.nodes.get(this.selectedTreeKey) : null;
+  private async restoreTreeItems(workspaceId: string, items: TrashItem[], parents: FileRef[]): Promise<void> {
+    if (this.treeMutationBusy) {
+      toast("Wait for the current file operation to finish, then restore these items from Echo Trash.");
+      return;
+    }
+    this.treeMutationBusy = true;
+    try {
+      const result = await runTreeOperation(items, (item) => editorAPI.restoreTrash(workspaceId, item.id));
+      if (!this.abort.signal.aborted) await this.refreshTreeParents(parents);
+      this.reportTreeOperation(`Restored ${result.succeeded.length} item${result.succeeded.length === 1 ? "" : "s"}`, result.failed);
+    } finally {
+      this.finishTreeMutation();
+    }
+  }
+
+  private async createUnderSelection(kind: "file" | "directory", selected = this.selectedTreeKey ? this.nodes.get(this.selectedTreeKey) : null): Promise<void> {
+    if (!this.workspace || !this.roots.length || this.treeMutationBusy) return;
     const parent = selected?.kind === "directory" ? selected : selected?.parentKey ? this.nodes.get(selected.parentKey) : this.nodes.get(refKey({ rootId: this.roots[0].id, path: "" }));
     if (!parent) return;
     if (parent.readOnly) {
@@ -2909,7 +3031,7 @@ class CodeView {
       const result = await editorAPI.createEntry(this.workspace.id, { parent: parent.ref, name, kind });
       this.expanded.add(parent.key);
       await this.reloadChildrenPreservingExpansion(parent);
-      this.selectedTreeKey = refKey(result.entry.ref);
+      this.selectTreeKey(refKey(result.entry.ref));
       this.renderTree();
       if (kind === "file") await this.recordCodeNavigation(() => this.openFile(result.entry.ref, true));
     } catch (error) {
@@ -2952,12 +3074,20 @@ class CodeView {
     }
   }
 
-  private async expandTo(ref: FileRef, select = true): Promise<void> {
+  private async expandTo(ref: FileRef, select = true, isCurrent = () => true): Promise<void> {
+    if (select) {
+      this.treeSelectionVersion++;
+      this.explorerRevealGeneration++;
+    }
+    const selectionVersion = this.treeSelectionVersion;
+    const currentRequest = () => !this.abort.signal.aborted && selectionVersion === this.treeSelectionVersion && isCurrent();
+    if (!currentRequest()) return;
     const segments = ref.path.split("/").filter(Boolean);
     let current = this.nodes.get(refKey({ rootId: ref.rootId, path: "" }));
     if (!current) return;
     this.expanded.add(current.key);
     await this.loadChildren(current);
+    if (!currentRequest()) return;
     for (let index = 0; index < segments.length; index++) {
       const nextPath = segments.slice(0, index + 1).join("/");
       const next = this.nodes.get(refKey({ rootId: ref.rootId, path: nextPath }));
@@ -2966,10 +3096,11 @@ class CodeView {
       if (next.kind === "directory" && (index < segments.length - 1 || this.expanded.has(next.key))) {
         this.expanded.add(next.key);
         await this.loadChildren(next);
+        if (!currentRequest()) return;
       }
     }
     if (select && current) {
-      this.selectedTreeKey = current.key;
+      this.selectTreeKey(current.key);
       this.renderTree();
       const index = this.flatTree.findIndex((node) => node.key === current!.key);
       if (index >= 0) this.treeVirtualizer.scrollToIndex(index, { align: "auto" });
@@ -2979,15 +3110,16 @@ class CodeView {
   private revealTabInExplorer(tab: OpenTab): void {
     const ref = this.worktreeRef(tab);
     const generation = ++this.explorerRevealGeneration;
+    const selectionVersion = ++this.treeSelectionVersion;
     if (!ref) return;
-    void this.expandTo(ref, false).then(() => {
-      if (this.abort.signal.aborted || generation !== this.explorerRevealGeneration || this.activeTabId !== tab.id) return;
+    const isCurrent = () => !this.abort.signal.aborted && generation === this.explorerRevealGeneration
+      && selectionVersion === this.treeSelectionVersion && this.activeTabId === tab.id;
+    void this.expandTo(ref, false, isCurrent).then(() => {
+      if (!isCurrent()) return;
       const node = this.nodes.get(refKey(ref));
       if (!node || node.kind !== "file") return;
-      if (this.selectedTreeKey !== node.key) {
-        this.selectedTreeKey = node.key;
-        this.renderTree();
-      }
+      this.selectTreeKey(node.key);
+      this.renderTree();
       const index = this.flatTree.findIndex((candidate) => candidate.key === node.key);
       if (index >= 0) this.treeVirtualizer.scrollToIndex(index, { align: "auto" });
       this.schedulePersist();
@@ -2995,15 +3127,17 @@ class CodeView {
   }
 
   private showTreeMenu(event: MouseEvent, node: TreeNode): void {
-    this.selectedTreeKey = node.key;
+    if (this.treeSelection.selected.has(node.key)) this.setTreeSelection(this.treeSelection, node.key);
+    else this.selectTreeKey(node.key);
     this.renderTreeRows();
+    const selection = this.selectedTreeNodes();
     showContextMenu(event.clientX, event.clientY, [
       ...(node.kind === "directory" ? [
-        { label: "New File", icon: "new-file", disabled: node.readOnly, run: () => this.createUnderSelection("file") },
-        { label: "New Folder", icon: "new-folder", disabled: node.readOnly, run: () => this.createUnderSelection("directory") },
+        { label: "New File", icon: "new-file", disabled: this.treeMutationBusy || node.readOnly, run: () => this.createUnderSelection("file", node) },
+        { label: "New Folder", icon: "new-folder", disabled: this.treeMutationBusy || node.readOnly, run: () => this.createUnderSelection("directory", node) },
       ] : []),
-      { label: "Rename", detail: "F2", icon: "edit", disabled: node.isRoot || node.readOnly, separatorBefore: node.kind === "directory", run: () => this.beginRename(node) },
-      { label: "Delete", detail: "Del", icon: "trash", danger: true, disabled: node.isRoot || node.readOnly, run: () => this.deleteNode(node) },
+      { label: "Rename", detail: "F2", icon: "edit", disabled: this.treeMutationBusy || selection.length !== 1 || node.isRoot || node.readOnly, separatorBefore: node.kind === "directory", run: () => this.beginRename(node) },
+      { label: "Delete", detail: "Del", icon: "trash", danger: true, disabled: this.treeMutationBusy || !canDeleteTreeNodes(selection), run: () => this.deleteTreeSelection(selection) },
       { label: "Reveal in File Browser", icon: "folder-opened", separatorBefore: true, run: () => this.reveal(node.ref) },
     ]);
   }
@@ -3523,9 +3657,13 @@ class CodeView {
       const node = this.nodes.get(row.dataset.treeKey || "");
       if (!node) return;
       this.treeScroller.focus();
-      void this.toggleNode(node);
+      if (event.ctrlKey || event.metaKey || event.shiftKey) {
+        event.preventDefault();
+        this.selectTreeKey(node.key, { toggle: event.ctrlKey || event.metaKey, range: event.shiftKey });
+      } else void this.toggleNode(node);
     }, { signal });
     this.treeCanvas.addEventListener("dblclick", (event) => {
+      if (event.ctrlKey || event.metaKey || event.shiftKey || (event.target as Element).closest("[data-rename-input]")) return;
       const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
       const node = row ? this.nodes.get(row.dataset.treeKey || "") : null;
       if (node?.kind === "file" && !node.blockedReason) void this.recordCodeNavigation(() => this.openFile(node.ref, true, false));
@@ -3539,36 +3677,41 @@ class CodeView {
     this.treeCanvas.addEventListener("dragstart", (event) => {
       const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
       const node = row ? this.nodes.get(row.dataset.treeKey || "") : null;
-      if (!row || !node || node.isRoot || node.readOnly || node.blockedReason || !event.dataTransfer) {
+      if (!row || !node || this.treeMutationBusy || (event.target as Element).closest("[data-rename-input]") || !event.dataTransfer) {
+        event.preventDefault();
+        return;
+      }
+      if (!this.treeSelection.selected.has(node.key)) this.selectTreeKey(node.key);
+      const selection = this.selectedTreeNodes();
+      if (!selection.length || selection.some((candidate) => candidate.isRoot || candidate.readOnly || candidate.blockedReason)) {
         event.preventDefault();
         return;
       }
       this.renamingKey = null;
-      this.draggingTreeKey = node.key;
-      row.classList.add("is-dragging");
+      this.draggingTreeNodes = selection;
+      this.renderTreeRows();
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("application/x-echo-tree-entry", node.key);
-      event.dataTransfer.setData("text/plain", node.name);
+      event.dataTransfer.setData("text/plain", selection.map((candidate) => candidate.name).join("\n"));
     }, { signal });
     this.treeCanvas.addEventListener("dragover", (event) => {
-      const source = this.nodes.get(this.draggingTreeKey || "");
       const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
       const target = row ? this.nodes.get(row.dataset.treeKey || "") : undefined;
-      const destination = this.treeMoveDestination(source, target);
+      const destination = treeMoveDestination(this.draggingTreeNodes, target);
       this.setTreeDropTarget(destination?.key || null);
-      this.startTreeDragScroll(event.clientY);
+      if (this.draggingTreeNodes.length) this.startTreeDragScroll(event.clientY);
       if (!destination || !event.dataTransfer) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = "move";
     }, { signal });
     this.treeCanvas.addEventListener("drop", (event) => {
-      const source = this.nodes.get(this.draggingTreeKey || "");
+      const selection = this.draggingTreeNodes;
       const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
       const target = row ? this.nodes.get(row.dataset.treeKey || "") : undefined;
-      const destination = this.treeMoveDestination(source, target);
+      const destination = treeMoveDestination(selection, target);
       if (destination) event.preventDefault();
       this.clearTreeDragState();
-      if (source && destination) void this.moveTreeNode(source, destination);
+      if (destination) void this.moveTreeNodes(selection, destination);
     }, { signal });
     this.treeCanvas.addEventListener("dragend", () => this.clearTreeDragState(), { signal });
     this.treeCanvas.addEventListener("dragleave", (event) => {
@@ -3829,12 +3972,13 @@ class CodeView {
     else if (event.key === "Home") nextIndex = 0;
     else if (event.key === "End") nextIndex = this.flatTree.length - 1;
     else if (event.key === "F2") {
-      const node = this.nodes.get(this.selectedTreeKey || "");
-      if (node) { event.preventDefault(); void this.beginRename(node); }
+      event.preventDefault();
+      event.stopPropagation();
+      this.renameTreeSelection();
       return;
     } else if (event.key === "Delete") {
-      const node = this.nodes.get(this.selectedTreeKey || "");
-      if (node) { event.preventDefault(); void this.deleteNode(node); }
+      event.preventDefault();
+      void this.deleteTreeSelection();
       return;
     } else if (event.key === "Enter" || event.key === " ") {
       const node = this.nodes.get(this.selectedTreeKey || "");
@@ -3847,12 +3991,12 @@ class CodeView {
     } else if (event.key === "ArrowLeft") {
       const node = this.nodes.get(this.selectedTreeKey || "");
       if (node?.kind === "directory" && this.expanded.has(node.key)) { event.preventDefault(); void this.toggleNode(node); }
-      else if (node?.parentKey) { this.selectedTreeKey = node.parentKey; this.renderTree(); }
+      else if (node?.parentKey) { event.preventDefault(); this.selectTreeKey(node.parentKey); this.renderTree(); }
       return;
     } else return;
     if (nextIndex >= 0 && this.flatTree[nextIndex]) {
       event.preventDefault();
-      this.selectedTreeKey = this.flatTree[nextIndex].key;
+      this.selectTreeKey(this.flatTree[nextIndex].key);
       this.renderTreeRows();
       this.treeVirtualizer.scrollToIndex(nextIndex, { align: "auto" });
     }
@@ -3922,8 +4066,8 @@ class CodeView {
       event.stopPropagation();
       this.cycleCodeTabs(event.shiftKey);
     } else if (event.key === "F2" && this.treeScroller.contains(document.activeElement)) {
-      const node = this.nodes.get(this.selectedTreeKey || "");
-      if (node) { event.preventDefault(); void this.beginRename(node); }
+      event.preventDefault();
+      this.renameTreeSelection();
     } else if (event.key === "F2" && this.activeCodeEditor()?.hasTextFocus()) {
       event.preventDefault();
       this.activeCodeEditor()?.trigger("echo", "editor.action.rename", null);
@@ -4147,8 +4291,6 @@ class CodeView {
     }
     this.setSidebar("explorer");
     await this.expandTo(reference.ref);
-    this.selectedTreeKey = refKey(reference.ref);
-    this.renderTree();
   }
 
   private async activateHistoricalChatResource(resource: HistoricalChatResource): Promise<void> {
@@ -4316,7 +4458,7 @@ class CodeView {
     const shell = this.root.querySelector<HTMLElement>(".code-app-shell");
     shell?.style.setProperty("--explorer-width", `${this.explorerWidth}px`);
     this.expanded = new Set(saved.expanded || []);
-    this.selectedTreeKey = saved.selectedTreeKey || null;
+    this.selectTreeKey(saved.selectedTreeKey || null);
     for (const persisted of saved.tabs || []) {
       if (this.abort.signal.aborted) return;
       await this.restoreTab(persisted);
@@ -4506,7 +4648,8 @@ class CodeView {
     try {
       await saveSession(this.workspace.id, {
         version: 5, activeTabId: this.activeTabId, tabs, expanded: [...this.expanded],
-        selectedTreeKey: this.selectedTreeKey,
+        selectedTreeKey: this.selectedTreeKey && this.treeSelection.selected.has(this.selectedTreeKey)
+          ? this.selectedTreeKey : this.treeSelection.selected.values().next().value || null,
         explorerWidth: this.explorerWidth, codeChatWidth: this.codeChatWidth,
         treeScrollTop: this.treeScroller?.scrollTop || 0,
       });
@@ -4581,6 +4724,12 @@ class CodeView {
   }
 
   private async applyFilesystemChanges(changes: FilesystemChange[]): Promise<void> {
+    // A batch remaps editor and selection references after its requests complete.
+    // Process watcher notifications against those final references.
+    if (this.treeMutationBusy) {
+      this.pendingTreeChanges.push(...changes);
+      return;
+    }
     for (const repositoryId of new Set(this.tabs.flatMap((tab) => tab.diff && changes.some((change) => tab.diff?.fileRef && isRefWithin(tab.diff.fileRef, change.ref)) ? [tab.diff.repository.id] : []))) {
       this.scheduleSourceControlDiffRefresh(repositoryId);
     }
@@ -4648,6 +4797,7 @@ class CodeView {
   }
 
   private async pollOpenTabs(): Promise<void> {
+    if (this.treeMutationBusy) return;
     for (const tab of this.tabs) {
       const ref = this.worktreeRef(tab);
       if (!ref) continue;
