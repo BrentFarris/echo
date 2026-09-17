@@ -3,6 +3,7 @@ package llm
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -25,6 +26,7 @@ const (
 	DefaultEditorFontSize           = 13.5
 	MinEditorFontSize               = 8
 	MaxEditorFontSize               = 30
+	MaxEditorColumnGuide            = 10000
 	ReasoningEffortNone             = "none"
 	ReasoningEffortLow              = "low"
 	ReasoningEffortMedium           = "medium"
@@ -105,6 +107,8 @@ type Settings struct {
 	EditorFontSize                     float64           `json:"editorFontSize"`
 	EditorInsertSpaces                 bool              `json:"editorInsertSpaces"`
 	EditorTabSize                      int               `json:"editorTabSize"`
+	EditorColumnGuidesEnabled          bool              `json:"editorColumnGuidesEnabled"`
+	EditorColumnGuides                 []int             `json:"editorColumnGuides"`
 	DisableNotificationSounds          bool              `json:"disableNotificationSounds,omitempty"`
 	DisablePlanQuestionSounds          bool              `json:"disablePlanQuestionSounds,omitempty"`
 	EnablePlanQuestionNotifications    *bool             `json:"enablePlanQuestionNotifications,omitempty"`
@@ -156,6 +160,7 @@ func DefaultSettings() Settings {
 		SearxngURL:                         DefaultSearxngURL,
 		EditorFontSize:                     DefaultEditorFontSize,
 		EditorTabSize:                      4,
+		EditorColumnGuides:                 []int{80, 90},
 		ThinkingTokenBudget:                -1,
 		ResearchAgentConcurrency:           DefaultResearchAgentConcurrency,
 		MaxChatRounds:                      DefaultMaxChatRounds,
@@ -199,6 +204,13 @@ func (s Settings) normalized(endpointProfilesAuthoritative bool) Settings {
 	s.ComfyuiImg2imgWorkflow = strings.TrimSpace(s.ComfyuiImg2imgWorkflow)
 	s.ComfyuiVideoWorkflow = strings.TrimSpace(s.ComfyuiVideoWorkflow)
 	s.Theme = s.Theme.Normalized()
+	if len(s.EditorColumnGuides) == 0 {
+		s.EditorColumnGuides = []int{80, 90}
+	} else {
+		s.EditorColumnGuides = slices.Clone(s.EditorColumnGuides)
+		slices.Sort(s.EditorColumnGuides)
+		s.EditorColumnGuides = slices.Compact(s.EditorColumnGuides)
+	}
 	if s.EditorTabSize == 0 {
 		s.EditorTabSize = 4
 	}
@@ -250,6 +262,7 @@ func normalizeSettingsGeneration(s Settings) Settings {
 }
 
 func (s Settings) Clone() Settings {
+	s.EditorColumnGuides = slices.Clone(s.EditorColumnGuides)
 	s.Endpoints = append([]LLMEndpoint(nil), s.Endpoints...)
 	for index := range s.Endpoints {
 		s.Endpoints[index].Headers = cloneStringMap(s.Endpoints[index].Headers)
@@ -283,6 +296,11 @@ func (s Settings) ForInteraction(interaction Interaction) Settings {
 }
 
 func (s Settings) Validate() error {
+	for _, column := range s.EditorColumnGuides {
+		if column < 1 || column > MaxEditorColumnGuide {
+			return fmt.Errorf("editor guide columns must be integers between 1 and %d", MaxEditorColumnGuide)
+		}
+	}
 	if s.EditorTabSize < 0 || s.EditorTabSize > 8 {
 		return fmt.Errorf("editor tab size must be between 1 and 8")
 	}

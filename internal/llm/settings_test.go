@@ -2,8 +2,55 @@ package llm
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 )
+
+func TestEditorColumnGuides(t *testing.T) {
+	for _, settings := range []Settings{DefaultSettings(), {}, {EditorColumnGuides: []int{}}} {
+		normalized := settings.NormalizedEndpointProfiles()
+		if normalized.EditorColumnGuidesEnabled || !slices.Equal(normalized.EditorColumnGuides, []int{80, 90}) {
+			t.Fatalf("expected disabled default guides, got %v / %v", normalized.EditorColumnGuidesEnabled, normalized.EditorColumnGuides)
+		}
+	}
+	settings := DefaultSettings()
+	settings.EditorColumnGuidesEnabled = true
+	settings.EditorColumnGuides = []int{90, 80, 90, 120}
+	normalized := settings.NormalizedEndpointProfiles()
+	if !normalized.EditorColumnGuidesEnabled || !slices.Equal(normalized.EditorColumnGuides, []int{80, 90, 120}) {
+		t.Fatalf("unexpected normalized guides: %v", normalized.EditorColumnGuides)
+	}
+	if !slices.Equal(settings.EditorColumnGuides, []int{90, 80, 90, 120}) {
+		t.Fatal("normalization modified the input slice")
+	}
+	cloned := normalized.Clone()
+	cloned.EditorColumnGuides[0] = 100
+	if normalized.EditorColumnGuides[0] != 80 {
+		t.Fatal("clone shares its guide slice")
+	}
+	normalized.EditorColumnGuidesEnabled = false
+	if !slices.Equal(normalized.Normalized().EditorColumnGuides, []int{80, 90, 120}) {
+		t.Fatal("disabling guides discarded the configured columns")
+	}
+	for _, column := range []int{1, 80, 90, MaxEditorColumnGuide} {
+		settings.EditorColumnGuides = []int{column}
+		if err := settings.Validate(); err != nil {
+			t.Fatalf("valid column %d rejected: %v", column, err)
+		}
+	}
+	for _, column := range []int{-1, 0, MaxEditorColumnGuide + 1} {
+		settings.EditorColumnGuides = []int{column}
+		if err := settings.Validate(); err == nil {
+			t.Fatalf("invalid column %d accepted", column)
+		}
+	}
+	for _, raw := range []string{`{"editorColumnGuides":[80.5]}`, `{"editorColumnGuides":["80"]}`} {
+		var decoded Settings
+		if err := json.Unmarshal([]byte(raw), &decoded); err == nil {
+			t.Fatalf("invalid guide JSON accepted: %s", raw)
+		}
+	}
+}
 
 func TestStreamIdleTimeoutNormalization(t *testing.T) {
 	settings := DefaultSettings()

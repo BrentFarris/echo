@@ -2306,3 +2306,125 @@ func TestSlow(t *testing.T) {
 		await page.locator(".debug-floating-toolbar [data-debug-action=stop]").click();
 	}
 });
+
+test("configures column guides in normal and diff editors", async ({ page }) => {
+  test.setTimeout(90_000);
+  const state = JSON.parse(readFileSync(resolve(directory, "../test-results/e2e-runtime/state.json"), "utf8")) as {
+    setupCode: string; workspace: string;
+  };
+  const workspace = join(dirname(state.workspace), "column-guide-workspace");
+  mkdirSync(workspace, { recursive: true });
+  const mainPath = join(workspace, "main.go");
+  const content = `package main\n\nfunc main() {\n\tprintln(1)\n}\n// ${"0123456789".repeat(24)}`;
+  writeFileSync(mainPath, content, "utf8");
+  const git = (...args: string[]) => {
+    const result = spawnSync("git", ["-C", workspace, ...args], { encoding: "utf8", windowsHide: true });
+    if (result.status !== 0) throw new Error(result.stderr || String(result.error));
+  };
+  git("init", "-b", "main");
+  git("add", ".");
+  git("-c", "user.name=Echo E2E", "-c", "user.email=echo-e2e@example.com", "commit", "-m", "Guide fixture");
+  writeFileSync(mainPath, content.replace("println(1)", "println(2)"), "utf8");
+  await page.goto("/");
+  await expect(page.locator(".auth-panel")).toBeVisible();
+  const setup = await page.getByRole("heading", { name: "Secure this Echo server" }).isVisible();
+  if (setup) {
+    await page.getByLabel("Setup code").fill(state.setupCode);
+    await page.getByLabel("Confirm password").fill(password);
+  }
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByLabel("Device name").fill("Playwright Guides");
+  await page.getByRole("button", { name: setup ? "Finish setup" : "Sign in" }).click();
+  await expect(page.locator(".app-shell")).toBeVisible();
+  const previous = await page.evaluate(async (workspacePath) => {
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      const response = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+      if (!response.ok) throw new Error(await response.text());
+      return (await response.json()).data;
+    };
+    const current = await request("/api/workspaces");
+    const { settings } = await request("/api/settings");
+    const created = await request("/api/workspaces", "POST", { name: "Column Guide Workspace", mainPath: workspacePath, folders: [] });
+    await request("/api/workspaces/active", "PUT", { id: created.workspace.id });
+    await request("/api/settings", "PUT", { settings: { ...settings, editorFontSize: 13.5, editorColumnGuidesEnabled: false, editorColumnGuides: [80, 90], disableSourceControlSplitDiffView: false } });
+    return { settings, workspaceId: current.activeId };
+  }, workspace);
+  try {
+    await page.goto("/#/code");
+    await expect(page.locator(".code-app-shell")).toHaveAttribute("aria-busy", "false");
+    await page.locator(".code-tree-label", { hasText: "main.go" }).dblclick();
+    await expect(page.locator("[data-monaco-host] .view-lines")).toContainText("println(2)");
+    // Column guides are app-wide editor preferences, retained across routes and reloads.
+    const guideViewport = page.viewportSize()!;
+    await page.setViewportSize({ width: 1680, height: 1000 });
+    const normalGuides = page.locator("[data-monaco-host] .view-ruler");
+    await expect(normalGuides).toHaveCount(0);
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByLabel("Settings sections").getByRole("button", { name: "Code", exact: true }).click();
+    await expect(page.getByLabel("Show column guides")).toBeEnabled();
+    await expect(page.getByLabel("Guide columns", { exact: true })).toBeDisabled();
+    await expect(page.getByLabel("Guide columns", { exact: true })).toHaveValue("80, 90");
+    const saveGuides = page.waitForResponse((response) => response.url().endsWith("/api/settings") && response.request().method() === "PUT");
+    await page.getByLabel("Show column guides").check();
+    expect((await saveGuides).ok()).toBe(true);
+    await expect(page.getByLabel("Guide columns", { exact: true })).toBeEnabled();
+    await page.screenshot({ path: test.info().outputPath("code-settings.png") });
+    await page.getByRole("button", { name: "Back to previous view" }).click();
+    await expect(normalGuides).toHaveCount(2);
+    const guidePositions = () => normalGuides.evaluateAll((nodes) => nodes.map((node) => Number.parseFloat((node as HTMLElement).style.left)));
+    const initialGuidePositions = await guidePositions();
+    expect(initialGuidePositions[1] / initialGuidePositions[0]).toBeCloseTo(90 / 80);
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.screenshot({ path: test.info().outputPath("column-guides-light.png") });
+    await page.emulateMedia({ colorScheme: "dark" });
+    await expect(page.locator("[data-monaco-host] .monaco-editor")).toHaveClass(/vs-dark/);
+    await page.screenshot({ path: test.info().outputPath("column-guides-dark.png") });
+    // Monaco recomputes ruler positions when the editor font changes.
+    const guideFontSave = page.waitForResponse((response) => response.url().endsWith("/api/settings") && response.request().method() === "PUT");
+    await page.locator("[data-monaco-host]").dispatchEvent("wheel", { ctrlKey: true, deltaY: -100, bubbles: true });
+    await expect.poll(async () => (await guidePositions())[0]).toBeGreaterThan(initialGuidePositions[0]);
+    expect((await guideFontSave).ok()).toBe(true);
+    const guideLines = page.locator("[data-monaco-host] .view-lines");
+    await guideLines.click();
+    await page.keyboard.press("Control+End");
+    await page.keyboard.press("Home");
+    await page.screenshot({ path: test.info().outputPath("column-guides-resized.png") });
+    const guideScreenX = await normalGuides.first().evaluate((node) => node.getBoundingClientRect().x);
+    await page.keyboard.press("End");
+    await expect.poll(() => normalGuides.first().evaluate((node) => node.getBoundingClientRect().x)).toBeLessThan(guideScreenX);
+    await page.reload();
+    await expect(page.locator(".code-app-shell")).toHaveAttribute("aria-busy", "false");
+    await expect(normalGuides).toHaveCount(2);
+    await page.emulateMedia({ colorScheme: "light" });
+
+    await page.setViewportSize({ width: 2400, height: 1000 });
+    await page.getByRole("button", { name: "Source Control", exact: true }).click();
+    await page.locator(".git-change-group[data-git-group='unstaged'] .git-change-row", { hasText: "main.go" }).click();
+    await expect(page.locator("[data-monaco-diff-host]")).toBeVisible();
+    await expect(page.locator("[data-monaco-diff-host] .original-in-monaco-diff-editor .view-ruler")).toHaveCount(2);
+    await expect(page.locator("[data-monaco-diff-host] .modified-in-monaco-diff-editor .view-ruler")).toHaveCount(2);
+    await page.screenshot({ path: test.info().outputPath("column-guides-diff.png") });
+    await page.getByRole("button", { name: "Use Inline Diff" }).click();
+    await expect(page.locator("[data-monaco-diff-host]")).toHaveAttribute("data-diff-layout", "inline");
+    await expect(page.locator("[data-monaco-diff-host] .modified-in-monaco-diff-editor .view-ruler")).toHaveCount(2);
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByLabel("Settings sections").getByRole("button", { name: "Code", exact: true }).click();
+    await expect(page.getByLabel("Show column guides")).toBeChecked();
+    const disableGuides = page.waitForResponse((response) => response.url().endsWith("/api/settings") && response.request().method() === "PUT");
+    await page.getByLabel("Show column guides").uncheck();
+    expect((await disableGuides).ok()).toBe(true);
+    await expect(page.getByLabel("Guide columns", { exact: true })).toHaveValue("80, 90");
+    await expect(page.getByLabel("Guide columns", { exact: true })).toBeDisabled();
+    await page.getByRole("button", { name: "Back to previous view" }).click();
+    await expect(page.locator(".code-app-shell")).toHaveAttribute("aria-busy", "false");
+    await expect(page.locator(".view-ruler")).toHaveCount(0);
+    await page.setViewportSize(guideViewport);
+
+  } finally {
+    await page.evaluate(async ({ settings, workspaceId }) => {
+      const saved = await fetch("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ settings }) });
+      if (!saved.ok) throw new Error("Could not restore settings");
+      if (workspaceId) await fetch("/api/workspaces/active", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: workspaceId }) });
+    }, previous);
+  }
+});

@@ -13,7 +13,7 @@ describe("indentation preferences", () => {
   });
 
   it("serializes font and indentation saves while retaining unrelated settings", async () => {
-    let stored: Record<string, unknown> = { theme: "dark", editorFontSize: 13.5 };
+    let stored: Record<string, unknown> = { theme: "dark", editorFontSize: 13.5, editorColumnGuidesEnabled: true, editorColumnGuides: [80, 90] };
     let release!: () => void;
     const firstWrite = new Promise<void>((resolve) => { release = resolve; });
     const write = vi.fn(async (settings) => { await firstWrite; stored = settings; });
@@ -23,7 +23,7 @@ describe("indentation preferences", () => {
     await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
     release();
     await Promise.all([font, indentation]);
-    expect(stored).toEqual({ theme: "dark", editorFontSize: 16, editorInsertSpaces: true, editorTabSize: 2 });
+    expect(stored).toEqual({ theme: "dark", editorFontSize: 16, editorInsertSpaces: true, editorTabSize: 2, editorColumnGuidesEnabled: true, editorColumnGuides: [80, 90] });
   });
 
   it("reports failed saves and allows subsequent saves to recover", async () => {

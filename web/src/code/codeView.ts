@@ -19,6 +19,7 @@ import {
 } from "./codeChatContext";
 import { loadSession, saveSession } from "./persistence";
 import { editorSettingsWriter, indentationDefaults, indentationLabel, openIndentationPopover, type Indentation } from "./indentation";
+import { columnGuideRulers, type ColumnGuideSettings } from "./columnGuides";
 import { previewKindForPath, type PreviewKind } from "./preview";
 import {
   CODE_ROUTE, chatCompletionTargetFromHash, chatTargetRouteHash, codeOpenTargetFromHash, codeRouteHash,
@@ -189,6 +190,7 @@ class CodeView {
   private splitGitDiff = true;
   private leadingWhitespaceIndicators = true;
   private editorFontSize = 13.5;
+  private editorRulers: number[] = [];
   private indentation: Indentation = indentationDefaults({});
   private closeIndentationPopover: (() => void) | null = null;
   private saveEditorSettings = editorSettingsWriter(
@@ -271,7 +273,7 @@ class CodeView {
       }
       const [roots, settingsData, lspData] = await Promise.all([
         editorAPI.getRoots(this.workspace.id),
-        api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: { disableSourceControlSplitDiffView?: boolean; disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean; editorFontSize?: number; editorInsertSpaces?: boolean; editorTabSize?: number } } | null>,
+        api("/api/settings", { method: "GET" }).catch(() => null) as Promise<{ settings?: ColumnGuideSettings & { disableSourceControlSplitDiffView?: boolean; disableGitSplitDiffView?: boolean; hideLeadingWhitespaceIndicators?: boolean; editorFontSize?: number; editorInsertSpaces?: boolean; editorTabSize?: number } } | null>,
         editorAPI.getWorkspaceLSPConfig(this.workspace.id).catch(() => ({ config: {}, profiles: [], statuses: [] } as WorkspaceLSPResponse)),
       ]);
       if (this.abort.signal.aborted) return;
@@ -281,6 +283,7 @@ class CodeView {
       this.splitGitDiff = disableSplitDiff !== true;
       this.leadingWhitespaceIndicators = settingsData?.settings?.hideLeadingWhitespaceIndicators !== true;
       this.indentation = indentationDefaults(settingsData?.settings || {});
+      this.editorRulers = columnGuideRulers(settingsData?.settings || {});
       this.editorFontSize = this.clampEditorFontSize((settingsData?.settings?.editorFontSize as number | undefined) || 13.5);
       this.lspProfiles = lspData.profiles || [];
       this.codeNavigation = new CodeNavigationHistory(this.workspace.id, { createId: randomUUID });
@@ -828,6 +831,7 @@ class CodeView {
       automaticLayout: true,
       fontFamily: "Cascadia Code, JetBrains Mono, Consolas, monospace",
       fontSize: this.editorFontSize,
+      rulers: this.editorRulers,
       lineHeight: Math.round(this.editorFontSize * 1.48),
       lineNumbers: "on",
       minimap: { enabled: true, maxColumn: 120, renderCharacters: true, showSlider: "mouseover" },
@@ -869,6 +873,7 @@ class CodeView {
       automaticLayout: true,
       fontFamily: "Cascadia Code, JetBrains Mono, Consolas, monospace",
       fontSize: this.editorFontSize,
+      rulers: this.editorRulers,
       lineHeight: Math.round(this.editorFontSize * 1.48),
       lineNumbers: "on",
       minimap: { enabled: true, maxColumn: 120, showSlider: "mouseover" },

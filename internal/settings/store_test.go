@@ -3,10 +3,30 @@ package settings
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/brent/echo/internal/llm"
 )
+
+func TestColumnGuidesRoundTrip(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "echo.json"))
+	cfg := llm.DefaultSettings()
+	cfg.EditorColumnGuides = []int{120, 90, 80, 90}
+	for _, enabled := range []bool{true, false} {
+		cfg.EditorColumnGuidesEnabled = enabled
+		if err := store.Save(cfg); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := store.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.EditorColumnGuidesEnabled != enabled || !slices.Equal(loaded.EditorColumnGuides, []int{80, 90, 120}) {
+			t.Fatalf("guides did not survive persistence: %v / %v", loaded.EditorColumnGuidesEnabled, loaded.EditorColumnGuides)
+		}
+	}
+}
 
 func TestLoadReturnsDefaultsWhenFileMissing(t *testing.T) {
 	dir := t.TempDir()

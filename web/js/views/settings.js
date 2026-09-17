@@ -10,6 +10,8 @@ import { icons } from "../icons.js";
 import { del, get, post, put } from "../api.js";
 import { logout } from "../../src/auth/authGate.ts";
 import { hasDirtySessions } from "../../src/code/persistence.ts";
+import { indentationDefaults } from "../../src/code/indentation.ts";
+import { columnGuideSettings, guideColumnsError, parseGuideColumns } from "../../src/code/columnGuides.ts";
 import { installChatMap } from "../../src/chatMap.ts";
 import { getEchoUpdateSnapshot, refreshEchoUpdateStatus, syncEchoUpdateBadges } from "../../src/echoUpdate.ts";
 import { chatTargetRouteHash, codeRouteHash, navigateBackFromSettings } from "../../src/navigation.ts";
@@ -72,6 +74,7 @@ const sections = [
   { id: "plugins", label: "Plugins", icon: icons.dashboard },
   { id: "external", label: "External Connections", icon: icons.git },
   { id: "messaging", label: "Messaging", icon: icons.mic },
+  { id: "code", label: "Code", icon: icons.code },
   { id: "source-control", label: "Source Control", icon: icons.git },
   { id: "lsp", label: "Language Servers", icon: icons.code },
   { id: "testing", label: "Testing", icon: icons.execute },
@@ -104,6 +107,10 @@ const state = {
   activeSection: "llm",
   themePalette: "light",
   editorFontSize: 13.5,
+  indentation: indentationDefaults({}),
+  columnGuides: columnGuideSettings({}),
+  guideColumnsText: "80, 90",
+  guideColumnsError: "",
   endpoints: [],
   routing: {
     chat: "",
@@ -554,6 +561,46 @@ function renderMessaging() {
   `;
 }
 
+function renderCode() {
+  const disabled = state.settingsLoaded ? "" : "disabled";
+  return `
+    <section class="settings-section">
+      <h2 class="settings-section-title">Code</h2>
+      <div class="settings-card">
+        <h3 class="settings-card-title">Editor</h3>
+        <div class="settings-grid">
+          <label class="field"><span>Editor Font Size</span>
+            <input type="number" min="${minEditorFontSize}" max="${maxEditorFontSize}" step="1" value="${state.editorFontSize}" data-editor-font-size aria-label="Code editor font size" ${disabled} />
+          </label>
+        </div>
+        <h3 class="settings-card-title">Indentation defaults</h3>
+        <p class="settings-card-help">Defaults for files without detected indentation. Change the current file's indentation from the editor status bar.</p>
+        <div class="settings-grid">
+          <label class="field"><span>Indent using</span>
+            <select data-editor-indent-style ${disabled}>
+              <option value="tabs" ${state.indentation.insertSpaces ? "" : "selected"}>Tabs</option>
+              <option value="spaces" ${state.indentation.insertSpaces ? "selected" : ""}>Spaces</option>
+            </select>
+          </label>
+          <label class="field"><span>Tab size</span>
+            <select data-editor-tab-size ${disabled}>${Array.from({ length: 8 }, (_, index) => index + 1).map((size) => `<option value="${size}" ${state.indentation.tabSize === size ? "selected" : ""}>${size}</option>`).join("")}</select>
+          </label>
+        </div>
+      </div>
+      <div class="settings-card">
+        <h3 class="settings-card-title">Column guides</h3>
+        <label class="settings-toggle"><span>Show column guides</span>
+          <input type="checkbox" data-editor-column-guides-enabled ${state.columnGuides.editorColumnGuidesEnabled ? "checked" : ""} ${disabled} />
+        </label>
+        <p class="settings-card-help" id="guide-columns-help">Vertical guides in the editor and diff views. Separate columns with commas, for example 80, 90.</p>
+        <label class="field"><span>Guide columns</span>
+          <input type="text" value="${esc(state.guideColumnsText)}" placeholder="80, 90" spellcheck="false" data-editor-column-guides aria-describedby="guide-columns-help guide-columns-error" aria-invalid="${Boolean(state.guideColumnsError)}" ${!state.settingsLoaded || !state.columnGuides.editorColumnGuidesEnabled ? "disabled" : ""} />
+        </label>
+        <p class="settings-status is-error" id="guide-columns-error" role="alert" ${state.guideColumnsError ? "" : "hidden"}>${esc(state.guideColumnsError)}</p>
+      </div>
+    </section>`;
+}
+
 function renderSourceControl() {
   const toggles = [
     { key: "leadingWhitespaceIndicators", checked: state.sourceControl.leadingWhitespaceIndicators, label: "Leading whitespace indicators", help: "Show leading whitespace changes in Source Control diffs." },
@@ -594,19 +641,6 @@ function renderTheme() {
               data-theme-palette="${name}"
             >${name === "light" ? "Light" : "Dark"}</button>
           `).join("")}
-        </div>
-
-        <div class="theme-font-size-field">
-          <span>Editor Font Size</span>
-          <input
-            type="number"
-            min="${minEditorFontSize}"
-            max="${maxEditorFontSize}"
-            step="1"
-            value="${state.editorFontSize}"
-            data-editor-font-size
-            aria-label="Code editor font size"
-          />
         </div>
 
         ${themeGroups.map((group) => `
@@ -1084,6 +1118,7 @@ const renderers = {
   plugins: renderPlugins,
   external: renderExternal,
   messaging: renderMessaging,
+  code: renderCode,
   "source-control": renderSourceControl,
   lsp: renderLanguageServers,
   testing: renderTesting,
@@ -1130,6 +1165,7 @@ function render() {
         </ul>
       </nav>
       <main class="settings-content">
+        ${state.saveStatus ? `<p class="settings-status is-error" role="alert">${esc(state.saveStatus)}</p>` : ""}
         ${renderContent()}
       </main>
       ${renderMobilePrimaryNav({ active: "settings", workspaceName: activeWorkspace?.name, workspaceSelector: true })}
@@ -1573,6 +1609,36 @@ function bindEvents(root) {
       field.value = String(state.editorFontSize);
       saveSettings();
     });
+  });
+
+  root.querySelector("[data-editor-indent-style]")?.addEventListener("change", (event) => {
+    state.indentation.insertSpaces = event.target.value === "spaces";
+    saveSettings();
+  });
+  root.querySelector("[data-editor-tab-size]")?.addEventListener("change", (event) => {
+    state.indentation.tabSize = Number(event.target.value);
+    saveSettings();
+  });
+  root.querySelector("[data-editor-column-guides-enabled]")?.addEventListener("change", (event) => {
+    state.columnGuides.editorColumnGuidesEnabled = event.target.checked;
+    root.querySelector("[data-editor-column-guides]").disabled = !event.target.checked;
+    saveSettings();
+  });
+  const guideField = root.querySelector("[data-editor-column-guides]");
+  guideField?.addEventListener("input", () => { state.guideColumnsText = guideField.value; });
+  guideField?.addEventListener("change", () => {
+    state.guideColumnsText = guideField.value;
+    const columns = parseGuideColumns(guideField.value);
+    state.guideColumnsError = columns ? "" : guideColumnsError;
+    const error = root.querySelector("#guide-columns-error");
+    error.textContent = state.guideColumnsError;
+    error.hidden = !state.guideColumnsError;
+    guideField.setAttribute("aria-invalid", String(!columns));
+    if (!columns) return;
+    state.columnGuides.editorColumnGuides = columns;
+    state.guideColumnsText = columns.join(", ");
+    guideField.value = state.guideColumnsText;
+    saveSettings();
   });
 
   root.querySelectorAll("[data-research-agent-concurrency]").forEach((field) => {
@@ -2106,6 +2172,9 @@ function readCTestingForm(root) {
 
 export function mount(root) {
   mountedRoot = root;
+  state.settingsLoaded = false;
+  state.saveStatus = "";
+  state.guideColumnsError = "";
   const requested = new URLSearchParams(location.hash.split("?")[1] || "").get("section");
   const requestedSection = requested === "git" ? "source-control" : requested;
   if (sections.some((section) => section.id === requestedSection)) state.activeSection = requestedSection;
@@ -2200,6 +2269,7 @@ function captureExternalFields(root) {
 
 // applySettings copies the loaded settings into the view state and re-renders.
 function applySettings(cfg) {
+  state.saveStatus = "";
   // The server returns { settings: <llm.Settings>, storagePath }; tolerate both
   // the nested and flat shapes.
   const s = cfg.settings || cfg;
@@ -2227,6 +2297,9 @@ function applySettings(cfg) {
     comfyuiVideoWorkflow: s.comfyuiVideoWorkflow || "",
   };
   state.editorFontSize = clampEditorFontSize(Number(s.editorFontSize) || 13.5);
+  state.indentation = indentationDefaults(s);
+  state.columnGuides = columnGuideSettings(s);
+  if (!state.guideColumnsError) state.guideColumnsText = state.columnGuides.editorColumnGuides.join(", ");
   state.researchAgentConcurrency = Math.max(0, Math.min(8, Number(s.researchAgentConcurrency ?? 4) || 0));
   state.sourceControl = {
     leadingWhitespaceIndicators: s.hideLeadingWhitespaceIndicators !== true,
@@ -2352,6 +2425,9 @@ function buildSettings() {
     enablePlanQuestionNotifications: state.messaging.planQuestionNotifications,
     enableChatCompletionNotifications: state.messaging.chatCompletionNotifications,
     editorFontSize: state.editorFontSize,
+    editorInsertSpaces: state.indentation.insertSpaces,
+    editorTabSize: state.indentation.tabSize,
+    ...state.columnGuides,
     researchAgentConcurrency: state.researchAgentConcurrency,
   };
   delete settings.disableGitSplitDiffView;
