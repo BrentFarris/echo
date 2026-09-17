@@ -133,7 +133,9 @@ export type PersistedTab = {
   ref: FileRef | null;
   title: string;
   hostPath: string;
+  /** Legacy preview-retention state (Keep Open), not close protection. */
   pinned: boolean;
+  closeProtected?: boolean;
   preview: boolean;
   dirty: boolean;
   deleted: boolean;

@@ -1289,6 +1289,7 @@
 
 .code-header-actions button,
 .code-tab-close,
+.code-tab-unpin,
 .code-breadcrumbs button,
 .code-statusbar button,
 .code-trash-dialog header button,
@@ -1306,6 +1307,7 @@
 .code-header-actions button:hover,
 .code-header-actions button:focus-visible,
 .code-tab-close:hover,
+.code-tab-unpin:hover,
 .code-breadcrumbs button:hover,
 .code-trash-dialog header button:hover,
 .code-diff-dialog header button:hover {
@@ -1600,12 +1602,23 @@
   color: #cca700;
 }
 
-.code-tab-close {
+.code-tab-close,
+.code-tab-unpin {
   width: 20px;
   height: 20px;
   flex: 0 0 auto;
-  opacity: 0;
   padding: 0;
+}
+
+.code-tab-close {
+  opacity: 0;
+}
+
+.code-tab-close:focus-visible,
+.code-tab-unpin:focus-visible {
+  opacity: 1;
+  outline: 1px solid var(--code-accent);
+  outline-offset: -1px;
 }
 
 .code-tab:hover .code-tab-close,
@@ -1613,7 +1626,7 @@
   opacity: 1;
 }
 
-.code-tab:has(.code-tab-dirty.is-visible):not(:hover) .code-tab-close {
+.code-tab:has(.code-tab-dirty.is-visible):not(:hover):not(:focus-within) .code-tab-close {
   display: none;
 }
 

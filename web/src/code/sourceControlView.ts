@@ -16,8 +16,8 @@ import { randomUUID } from "../randomUUID";
 
 type SourceControlViewCallbacks = {
   roots(): WorkspaceRoot[];
-  openFile(ref: FileRef, pin: boolean): Promise<void>;
-  openDiff(repository: SourceControlRepository, target: SourceControlDiffRequest, pin: boolean): Promise<void>;
+  openFile(ref: FileRef, keepOpen: boolean): Promise<void>;
+  openDiff(repository: SourceControlRepository, target: SourceControlDiffRequest, keepOpen: boolean): Promise<void>;
   updateBadge(count: number): void;
   statusChanged?(repositoryId: string): void;
   operationChanged?(repositoryId: string, busy: boolean): void;
@@ -582,7 +582,7 @@ export class SourceControlView {
     return changes && change ? { scope, changes, change, index } : null;
   }
 
-  private async openChange(row: HTMLElement, pin: boolean): Promise<void> {
+  private async openChange(row: HTMLElement, keepOpen: boolean): Promise<void> {
     const context = this.changeContext(row);
     const repositoryId = row.closest<HTMLElement>("[data-git-repository]")?.dataset.gitRepository;
     const repository = this.repositories.find((candidate) => candidate.id === repositoryId);
@@ -590,7 +590,7 @@ export class SourceControlView {
       kind: "change", groupId: context.change.groupId, path: context.change.path,
       oldPath: context.change.oldPath, fileRef: context.change.ref,
       scope: diffScopeForGroup(this.statuses.get(repository.id)?.groups.find((group) => group.id === context.change.groupId)),
-    }, pin);
+    }, keepOpen);
   }
 
   private async handleFileAction(repository: SourceControlRepository, scope: string, changes: SourceControlChange[], index: number, action: string): Promise<void> {

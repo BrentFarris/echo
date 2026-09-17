@@ -10,6 +10,7 @@ export type MenuAction = {
   icon?: string;
   danger?: boolean;
   disabled?: boolean;
+  checked?: boolean;
   separatorBefore?: boolean;
   run(): unknown | Promise<unknown>;
 };
@@ -28,8 +29,8 @@ export function showContextMenu(x: number, y: number, actions: MenuAction[]): vo
   menu.setAttribute("role", "menu");
   menu.innerHTML = actions.map((action, index) => `
     ${action.separatorBefore ? `<div class="code-menu-separator" role="separator"></div>` : ""}
-    <button type="button" role="menuitem" data-menu-index="${index}" class="${action.danger ? "is-danger" : ""}" ${action.disabled ? "disabled" : ""}>
-      <span class="codicon codicon-${escapeHTML(action.icon || "blank")}" aria-hidden="true"></span>
+    <button type="button" role="${action.checked === undefined ? "menuitem" : "menuitemcheckbox"}" ${action.checked === undefined ? "" : `aria-checked="${action.checked}"`} data-menu-index="${index}" class="${action.danger ? "is-danger" : ""}" ${action.disabled ? "disabled" : ""}>
+      <span class="codicon codicon-${escapeHTML(action.checked === undefined ? action.icon || "blank" : action.checked ? "check" : "blank")}" aria-hidden="true"></span>
       <span>${escapeHTML(action.label)}</span>
       ${action.detail ? `<kbd>${escapeHTML(action.detail)}</kbd>` : ""}
     </button>

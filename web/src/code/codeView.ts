@@ -44,6 +44,7 @@ import {
 } from "./codeNavigationHistory";
 import { beginMruCycle, nextMruCycle, pruneMruCycle, removeFromMru, type MruCycleState } from "./mruTabOrder";
 import { reorderTabs, type TabDropPosition } from "./tabOrder";
+import { restoreTabOpenState, setTabPinned } from "./tabState";
 import {
   commandPalettePresentation, loadRecentCommandIds, pruneRecentCommandIds,
   recordRecentCommandId, saveRecentCommandIds,
@@ -72,6 +73,7 @@ type OpenTab = {
   ref: FileRef | null;
   title: string;
   hostPath: string;
+  keepOpen: boolean;
   pinned: boolean;
   dirty: boolean;
   deleted: boolean;
@@ -156,7 +158,7 @@ class CodeView {
   private tabs: OpenTab[] = [];
   private activeTabId: string | null = null;
   private draggingTabId: string | null = null;
-  private tabDragStartedOnClose = false;
+  private tabDragStartedOnAction = false;
   private tabDragScrollFrame = 0;
   private tabDragScrollClientX = 0;
   private tabDragScrollActive = false;
@@ -477,9 +479,9 @@ class CodeView {
     if (!host) return;
     this.sourceControlView = new SourceControlView(host, this.workspace.id, this.abort.signal, {
       roots: () => this.roots,
-      openFile: async (ref, pin) => { await this.recordCodeNavigation(() => this.openFile(ref, pin)); },
-      openDiff: async (repository, target, pin) => {
-        await this.recordCodeNavigation(() => this.openSourceControlDiff(repository, target, pin));
+      openFile: async (ref, keepOpen) => { await this.recordCodeNavigation(() => this.openFile(ref, keepOpen)); },
+      openDiff: async (repository, target, keepOpen) => {
+        await this.recordCodeNavigation(() => this.openSourceControlDiff(repository, target, keepOpen));
       },
       updateBadge: (count) => setSourceControlBadgeCount(this.root, count),
       statusChanged: (repositoryId) => this.scheduleSourceControlDiffRefresh(repositoryId),
@@ -500,7 +502,7 @@ class CodeView {
       workspaceId: this.workspace.id,
       signal: this.abort.signal,
       getOverlays: () => this.searchOverlays(),
-      openResult: (ref, match, pin) => this.openSearchResult(ref, match, pin),
+      openResult: (ref, match, keepOpen) => this.openSearchResult(ref, match, keepOpen),
       confirmReplace: (details) => this.confirmSearchReplace(details),
       applyUpdates: (updates) => this.applySearchUpdates(updates),
       focusEditor: () => this.focusActiveEditor(),
@@ -582,9 +584,9 @@ class CodeView {
     return overlays;
   }
 
-  private async openSearchResult(ref: FileRef, match: TextSearchMatch, pin: boolean): Promise<void> {
+  private async openSearchResult(ref: FileRef, match: TextSearchMatch, keepOpen: boolean): Promise<void> {
     await this.recordCodeNavigation(async () => {
-      await this.openFile(ref, pin);
+      await this.openFile(ref, keepOpen);
       const tab = this.tabs.find((candidate) => {
         const candidateRef = this.worktreeRef(candidate);
         return candidateRef && refKey(candidateRef) === refKey(ref);
@@ -1082,7 +1084,7 @@ class CodeView {
     if (!reusable) model.setEOL(snapshot.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
     const tab: OpenTab = {
       kind: "file", id, ref: snapshot.ref, title: snapshot.ref.path.split("/").pop() || snapshot.ref.path,
-      hostPath: snapshot.hostPath, pinned: false, dirty: shared?.dirty || false, deleted: shared?.deleted || false, conflict: shared?.conflict || false,
+      hostPath: snapshot.hostPath, keepOpen: false, pinned: false, dirty: shared?.dirty || false, deleted: shared?.deleted || false, conflict: shared?.conflict || false,
       revision: shared?.revision || snapshot.revision, hasBom: shared?.hasBom ?? snapshot.hasBom, eol: shared?.eol || snapshot.eol,
       model, viewState: null, changeDisposable: { dispose() {} }, applying: false,
     };
@@ -1286,16 +1288,16 @@ class CodeView {
     model.dispose();
   }
 
-  private async openFile(ref: FileRef, pin: boolean, focusEditor = true, showErrors = true, activate = true, isCurrent?: () => boolean): Promise<boolean> {
+  private async openFile(ref: FileRef, keepOpen: boolean, focusEditor = true, showErrors = true, activate = true, isCurrent?: () => boolean): Promise<boolean> {
     if (!this.workspace || isCurrent?.() === false) return false;
     const previewKind = previewKindForPath(ref.path);
     if (previewKind) {
-      await this.openMedia(ref, pin, focusEditor);
+      await this.openMedia(ref, keepOpen, focusEditor);
       return false;
     }
     const existing = this.tabs.find((tab) => tab.ref && refKey(tab.ref) === refKey(ref));
     if (existing) {
-      if (pin) existing.pinned = true;
+      if (keepOpen) existing.keepOpen = true;
       if (activate) this.activateTab(existing.id, focusEditor);
       this.renderTabs();
       this.sendFilesystemSubscription();
@@ -1306,10 +1308,10 @@ class CodeView {
       if (isCurrent?.() === false) return false;
       // A double-click emits both click and dblclick handlers. Their reads can
       // overlap, so check again after I/O before creating a second tab for the
-      // same file. The pinned request wins regardless of completion order.
+      // same file. The Keep Open request wins regardless of completion order.
       const concurrentlyOpened = this.tabs.find((tab) => tab.ref && refKey(tab.ref) === refKey(ref));
       if (concurrentlyOpened) {
-        if (pin) concurrentlyOpened.pinned = true;
+        if (keepOpen) concurrentlyOpened.keepOpen = true;
         if (activate) this.activateTab(concurrentlyOpened.id, focusEditor);
         this.renderTabs();
         this.schedulePersist();
@@ -1317,9 +1319,9 @@ class CodeView {
         return true;
       }
       const tab = this.createModel(snapshot, randomUUID());
-      tab.pinned = pin;
-      if (!pin) {
-        const previewIndex = this.tabs.findIndex((candidate) => !candidate.pinned && !candidate.dirty);
+      tab.keepOpen = keepOpen;
+      if (!keepOpen) {
+        const previewIndex = this.tabs.findIndex((candidate) => !candidate.keepOpen && !candidate.dirty);
         if (previewIndex >= 0) {
           this.disposeTab(this.tabs[previewIndex]);
           this.tabs.splice(previewIndex, 1, tab);
@@ -1350,7 +1352,7 @@ class CodeView {
           { id: "reveal", label: "Reveal on Echo host", primary: true },
         ],
       });
-      if (choice === "reload") return await this.openFile(ref, pin, focusEditor, showErrors, activate, isCurrent);
+      if (choice === "reload") return await this.openFile(ref, keepOpen, focusEditor, showErrors, activate, isCurrent);
       if (choice === "reveal") await this.reveal(ref);
       return false;
     }
@@ -1468,13 +1470,13 @@ class CodeView {
     return model;
   }
 
-  private async openMedia(ref: FileRef, pin: boolean, focusEditor = true): Promise<void> {
+  private async openMedia(ref: FileRef, keepOpen: boolean, focusEditor = true): Promise<void> {
     if (!this.workspace) return;
     const kind = previewKindForPath(ref.path);
     if (!kind) return;
     const existing = this.tabs.find((tab) => tab.ref && refKey(tab.ref) === refKey(ref));
     if (existing) {
-      if (pin) existing.pinned = true;
+      if (keepOpen) existing.keepOpen = true;
       this.activateTab(existing.id, focusEditor);
       this.renderTabs();
       this.sendFilesystemSubscription();
@@ -1482,13 +1484,13 @@ class CodeView {
     }
     const tab: OpenTab = {
       kind: "media", id: randomUUID(), ref, title: ref.path.split("/").pop() || ref.path,
-      hostPath: "", pinned: pin, dirty: false, deleted: false, conflict: false, revision: "",
+      hostPath: "", keepOpen, pinned: false, dirty: false, deleted: false, conflict: false, revision: "",
       hasBom: false, eol: "lf", model: this.mediaStubModel(ref), viewState: null,
       changeDisposable: { dispose() {} }, applying: false,
       media: { kind, url: editorAPI.mediaURL(this.workspace.id, ref) },
     };
-    if (!pin) {
-      const previewIndex = this.tabs.findIndex((candidate) => !candidate.pinned && !candidate.dirty);
+    if (!keepOpen) {
+      const previewIndex = this.tabs.findIndex((candidate) => !candidate.keepOpen && !candidate.dirty);
       if (previewIndex >= 0) {
         this.disposeTab(this.tabs[previewIndex]);
         this.tabs.splice(previewIndex, 1, tab);
@@ -1507,7 +1509,7 @@ class CodeView {
   private async openSourceControlDiff(
     repository: SourceControlRepository,
     target: SourceControlDiffRequest,
-    pin: boolean,
+    keepOpen: boolean,
   ): Promise<void> {
     if (!this.workspace) return;
     const scope = sourceControlTabScope(target);
@@ -1515,7 +1517,7 @@ class CodeView {
     const identity = `${repository.id}:${target.kind}:${target.groupId || ""}:${reviewRef || ""}:${target.path}`;
     const existing = this.tabs.find((tab) => tab.kind === "diff" && tab.id === identity);
     if (existing) {
-      if (pin) existing.pinned = true;
+      if (keepOpen) existing.keepOpen = true;
       this.activateTab(existing.id);
       this.renderTabs();
       return;
@@ -1529,7 +1531,7 @@ class CodeView {
       // tab created by the first response before allocating any shared models.
       const opened = this.tabs.find((candidate) => candidate.kind === "diff" && candidate.id === identity);
       if (opened) {
-        if (pin) opened.pinned = true;
+        if (keepOpen) opened.keepOpen = true;
         this.activateTab(opened.id);
         this.renderTabs();
         return;
@@ -1567,7 +1569,7 @@ class CodeView {
       const qualifier = sourceControlScopeLabel(scope, repository, reviewRef);
       const tab: OpenTab = {
         kind: "diff", id: identity, ref: null, title: `${document.path.split("/").pop() || document.path} (${qualifier})`,
-        hostPath: document.path, pinned: pin, dirty: shared?.dirty || false, deleted: !document.modified.exists,
+        hostPath: document.path, keepOpen, pinned: false, dirty: shared?.dirty || false, deleted: !document.modified.exists,
         conflict: shared?.conflict || false, revision: shared?.revision || document.modifiedRevision || "",
         hasBom: shared?.hasBom ?? Boolean(document.modified.hasBom), eol: shared?.eol || document.modified.eol,
         model: modifiedModel, viewState: null, changeDisposable: { dispose() {} }, applying: false,
@@ -1582,8 +1584,8 @@ class CodeView {
         if (tab.applying || !tab.diff?.editable) return;
         this.markModelDirty(modifiedModel);
       });
-      if (!pin) {
-        const previewIndex = this.tabs.findIndex((candidate) => !candidate.pinned && !candidate.dirty);
+      if (!keepOpen) {
+        const previewIndex = this.tabs.findIndex((candidate) => !candidate.keepOpen && !candidate.dirty);
         if (previewIndex >= 0) {
           this.disposeTab(this.tabs[previewIndex]);
           this.tabs.splice(previewIndex, 1, tab);
@@ -1595,7 +1597,7 @@ class CodeView {
       this.sendFilesystemSubscription();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.openUnavailableSourceControlDiff(identity, repository, target, scope, reviewRef, pin, message);
+      this.openUnavailableSourceControlDiff(identity, repository, target, scope, reviewRef, keepOpen, message);
       toast(message, { sticky: true });
     }
   }
@@ -1711,7 +1713,7 @@ class CodeView {
     target: SourceControlDiffRequest,
     scope: SourceControlDiffScope,
     reviewRef: string | undefined,
-    pin: boolean,
+    keepOpen: boolean,
     reason: string,
   ): void {
     const language = languageForPath(target.path, this.lspProfiles);
@@ -1721,7 +1723,7 @@ class CodeView {
     this.retainModel(modifiedModel);
     const tab: OpenTab = {
       kind: "diff", id: identity, ref: null, title: `${target.path.split("/").pop() || target.path} (${sourceControlScopeLabel(scope, repository, reviewRef)})`,
-      hostPath: target.path, pinned: pin, dirty: false, deleted: false, conflict: false, revision: "",
+      hostPath: target.path, keepOpen, pinned: false, dirty: false, deleted: false, conflict: false, revision: "",
       hasBom: false, eol: "lf", model: modifiedModel, viewState: null, applying: false,
       changeDisposable: { dispose() {} },
       diff: {
@@ -1730,8 +1732,8 @@ class CodeView {
         unavailableReason: `${reason} The ${repository.providerLabel} revision may no longer be available; refresh Source Control and reopen this diff.`,
       },
     };
-    if (!pin) {
-      const previewIndex = this.tabs.findIndex((candidate) => !candidate.pinned && !candidate.dirty);
+    if (!keepOpen) {
+      const previewIndex = this.tabs.findIndex((candidate) => !candidate.keepOpen && !candidate.dirty);
       if (previewIndex >= 0) {
         this.disposeTab(this.tabs[previewIndex]);
         this.tabs.splice(previewIndex, 1, tab);
@@ -1751,7 +1753,7 @@ class CodeView {
     for (const tab of this.tabs) {
       if (tab.model !== model) continue;
       tab.dirty = true;
-      tab.pinned = true;
+      tab.keepOpen = true;
       tab.eol = model.getEOL() === "\r\n" ? "crlf" : "lf";
     }
     this.renderTabs();
@@ -1902,20 +1904,22 @@ class CodeView {
     this.clearTabDropIndicator();
     this.root.querySelectorAll(".code-tab.is-dragging").forEach((tab) => tab.classList.remove("is-dragging"));
     this.draggingTabId = null;
-    this.tabDragStartedOnClose = false;
+    this.tabDragStartedOnAction = false;
   }
 
   private renderTabs(): void {
     const list = this.root.querySelector<HTMLElement>("[data-tabs-list]");
     if (!list) return;
     list.innerHTML = this.tabs.map((tab) => `
-      <div class="code-tab ${tab.id === this.activeTabId ? "is-active" : ""} ${!tab.pinned ? "is-preview" : ""}" role="tab" aria-selected="${tab.id === this.activeTabId}" tabindex="${tab.id === this.activeTabId ? 0 : -1}" draggable="true" data-tab-id="${escapeHTML(tab.id)}" title="${escapeHTML(tab.hostPath || tab.title)}">
+      <div class="code-tab ${tab.id === this.activeTabId ? "is-active" : ""} ${!tab.keepOpen ? "is-preview" : ""} ${tab.pinned ? "is-pinned" : ""}" role="tab" aria-selected="${tab.id === this.activeTabId}" tabindex="${tab.id === this.activeTabId ? 0 : -1}" draggable="true" data-tab-id="${escapeHTML(tab.id)}" title="${escapeHTML(tab.hostPath || tab.title)}">
         <span class="codicon codicon-${this.tabIcon(tab)} code-tab-icon"></span>
         <span class="code-tab-title">${escapeHTML(tab.title)}</span>
         ${tab.conflict ? `<span class="codicon codicon-warning code-tab-conflict" title="Changed on disk"></span>` : ""}
         ${tab.deleted ? `<span class="codicon codicon-trash code-tab-conflict" title="Deleted on disk"></span>` : ""}
         <span class="code-tab-dirty ${tab.dirty ? "is-visible" : ""}" aria-label="${tab.dirty ? "Unsaved changes" : ""}"></span>
-        <button type="button" class="code-tab-close" draggable="false" data-tab-close aria-label="Close ${escapeHTML(tab.title)}"><span class="codicon codicon-close"></span></button>
+        ${tab.pinned
+          ? `<button type="button" class="code-tab-unpin" draggable="false" data-tab-action data-tab-unpin aria-label="Unpin ${escapeHTML(tab.title)}" title="Unpin ${escapeHTML(tab.title)}"><span class="codicon codicon-pinned" aria-hidden="true"></span></button>`
+          : `<button type="button" class="code-tab-close" draggable="false" data-tab-action data-tab-close aria-label="Close ${escapeHTML(tab.title)}"><span class="codicon codicon-close" aria-hidden="true"></span></button>`}
       </div>
     `).join("");
     this.syncActiveTabState();
@@ -2169,6 +2173,7 @@ class CodeView {
   }
 
   private async closeTab(tab: OpenTab, skipPrompt = false): Promise<boolean> {
+    if (tab.pinned || !this.tabs.includes(tab)) return false;
     if (tab.dirty && !skipPrompt) {
       const choice = await choiceDialog({
         title: `Save changes to ${tab.title}?`, message: "Your changes will be lost if you close this editor without saving.",
@@ -2177,7 +2182,16 @@ class CodeView {
       if (!choice || choice === "cancel") return false;
       if (choice === "save" && !(await this.saveTab(tab))) return false;
     }
+    // A tab can become pinned while a save or confirmation is pending.
+    if (tab.pinned || !this.tabs.includes(tab)) return false;
+    this.removeTab(tab);
+    return true;
+  }
+
+  /** Internal cleanup after confirmed file deletion or a successful Save As. */
+  private removeTab(tab: OpenTab): void {
     const index = this.tabs.indexOf(tab);
+    if (index < 0) return;
     this.tabs.splice(index, 1);
     this.mruTabIds = removeFromMru(this.mruTabIds, tab.id);
     if (this.mruCycle) this.mruCycle = pruneMruCycle(this.mruCycle, this.tabs.map((t) => t.id));
@@ -2199,7 +2213,6 @@ class CodeView {
     this.updateCodeChatSelectionNotice();
     this.schedulePersist();
     this.sendFilesystemSubscription();
-    return true;
   }
 
   private newUntitled(): void {
@@ -2208,7 +2221,7 @@ class CodeView {
     const model = this.createEditorModel("", "plaintext", monaco.Uri.from({ scheme: "untitled", authority: this.workspace?.id || "workspace", path: `/${id}` }));
     this.retainModel(model);
     const tab: OpenTab = {
-      kind: "file", id, ref: null, title, hostPath: "", pinned: true, dirty: false,
+      kind: "file", id, ref: null, title, hostPath: "", keepOpen: true, pinned: false, dirty: false,
       deleted: false, conflict: false, revision: "", hasBom: false, eol: "lf", model,
       viewState: null, changeDisposable: { dispose() {} }, applying: false,
     };
@@ -2325,7 +2338,7 @@ class CodeView {
     const model = this.createEditorModel(content, languageForPath(title + extension, this.lspProfiles), uri);
     this.retainModel(model);
     const tab: OpenTab = {
-      kind: "file", id, ref: null, title, hostPath: uri.toString(), pinned: true, dirty: false,
+      kind: "file", id, ref: null, title, hostPath: uri.toString(), keepOpen: true, pinned: false, dirty: false,
       deleted: false, conflict: false, revision: "", hasBom: false, eol: "lf", model,
       viewState: null, changeDisposable: { dispose() {} }, applying: false, readOnly: true, transient: true,
       debugSourceKey: navigation?.key,
@@ -2443,7 +2456,7 @@ class CodeView {
       candidate.dirty = false;
       candidate.conflict = false;
       candidate.deleted = false;
-      candidate.pinned = true;
+      candidate.keepOpen = true;
     }
     this.renderTabs();
     this.renderStatus();
@@ -2557,15 +2570,17 @@ class CodeView {
       });
       if (choice !== "continue") return false;
     }
-    const closeDuplicate = async () => {
-      if (duplicate && this.tabs.includes(duplicate)) await this.closeTab(duplicate, true);
+    const removeDuplicate = () => {
+      if (!duplicate || !this.tabs.includes(duplicate)) return;
+      if (duplicate.pinned) setTabPinned(tab, true);
+      this.removeTab(duplicate);
     };
     try {
       const result = await editorAPI.createEntry(this.workspace.id, {
         parent, name: destination.name, kind: "file", content: tab.model.getValue(), hasBom: tab.hasBom,
       });
       if (!result.file) throw new Error("The server did not return the new file");
-      await closeDuplicate();
+      removeDuplicate();
       this.adoptFile(tab, result.file);
       await this.refreshParent(parent);
       return true;
@@ -2582,7 +2597,7 @@ class CodeView {
           const saved = await editorAPI.saveFile(this.workspace.id, {
             ref: destinationRef, content: tab.model.getValue(), expectedRevision: current.revision, hasBom: tab.hasBom,
           });
-          await closeDuplicate();
+          removeDuplicate();
           this.adoptFile(tab, saved);
           return true;
         } catch (replaceError) {
@@ -2610,7 +2625,7 @@ class CodeView {
     tab.changeDisposable = tab.model.onDidChangeContent(() => {
       if (tab.applying) return;
       tab.dirty = true;
-      tab.pinned = true;
+      tab.keepOpen = true;
       this.renderTabs();
       this.schedulePersist();
     });
@@ -2703,7 +2718,7 @@ class CodeView {
       tab.changeDisposable = tab.model.onDidChangeContent(() => {
         if (tab.applying) return;
         tab.dirty = true;
-        tab.pinned = true;
+        tab.keepOpen = true;
         this.renderTabs();
         this.schedulePersist();
       });
@@ -2757,7 +2772,7 @@ class CodeView {
     }
     try {
       const item = await editorAPI.trashEntry(this.workspace.id, node.ref);
-      for (const tab of [...affected]) await this.closeTab(tab, true);
+      for (const tab of [...affected]) this.removeTab(tab);
       const parent = node.parentKey ? this.nodes.get(node.parentKey) : null;
       if (parent) await this.reloadChildrenPreservingExpansion(parent);
       toast(`Moved ${node.name} to Echo Trash`, {
@@ -2889,18 +2904,35 @@ class CodeView {
 
   private showTabMenu(event: MouseEvent, tab: OpenTab): void {
     showContextMenu(event.clientX, event.clientY, [
-      { label: "Close", detail: "Ctrl+W", icon: "close", run: () => this.closeTab(tab) },
+      { label: "Close", detail: "Ctrl+W", icon: "close", disabled: tab.pinned, run: () => this.closeTab(tab) },
       { label: "Close Others", icon: "close-all", run: () => this.closeOthers(tab) },
       { label: "Copy Path", icon: "copy", separatorBefore: true, disabled: !tab.ref, run: () => this.copyPath(tab, false) },
       { label: "Copy Relative Path", icon: "copy", disabled: !tab.ref, run: () => this.copyPath(tab, true) },
       { label: "Show in File Browser", icon: "folder-opened", separatorBefore: true, disabled: !tab.ref, run: () => tab.ref && this.reveal(tab.ref) },
       { label: "Show in Folder Tree", icon: "list-tree", disabled: !tab.ref, run: () => tab.ref && this.expandTo(tab.ref) },
-      { label: tab.pinned ? "Unpin" : "Pin", icon: "pinned", separatorBefore: true, run: () => { tab.pinned = !tab.pinned; this.renderTabs(); this.schedulePersist(); } },
+      { label: "Keep Open", checked: tab.keepOpen, disabled: tab.pinned, separatorBefore: true, run: () => { tab.keepOpen = !tab.keepOpen; this.renderTabs(); this.schedulePersist(); } },
+      { label: tab.pinned ? "Unpin" : "Pin", icon: "pinned", run: () => this.setPinned(tab, !tab.pinned) },
     ]);
   }
 
+  private setPinned(tab: OpenTab, pinned: boolean): void {
+    const focused = document.activeElement;
+    const restoreFocus = focused instanceof Element && focused.hasAttribute("data-tab-action")
+      && focused.closest<HTMLElement>("[data-tab-id]")?.dataset.tabId === tab.id;
+    setTabPinned(tab, pinned);
+    this.renderTabs();
+    this.schedulePersist();
+    if (restoreFocus) {
+      const element = this.root.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(tab.id)}"]`);
+      // Dirty tabs hide their close button until hovered or focused. Focus the
+      // tab first so its replacement action is visible and can receive focus.
+      element?.focus({ preventScroll: true });
+      element?.querySelector<HTMLButtonElement>("[data-tab-action]")?.focus({ preventScroll: true });
+    }
+  }
+
   private async closeOthers(keep: OpenTab): Promise<void> {
-    const others = this.tabs.filter((tab) => tab !== keep);
+    const others = this.tabs.filter((tab) => tab !== keep && !tab.pinned);
     const dirty = others.filter((tab) => tab.dirty);
     if (dirty.length) {
       const choice = await choiceDialog({
@@ -2910,7 +2942,7 @@ class CodeView {
       });
       if (!choice || choice === "cancel") return;
       if (choice === "save") {
-        for (const tab of dirty) if (!(await this.saveTab(tab))) return;
+        for (const tab of dirty) if (!tab.pinned && !(await this.saveTab(tab))) return;
       }
     }
     for (const tab of [...others]) await this.closeTab(tab, true);
@@ -3245,7 +3277,7 @@ class CodeView {
     const model = this.createEditorModel(content, languageForPath(title, this.lspProfiles), monaco.Uri.from({ scheme: "untitled", authority: this.workspace?.id || "workspace", path: `/${id}` }));
     this.retainModel(model);
     const tab: OpenTab = {
-      kind: "file", id, ref: null, title, hostPath: "", pinned: true, dirty: true,
+      kind: "file", id, ref: null, title, hostPath: "", keepOpen: true, pinned: false, dirty: true,
       deleted: false, conflict: false, revision: "", hasBom: false, eol: model.getEOL() === "\r\n" ? "crlf" : "lf",
       model, viewState: null, changeDisposable: { dispose() {} }, applying: false,
     };
@@ -3495,9 +3527,9 @@ class CodeView {
     tabs.addEventListener("dragstart", (event) => {
       const element = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-tab-id]") : null;
       const tab = element ? this.tabs.find((candidate) => candidate.id === element.dataset.tabId) : null;
-      const startedOnClose = this.tabDragStartedOnClose;
+      const startedOnAction = this.tabDragStartedOnAction;
       this.clearTabDragState();
-      if (!element || !tab || startedOnClose || !event.dataTransfer) {
+      if (!element || !tab || startedOnAction || !event.dataTransfer) {
         event.preventDefault();
         return;
       }
@@ -3539,11 +3571,12 @@ class CodeView {
       if (!element) return;
       const tab = this.tabs.find((candidate) => candidate.id === element.dataset.tabId);
       if (!tab) return;
-      if ((event.target as Element).closest("[data-tab-close]")) void this.closeTab(tab);
+      if ((event.target as Element).closest("[data-tab-unpin]")) this.setPinned(tab, false);
+      else if ((event.target as Element).closest("[data-tab-close]")) void this.closeTab(tab);
       else void this.recordCodeNavigation(() => this.activateTab(tab.id));
     }, { signal });
     tabs.addEventListener("mousedown", (event) => {
-      this.tabDragStartedOnClose = event.button === 0 && Boolean((event.target as Element).closest("[data-tab-close]"));
+      this.tabDragStartedOnAction = event.button === 0 && Boolean((event.target as Element).closest("[data-tab-action]"));
       // Suppress the browser's native middle-click autoscroll when the tab bar
       // overflows and becomes scrollable, so middle-click keeps closing tabs
       // instead of starting a horizontal scroll drag.
@@ -3561,10 +3594,11 @@ class CodeView {
       void this.closeTab(tab);
     }, { signal });
     tabs.addEventListener("dblclick", (event) => {
+      if ((event.target as Element).closest("[data-tab-action]")) return;
       const element = (event.target as Element).closest<HTMLElement>("[data-tab-id]");
       if (element) {
         const tab = this.tabs.find((candidate) => candidate.id === element.dataset.tabId);
-        if (tab) { tab.pinned = true; this.renderTabs(); this.schedulePersist(); }
+        if (tab) { tab.keepOpen = true; this.renderTabs(); this.schedulePersist(); }
       } else {
         this.newUntitled();
       }
@@ -3582,7 +3616,7 @@ class CodeView {
         event.preventDefault();
       }
     }, { signal, passive: false });
-    document.addEventListener("mouseup", () => { this.tabDragStartedOnClose = false; }, { signal });
+    document.addEventListener("mouseup", () => { this.tabDragStartedOnAction = false; }, { signal });
 
     this.root.querySelector("[data-breadcrumbs]")?.addEventListener("click", (event) => {
       const button = (event.target as Element).closest<HTMLElement>("[data-breadcrumb-index]");
@@ -4210,12 +4244,12 @@ class CodeView {
         if (!ref) return;
         const existing = this.tabs.find((candidate) => candidate.ref && refKey(candidate.ref) === refKey(ref));
         if (existing) {
-          existing.pinned = persisted.pinned;
+          Object.assign(existing, restoreTabOpenState(persisted));
           return;
         }
         await this.openMedia(ref, true, false);
         const opened = this.tabs.find((candidate) => candidate.ref && refKey(candidate.ref) === refKey(ref));
-        if (opened) opened.pinned = persisted.pinned;
+        if (opened) Object.assign(opened, restoreTabOpenState(persisted));
         return;
       }
       if (persisted.kind === "diff" && persisted.diff) {
@@ -4234,7 +4268,7 @@ class CodeView {
         const tab = this.activeTab();
         if (!tab) return;
         this.restoredTabIdAliases.set(persisted.id, tab.id);
-        tab.pinned = persisted.pinned;
+        Object.assign(tab, restoreTabOpenState(persisted));
         if (persisted.dirty && persisted.content !== undefined && tab.diff?.editable) {
           tab.applying = true;
           tab.model.setValue(persisted.content);
@@ -4249,6 +4283,7 @@ class CodeView {
       }
       if (!persisted.ref) {
         const tab = this.newUntitledFrom(persisted.content || "", persisted.title, persisted.id);
+        Object.assign(tab, restoreTabOpenState(persisted));
         tab.dirty = persisted.dirty;
         this.captureRestoredViewState(tab, persisted);
         return;
@@ -4267,7 +4302,7 @@ class CodeView {
         snapshot.hasBom = persisted.hasBom;
       }
       const tab = this.createModel(snapshot, persisted.id);
-      tab.pinned = persisted.pinned;
+      Object.assign(tab, restoreTabOpenState(persisted));
       tab.dirty = persisted.dirty;
       tab.deleted = !disk || persisted.deleted;
       tab.conflict = Boolean(disk && persisted.dirty && disk.revision !== persisted.revision);
@@ -4343,8 +4378,8 @@ class CodeView {
         ? (tab.kind === "diff" ? this.diffEditor.getModifiedEditor().getPosition() : this.editor.getPosition()) || undefined
         : tab.kind === "diff" ? diffState?.cursorState[0]?.position : tab.viewState?.cursorState[0]?.position;
       return {
-        kind: tab.kind, id: tab.id, ref: tab.ref, title: tab.title, hostPath: tab.hostPath, pinned: tab.pinned,
-        preview: !tab.pinned, dirty: tab.dirty, deleted: tab.deleted, revision: tab.revision,
+        kind: tab.kind, id: tab.id, ref: tab.ref, title: tab.title, hostPath: tab.hostPath, pinned: tab.keepOpen, closeProtected: tab.pinned,
+        preview: !tab.keepOpen, dirty: tab.dirty, deleted: tab.deleted, revision: tab.revision,
         hasBom: tab.hasBom, eol: tab.eol,
         ...(tab.dirty || (tab.kind === "file" && !tab.ref) ? { content: tab.model.getValue() } : {}),
         cursor: position ? { lineNumber: position.lineNumber, column: position.column } : undefined,

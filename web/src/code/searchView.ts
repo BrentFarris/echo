@@ -21,7 +21,7 @@ export type SearchViewOptions = {
   workspaceId: string;
   signal: AbortSignal;
   getOverlays(): TextSearchOverlay[];
-  openResult(ref: FileRef, match: TextSearchMatch, pin: boolean): void | Promise<void>;
+  openResult(ref: FileRef, match: TextSearchMatch, keepOpen: boolean): void | Promise<void>;
   confirmReplace(details: ReplaceConfirmation): Promise<boolean>;
   applyUpdates(updates: TextReplaceUpdate[]): void | Promise<void>;
   focusEditor(): void;
@@ -373,10 +373,10 @@ export class SearchView {
     </div>`;
   }
 
-  private async openResult(element: HTMLElement, pin: boolean): Promise<void> {
+  private async openResult(element: HTMLElement, keepOpen: boolean): Promise<void> {
     const file = this.response?.files[Number(element.dataset.fileIndex)];
     const match = file?.matches[Number(element.dataset.matchIndex)];
-    if (file && match) await this.options.openResult(file.ref, match, pin);
+    if (file && match) await this.options.openResult(file.ref, match, keepOpen);
   }
 
   private async replace(scope: "match" | "file" | "all", fileIndex?: number, matchIndex?: number): Promise<void> {
