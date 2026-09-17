@@ -1,5 +1,6 @@
 import { get } from "../../js/api.js";
 import type { CatalogPlugin, PluginCatalog, PluginView } from "./types";
+import { codeRouteHash } from "../navigation";
 
 const emptyCatalog: PluginCatalog = { safeMode: false, plugins: [], stages: [] };
 let catalog: PluginCatalog = emptyCatalog;
@@ -14,9 +15,21 @@ export function getEffectivePluginViews(): Array<{ plugin: CatalogPlugin; view: 
   const views: Array<{ plugin: CatalogPlugin; view: PluginView }> = [];
   for (const plugin of catalog.plugins) {
     if (!plugin.effective) continue;
-    for (const view of plugin.views || []) views.push({ plugin, view });
+    for (const view of plugin.views || []) {
+      if (view.kind === "code-sidebar" && !isBookmarksPlugin(plugin)) continue;
+      views.push({ plugin, view });
+    }
   }
   return views;
+}
+
+export function isBookmarksPlugin(plugin: CatalogPlugin): boolean {
+  return plugin.id === "bookmarks" && plugin.source.type === "builtin" && plugin.source.builtin === "bookmarks"
+    && Boolean(plugin.views?.some(view => view.id === "bookmarks" && view.kind === "code-sidebar"));
+}
+
+export function bookmarksEnabled(workspaceId: string): boolean {
+  return activeWorkspaceId === workspaceId && catalog.plugins.some(plugin => plugin.effective && isBookmarksPlugin(plugin));
 }
 
 export async function refreshPluginCatalog(): Promise<PluginCatalog> {
@@ -69,6 +82,7 @@ export function renderPluginIcon(plugin: CatalogPlugin, view: PluginView): strin
 }
 
 function isActive(pluginId: string, viewId: string): boolean {
+  if (pluginId === "bookmarks" && viewId === "bookmarks" && location.hash === codeRouteHash("bookmarks")) return true;
   const route = location.hash.replace(/^#/, "").split("?")[0];
   return route === `/plugins/${encodeURIComponent(pluginId)}/${encodeURIComponent(viewId)}`;
 }

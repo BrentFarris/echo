@@ -56,6 +56,8 @@ Plugin dependencies, arbitrary server routes, host CSS/JavaScript injection, cor
 
 A view has a lowercase kebab-case ID, `page` or `floating` kind, title, local HTML entry, optional local SVG/PNG/WebP icon, and optional default/minimum dimensions. All v1 views are singleton. Page routes use `#/plugins/<plugin-id>/<view-id>`; floating windows persist across core route changes.
 
+The `code-sidebar` kind is reserved for the genuine built-in Bookmarks package and has no HTML entry or iframe session. Local and GitHub packages cannot install this kind. The host owns the editor integration and `#/code?sidebar=bookmarks` route. Authenticated `GET` and `POST /api/plugins/bookmarks/state?workspaceId=…` operations require Bookmarks to be enabled in that workspace; these are not plugin bridge methods.
+
 A tool declares a unique name prefixed by its normalized plugin ID (`example-plugin` → `example_plugin_`), description, object input JSON Schema, optional output schema, backend method, timeout, and `readOnly` or `mutating` classification. Echo validates arguments/results and enforces limits. Plan and research never receive plugin tools; restricted custom modes must name them explicitly.
 
 Settings use `string`, `url`, `number`, `boolean`, `select`, or `secret`, with `global` or `workspace` scope. The host renders and validates every field. Secret defaults are forbidden. A secret may come from the OS credential store, an environment-variable reference, or session memory.

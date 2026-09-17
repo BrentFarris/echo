@@ -75,6 +75,9 @@ func (m *Manager) CreateUISession(pluginID, viewID, workspaceID string) (UISessi
 	if !ok {
 		return UISession{}, fmt.Errorf("plugin view was not found")
 	}
+	if view.Kind == "code-sidebar" {
+		return UISession{}, fmt.Errorf("native Code sidebars do not create iframe sessions")
+	}
 	config, _ := m.nonSecretConfigAndRefs(installed, workspaceID)
 	token := secureToken(32)
 	nonce := secureToken(24)

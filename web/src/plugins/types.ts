@@ -13,7 +13,7 @@ export type PluginDimensions = { width?: number; height?: number };
 export type PluginView = {
   pluginId: string;
   id: string;
-  kind: "page" | "floating";
+  kind: "page" | "floating" | "code-sidebar";
   title: string;
   icon?: string;
   defaultSize?: PluginDimensions;

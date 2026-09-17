@@ -190,6 +190,9 @@ func (m *Manager) initialize() error {
 	}
 	for id, installed := range state.Plugins {
 		validation, err := ValidatePackage(installed.PackagePath, m.coreToolNames)
+		if err == nil {
+			err = validateBuiltinContributions(validation.Manifest, installed.Source)
+		}
 		if !m.ownsInstalledPath(id, installed) {
 			err = fmt.Errorf("installed package path is outside Echo's immutable package store")
 		}
@@ -323,6 +326,9 @@ func (m *Manager) stage(ctx context.Context, source Source, populate func(string
 	if err != nil {
 		return StageRecord{}, err
 	}
+	if err := validateBuiltinContributions(validation.Manifest, source); err != nil {
+		return StageRecord{}, err
+	}
 	state, stateErr := m.store.load()
 	if stateErr != nil {
 		return StageRecord{}, stateErr
@@ -431,6 +437,9 @@ func (m *Manager) Approve(ctx context.Context, stageID string, approval Approval
 	}
 	if validation.Digest != record.Validation.Digest || validation.Manifest.ID != record.Validation.Manifest.ID {
 		return CatalogPlugin{}, fmt.Errorf("plugin stage changed after validation")
+	}
+	if err := validateBuiltinContributions(validation.Manifest, record.Source); err != nil {
+		return CatalogPlugin{}, err
 	}
 	if !validation.Compatible {
 		return CatalogPlugin{}, fmt.Errorf("plugin does not include a backend for %s", validation.Target)
@@ -706,6 +715,9 @@ func (m *Manager) ownsInstalledPath(pluginID string, installed InstalledPlugin) 
 }
 
 func (m *Manager) verifyInstalledSnapshot(installed InstalledPlugin) error {
+	if err := validateBuiltinContributions(installed.Manifest, installed.Source); err != nil {
+		return err
+	}
 	if !m.ownsInstalledPath(installed.Manifest.ID, installed) {
 		return fmt.Errorf("installed package path is outside Echo's immutable package store")
 	}

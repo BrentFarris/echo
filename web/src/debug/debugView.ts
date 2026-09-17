@@ -653,11 +653,13 @@ export class DebugView {
   private installEditorIntegration(): void {
     this.disposables.push(this.options.editor.onMouseDown((event) => {
       if (event.event.leftButton && event.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN && event.target.position) {
+        if (event.target.detail.glyphMarginLane === monaco.editor.GlyphMarginLane.Left) return;
         void this.toggleSourceBreakpoint(this.options.activeFile(), event.target.position.lineNumber);
       }
     }));
     this.disposables.push(this.options.editor.onContextMenu((event) => {
       if (event.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN || !event.target.position) return;
+      if (event.target.detail.glyphMarginLane === monaco.editor.GlyphMarginLane.Left) return;
       const ref = this.options.activeFile();
       if (!ref) return;
       const line = event.target.position.lineNumber;

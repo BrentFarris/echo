@@ -35,6 +35,11 @@ import {
 import type { ChatReference } from "../chatMentions";
 import { detachTerminalDock, mountTerminalDock } from "../terminal";
 import { SearchView } from "./searchView";
+import { BookmarksController } from "./bookmarksController";
+import { BookmarksView } from "./bookmarksView";
+import type { Bookmark } from "./bookmarkTypes";
+import { bookmarksEnabled, getPluginWorkspaceId, refreshPluginCatalog } from "../plugins/catalog";
+import "./bookmarks.css";
 import { NavigationModelCache } from "./navigationModelCache";
 import { explorerDiagnosticPresentation, updateExplorerDiagnostic } from "./explorerDiagnostics";
 import { ExplorerDirectoryLoader, needsDirectoryRefresh, preservedTreeScrollTop, reconcileDirectory, type FilesystemChange, type TreeNode } from "./explorerTree";
@@ -173,6 +178,9 @@ class CodeView {
   private diffRefreshTimers = new Map<string, number>();
   private sourceControlView: SourceControlView | null = null;
   private searchView: SearchView | null = null;
+  private bookmarks: BookmarksController | null = null;
+  private bookmarksView: BookmarksView | null = null;
+  private bookmarkActions: Array<{ dispose(): void }> = [];
   private debugView: DebugView | null = null;
   private goTestCodeLens: { dispose(): void } | null = null;
   private cTestCodeLens: { dispose(): void } | null = null;
@@ -302,6 +310,7 @@ class CodeView {
       this.installEvents();
       this.initializeSourceControlView();
       this.initializeSearchView();
+      this.initializeBookmarks();
       this.initializeDebugView();
       this.initializeTesting();
       await this.restoreWorkspace();
@@ -382,6 +391,7 @@ class CodeView {
             </div>
           </aside>
           <aside class="code-search-view" aria-label="Search" data-sidebar-view="search"${this.activeSidebar === "search" ? "" : " hidden"}></aside>
+          <aside class="code-bookmarks-view" aria-label="Bookmarks" data-sidebar-view="bookmarks"${this.activeSidebar === "bookmarks" ? "" : " hidden"}></aside>
           <aside class="code-git-view" aria-label="Source Control" data-sidebar-view="git"${this.activeSidebar === "git" ? "" : " hidden"}></aside>
           <aside class="code-debug-view" aria-label="Run and Debug" data-sidebar-view="debug"${this.activeSidebar === "debug" ? "" : " hidden"}></aside>
           </div>
@@ -538,12 +548,94 @@ class CodeView {
     void this.debugView.start();
   }
 
+  private initializeBookmarks(): void {
+    const reconcile = () => {
+      if (!this.workspace || this.abort.signal.aborted || getPluginWorkspaceId() !== this.workspace.id) return;
+      if (bookmarksEnabled(this.workspace.id)) {
+        if (!this.bookmarks) {
+          const host = this.root.querySelector<HTMLElement>("[data-sidebar-view=bookmarks]")!;
+          this.bookmarksView = new BookmarksView(host, {
+            roots: () => this.roots,
+            toggle: () => { void this.toggleBookmark(); },
+            open: mark => { void this.openBookmark(mark); },
+            rename: (id, label) => { void this.bookmarks?.rename(id, label); },
+            remove: id => { void this.bookmarks?.remove(id); },
+            retry: () => { void this.bookmarks?.retry(); },
+          });
+          this.bookmarks = new BookmarksController({
+            workspaceId: this.workspace.id,
+            refForModel: model => {
+              const tab = this.tabs.find(candidate => candidate.model === model && candidate.kind !== "media");
+              return tab ? this.worktreeRef(tab) : this.refForFileURI(model.uri.toString());
+            },
+            changed: (marks, loaded, error) => this.bookmarksView?.update(marks, loaded, error),
+            reportError: message => toast(message, { sticky: true }),
+          });
+          for (const editor of [this.editor, this.diffEditor.getModifiedEditor()]) {
+            this.bookmarkActions.push(editor.addAction({
+              id: "echo.bookmarks.toggle", label: "Bookmarks: Toggle", precondition: "editorTextFocus",
+              keybindings: [
+                monaco.KeyMod.chord(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, monaco.KeyCode.KeyK),
+                monaco.KeyMod.chord(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK),
+              ],
+              run: () => this.toggleBookmark(),
+            }));
+          }
+        }
+      } else {
+        this.disposeBookmarks();
+        if (this.activeSidebar === "bookmarks") this.setSidebar("explorer");
+      }
+      this.registerCommands();
+    };
+    window.addEventListener("echo:plugin-catalog", reconcile, { signal: this.abort.signal });
+    window.addEventListener("echo:open-bookmarks", event => {
+      if (!this.bookmarks) return;
+      event.preventDefault();
+      this.setSidebar("bookmarks");
+    }, { signal: this.abort.signal });
+    reconcile();
+    void refreshPluginCatalog().then(reconcile).catch(error => toast(String(error)));
+  }
+
+  private async toggleBookmark(): Promise<void> {
+    const tab = this.activeTab();
+    const editor = this.activeCodeEditor();
+    const ref = tab && tab.kind !== "media" && !tab.deleted ? this.worktreeRef(tab) : null;
+    const position = editor?.getPosition();
+    if (!this.bookmarks || !ref || !position || !tab || this.diffEditor.getOriginalEditor().hasTextFocus()) return;
+    await this.bookmarks.toggle(ref, position.lineNumber, tab.model.getLineContent(position.lineNumber));
+  }
+
+  private async openBookmark(mark: Bookmark): Promise<void> {
+    await this.recordCodeNavigation(async () => {
+      if (!await this.openFile(mark.ref, true)) return;
+      const editor = this.activeCodeEditor();
+      const model = editor?.getModel();
+      if (!editor || !model) return;
+      const line = Math.max(1, Math.min(model.getLineCount(), mark.line));
+      editor.setPosition({ lineNumber: line, column: 1 });
+      editor.revealLineInCenter(line);
+      this.setMobileExplorer(false);
+      editor.focus();
+    });
+  }
+
+  private disposeBookmarks(): void {
+    this.bookmarkActions.splice(0).forEach(action => action.dispose());
+    this.bookmarks?.dispose();
+    this.bookmarks = null;
+    this.bookmarksView?.dispose();
+    this.bookmarksView = null;
+  }
+
   handleRouteChange(): void {
     if (routePathFromHash(window.location.hash) !== CODE_ROUTE) return;
     this.setSidebar(codeSidebarFromHash(window.location.hash), false);
   }
 
   private setSidebar(view: CodeSidebar, updateRoute = true): void {
+    if (view === "bookmarks" && !this.bookmarks) view = "explorer";
     this.activeSidebar = view;
     this.root.querySelectorAll<HTMLElement>("[data-sidebar-view]").forEach((element) => { element.hidden = element.dataset.sidebarView !== view; });
     this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach((button) => {
@@ -555,6 +647,11 @@ class CodeView {
       }
     });
     const mobile = this.root.querySelector<HTMLElement>("[data-mobile-explorer] .codicon");
+    this.root.querySelectorAll<HTMLElement>('[data-plugin-id="bookmarks"][data-plugin-view-id="bookmarks"]').forEach(button => {
+      button.classList.toggle("is-active", view === "bookmarks");
+      if (view === "bookmarks") button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+    });
     if (mobile) mobile.className = `codicon codicon-${this.sidebarIcon(view)}`;
     if (updateRoute && routePathFromHash(window.location.hash) === CODE_ROUTE) {
       window.history.replaceState(window.history.state, "", codeRouteHash(view));
@@ -564,6 +661,7 @@ class CodeView {
   }
 
   private sidebarIcon(view: CodeSidebar): string {
+    if (view === "bookmarks") return "bookmark";
     if (view === "git") return "source-control";
     if (view === "search") return "search";
     if (view === "debug") return "debug-alt";
@@ -684,6 +782,7 @@ class CodeView {
     }
     try {
       await api("/api/workspaces/active", { method: "PUT", body: { id: workspaceId } });
+      await this.bookmarks?.flush();
       window.location.reload();
     } catch (error) {
       this.workspaceSwitching = false;
@@ -1443,6 +1542,7 @@ class CodeView {
     try {
       const result = await editorAPI.moveEntry(this.workspace.id, previousRef, destination.ref);
       const restoredExpansion = expandedRefs.map((ref) => this.rewrittenTreeRef(ref, previousRef, result.entry.ref));
+      await this.bookmarks?.remap(previousRef, result.entry.ref);
       this.codeNavigation?.remapRef(previousRef, result.entry.ref);
       this.rewriteOpenRefs(previousRef, result.entry.ref, node.hostPath, result.entry.hostPath);
       this.rewriteExpandedRefs(previousRef, result.entry.ref);
@@ -2685,6 +2785,7 @@ class CodeView {
     try {
       const previousRef = node.ref;
       const result = await editorAPI.renameEntry(this.workspace.id, previousRef, newName);
+      await this.bookmarks?.remap(previousRef, result.entry.ref);
       this.codeNavigation?.remapRef(previousRef, result.entry.ref);
       this.rewriteOpenRefs(previousRef, result.entry.ref, node.hostPath, result.entry.hostPath);
       this.rewriteExpandedRefs(previousRef, result.entry.ref);
@@ -3024,6 +3125,10 @@ class CodeView {
 
   private registerCommands(): void {
     this.commands = [
+      ...(this.bookmarks ? [
+        { id: "bookmarks.toggle", label: "Bookmarks: Toggle", keybinding: "Ctrl+K, K", run: () => this.toggleBookmark() },
+        { id: "bookmarks.open", label: "View: Bookmarks", run: () => this.setSidebar("bookmarks") },
+      ] : []),
       { id: "file.save", label: "File: Save", keybinding: "Ctrl+S", run: () => this.saveTab() },
       { id: "file.saveAs", label: "File: Save As…", keybinding: "Ctrl+Shift+S", run: () => this.saveAsActive() },
       { id: "file.new", label: "File: New Untitled File", keybinding: "Ctrl+N", run: () => this.newUntitled() },
@@ -4561,6 +4666,7 @@ class CodeView {
   }
 
   dispose(): void {
+    this.disposeBookmarks();
     this.diffHunkGutter?.dispose();
     this.diffHunkGutter = null;
     this.diffRefreshTimers.forEach((timer) => clearTimeout(timer));

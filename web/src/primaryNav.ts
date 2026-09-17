@@ -1,6 +1,6 @@
 import { renderDesktopPluginButtons, renderMobilePluginOverflowButton } from "./plugins/catalog";
 
-export type PrimaryNavView = "chat" | "explorer" | "search" | "git" | "debug" | "sandbox" | "settings" | "plugin";
+export type PrimaryNavView = "chat" | "explorer" | "search" | "git" | "debug" | "bookmarks" | "sandbox" | "settings" | "plugin";
 
 export type PrimaryNavOptions = {
   active: PrimaryNavView;

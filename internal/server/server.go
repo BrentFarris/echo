@@ -497,6 +497,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("PUT /api/agent-modes/{id}", s.handleUpdateAgentMode)
 	mux.HandleFunc("DELETE /api/agent-modes/{id}", s.handleDeleteAgentMode)
 	mux.HandleFunc("GET /api/plugins", s.handlePluginCatalog)
+	mux.HandleFunc("GET /api/plugins/bookmarks/state", s.handleBookmarks)
+	mux.HandleFunc("POST /api/plugins/bookmarks/state", s.handleBookmarks)
 	mux.HandleFunc("POST /api/plugins/stages", s.handlePluginStage)
 	mux.HandleFunc("POST /api/plugins/stages/{stageId}/approve", s.handlePluginApprove)
 	mux.HandleFunc("DELETE /api/plugins/stages/{stageId}", s.handlePluginReject)

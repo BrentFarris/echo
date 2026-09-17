@@ -128,7 +128,11 @@ function onDocumentClick(event: MouseEvent): void {
     const pluginId = pluginButton.dataset.pluginId || "";
     const viewId = pluginButton.dataset.pluginViewId || "";
     const match = getView(pluginId, viewId);
-    if (match?.view.kind === "page") location.hash = `#/plugins/${encodeURIComponent(pluginId)}/${encodeURIComponent(viewId)}`;
+    if (match?.view.kind === "code-sidebar") {
+      const request = new CustomEvent("echo:open-bookmarks", { cancelable: true });
+      if (window.dispatchEvent(request)) location.hash = codeRouteHash("bookmarks");
+    }
+    else if (match?.view.kind === "page") location.hash = `#/plugins/${encodeURIComponent(pluginId)}/${encodeURIComponent(viewId)}`;
     else if (match) void toggleFloating(match.plugin, match.view);
     closeMobileMenu();
     return;

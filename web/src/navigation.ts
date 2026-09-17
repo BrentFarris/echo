@@ -3,7 +3,7 @@ export const SETTINGS_ROUTE = "/settings";
 export const CODE_ROUTE = "/code";
 export const CODE_NAVIGATION_HISTORY_STATE_KEY = "echoCodeNavigation";
 
-export type CodeSidebar = "explorer" | "search" | "git" | "debug";
+export type CodeSidebar = "explorer" | "search" | "git" | "debug" | "bookmarks";
 export type CodeOpenTarget = { rootId: string; path: string };
 export type ChatTarget = {
   workspaceId: string;
@@ -32,7 +32,7 @@ export function codeSidebarFromHash(hash: string): CodeSidebar {
   if (queryIndex < 0) return "explorer";
   const sidebar = new URLSearchParams(hash.slice(queryIndex + 1)).get("sidebar");
   if (sidebar === "source-control" || sidebar === "git") return "git";
-  return sidebar === "search" || sidebar === "debug" ? sidebar : "explorer";
+  return sidebar === "search" || sidebar === "debug" || sidebar === "bookmarks" ? sidebar : "explorer";
 }
 
 /** Builds the canonical hash for an Echo Code sidebar. */

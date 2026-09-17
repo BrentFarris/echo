@@ -91,4 +91,11 @@ describe("plugin settings", () => {
       { source: { type: "builtin", builtin: "notes" } },
     ));
   });
+
+  it("stages the built-in Bookmarks package for review", async () => {
+    root.querySelector<HTMLButtonElement>('[data-plugin-action="stage-bookmarks"]')!.click();
+    await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith(
+      "/api/plugins/stages", { source: { type: "builtin", builtin: "bookmarks" } },
+    ));
+  });
 });

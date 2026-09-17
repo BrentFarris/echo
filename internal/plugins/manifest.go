@@ -94,7 +94,7 @@ type ViewContribution struct {
 	Kind        string     `json:"kind"`
 	Title       string     `json:"title"`
 	Icon        string     `json:"icon,omitempty"`
-	Entry       string     `json:"entry"`
+	Entry       string     `json:"entry,omitempty"`
 	Singleton   *bool      `json:"singleton,omitempty"`
 	DefaultSize Dimensions `json:"defaultSize,omitempty"`
 	MinimumSize Dimensions `json:"minimumSize,omitempty"`
@@ -327,8 +327,8 @@ func validateViews(root string, views []ViewContribution) error {
 			return fmt.Errorf("plugin views must have unique lowercase kebab-case ids")
 		}
 		seen[view.ID] = true
-		if view.Kind != "page" && view.Kind != "floating" {
-			return fmt.Errorf("view %q kind must be page or floating", view.ID)
+		if view.Kind != "page" && view.Kind != "floating" && view.Kind != "code-sidebar" {
+			return fmt.Errorf("view %q kind must be page, floating, or reserved code-sidebar", view.ID)
 		}
 		if strings.TrimSpace(view.Title) == "" || len(view.Title) > 100 {
 			return fmt.Errorf("view %q title is required and must be 100 characters or fewer", view.ID)
@@ -336,15 +336,21 @@ func validateViews(root string, views []ViewContribution) error {
 		if !view.IsSingleton() {
 			return fmt.Errorf("view %q must be singleton in plugin API v1", view.ID)
 		}
-		entry, err := packagePath(root, view.Entry)
-		if err != nil {
-			return fmt.Errorf("view %q entry: %w", view.ID, err)
-		}
-		if strings.ToLower(filepath.Ext(entry)) != ".html" {
-			return fmt.Errorf("view %q entry must be an HTML file", view.ID)
-		}
-		if info, err := os.Stat(entry); err != nil || !info.Mode().IsRegular() {
-			return fmt.Errorf("view %q entry is unavailable", view.ID)
+		if view.Kind == "code-sidebar" {
+			if view.ID != "bookmarks" || view.Entry != "" {
+				return fmt.Errorf("native Bookmarks views must have id bookmarks and no HTML entry")
+			}
+		} else {
+			entry, err := packagePath(root, view.Entry)
+			if err != nil {
+				return fmt.Errorf("view %q entry: %w", view.ID, err)
+			}
+			if strings.ToLower(filepath.Ext(entry)) != ".html" {
+				return fmt.Errorf("view %q entry must be an HTML file", view.ID)
+			}
+			if info, err := os.Stat(entry); err != nil || !info.Mode().IsRegular() {
+				return fmt.Errorf("view %q entry is unavailable", view.ID)
+			}
 		}
 		if view.Icon != "" {
 			icon, err := packagePath(root, view.Icon)

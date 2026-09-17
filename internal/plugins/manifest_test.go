@@ -72,6 +72,7 @@ func TestBuiltinPackagesValidate(t *testing.T) {
 	}{
 		{id: "calculator", viewID: "calculator", viewKind: "floating"},
 		{id: "notes", viewID: "notes", viewKind: "page"},
+		{id: "bookmarks", viewID: "bookmarks", viewKind: "code-sidebar"},
 	}
 	packages := BuiltinPackages()
 	for _, test := range tests {

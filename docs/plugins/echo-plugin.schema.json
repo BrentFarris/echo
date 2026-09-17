@@ -138,10 +138,13 @@
     "view": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "title", "entry"],
+      "required": ["id", "kind", "title"],
+      "if": { "properties": { "kind": { "const": "code-sidebar" } } },
+      "then": { "properties": { "id": { "const": "bookmarks" } }, "not": { "required": ["entry"] } },
+      "else": { "required": ["entry"] },
       "properties": {
         "id": { "$ref": "#/$defs/kebabId" },
-        "kind": { "enum": ["page", "floating"] },
+        "kind": { "enum": ["page", "floating", "code-sidebar"], "description": "code-sidebar is reserved for the genuine built-in Bookmarks package." },
         "title": { "type": "string", "minLength": 1, "maxLength": 100 },
         "icon": { "$ref": "#/$defs/packagePath" },
         "entry": { "$ref": "#/$defs/packagePath" },

@@ -1,0 +1,21 @@
+{
+  "manifestVersion": 1,
+  "id": "bookmarks",
+  "name": "Bookmarks",
+  "version": "1.0.0",
+  "description": "Bookmark code lines, name them, and return to them from the Code sidebar.",
+  "author": "Echo",
+  "license": "MIT",
+  "echo": { "api": "^1" },
+  "permissions": [],
+  "contributes": {
+    "views": [
+      {
+        "id": "bookmarks",
+        "kind": "code-sidebar",
+        "title": "Bookmarks",
+        "icon": "assets/bookmarks.svg"
+      }
+    ]
+  }
+}

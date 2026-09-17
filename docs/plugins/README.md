@@ -4,6 +4,8 @@ Echo plugins add deliberately bounded extensions around the core application. Ch
 
 Plugin API v1 supports declarative page and floating views, model tools, host-rendered settings, secret references, namespaced storage, and an optional native JSON-RPC backend. A plugin installs once per Echo instance; global and workspace activation determine where it is effective, and only one version of an ID can be installed.
 
+The optional built-in [Bookmarks](../../internal/plugins/builtin/bookmarks/README.md) plugin adds a host-rendered Code sidebar with workspace-scoped server storage. Its reserved native view is not a third-party extension capability.
+
 Start with:
 
 - [Authoring](authoring.md) for package and manifest contracts.
