@@ -22,6 +22,14 @@ describe("diff block edits", () => {
   it("uses the working editor's CRLF convention", () => {
     expect(revertBlockText("a\nb\n", "A\r\nB\r\n", { original: { start: 1, end: 2 }, modified: { start: 1, end: 2 } }, "\r\n")).toBe("a\r\nB\r\n");
   });
+  it.each([
+    ["Hello 😀!", "Hello 😃!", { start: 6, end: 8, text: "😃" }],
+    ["𐀀!", "𐐀!", { start: 0, end: 2, text: "𐐀" }],
+    ["a\r\nb", "a\nb", { start: 1, end: 3, text: "\n" }],
+    ["a\nb", "a\r\nb", { start: 1, end: 2, text: "\r\n" }],
+  ])("keeps editor replacement boundaries intact (%s)", (before, after, expected) => {
+    expect(replacementEdit(before, after)).toEqual(expected);
+  });
   it("restores large deleted blocks without exceeding JavaScript argument limits", () => {
     const original = "line\n".repeat(150_000);
     expect(revertBlockText(original, "", { original: { start: 1, end: 150_001 }, modified: { start: 1, end: 1 } }, "\n")).toBe(original);

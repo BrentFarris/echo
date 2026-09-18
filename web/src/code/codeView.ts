@@ -79,6 +79,8 @@ import type { DebugSource, DebugSourceNavigation } from "../debug/types";
 import { registerGoTestCodeLens } from "./goTestCodeLens";
 import { registerCTestCodeLens } from "./cTestCodeLens";
 import { TestOutput } from "./testOutput";
+import { InlineChatController, type InlineChatTarget } from "./inlineChat";
+import { closeInlineChat, inlineChatKey } from "./inlineChatSession";
 
 type Workspace = { id: string; name: string; mainPath: string; folders: string[]; iconExt?: string };
 
@@ -229,6 +231,7 @@ class CodeView {
   private codeChatWidth = 360;
   private codeChatOpen = false;
   private codeChatSurface: MountedChatSurface | null = null;
+  private inlineChat: InlineChatController | null = null;
   private diffSelectionSides = new Map<string, "original" | "modified">();
   private restoredTreeScrollTop = 0;
   private explorerRevealGeneration = 0;
@@ -1045,6 +1048,31 @@ class CodeView {
       openCodeEditor: (_source, resource, selectionOrPosition) => this.openNavigationTarget(resource, selectionOrPosition),
     });
     this.mediaTheme.addEventListener("change", () => monaco.editor.setTheme(this.mediaTheme.matches ? "vs-dark" : "vs"), { signal: this.abort.signal });
+    if (this.workspace) {
+      this.inlineChat = new InlineChatController(this.editor, {
+        workspaceId: this.workspace.id,
+        target: () => this.inlineChatTarget(),
+        keepOpen: () => { const tab = this.activeTab(); if (tab) { tab.keepOpen = true; this.renderTabs(); this.schedulePersist(); } },
+        activateReference: async ref => { await this.openFile(ref, true); },
+      });
+      this.editor.addAction({
+        id: "echo.inlineChat", label: "Inline Chat", precondition: "!editorReadonly",
+        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyI], keybindingContext: "editorTextFocus",
+        contextMenuGroupId: "1_modification", contextMenuOrder: 1,
+        run: () => this.openInlineChat(),
+      });
+    }
+  }
+
+  private inlineChatTarget(): InlineChatTarget | null {
+    const tab = this.activeTab();
+    return tab?.kind === "file" && !tab.readOnly && !tab.transient ? tab : null;
+  }
+
+  private openInlineChat(): void {
+    if (!this.inlineChatTarget()) return;
+    this.revealMarkdownSource();
+    this.inlineChat?.open();
   }
 
   private initializeTree(): void {
@@ -2432,6 +2460,7 @@ class CodeView {
   }
 
   private updateEditorSurface(): void {
+    this.inlineChat?.refresh();
     this.diffHunkGutter?.refresh();
     const placeholder = this.root.querySelector<HTMLElement>("[data-editor-placeholder]");
     const host = this.root.querySelector<HTMLElement>("[data-monaco-host]");
@@ -2535,6 +2564,7 @@ class CodeView {
   }
 
   private disposeTab(tab: OpenTab): void {
+    if (!this.abort.signal.aborted && this.workspace) closeInlineChat(inlineChatKey(this.workspace.id, tab.id));
     if (tab.id === this.activeTabId) this.markdownPreview?.show(null);
     tab.changeDisposable.dispose();
     this.releaseModel(tab.model);
@@ -2838,6 +2868,7 @@ class CodeView {
       candidate.deleted = false;
       candidate.keepOpen = true;
     }
+    this.inlineChat?.refresh();
     this.renderTabs();
     this.renderStatus();
     this.schedulePersist();
@@ -3444,6 +3475,7 @@ class CodeView {
 
   private registerCommands(): void {
     this.commands = [
+      { id: "editor.inlineChat", label: "Inline Chat", keybinding: "Ctrl+I", run: () => this.openInlineChat() },
       ...(this.bookmarks ? [
         { id: "bookmarks.toggle", label: "Bookmarks: Toggle", keybinding: "Ctrl+K, K", run: () => this.toggleBookmark() },
         { id: "bookmarks.open", label: "View: Bookmarks", run: () => this.setSidebar("bookmarks") },
@@ -4208,6 +4240,12 @@ class CodeView {
   }
 
   private handleGlobalKeyboard(event: KeyboardEvent): void {
+    const inInlineChat = event.target instanceof Element && Boolean(event.target.closest(".inline-chat-zone"));
+    if (inInlineChat && event.key === "Escape") return;
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && !event.isComposing
+      && event.key.toLowerCase() === "i" && (inInlineChat || this.editor?.hasTextFocus())) {
+      event.preventDefault(); event.stopPropagation(); this.openInlineChat(); return;
+    }
     if (document.querySelector(".code-modal-overlay, .code-picker-overlay")) return;
     // Monaco owns navigation and cancellation while its quick input is focused.
     if (event.target instanceof Element && event.target.closest(".quick-input-widget")) return;
@@ -4978,6 +5016,7 @@ class CodeView {
     this.schedulePersist();
     this.searchView?.refresh();
     this.sendFilesystemSubscription();
+    this.inlineChat?.refresh();
   }
 
   private async reloadCleanTab(tab: OpenTab): Promise<void> {
@@ -5030,11 +5069,14 @@ class CodeView {
       }
     }
     await this.refreshExplorer();
+    this.inlineChat?.refresh();
     this.renderTabs();
     for (const repositoryId of new Set(this.tabs.flatMap((tab) => tab.diff ? [tab.diff.repository.id] : []))) this.scheduleSourceControlDiffRefresh(repositoryId);
   }
 
   dispose(): void {
+    this.inlineChat?.dispose();
+    this.inlineChat = null;
     this.disposeBookmarks();
     this.diffHunkGutter?.dispose();
     this.diffHunkGutter = null;

@@ -57,6 +57,8 @@ Echo also ships the read-only `builtin/echo-plugins` skill. You can ask Chat to 
 
 The Code view uses Monaco for editing and reviewing diffs. Its explorer watches the filesystem for changes, keeps unsaved browser buffers recoverable, and moves deleted entries into Echo's restorable trash. The source-control view supports common repository workflows without leaving the browser, while the integrated terminal provides a full PTY on the Echo server.
 
+Press **Ctrl+I** (**Cmd+I** on macOS) in an editable file to open inline AI chat at the selection or cursor. Ask questions, attach workspace files with `@`, or request changes. Green/red previews remain separate from your buffer until you accept with the checkmark; acceptance is undoable and leaves the file unsaved. Stop ends generation and keeps the latest preview, while X discards it. Inline conversations stay with their open file through tab switches and are cleared when accepted, canceled, closed, or the page is reloaded.
+
 ### Optional Linux sandbox and desktop
 
 On Windows x64 with Docker Desktop in Linux-container mode, or Linux x86-64 with Docker Engine, a workspace can opt into one isolated Ubuntu runtime sharing its shell environment with the visible Xfce/Chromium desktop. Commands, terminals, Git, LSPs, builds, tests, and web fetches then run through the sandbox with no host fallback; registered workspace files remain canonical host bind mounts. The user can watch the AI, take over the desktop to sign in without logging keystrokes, and return the same persistent browser profile to the AI. See the [Linux sandbox guide](docs/sandbox.md) for setup, persistence, network grants, reset boundaries, and the container-isolation security model.

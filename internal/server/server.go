@@ -531,6 +531,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/workspaces/{id}/sandbox/desktop-sessions", s.handleDeleteSandboxDesktopSession)
 	mux.HandleFunc("POST /api/workspaces/{id}/sandbox/desktop-control", s.handleSandboxDesktopControl)
 	mux.HandleFunc("GET /api/workspaces/{id}/sandbox/desktop-ws", s.handleSandboxDesktopWebSocket)
+	mux.HandleFunc("POST /api/workspaces/{id}/inline-chat", s.handleInlineChat)
 	mux.HandleFunc("GET /api/workspaces/{id}/fs/roots", s.handleFSRoots)
 	mux.HandleFunc("GET /api/workspaces/{id}/fs/entries", s.handleFSEntries)
 	mux.HandleFunc("POST /api/workspaces/{id}/fs/entries", s.handleFSCreateEntry)

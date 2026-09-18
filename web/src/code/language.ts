@@ -13,6 +13,10 @@ import "monaco-editor/language/typescript/monaco.contribution";
 // The lean editor API exposes language-provider registries but does not load
 // the editor contributions that invoke them. Import only Echo's LSP v1 UI.
 import "monaco-editor/editor/browser/services/contribution.js";
+// Lazy language workers register drop/paste contributions after the first
+// editor. Their service must exist before standalone services are initialized,
+// including when Code is remounted while an inline conversation is retained.
+import "monaco-editor/editor/common/services/treeViewsDndService.js";
 import "monaco-editor/editor/contrib/codeAction/browser/codeActionContributions.js";
 import "monaco-editor/editor/contrib/codelens/browser/codelensController.js";
 import "monaco-editor/editor/contrib/comment/browser/comment.js";
