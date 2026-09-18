@@ -3772,7 +3772,7 @@ class CodeView {
     if (!this.workspace) return;
     const overlay = document.createElement("div");
     overlay.className = "code-picker-overlay";
-    overlay.innerHTML = `<section class="code-picker" role="dialog" aria-modal="true"><div class="code-picker-input"><span class="codicon codicon-search"></span><input aria-label="Go to File" placeholder="Type a file name"></div><div class="code-picker-meta" data-picker-meta>Type to search workspace files</div><div class="code-picker-list" role="listbox" data-picker-list></div></section>`;
+    overlay.innerHTML = `<section class="code-picker" role="dialog" aria-modal="true"><div class="code-picker-input"><span class="codicon codicon-search"></span><input aria-label="Go to File" placeholder="Type a file name, optionally followed by :line"></div><div class="code-picker-meta" data-picker-meta>Type to search workspace files</div><div class="code-picker-list" role="listbox" data-picker-list></div></section>`;
     document.body.appendChild(overlay);
     const input = overlay.querySelector<HTMLInputElement>("input")!;
     const list = overlay.querySelector<HTMLElement>("[data-picker-list]")!;
@@ -3794,7 +3794,7 @@ class CodeView {
       const generation = ++searchGeneration;
       const query = input.value;
       try {
-        const response = await editorAPI.searchFiles(this.workspace!.id, query);
+        const response = await editorAPI.searchFiles(this.workspace!.id, parseQuickOpenQuery(query).query);
         if (closed || generation !== searchGeneration || query !== input.value) return;
         results = response.items;
         selected = Math.min(selected, Math.max(0, results.length - 1));
@@ -3808,8 +3808,19 @@ class CodeView {
     const choose = async () => {
       const result = results[selected];
       if (!result) return;
+      const { line } = parseQuickOpenQuery(input.value);
       close();
-      await this.recordCodeNavigation(() => this.openFile(result.ref, true));
+      await this.recordCodeNavigation(async () => {
+        if (!await this.openFile(result.ref, true) || line === undefined) return;
+        this.revealMarkdownSource();
+        const editor = this.activeCodeEditor();
+        const model = editor?.getModel();
+        if (!editor || !model) return;
+        const lineNumber = Math.max(1, Math.min(model.getLineCount(), line));
+        editor.setPosition({ lineNumber, column: 1 });
+        editor.revealLineInCenter(lineNumber);
+        editor.focus();
+      });
     };
     input.addEventListener("input", () => {
       searchGeneration++;
@@ -5129,6 +5140,13 @@ class CodeView {
     this.editor?.dispose();
     this.diffEditor?.dispose();
   }
+}
+
+function parseQuickOpenQuery(value: string): { query: string; line?: number } {
+  const query = value.trim();
+  // Keep matching files while the user types the colon before a line number.
+  const match = /^(.*):(\d*)$/.exec(query);
+  return { query: match ? match[1] : query, line: match?.[2] ? Number(match[2]) : undefined };
 }
 
 function isMarkdownTab(tab: OpenTab | undefined): tab is OpenTab & { ref: FileRef } {
