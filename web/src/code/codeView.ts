@@ -452,8 +452,8 @@ class CodeView {
                   </div>
                   <div class="code-diff-toolbar" data-diff-toolbar hidden>
                     <span data-diff-label></span>
-                    <button type="button" title="Previous Change" aria-label="Previous Change" data-diff-action="previous"><span class="codicon codicon-arrow-up"></span></button>
-                    <button type="button" title="Next Change" aria-label="Next Change" data-diff-action="next"><span class="codicon codicon-arrow-down"></span></button>
+                    <button type="button" title="Previous Change (Ctrl+Shift+Up)" aria-label="Previous Change" data-diff-action="previous"><span class="codicon codicon-arrow-up"></span></button>
+                    <button type="button" title="Next Change (Ctrl+Shift+Down)" aria-label="Next Change" data-diff-action="next"><span class="codicon codicon-arrow-down"></span></button>
                     <button type="button" title="Toggle Inline Diff" aria-label="Toggle Inline Diff" data-diff-action="layout"><span class="codicon codicon-layout"></span></button>
                   </div>
                   <div class="code-monaco-diff-host" data-monaco-diff-host hidden></div>
@@ -4294,6 +4294,13 @@ class CodeView {
       event.preventDefault();
       event.stopPropagation();
       window.history.forward();
+    } else if (event.ctrlKey && event.shiftKey && !event.metaKey && !event.altKey && !event.isComposing
+      && (key === "arrowup" || key === "arrowdown") && activeTab?.kind === "diff"
+      && (editorHasTextFocus || this.diffEditor.getOriginalEditor().hasTextFocus())) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.diffEditor.goToDiff(key === "arrowup" ? "previous" : "next");
+      this.diffEditor.getModifiedEditor().focus();
     } else if (activeEditor && !modifier && !event.altKey && shouldHandleTab) {
       event.preventDefault();
       event.stopPropagation();
