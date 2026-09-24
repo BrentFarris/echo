@@ -385,6 +385,7 @@ export function sendMessage(log, text, model, agentModeId, options = {}) {
   return ws.send({
     type: "chat_send", workspaceId: binding.workspaceId, chatId: binding.activeChatId, requestId,
     message: text, ...(model ? { model } : {}), ...(agentModeId ? { agentModeId } : {}),
+    ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
     ...(images.length ? { images } : {}), ...(videos.length ? { videos } : {}),
     ...(binding.surface === "code" ? { surface: "code" } : {}),
     ...(options.editorContext ? { editorContext: options.editorContext } : {}),
@@ -690,6 +691,7 @@ function goalMessagePayload(type, text, options = {}) {
   return {
     type, workspaceId: binding.workspaceId, chatId: binding.activeChatId, requestId,
     message: text,
+    ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
     ...(images.length ? { images } : {}), ...(videos.length ? { videos } : {}),
     ...(binding.surface === "code" ? { surface: "code" } : {}),
     ...(options.editorContext ? { editorContext: options.editorContext } : {}),

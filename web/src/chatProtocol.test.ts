@@ -71,6 +71,12 @@ describe("multi-chat WebSocket protocol", () => {
       type: "chat_send", workspaceId: "workspace-tabs", chatId: "chat-two",
       message: "next question", model: "model-a", agentModeId: "general",
     }));
+    expect(socket.send).toHaveBeenLastCalledWith(expect.not.objectContaining({ reasoningEffort: expect.anything() }));
+    expect(sendMessage(log, "think harder", "model-a", "general", { reasoningEffort: "high" })).toBe(true);
+    expect(socket.send).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "chat_send", workspaceId: "workspace-tabs", chatId: "chat-two",
+      message: "think harder", model: "model-a", agentModeId: "general", reasoningEffort: "high",
+    }));
     expect(canClearChat(log)).toBe(true);
     expect(canCompressChat(log)).toBe(true);
     expect(compressChat(log, "model-a")).toBe(true);

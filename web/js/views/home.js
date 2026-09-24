@@ -41,6 +41,24 @@ let selectedModel = null;
 let defaultSelectedModel = null;
 let agentModes = [];
 let selectedAgentModeId = "general";
+// Thinking level selected in the mode popup. "" means no override: the endpoint
+// settings (reasoning effort or thinking token budget) apply unchanged.
+let selectedThinking = "";
+// Slider ladder: position 0 (leftmost) is Off, position 6 (rightmost) is Max.
+// "Default" sits in the middle and sends no override.
+const thinkingLadder = [
+  { position: 0, label: "Off", value: "none" },
+  { position: 1, label: "Low", value: "low" },
+  { position: 2, label: "Medium", value: "medium" },
+  { position: 3, label: "Default", value: "" },
+  { position: 4, label: "High", value: "high" },
+  { position: 5, label: "XHigh", value: "xhigh" },
+  { position: 6, label: "Max", value: "max" },
+];
+const thinkingPositionForValue = (value) => {
+  const entry = thinkingLadder.find((step) => step.value === value);
+  return entry ? entry.position : 3;
+};
 const tabComposerState = new Map();
 const knownWorkspaceTabs = new Map();
 const tabViewState = new Map();
@@ -121,6 +139,15 @@ function confirmBusyChatClose() {
     else dialog.setAttribute("open", "");
   });
 }
+
+// defaultThinkingLevel returns the thinking level to start a fresh chat tab
+// with: the reasoning effort configured on the chat endpoint, or "" (Default /
+// provider token budget) when the endpoint leaves it unset.
+const defaultThinkingLevel = () => {
+  const active = endpoints.find((e) => e.model === selectedModel || e.id === selectedModel)
+    || endpoints.find((e) => e.model === defaultSelectedModel);
+  return active?.reasoningEffort || "";
+};
 
 // loadEndpoints fetches the configured endpoints from the server so the model
 // selector can offer every endpoint's model for the next chat prompt. It also
@@ -600,6 +627,7 @@ export function mount(root) {
       segments: snapshotComposer(input),
       model: selectedModel,
       agentModeId: selectedAgentModeId,
+      thinking: selectedThinking,
       images: existing?.images || [],
       videos: existing?.videos || [],
     });
@@ -617,7 +645,7 @@ export function mount(root) {
     const key = tabStateKey(currentWorkspaceId, currentChatId);
     let state = tabComposerState.get(key);
     if (!state) {
-      state = { segments: [], model: defaultSelectedModel, agentModeId: "general", images: [], videos: [] };
+      state = { segments: [], model: defaultSelectedModel, agentModeId: "general", thinking: defaultThinkingLevel(), images: [], videos: [] };
       tabComposerState.set(key, state);
     }
     state.images ||= [];
@@ -626,6 +654,7 @@ export function mount(root) {
     selectedAgentModeId = agentModes.some((mode) => mode.id === state.agentModeId)
       ? state.agentModeId
       : "general";
+    selectedThinking = typeof state.thinking === "string" ? state.thinking : defaultThinkingLevel();
     restoreComposer(input, state.segments || [], createReferenceChip);
     renderAttachmentDrafts();
     updateModelLabel();
@@ -816,9 +845,20 @@ export function mount(root) {
   modeDropdown.innerHTML = `
     <div class="model-dropdown-header">Agent mode</div>
     <div class="model-dropdown-list" role="listbox" aria-label="Select agent mode" data-mode-list></div>
+    <div class="mode-dropdown-thinking">
+      <div class="mode-dropdown-thinking-head">
+        <span>Thinking</span>
+        <output data-thinking-label>Default</output>
+      </div>
+      <input type="range" min="0" max="6" step="1" value="3"
+        aria-label="Thinking level" aria-valuetext="Default"
+        data-thinking-slider />
+    </div>
     <a class="mode-dropdown-settings" href="#/settings">Manage modes in Settings</a>
   `;
   const modeList = modeDropdown.querySelector("[data-mode-list]");
+  const thinkingSlider = modeDropdown.querySelector("[data-thinking-slider]");
+  const thinkingLabel = modeDropdown.querySelector("[data-thinking-label]");
   document.body.appendChild(modeDropdown);
 
   const moreMenu = document.createElement("div");
@@ -867,7 +907,7 @@ export function mount(root) {
     const key = tabStateKey(currentWorkspaceId, currentChatId);
     let state = tabComposerState.get(key);
     if (!state) {
-      state = { segments: snapshotComposer(input), model: selectedModel, agentModeId: selectedAgentModeId, images: [], videos: [] };
+      state = { segments: snapshotComposer(input), model: selectedModel, agentModeId: selectedAgentModeId, thinking: selectedThinking, images: [], videos: [] };
       tabComposerState.set(key, state);
     }
     state.images ||= [];
@@ -1043,6 +1083,7 @@ export function mount(root) {
       startingNewGoal = false;
       modelTrigger.disabled = false;
       modeTrigger.disabled = false;
+      if (thinkingSlider) thinkingSlider.disabled = false;
       input.dataset.placeholder = "Describe what to build";
       return;
     }
@@ -1069,6 +1110,7 @@ export function mount(root) {
     const locked = goalLocksComposer();
     modelTrigger.disabled = locked;
     modeTrigger.disabled = locked;
+    if (thinkingSlider) thinkingSlider.disabled = locked;
     if (locked) {
       selectedAgentModeId = "goal";
       modeLabel.textContent = "Goal";
@@ -1188,6 +1230,28 @@ export function mount(root) {
         <small>${mode.builtIn ? "Built-in" : esc(mode.prompt)}</small>
       </button>
     `).join("");
+    syncThinkingControl();
+  };
+
+  const syncThinkingControl = () => {
+    const position = thinkingPositionForValue(selectedThinking);
+    const step = thinkingLadder.find((entry) => entry.position === position);
+    if (thinkingSlider) {
+      thinkingSlider.value = String(position);
+      thinkingSlider.setAttribute("aria-valuetext", step?.label || "Default");
+    }
+    if (thinkingLabel) thinkingLabel.textContent = step?.label || "Default";
+  };
+
+  const onThinkingInput = () => {
+    if (!thinkingSlider) return;
+    const position = Number(thinkingSlider.value) || 0;
+    const step = thinkingLadder.find((entry) => entry.position === position);
+    if (!step) return;
+    selectedThinking = step.value;
+    if (thinkingLabel) thinkingLabel.textContent = step.label;
+    thinkingSlider.setAttribute("aria-valuetext", step.label);
+    saveCurrentComposer();
   };
 
   const positionModeDropdown = () => {
@@ -1254,6 +1318,11 @@ export function mount(root) {
     } else {
       closeModeDropdown();
     }
+  };
+
+  const onThinkingSliderChange = (e) => {
+    e.stopPropagation();
+    onThinkingInput();
   };
 
   const onModeListClick = (e) => {
@@ -1491,6 +1560,8 @@ export function mount(root) {
   modelList?.addEventListener("click", onModelListClick);
   modeTrigger?.addEventListener("click", onModeTriggerClick);
   modeList?.addEventListener("click", onModeListClick);
+  thinkingSlider?.addEventListener("input", onThinkingInput);
+  thinkingSlider?.addEventListener("change", onThinkingSliderChange);
   moreTrigger?.addEventListener("click", onMoreTriggerClick);
   attachmentTrigger?.addEventListener("click", onAttachmentTriggerClick);
   attachmentMenu.addEventListener("click", onAttachmentMenuClick);
@@ -1528,13 +1599,14 @@ export function mount(root) {
     if (!text.trim() && images.length === 0 && videos.length === 0) return;
     prepareCompletionNotificationPermission();
     preparePlanQuestionNotificationPermission();
+    const reasoningOptions = selectedThinking ? { reasoningEffort: selectedThinking } : {};
     let sent = false;
     if (selectedAgentModeId === "goal") {
       sent = goalAcceptsSteering()
         ? steerGoal(log, text, { images, videos })
-        : startGoal(log, text, selectedModel || undefined, { images, videos });
+        : startGoal(log, text, selectedModel || undefined, { images, videos, ...reasoningOptions });
     } else {
-      sent = sendMessage(log, text, selectedModel || undefined, selectedAgentModeId, { images, videos });
+      sent = sendMessage(log, text, selectedModel || undefined, selectedAgentModeId, { images, videos, ...reasoningOptions });
     }
     if (sent) {
       startingNewGoal = false;
@@ -1760,6 +1832,8 @@ export function mount(root) {
     modelList?.removeEventListener("click", onModelListClick);
     modeTrigger?.removeEventListener("click", onModeTriggerClick);
     modeList?.removeEventListener("click", onModeListClick);
+    thinkingSlider?.removeEventListener("input", onThinkingInput);
+    thinkingSlider?.removeEventListener("change", onThinkingSliderChange);
     moreTrigger?.removeEventListener("click", onMoreTriggerClick);
     attachmentTrigger?.removeEventListener("click", onAttachmentTriggerClick);
     attachmentMenu.removeEventListener("click", onAttachmentMenuClick);

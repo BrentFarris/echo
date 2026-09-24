@@ -229,24 +229,25 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 type inboundMessage struct {
-	Type          string                `json:"type"`
-	WorkspaceID   string                `json:"workspaceId,omitempty"`
-	Surface       string                `json:"surface,omitempty"`
-	ChatID        string                `json:"chatId,omitempty"`
-	RequestID     string                `json:"requestId,omitempty"`
-	TurnID        string                `json:"turnId,omitempty"`
-	Role          string                `json:"role,omitempty"`
-	Message       string                `json:"message,omitempty"`
-	Model         string                `json:"model,omitempty"`
-	AgentModeID   string                `json:"agentModeId,omitempty"`
-	StopIfBusy    bool                  `json:"stopIfBusy,omitempty"`
-	QuestionSetID string                `json:"questionSetId,omitempty"`
-	Answers       []sessions.PlanAnswer `json:"answers,omitempty"`
-	Refs          []workspacefs.FileRef `json:"refs,omitempty"`
-	EditorContext *editorContext        `json:"editorContext,omitempty"`
-	References    []chatReferenceInput  `json:"references,omitempty"`
-	Images        []chatMediaInput      `json:"images,omitempty"`
-	Videos        []chatMediaInput      `json:"videos,omitempty"`
+	Type            string                `json:"type"`
+	WorkspaceID     string                `json:"workspaceId,omitempty"`
+	Surface         string                `json:"surface,omitempty"`
+	ChatID          string                `json:"chatId,omitempty"`
+	RequestID       string                `json:"requestId,omitempty"`
+	TurnID          string                `json:"turnId,omitempty"`
+	Role            string                `json:"role,omitempty"`
+	Message         string                `json:"message,omitempty"`
+	Model           string                `json:"model,omitempty"`
+	AgentModeID     string                `json:"agentModeId,omitempty"`
+	ReasoningEffort string                `json:"reasoningEffort,omitempty"`
+	StopIfBusy      bool                  `json:"stopIfBusy,omitempty"`
+	QuestionSetID   string                `json:"questionSetId,omitempty"`
+	Answers         []sessions.PlanAnswer `json:"answers,omitempty"`
+	Refs            []workspacefs.FileRef `json:"refs,omitempty"`
+	EditorContext   *editorContext        `json:"editorContext,omitempty"`
+	References      []chatReferenceInput  `json:"references,omitempty"`
+	Images          []chatMediaInput      `json:"images,omitempty"`
+	Videos          []chatMediaInput      `json:"videos,omitempty"`
 }
 
 func (c *client) readPump(h *Hub) {

@@ -419,6 +419,13 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 			settings = resolved
 		}
 	}
+	reasoningEffortOverride := strings.TrimSpace(msg.ReasoningEffort)
+	if reasoningEffortOverride != "" {
+		if err := llm.ValidateReasoningEffort(reasoningEffortOverride); err != nil {
+			m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "invalid_reasoning_effort", err.Error(), requestID)
+			return
+		}
+	}
 	mode, err := m.server.modes.Resolve(session.workspace.MainPath, msg.AgentModeID)
 	if err != nil {
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "agent_mode_load_failed", err.Error(), requestID)
@@ -485,6 +492,9 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	messages := append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, session.transcript.ContextCheckpoint)...)
 	visionMode := session.transcript.Vision || messagesRequireMedia(messages)
 	settings, streamer := m.server.routeMediaChat(settings, messages, visionMode)
+	if reasoningEffortOverride != "" {
+		settings.ReasoningEffort = reasoningEffortOverride
+	}
 	planMode := mode.ID == agentmodes.PlanID
 	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, GoalMode: goalMode, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})))
 	if err != nil {
@@ -547,6 +557,7 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	session.appendTrajectoryLocked("turn/start", turnID, nil, map[string]any{
 		"requestId": requestID, "model": request.Model, "agentModeId": mode.ID,
 		"agentModeName": mode.Name, "startedAt": session.active.StartedAt, "origin": "send",
+		"reasoningEffort": settings.ReasoningEffort,
 	})
 	session.appendTrajectoryLocked("user/message", turnID, nil, map[string]any{
 		"content": visibleText, "modelContent": modelText, "images": images, "videos": videos,

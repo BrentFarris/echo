@@ -314,11 +314,11 @@ func (s Settings) Validate() error {
 	if s.EditorTabSize < 0 || s.EditorTabSize > 8 {
 		return fmt.Errorf("editor tab size must be between 1 and 8")
 	}
-	if err := validateReasoningEffort(s.ReasoningEffort); err != nil {
+	if err := ValidateReasoningEffort(s.ReasoningEffort); err != nil {
 		return err
 	}
 	for _, endpoint := range s.Endpoints {
-		if err := validateReasoningEffort(endpoint.ReasoningEffort); err != nil {
+		if err := ValidateReasoningEffort(endpoint.ReasoningEffort); err != nil {
 			return err
 		}
 	}
@@ -388,7 +388,7 @@ func (s Settings) Validate() error {
 	if s.ThinkingTokenBudget < -1 {
 		return fmt.Errorf("thinking token budget must be -1 or greater")
 	}
-	if err := validateReasoningEffort(s.ReasoningEffort); err != nil {
+	if err := ValidateReasoningEffort(s.ReasoningEffort); err != nil {
 		return err
 	}
 	if s.FrequencyPenalty < -2 || s.FrequencyPenalty > 2 {
@@ -568,7 +568,7 @@ func (e LLMEndpoint) ValidateGeneration() error {
 	if settings.ThinkingTokenBudget < -1 {
 		return fmt.Errorf("thinking token budget must be -1 or greater")
 	}
-	if err := validateReasoningEffort(settings.ReasoningEffort); err != nil {
+	if err := ValidateReasoningEffort(settings.ReasoningEffort); err != nil {
 		return err
 	}
 	if settings.FrequencyPenalty < -2 || settings.FrequencyPenalty > 2 {
@@ -639,7 +639,9 @@ func normalizeReasoningEffort(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-func validateReasoningEffort(value string) error {
+// ValidateReasoningEffort reports whether value is a supported reasoning effort
+// override. The empty string represents the provider default / token budget.
+func ValidateReasoningEffort(value string) error {
 	switch normalizeReasoningEffort(value) {
 	case "", ReasoningEffortNone, ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh, ReasoningEffortXHigh, ReasoningEffortMax:
 		return nil
