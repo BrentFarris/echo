@@ -23,8 +23,19 @@ const commandErrorListeners = new Set();
 const askUserQuestionsToolName = "ask_user_questions";
 
 function setStreaming(streaming) {
+  syncPlanActionButtons(streaming);
   for (const cb of streamingListeners) {
     try { cb(streaming); } catch (err) { console.error("streaming state handler error:", err); }
+  }
+}
+
+// Plan-action buttons disable while any reply is streaming or the active tab
+// is busy, so a click cannot interleave a General-mode send into a running turn.
+function syncPlanActionButtons(streaming = activeStream != null) {
+  if (!binding) return;
+  const disabled = streaming || activeBindingChatBusy();
+  for (const button of binding.log.querySelectorAll(".chat-plan-actions button")) {
+    button.disabled = disabled;
   }
 }
 
@@ -123,6 +134,7 @@ export function openWorkspaceSession(log, workspaceId, options = {}) {
     log, workspaceId: workspaceId || "", surface: options.surface === "code" ? "code" : "chat",
     onActivateFile: typeof options.onActivateFile === "function" ? options.onActivateFile : null,
     onActivateResource: typeof options.onActivateResource === "function" ? options.onActivateResource : null,
+    onPlanAction: typeof options.onPlanAction === "function" ? options.onPlanAction : null,
     sequence: 0, hasSnapshot: false,
     activeChatId: "", tabs: [], turns: new Map(), goal: null, scrollFollower,
   };
@@ -291,6 +303,7 @@ function applyEvent(event) {
       const stream = createTurnView(event.turnId, event.message || "", event.images || [], event.videos || [], {
         references: event.references, editorContext: event.editorContext,
         goalId: event.goalId, goalOrigin: event.goalOrigin,
+        agentModeId: event.agentModeId, agentModeName: event.agentModeName,
       });
       binding.turns.set(event.turnId, stream);
       activeStream = stream;
@@ -303,6 +316,7 @@ function applyEvent(event) {
       binding.log.querySelector(".chat-empty")?.remove();
       const stream = createTurnView(event.turnId, event.message || "", event.images || [], event.videos || [], {
         references: event.references, editorContext: event.editorContext,
+        agentModeId: event.agentModeId, agentModeName: event.agentModeName,
       });
       binding.turns.set(event.turnId, stream);
       activeStream = stream;
@@ -410,6 +424,8 @@ function renderStoredTurn(turn, active) {
     editorContext: turn.editorContext,
     goalId: turn.goalId,
     goalOrigin: turn.goalOrigin,
+    agentModeId: turn.agentModeId,
+    agentModeName: turn.agentModeName,
   });
   binding.turns.set(turn.id, stream);
   const compressions = turn.assistantDeleted ? [] : (turn.compressions || []);
@@ -975,6 +991,8 @@ function createTurnView(turnId, userText, images = [], videos = [], options = {}
     fileChanges: [],
     researchAgents: new Map(), researchReasoning: new Map(), researchStatusContainer: null,
     goalId: options.goalId || "", goalOrigin: options.goalOrigin || "", goalGuidance: new Map(),
+    agentModeId: String(options.agentModeId || ""), agentModeName: String(options.agentModeName || ""),
+    assistantDeleted: Boolean(options.assistantDeleted),
   };
 }
 
@@ -1983,11 +2001,50 @@ function finishStream(stream, outcome, message = "") {
     markRunningToolsInterrupted(stream, outcome);
     appendStreamStatus(stream, outcome, message);
   }
+  if (isPlanTurn(stream) && outcome === "done") renderPlanActions(stream);
   renderFileChangeSummary(stream);
   if (activeStream === stream) {
     activeStream = null;
     setStreaming(false);
   }
+}
+
+// A completed Plan-mode turn with a real final response gets two follow-up
+// actions: implement the plan, or implement it and commit the changes. Both
+// send an explicit text message while flipping the composer to General mode.
+function isPlanTurn(stream) {
+  return Boolean(stream && stream.agentModeId === "plan" && !stream.assistantDeleted && !stream.goalId);
+}
+
+function renderPlanActions(stream) {
+  stream.el.querySelector(".chat-plan-actions")?.remove();
+  const text = String(stream.el.dataset.copyText || "").trim();
+  if (!text) return;
+  const actions = document.createElement("div");
+  actions.className = "chat-plan-actions";
+  actions.setAttribute("role", "group");
+  actions.setAttribute("aria-label", "Plan actions");
+  const messages = ["Implement the plan", "Implement the plan and commit the changes"];
+  messages.forEach((message, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `${index === messages.length - 1 ? "primary-button" : "secondary-button"} compact-button`;
+    button.textContent = message;
+    button.addEventListener("click", () => {
+      if (activeStream || activeBindingChatBusy()) {
+        toast("Wait for the current response to finish before implementing the plan.", { sticky: true });
+        return;
+      }
+      const sent = typeof binding?.onPlanAction === "function"
+        ? binding.onPlanAction(message)
+        : sendMessage(binding?.log || stream.el.closest(".chat-log"), message, undefined, "general");
+      if (!sent) toast("Could not send the plan instruction.", { sticky: true });
+    });
+    actions.appendChild(button);
+  });
+  const work = stream.content.parentElement;
+  work.appendChild(actions);
+  syncPlanActionButtons(activeStream != null);
 }
 
 function finalizeSuccessfulResponse(stream) {

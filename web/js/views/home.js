@@ -638,6 +638,15 @@ export function mount(root) {
       saveCurrentComposer();
       location.hash = codeFileRouteHash(ref);
     },
+    onPlanAction: (message) => {
+      selectedAgentModeId = "general";
+      startingNewGoal = false;
+      updateModeLabel();
+      saveCurrentComposer();
+      setSendButtonBusy(streaming);
+      const reasoningOptions = selectedThinking ? { reasoningEffort: selectedThinking } : {};
+      return sendMessage(log, message, selectedModel || undefined, "general", reasoningOptions);
+    },
   });
 
   const restoreCurrentComposer = () => {

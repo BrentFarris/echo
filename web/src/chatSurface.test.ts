@@ -350,4 +350,20 @@ describe("compact chat surface", () => {
     expect(resolved).toHaveBeenCalledWith(false);
     surface.dispose();
   });
+
+  it("forwards plan follow-up actions through General mode on the code surface", async () => {
+    const surface = mountChatSurface(host, { workspaceId: "workspace-plan", surface: "code" });
+    await vi.waitFor(() => expect(chat.openWorkspaceSession).toHaveBeenCalled());
+    const options = chat.openWorkspaceSession.mock.calls.at(-1)?.[2];
+    expect(options.onPlanAction).toBeTypeOf("function");
+    const mode = host.querySelector<HTMLSelectElement>("[data-code-chat-mode]")!;
+    expect(mode.value).toBe("general");
+    expect(options.onPlanAction("Implement the plan")).toBe(true);
+    expect(chat.sendMessage).toHaveBeenCalledWith(
+      expect.any(HTMLElement), "Implement the plan", undefined, "general", {},
+    );
+    // The mode selector was flipped back to General.
+    expect(mode.value).toBe("general");
+    surface.dispose();
+  });
 });

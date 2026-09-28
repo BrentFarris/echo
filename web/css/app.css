@@ -1451,6 +1451,20 @@ button.chat-prompt-resource-row:focus-visible {
   border-radius: 6px;
 }
 
+/* Follow-up actions shown under a completed Plan-mode response. */
+.chat-plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+}
+
+.chat-plan-actions button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .chat-message-action.icon-button:hover:not(:disabled),
 .chat-message-action.icon-button:focus-visible {
   border-color: var(--color-border);
