@@ -16,14 +16,6 @@ const socket = vi.hoisted(() => {
 
 vi.mock("../js/ws.js", () => ({ on: socket.on, onState: socket.onState, send: socket.send }));
 
-const planQuestionSound = vi.hoisted(() => ({
-  play: vi.fn(),
-}));
-
-vi.mock("../src/planQuestionSound.ts", () => ({
-  playPlanQuestionSound: planQuestionSound.play,
-}));
-
 import { closeWorkspaceSession, openWorkspaceSession } from "../js/chat.js";
 
 function emit(type: string, message: any) {
@@ -49,7 +41,6 @@ describe("Plan-mode clarifying questions", () => {
 
   beforeEach(() => {
     socket.send.mockClear();
-    planQuestionSound.play.mockClear();
     log = document.createElement("div");
     document.body.append(log);
     openWorkspaceSession(log, "workspace-plan");
@@ -78,7 +69,6 @@ describe("Plan-mode clarifying questions", () => {
     const card = log.querySelector<HTMLDetailsElement>(".chat-plan-question-item")!;
     expect(card).not.toBeNull();
     expect(card.open).toBe(true);
-    expect(planQuestionSound.play).toHaveBeenCalledOnce();
     const fields = [...card.querySelectorAll<HTMLFieldSetElement>(".chat-plan-question-field")];
     const extended = fields[0].querySelector<HTMLInputElement>('input[type="radio"][value="1"]')!;
     extended.checked = true;
@@ -169,16 +159,18 @@ describe("Plan-mode clarifying questions", () => {
     expect(card.nextElementSibling?.classList.contains("chat-final-content")).toBe(true);
   });
 
-  it("plays the question sound on live waiting-for-input and on restoring a pending question, but not answered ones", () => {
+  it("keeps pending questions awaiting input while rendering answered ones collapsed", () => {
     sessionEvent(2, { type: "turn_started", turnId: "turn-a", message: "Plan it" });
     sessionEvent(3, {
       type: "tool_call", turnId: "turn-a", turn: 0, callId: "call-a", callOrder: 0,
       tool: "ask_user_questions", status: "awaiting_input", planQuestions: questionSet,
     });
-    expect(planQuestionSound.play).toHaveBeenCalledOnce();
+    const live = log.querySelector<HTMLDetailsElement>(".chat-plan-question-item")!;
+    expect(live).not.toBeNull();
+    expect(live.open).toBe(true);
+    expect(live.textContent).toContain("Waiting for your answers…");
 
-    // Restoring an already-answered question set must stay silent.
-    planQuestionSound.play.mockClear();
+    // Restoring an already-answered question set renders it collapsed.
     emit("session_snapshot", {
       type: "session_snapshot", workspaceId: "workspace-plan", sequence: 30,
       activeChatId: "chat-plan", tabs: [{ chatId: "chat-plan", preview: "Stored", busy: false }],
@@ -193,14 +185,17 @@ describe("Plan-mode clarifying questions", () => {
         }],
       }],
     });
-    expect(planQuestionSound.play).not.toHaveBeenCalled();
+    const answered = log.querySelector<HTMLDetailsElement>(".chat-plan-question-item")!;
+    expect(answered.open).toBe(false);
+    expect(answered.textContent).toContain("Answered");
 
-    // Restoring a still-pending (awaiting_input) question must play the sound.
-    planQuestionSound.play.mockClear();
+    // Restoring a still-pending (awaiting_input) question renders it open.
+    // The server delivers the in-flight turn via the activeTurn field.
     emit("session_snapshot", {
       type: "session_snapshot", workspaceId: "workspace-plan", sequence: 40,
-      activeChatId: "chat-plan", tabs: [{ chatId: "chat-plan", preview: "Pending", busy: false }],
-      turns: [{
+      activeChatId: "chat-plan", tabs: [{ chatId: "chat-plan", preview: "Pending", busy: true }],
+      turns: [],
+      activeTurn: {
         id: "pending", userContent: "Plan it", status: "running",
         assistantTurns: [{
           number: 0, hasToolCalls: true, tools: [{
@@ -208,8 +203,10 @@ describe("Plan-mode clarifying questions", () => {
             planQuestions: questionSet,
           }],
         }],
-      }],
+      },
     });
-    expect(planQuestionSound.play).toHaveBeenCalledOnce();
+    const pending = log.querySelector<HTMLDetailsElement>(".chat-plan-question-item")!;
+    expect(pending.open).toBe(true);
+    expect(pending.textContent).toContain("Waiting for your answers…");
   });
 });

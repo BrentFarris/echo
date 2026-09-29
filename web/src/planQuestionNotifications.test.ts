@@ -23,9 +23,14 @@ const planQuestionSound = vi.hoisted(() => ({
   playPlanQuestionSound: vi.fn(),
 }));
 
+const completionNotifications = vi.hoisted(() => ({
+  isCompletedChatVisible: vi.fn(() => false),
+}));
+
 vi.mock("../js/ws.js", () => ({ on: socket.on }));
 vi.mock("../js/api.js", () => ({ get: api.get }));
 vi.mock("./planQuestionSound", () => planQuestionSound);
+vi.mock("./completionNotifications", () => completionNotifications);
 
 describe("plan question notifications", () => {
   let module: typeof import("./planQuestionNotifications");
@@ -39,6 +44,21 @@ describe("plan question notifications", () => {
     ...overrides,
   });
 
+  const pendingSnapshot = (overrides: Record<string, unknown> = {}) => ({
+    type: "session_snapshot", workspaceId: "workspace-1", workspaceName: "Echo repo",
+    surface: "chat", activeChatId: "chat-1", sequence: 5,
+    turns: [{
+      id: "turn-1", userContent: "Plan it", status: "running",
+      assistantTurns: [{
+        number: 0, hasToolCalls: true, tools: [{
+          callId: "call-1", callOrder: 0, name: "ask_user_questions", status: "awaiting_input",
+          planQuestions: { questionSetId: "call-1", questions: [{ id: "scope", question: "Which scope?", options: ["Core", "Extended"] }] },
+        }],
+      }],
+    }],
+    ...overrides,
+  });
+
   beforeEach(async () => {
     vi.resetModules();
     socket.handlers.clear();
@@ -46,6 +66,8 @@ describe("plan question notifications", () => {
     api.get.mockReset();
     api.get.mockResolvedValue({ settings: {} });
     planQuestionSound.playPlanQuestionSound.mockClear();
+    completionNotifications.isCompletedChatVisible.mockReset();
+    completionNotifications.isCompletedChatVisible.mockReturnValue(false);
     permission = "granted";
     created = [];
     class FakeNotification {
@@ -82,6 +104,47 @@ describe("plan question notifications", () => {
     expect(window.focus).toHaveBeenCalledOnce();
     expect(window.location.hash).toContain("#/code?workspaceId=workspace-1&chatId=chat-1&chat=open");
     expect(created[0].close).toHaveBeenCalledOnce();
+  });
+
+  it("alerts for pending questions restored from a session snapshot", () => {
+    socket.emit("session_snapshot", pendingSnapshot());
+    expect(planQuestionSound.playPlanQuestionSound).toHaveBeenCalledOnce();
+    expect(created).toHaveLength(1);
+    expect(created[0].title).toBe("Clarifying question");
+    expect(created[0].options?.body).toContain("Echo repo — Which scope?");
+    created[0].onclick?.();
+    expect(window.location.hash).toContain("#/home?workspaceId=workspace-1&chatId=chat-1");
+  });
+
+  it("does not double-alert when the live broadcast and the snapshot both carry the same pending set", () => {
+    socket.emit("plan_questions_awaiting", awaiting());
+    socket.emit("session_snapshot", pendingSnapshot());
+    expect(planQuestionSound.playPlanQuestionSound).toHaveBeenCalledOnce();
+    expect(created).toHaveLength(1);
+  });
+
+  it("silences the sound for already-answered question sets restored from a snapshot", () => {
+    socket.emit("session_snapshot", pendingSnapshot({
+      turns: [{
+        id: "turn-1", userContent: "Plan it", status: "done",
+        assistantTurns: [{
+          number: 0, hasToolCalls: true, tools: [{
+            callId: "call-1", callOrder: 0, name: "ask_user_questions", status: "complete",
+            success: true, planQuestions: { questionSetId: "call-1", questions: [] },
+            answers: [{ questionId: "scope", optionIndex: 0 }],
+          }],
+        }],
+      }],
+    }));
+    expect(planQuestionSound.playPlanQuestionSound).not.toHaveBeenCalled();
+    expect(created).toHaveLength(0);
+  });
+
+  it("keeps the sound but suppresses the notification when that exact chat is visible", () => {
+    completionNotifications.isCompletedChatVisible.mockReturnValue(true);
+    socket.emit("plan_questions_awaiting", awaiting());
+    expect(planQuestionSound.playPlanQuestionSound).toHaveBeenCalledOnce();
+    expect(created).toHaveLength(0);
   });
 
   it("suppresses the notification (but keeps the sound) when disabled", () => {
