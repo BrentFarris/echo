@@ -1312,6 +1312,14 @@ function ensureTurn(stream, number) {
 function appendTurnText(stream, turnNumber, text) {
   if (!stream || !text) return;
   const turn = ensureTurn(stream, Number.isInteger(turnNumber) ? turnNumber : 0);
+  if (!text.trim()) {
+    // Whitespace is not content: it must not close a thinking block or start a
+    // visible text block, otherwise adjacent reasoning disclosures fragment
+    // into separate "Thinking" boxes. Keep the current kind open and preserve
+    // the whitespace for the final copy text.
+    turn.text += text;
+    return;
+  }
   completeReasoning(turn);
   if (turn.lastKind !== "text" || !turn.textBlock) {
     turn.textBlock = document.createElement("div");
@@ -1332,13 +1340,40 @@ function appendReasoning(stream, turnNumber, text) {
   const turn = ensureTurn(stream, Number.isInteger(turnNumber) ? turnNumber : 0);
   if (turn.lastKind === "text") flushTurnTextBlock(turn);
   if (turn.lastKind !== "reasoning" || !turn.reasoning) {
-    completeReasoning(turn);
-    turn.reasoning = createReasoningItem();
-    turn.el.appendChild(turn.reasoning.details);
+    const adjacent = adjacentReasoningItem(turn);
+    if (adjacent) {
+      // A thinking disclosure already sits at the end of the turn with nothing
+      // (or only whitespace) before it, so extend it instead of opening a new
+      // box. This keeps back-to-back reasoning from the model as one block.
+      turn.reasoning = adjacent;
+      adjacent.complete = false;
+      adjacent.label.textContent = "Thinking…";
+      adjacent.details.classList.add("is-running");
+    } else {
+      completeReasoning(turn);
+      turn.reasoning = createReasoningItem();
+      turn.el.appendChild(turn.reasoning.details);
+    }
   }
   turn.lastKind = "reasoning";
   turn.reasoning.text += text;
   turn.reasoning.body.textContent = turn.reasoning.text;
+}
+
+// adjacentReasoningItem returns the turn's open reasoning disclosure when it is
+// the last meaningful child (ignoring whitespace-only text nodes), so a
+// following reasoning event extends it rather than fragmenting the work into
+// several "Thinking" boxes. It returns null when a visible block or tool sits
+// between reasoning disclosures, which must stay separate.
+function adjacentReasoningItem(turn) {
+  if (!turn?.el || !turn.reasoning?.details?.isConnected) return null;
+  const children = turn.el.childNodes;
+  for (let index = children.length - 1; index >= 0; index--) {
+    const child = children[index];
+    if (child.nodeType === Node.TEXT_NODE && !child.textContent.trim()) continue;
+    return child === turn.reasoning.details ? turn.reasoning : null;
+  }
+  return null;
 }
 
 function createReasoningItem() {
