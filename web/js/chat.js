@@ -190,6 +190,10 @@ ws.on("session_snapshot", (snapshot) => {
   renderExecutionHold(Boolean(snapshot.executionHeld));
   for (const steering of binding.goal?.pendingInputs || []) renderPendingGoalSteering(steering);
   if (!binding.log.childElementCount) renderEmpty(binding.log, "Ask Echo to inspect, plan, or build in this workspace.");
+  // Reopening a chat (tab switch, map/deep-link jump, or reload) should land on
+  // the latest message. The follower only re-enables at the tail, so position
+  // the transcript at the bottom before reset() so it adopts the tail position.
+  binding.log.scrollTop = binding.log.scrollHeight;
   binding.scrollFollower?.reset();
   setStreaming(activeStream != null);
   emitWorkspaceState();

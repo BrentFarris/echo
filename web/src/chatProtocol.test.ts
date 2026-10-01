@@ -304,8 +304,8 @@ describe("multi-chat WebSocket protocol", () => {
     unsubscribe();
   });
 
-  it("preserves manual transcript scrolling while messages stream", async () => {
-    let scrollPosition = 37;
+  it("opens a chat at the bottom, then preserves manual transcript scrolling while messages stream", async () => {
+    let scrollPosition = 0;
     Object.defineProperties(log, {
       scrollHeight: { configurable: true, get: () => 1000 },
       clientHeight: { configurable: true, get: () => 200 },
@@ -323,6 +323,12 @@ describe("multi-chat WebSocket protocol", () => {
         assistantTurns: [{ number: 0, content: "Earlier answer", hasToolCalls: false }],
       }],
     });
+    // Reopening a chat positions the transcript at the latest message.
+    expect(scrollPosition).toBe(1000);
+
+    // The user scrolls back up; following must stop so streaming does not yank them down.
+    scrollPosition = 37;
+    log.dispatchEvent(new Event("scroll"));
     expect(sendMessage(log, "New question", "model-a", "general")).toBe(true);
     expect(scrollPosition).toBe(37);
 
