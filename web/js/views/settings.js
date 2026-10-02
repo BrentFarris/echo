@@ -37,7 +37,6 @@ let closeSettingsWorkspaceDropdown = null;
 let closeSettingsAddWorkspaceModal = null;
 let closeSettingsEditWorkspaceModal = null;
 let disposeSettingsChatMap = null;
-let disposeSettingsEscape = null;
 let pluginCatalogListener = null;
 let updateStatusListener = null;
 
@@ -1326,7 +1325,12 @@ function bindEvents(root) {
 
   // Return to the view that opened Settings, or Chat for a direct page load.
   root.querySelectorAll("[data-action='back-from-settings']").forEach((btn) => {
-    btn.addEventListener("click", () => { void goBackFromSettings(root); });
+    btn.addEventListener("click", async () => {
+      // Persist any in-progress external connection edits before leaving.
+      captureExternalFields(root);
+      await saveSettings();
+      navigateBackFromSettings();
+    });
   });
 
   // --- LLM endpoint management ---
@@ -2197,20 +2201,6 @@ export function mount(root) {
   };
   window.addEventListener("echo:plugin-catalog", pluginCatalogListener);
   window.addEventListener("echo:update-status", updateStatusListener);
-
-  // Pressing Escape in settings behaves like the Back button, unless an
-  // editable field is focused (so in-progress edits are not lost).
-  disposeSettingsEscape?.();
-  const onSettingsKeydown = (event) => {
-    if (event.key !== "Escape") return;
-    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.isComposing) return;
-    if (settingsEscapeIsEditable(document.activeElement)) return;
-    event.preventDefault();
-    void goBackFromSettings(root);
-  };
-  root.addEventListener("keydown", onSettingsKeydown);
-  disposeSettingsEscape = () => root.removeEventListener("keydown", onSettingsKeydown);
-
   render();
   loadSettings();
   loadAgentModes();
@@ -2229,8 +2219,6 @@ export function unmount() {
   closeSettingsEditWorkspaceModal = null;
   disposeSettingsChatMap?.();
   disposeSettingsChatMap = null;
-  disposeSettingsEscape?.();
-  disposeSettingsEscape = null;
   if (pluginCatalogListener) window.removeEventListener("echo:plugin-catalog", pluginCatalogListener);
   pluginCatalogListener = null;
   if (updateStatusListener) window.removeEventListener("echo:update-status", updateStatusListener);
@@ -2281,21 +2269,6 @@ function chooseDirtyLogout() {
 }
 
 // ---- Persistence ----
-
-// True when an editable form control or contenteditable element has focus.
-function settingsEscapeIsEditable(el) {
-  if (!el) return false;
-  const tag = el.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
-  return el.isContentEditable === true;
-}
-
-// Mirrors the back button: persist in-progress edits, then return to origin.
-async function goBackFromSettings(root) {
-  captureExternalFields(root);
-  await saveSettings();
-  navigateBackFromSettings();
-}
 
 // captureExternalFields reads any external connection inputs currently in the
 // DOM into state. This is used on navigation (back button, switching sections)

@@ -27,9 +27,6 @@ vi.mock("./primaryNav.ts", () => ({ renderMobilePrimaryNav: () => "" }));
 vi.mock("../js/workspaces.js", () => ({ openAddWorkspaceModal: vi.fn(), openWorkspaceDropdown: vi.fn() }));
 
 import { mount, unmount } from "../js/views/settings.js";
-import { navigateBackFromSettings } from "./navigation";
-
-const mockedNavigateBackFromSettings = vi.mocked(navigateBackFromSettings);
 
 describe("Code settings", () => {
   let root: HTMLElement;
@@ -45,7 +42,6 @@ describe("Code settings", () => {
   beforeEach(async () => {
     fixture.settings = { endpoints: [], editorFontSize: 17, editorInsertSpaces: true, editorTabSize: 2, headers: { retained: "yes" } };
     api.put.mockClear();
-    mockedNavigateBackFromSettings.mockClear();
     location.hash = "#/settings?section=code";
     root = document.createElement("div");
     document.body.append(root);
@@ -144,21 +140,5 @@ describe("Code settings", () => {
     expect(root.textContent).toContain("Save failed: offline");
     expect(field("[data-editor-column-guides]").value).toBe("100, 120");
     expect(fixture.settings.editorColumnGuides).toEqual([80, 90]);
-  });
-
-  it("navigates back when Escape is pressed with no editable field focused", async () => {
-    root.querySelector<HTMLElement>("[data-section=theme]")!.focus();
-    root.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(mockedNavigateBackFromSettings).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not navigate when Escape is pressed while an editable field is focused", async () => {
-    field("[data-editor-font-size]").focus();
-    root.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(mockedNavigateBackFromSettings).not.toHaveBeenCalled();
   });
 });
