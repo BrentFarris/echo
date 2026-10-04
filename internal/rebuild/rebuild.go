@@ -108,6 +108,79 @@ func (c *Coordinator) UpdateAndPrepare(ctx context.Context, request Request) (Re
 	return c.buildAndPrepare(ctx, request, true)
 }
 
+// RelaunchOnly prepares a detached launcher that restarts the currently
+// running Echo binary without rebuilding anything. SourceDir is ignored.
+func (c *Coordinator) RelaunchOnly(_ context.Context, request Request) (Result, error) {
+	c.mu.Lock()
+	if c.running {
+		c.mu.Unlock()
+		return Result{}, ErrInProgress
+	}
+	c.running = true
+	c.mu.Unlock()
+	prepared := false
+	defer func() {
+		if prepared {
+			// A successful preparation is terminal for this process: keep the
+			// coordinator locked until the host exits for the relaunch.
+			return
+		}
+		c.mu.Lock()
+		c.running = false
+		c.mu.Unlock()
+	}()
+
+	executablePath, err := os.Executable()
+	if err != nil {
+		return Result{}, fmt.Errorf("resolve the running Echo binary: %w", err)
+	}
+
+	dataDir := request.DataDir
+	if strings.TrimSpace(dataDir) == "" {
+		dataDir = os.TempDir()
+	}
+	dataDir, err = filepath.Abs(dataDir)
+	if err != nil {
+		return Result{}, fmt.Errorf("resolve Echo data path: %w", err)
+	}
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return Result{}, fmt.Errorf("create Echo data directory: %w", err)
+	}
+	logPath := filepath.Join(dataDir, "rebuild-relaunch.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return Result{}, fmt.Errorf("open relaunch log: %w", err)
+	}
+	logLine(logFile, "=== Echo relaunch started (no rebuild) ===")
+	logLine(logFile, "Binary: "+executablePath)
+
+	workingDir := request.WorkingDir
+	if strings.TrimSpace(workingDir) == "" {
+		workingDir = filepath.Dir(executablePath)
+	} else if absolute, resolveErr := filepath.Abs(workingDir); resolveErr == nil {
+		workingDir = absolute
+	}
+	spec := launchSpec{
+		ProcessID:   request.ProcessID,
+		StagedPath:  executablePath,
+		BinaryPath:  executablePath,
+		Arguments:   sanitizeArguments(request.Arguments),
+		WorkingDir:  workingDir,
+		LogPath:     logPath,
+		WaitSeconds: 15,
+	}
+	logLine(logFile, "Preparing detached relaunch...")
+	if err := logFile.Close(); err != nil {
+		return Result{}, fmt.Errorf("close relaunch log: %w", err)
+	}
+	if err := c.launch(spec, dataDir); err != nil {
+		return Result{}, &BuildError{Stage: "relaunch preparation", LogPath: logPath, Err: err}
+	}
+	prepared = true
+
+	return Result{SourcePath: filepath.Dir(executablePath), BinaryPath: executablePath, LogPath: logPath}, nil
+}
+
 func (c *Coordinator) buildAndPrepare(ctx context.Context, request Request, update bool) (Result, error) {
 	c.mu.Lock()
 	if c.running {
@@ -235,13 +308,14 @@ func (c *Coordinator) buildAndPrepare(ctx context.Context, request Request, upda
 		workingDir = absolute
 	}
 	spec := launchSpec{
-		ProcessID:   request.ProcessID,
-		StagedPath:  stagedPath,
-		BinaryPath:  binaryPath,
-		Arguments:   sanitizeArguments(request.Arguments),
-		WorkingDir:  workingDir,
-		LogPath:     logPath,
-		WaitSeconds: 15,
+		ProcessID:     request.ProcessID,
+		StagedPath:    stagedPath,
+		BinaryPath:    binaryPath,
+		Arguments:     sanitizeArguments(request.Arguments),
+		WorkingDir:    workingDir,
+		LogPath:       logPath,
+		WaitSeconds:   15,
+		ReplaceBinary: true,
 	}
 	logLine(logFile, "Build succeeded. Preparing detached relaunch...")
 	if err := logFile.Close(); err != nil {

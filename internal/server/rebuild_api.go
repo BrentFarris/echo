@@ -16,6 +16,7 @@ import (
 type rebuildCoordinator interface {
 	BuildAndPrepare(context.Context, rebuild.Request) (rebuild.Result, error)
 	UpdateAndPrepare(context.Context, rebuild.Request) (rebuild.Result, error)
+	RelaunchOnly(context.Context, rebuild.Request) (rebuild.Result, error)
 }
 
 type echoUpdateChecker interface {
@@ -77,6 +78,32 @@ func (s *Server) handleDevelopmentRelaunch(w http.ResponseWriter, r *http.Reques
 	})
 	// The host performs the existing graceful shutdown. The detached launcher
 	// is already waiting for this exact process before replacing it.
+	s.requestRestart()
+}
+
+// handleRelaunch restarts the currently running Echo binary without building
+// anything, so the Echo source workspace does not need to be registered.
+func (s *Server) handleRelaunch(w http.ResponseWriter, r *http.Request) {
+	request := rebuild.Request{
+		DataDir:    filepath.Dir(s.settingsPath),
+		ProcessID:  s.processID,
+		Arguments:  append([]string(nil), s.processArgs...),
+		WorkingDir: s.workingDir,
+	}
+	result, err := s.rebuilder.RelaunchOnly(r.Context(), request)
+	if err != nil {
+		s.writeDevelopmentError(w, err, false)
+		return
+	}
+
+	writeData(w, http.StatusAccepted, map[string]any{
+		"status":     "restarting",
+		"instanceId": s.instanceID,
+		"binaryPath": result.BinaryPath,
+		"logPath":    result.LogPath,
+	})
+	// The host performs the existing graceful shutdown. The detached launcher
+	// is already waiting for this exact process before relaunching it.
 	s.requestRestart()
 }
 

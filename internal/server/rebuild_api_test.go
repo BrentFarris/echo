@@ -18,10 +18,11 @@ import (
 )
 
 type fakeRebuilder struct {
-	request rebuild.Request
-	result  rebuild.Result
-	err     error
-	updated bool
+	request    rebuild.Request
+	result     rebuild.Result
+	err        error
+	updated    bool
+	relaunched bool
 }
 
 func (f *fakeRebuilder) BuildAndPrepare(_ context.Context, request rebuild.Request) (rebuild.Result, error) {
@@ -32,6 +33,12 @@ func (f *fakeRebuilder) BuildAndPrepare(_ context.Context, request rebuild.Reque
 func (f *fakeRebuilder) UpdateAndPrepare(_ context.Context, request rebuild.Request) (rebuild.Result, error) {
 	f.request = request
 	f.updated = true
+	return f.result, f.err
+}
+
+func (f *fakeRebuilder) RelaunchOnly(_ context.Context, request rebuild.Request) (rebuild.Result, error) {
+	f.request = request
+	f.relaunched = true
 	return f.result, f.err
 }
 
@@ -105,6 +112,63 @@ func TestRebuildRelaunchRequiresRegisteredEchoSource(t *testing.T) {
 	rr := doRequest(t, s, http.MethodPost, "/api/development/rebuild-relaunch")
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRelaunchRestartsCurrentBinaryWithoutEchoSource(t *testing.T) {
+	s, _ := newTestServer(t)
+	logPath := filepath.Join(t.TempDir(), "rebuild-relaunch.log")
+	fake := &fakeRebuilder{result: rebuild.Result{BinaryPath: "echo", LogPath: logPath}}
+	s.rebuilder = fake
+	s.processID = 1234
+	s.processArgs = []string{"-port", "4872"}
+
+	rr := doRequest(t, s, http.MethodPost, "/api/development/relaunch")
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if !fake.relaunched || fake.request.SourceDir != "" || fake.request.ProcessID != 1234 || len(fake.request.Arguments) != 2 {
+		t.Fatalf("relaunch request = %#v, relaunched = %v", fake.request, fake.relaunched)
+	}
+	select {
+	case <-s.RestartRequested():
+	default:
+		t.Fatal("restart was not requested")
+	}
+	var payload struct {
+		Data struct {
+			Status     string `json:"status"`
+			InstanceID string `json:"instanceId"`
+			BinaryPath string `json:"binaryPath"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Data.Status != "restarting" || payload.Data.InstanceID != s.instanceID || payload.Data.BinaryPath != "echo" {
+		t.Fatalf("response = %#v", payload.Data)
+	}
+}
+
+func TestRelaunchReportsFailureWithoutRestart(t *testing.T) {
+	s, _ := newTestServer(t)
+	s.rebuilder = &fakeRebuilder{err: &rebuild.BuildError{Stage: "relaunch preparation", LogPath: "relaunch.log", Err: errors.New("launcher failed")}}
+
+	rr := doRequest(t, s, http.MethodPost, "/api/development/relaunch")
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	select {
+	case <-s.RestartRequested():
+		t.Fatal("restart requested after relaunch failure")
+	default:
+	}
+	var payload errorEnvelope
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Code != "rebuild_failed" {
+		t.Fatalf("error code = %q", payload.Code)
 	}
 }
 

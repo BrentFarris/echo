@@ -95,6 +95,32 @@ describe("Development rebuild and relaunch", () => {
     expect(api.post).not.toHaveBeenCalled();
   });
 
+  it("relaunches without rebuilding, waits for the new server identity, and reloads", async () => {
+    let finish!: (value: { instanceId: string }) => void;
+    api.post.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+
+    root.querySelector<HTMLButtonElement>("[data-action=relaunch-echo]")!.click();
+    await Promise.resolve();
+
+    expect(api.post).toHaveBeenCalledWith("/api/development/relaunch", {});
+    expect(root.querySelector<HTMLButtonElement>("[data-action=relaunch-echo]")!.disabled).toBe(true);
+    expect(root.querySelector("[data-relaunch-status]")?.textContent).toContain("relaunch");
+
+    finish({ instanceId: "old-instance" });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(replacement.waitForReplacementServer).toHaveBeenCalledWith("old-instance");
+    expect(replacement.reloadForReplacementServer).toHaveBeenCalledOnce();
+  });
+
+  it("does nothing when relaunch confirmation is canceled", () => {
+    vi.mocked(window.confirm).mockReturnValue(false);
+    root.querySelector<HTMLButtonElement>("[data-action=relaunch-echo]")!.click();
+    expect(api.post).not.toHaveBeenCalled();
+  });
+
   it("does not terminate Echo when confirmation is canceled", () => {
     vi.mocked(window.confirm).mockReturnValue(false);
     root.querySelector<HTMLButtonElement>("[data-action=terminate-echo]")!.click();

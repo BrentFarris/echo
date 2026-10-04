@@ -491,6 +491,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/development/update-status", s.handleEchoUpdateStatus)
 	mux.HandleFunc("POST /api/development/update", s.handleEchoUpdate)
 	mux.HandleFunc("POST /api/development/rebuild-relaunch", s.handleRebuildRelaunch)
+	mux.HandleFunc("POST /api/development/relaunch", s.handleRelaunch)
 	mux.HandleFunc("POST /api/development/terminate", s.handleTerminateEcho)
 	mux.HandleFunc("GET /api/agent-modes", s.handleGetAgentModes)
 	mux.HandleFunc("POST /api/agent-modes", s.handleCreateAgentMode)

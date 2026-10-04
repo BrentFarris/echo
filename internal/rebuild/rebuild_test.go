@@ -289,6 +289,45 @@ func TestConcurrentBuildIsRejected(t *testing.T) {
 	}
 }
 
+func TestRelaunchOnlyReusesRunningBinaryWithoutBuilding(t *testing.T) {
+	dataDir := t.TempDir()
+	coordinator := NewCoordinator()
+	var launched launchSpec
+	coordinator.run = func(_ context.Context, _ string, _ io.Writer, name string, _ ...string) error {
+		t.Fatalf("unexpected command %q", name)
+		return nil
+	}
+	coordinator.launch = func(spec launchSpec, gotDataDir string) error {
+		launched = spec
+		if gotDataDir != dataDir {
+			t.Fatalf("launcher data dir = %q, want %q", gotDataDir, dataDir)
+		}
+		return nil
+	}
+
+	result, err := coordinator.RelaunchOnly(context.Background(), Request{
+		DataDir:    dataDir,
+		ProcessID:  99,
+		Arguments:  []string{"-port", "4872", "--reset-auth"},
+		WorkingDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("RelaunchOnly: %v", err)
+	}
+	if launched.ProcessID != 99 || launched.StagedPath != launched.BinaryPath {
+		t.Fatalf("launcher spec = %#v", launched)
+	}
+	if strings.Join(launched.Arguments, "|") != "-port|4872" {
+		t.Fatalf("launcher arguments = %#v", launched.Arguments)
+	}
+	if launched.WorkingDir == "" || result.BinaryPath != launched.BinaryPath || result.LogPath != filepath.Join(dataDir, "rebuild-relaunch.log") {
+		t.Fatalf("result = %#v, spec = %#v", result, launched)
+	}
+	if _, err := coordinator.RelaunchOnly(context.Background(), Request{DataDir: dataDir}); !errors.Is(err, ErrInProgress) {
+		t.Fatalf("second relaunch after preparation = %v", err)
+	}
+}
+
 func TestLaunchScriptsUseExactPIDAndPreserveQuotedArguments(t *testing.T) {
 	spec := launchSpec{
 		ProcessID: 77, StagedPath: `C:\Echo Source\echo.rebuild.exe`, BinaryPath: `C:\Echo Source\echo.exe`,

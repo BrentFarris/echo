@@ -17,6 +17,10 @@ type launchSpec struct {
 	LogPath     string
 	ReadyPath   string
 	WaitSeconds int
+	// ReplaceBinary moves StagedPath over BinaryPath before launching. A
+	// relaunch of the already-running binary skips the move because the
+	// staged and target paths are identical.
+	ReplaceBinary bool
 }
 
 func prepareAndLaunch(spec launchSpec, dataDir string) error {
@@ -65,8 +69,8 @@ func buildPowerShellLauncher(spec launchSpec) string {
 		"    Start-Sleep -Milliseconds 200\r\n" +
 		"  }\r\n" +
 		"  while (Get-Process -Id $echoProcessId -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 100 }\r\n" +
-		"  Move-Item -LiteralPath $stagedBinary -Destination $binaryPath -Force\r\n" +
-		"  Write-Log \"Launching rebuilt Echo from $binaryPath\"\r\n" +
+		"  if ($stagedBinary -ne $binaryPath) { Move-Item -LiteralPath $stagedBinary -Destination $binaryPath -Force }\r\n" +
+		"  Write-Log \"Launching Echo from $binaryPath\"\r\n" +
 		"  if ($launchArguments) { Start-Process -FilePath $binaryPath -ArgumentList $launchArguments -WorkingDirectory $workingDirectory -WindowStyle Hidden } else { Start-Process -FilePath $binaryPath -WorkingDirectory $workingDirectory -WindowStyle Hidden }\r\n" +
 		"  Write-Log 'Echo relaunch command completed.'\r\n" +
 		"} catch { Write-Log \"RELAUNCH FAILED: $($_.Exception.Message)\"; exit 1 }\r\n"
@@ -100,9 +104,9 @@ func buildShellLauncher(spec launchSpec) string {
 		"  elapsed=$((elapsed + 1))\n" +
 		"done\n" +
 		"while kill -0 \"$echo_pid\" 2>/dev/null; do sleep 1; done\n" +
-		"mv -f \"$staged_binary\" \"$binary_path\" || { log 'RELAUNCH FAILED: could not replace binary.'; exit 1; }\n" +
+		"if [ \"$staged_binary\" != \"$binary_path\" ]; then mv -f \"$staged_binary\" \"$binary_path\" || { log 'RELAUNCH FAILED: could not replace binary.'; exit 1; }; fi\n" +
 		"cd \"$working_directory\" || { log 'RELAUNCH FAILED: working directory is unavailable.'; exit 1; }\n" +
-		"log \"Launching rebuilt Echo from $binary_path\"\n" +
+		"log \"Launching Echo from $binary_path\"\n" +
 		"nohup \"$binary_path\"" + launchArguments + " >> \"$log_file\" 2>&1 &\n" +
 		"log 'Echo relaunch command completed.'\n"
 }
