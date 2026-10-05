@@ -16,8 +16,14 @@ describe("chat tab visual contracts", () => {
 
   it("renders the close glyph and provides explicit overflow controls", () => {
     expect(css).toMatch(/\.chat-tab-close svg\s*\{[\s\S]*?stroke:\s*currentColor;/);
-    expect(css).toMatch(/\.chat-tabs-shell\.has-overflow\s*\{[\s\S]*?grid-template-columns:/);
+    expect(css).toMatch(/\.chat-tabs-shell\s*\{[\s\S]*?grid-template-columns:\s*26px minmax\(0, 1fr\);/);
+    expect(css).toMatch(/\.chat-tabs-shell\.has-overflow\s*\{[\s\S]*?grid-template-columns:\s*26px 26px minmax\(0, 1fr\) 26px;/);
     expect(css).toMatch(/\.chat-tabs-shell\.has-overflow \.chat-tabs-scroll\s*\{\s*display:\s*grid;/);
+  });
+
+  it("always exposes the new-tab button to the left of the tab strip", () => {
+    expect(css).toMatch(/\.chat-tabs-new\s*\{[\s\S]*?display:\s*grid;[\s\S]*?width:\s*26px;/);
+    expect(css).toMatch(/\.chat-tabs-new svg\s*\{[\s\S]*?stroke:\s*currentColor;/);
   });
 
   it("keeps trajectory controls separate from its scrolling ledger", () => {

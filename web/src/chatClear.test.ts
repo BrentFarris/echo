@@ -62,6 +62,9 @@ describe("clear current chat menu action", () => {
   beforeEach(async () => {
     root = document.createElement("div");
     document.body.appendChild(root);
+    // The tab strip is always rendered now, and its rAF callback scrolls the
+    // active tab into view; jsdom does not implement scrollIntoView.
+    Element.prototype.scrollIntoView = vi.fn();
     mount(root);
     await Promise.resolve();
     await Promise.resolve();

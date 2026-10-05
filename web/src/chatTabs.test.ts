@@ -233,6 +233,30 @@ describe("multi-chat tab UI", () => {
     expect(active.title).toBe("Second prompt with a long descriptive label");
   });
 
+  it("shows the tab strip even with a single tab", () => {
+    chat.emitWorkspace({
+      workspaceId: "workspace-tabs", activeChatId: "chat-one", hasSnapshot: true,
+      tabs: [{ chatId: "chat-one", preview: "Only chat", busy: false }],
+    });
+    expect(root.querySelector<HTMLElement>("[data-chat-tabs-shell]")!.hidden).toBe(false);
+    expect(root.querySelectorAll("[data-chat-tabs] [role='tab']")).toHaveLength(1);
+    expect(root.querySelector<HTMLElement>("[data-new-tab-button]")).not.toBeNull();
+  });
+
+  it("creates a new tab from the strip's plus button", () => {
+    root.querySelector<HTMLButtonElement>("[data-new-tab-button]")!.click();
+    expect(chat.createChatTab).toHaveBeenCalledOnce();
+    expect(document.querySelector<HTMLElement>(".chat-more-menu")!.hidden).toBe(true);
+  });
+
+  it("renders the newest tab leftmost so older tabs shift right", () => {
+    chat.emitWorkspace(twoTabs("chat-one"));
+    const tabs = root.querySelector<HTMLElement>("[data-chat-tabs]")!;
+    const order = [...tabs.querySelectorAll("[data-chat-tab-activate]")]
+      .map((tab) => (tab as HTMLElement).dataset.chatTabActivate);
+    expect(order).toEqual(["chat-two", "chat-one"]);
+  });
+
   it("restores a separate unsent draft when shared activation changes", () => {
     chat.emitWorkspace(twoTabs("chat-one"));
     const editor = root.querySelector<HTMLElement>("[data-chat-input]")!;

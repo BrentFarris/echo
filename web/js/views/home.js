@@ -178,6 +178,7 @@ function chatPanel() {
       <section class="workspace-panel">
         <section class="work-panel chat-panel" aria-label="Chat">
           <div class="chat-tabs-shell" data-chat-tabs-shell hidden>
+            <button class="chat-tabs-new" type="button" title="New chat tab" aria-label="New chat tab" data-new-tab-button>${icons.plus}</button>
             <button class="chat-tabs-scroll chat-tabs-scroll-previous" type="button" title="Scroll tabs left" aria-label="Scroll tabs left" data-chat-tabs-scroll="previous">${icons.arrowLeft}</button>
             <div class="chat-tabs" role="tablist" aria-label="Open chats" data-chat-tabs></div>
             <button class="chat-tabs-scroll chat-tabs-scroll-next" type="button" title="Scroll tabs right" aria-label="Scroll tabs right" data-chat-tabs-scroll="next">${icons.arrowLeft}</button>
@@ -270,6 +271,7 @@ export function mount(root) {
   const tabsHost = root.querySelector("[data-chat-tabs]");
   const tabsScrollPrevious = root.querySelector("[data-chat-tabs-scroll='previous']");
   const tabsScrollNext = root.querySelector("[data-chat-tabs-scroll='next']");
+  const tabsNewButton = root.querySelector("[data-new-tab-button]");
   const form = root.querySelector("[data-chat-form]");
   const goalBar = root.querySelector("[data-goal-bar]");
   const goalStatus = root.querySelector("[data-goal-status]");
@@ -681,7 +683,7 @@ export function mount(root) {
 
   const renderTabs = () => {
     tabsHost.replaceChildren();
-    const show = currentTabs.length >= 2;
+    const show = currentTabs.length >= 1;
     tabsShell.hidden = !show;
     panel.classList.toggle("has-chat-tabs", show);
     if (!show) {
@@ -689,7 +691,9 @@ export function mount(root) {
       renderedActiveChatId = currentChatId;
       return;
     }
-    for (const tab of currentTabs) {
+    // Newest chats render leftmost, next to the [+] button, so creating a
+    // tab shifts the older tabs right instead of appending off-screen.
+    for (const tab of [...currentTabs].reverse()) {
       const item = document.createElement("div");
       item.className = `chat-tab-item${tab.chatId === currentChatId ? " is-active" : ""}`;
       item.dataset.chatId = tab.chatId;
@@ -1586,6 +1590,7 @@ export function mount(root) {
   tabsHost.addEventListener("scroll", onTabsScroll);
   tabsScrollPrevious.addEventListener("click", onTabsScrollPrevious);
   tabsScrollNext.addEventListener("click", onTabsScrollNext);
+  tabsNewButton.addEventListener("click", onNewTabClick);
   chatPane.addEventListener("click", onViewSwitcherClick);
   log.addEventListener("scroll", onChatLogScroll, { passive: true });
   moreMenu.addEventListener("keydown", onMoreMenuKeydown);
