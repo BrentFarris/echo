@@ -28,9 +28,13 @@ export function applyDebugEvent(snapshot: DebugSnapshot, event: DebugEvent): Deb
   return next;
 }
 
+export function isTerminalSession(session: DebugSession): boolean {
+  return session.status === "terminated" || session.status === "failed";
+}
+
 export function activeDebugSession(snapshot: DebugSnapshot, selectedId?: string): DebugSession | undefined {
   const sessions = snapshot.sessions || [];
-  const selectable = sessions.filter((session) => session.status !== "terminated" && session.status !== "failed");
+  const selectable = sessions.filter((session) => !isTerminalSession(session));
   return selectable.find((session) => session.id === selectedId)
     || selectable.find((session) => session.status === "stopped")
     || selectable.at(-1)

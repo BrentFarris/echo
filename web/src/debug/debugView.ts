@@ -13,7 +13,7 @@ import {
 } from "./api";
 import {
   activeDebugSession, applyDebugEvent, breakpointDecorationClass, capability,
-  commandSupported, debugKeyAction,
+  commandSupported, debugKeyAction, isTerminalSession,
 } from "./state";
 import {
   debugStopNotificationPermission, debugStopNotificationsEnabled,
@@ -430,13 +430,13 @@ export class DebugView {
   }
 
   private renderSessionPicker(active: DebugSession): string {
-    const live = this.snapshot.sessions.filter((session) => !["terminated", "failed"].includes(session.status));
+    const live = this.snapshot.sessions.filter((session) => !isTerminalSession(session));
     return `<div class="debug-session-row"><span class="debug-status is-${active.status}"></span><select aria-label="Active debug session" data-debug-session>${live.map((session) => `<option value="${session.id}" ${session.id === active.id ? "selected" : ""}>${escapeHTML(session.configuration)} · ${escapeHTML(session.status)}</option>`).join("")}</select></div>`;
   }
 
   private renderToolbar(): void {
     const session = this.activeSession();
-    const live = this.snapshot.sessions.filter((item) => !["terminated", "failed"].includes(item.status));
+    const live = this.snapshot.sessions.filter((item) => !isTerminalSession(item));
     if (!session || live.length === 0) {
       this.options.toolbarHost.innerHTML = "";
       return;
@@ -462,8 +462,9 @@ export class DebugView {
   }
 
   private renderCallStack(): string {
-    if (!this.snapshot.sessions.length) return `<p class="debug-section-empty">No debug sessions.</p>`;
-    return this.snapshot.sessions.map((session) => {
+    const sessions = this.snapshot.sessions.filter((session) => !isTerminalSession(session));
+    if (!sessions.length) return `<p class="debug-section-empty">No debug sessions.</p>`;
+    return sessions.map((session) => {
       const threads = session.status === "stopped" ? this.threads.get(session.id) || [] : [];
       const threadRows = threads.map((thread) => {
         const key = `${session.id}:${thread.id}`;
@@ -1408,7 +1409,7 @@ export class DebugView {
     const entries = this.allOutput().filter((entry) => ["adapter", "lifecycle", "echo", "telemetry", "dap"].includes(entry.category) && Date.parse(entry.timestamp) >= this.outputClearedAt);
     const progress = [...this.progress.values()].map((item) => `<div class="debug-progress-row"><span class="codicon codicon-loading codicon-modifier-spin"></span><strong>${escapeHTML(item.title)}</strong><span>${escapeHTML(item.message || "")}${item.percentage !== undefined ? ` ${Math.max(0, Math.min(100, item.percentage))}%` : ""}</span>${item.cancellable ? `<button type="button" data-debug-cancel-progress data-session-id="${item.sessionId}" data-progress-id="${escapeHTML(item.progressId)}">Cancel</button>` : ""}</div>`).join("");
     const content = progress + entries.map(renderOutputEntry).join("");
-    host.innerHTML = `<section class="debug-panel-view"><header><span>Debugger lifecycle, adapter stderr, hooks, telemetry, and optional redacted protocol tracing</span><input type="search" class="debug-panel-filter" aria-label="Filter Debug Output" placeholder="Filter" value="${escapeHTML(this.outputFilter)}" data-debug-output-filter><label class="debug-trace-toggle"><input type="checkbox" data-debug-trace ${session?.traceDAP ? "checked" : ""} ${session && !["terminated", "failed"].includes(session.status) ? "" : "disabled"}> Trace Protocol</label><button type="button" data-output-action="clear"><span class="codicon codicon-clear-all"></span> Clear</button></header><div class="debug-console-output">${content || `<p class="debug-section-empty">No debugger diagnostics.</p>`}</div></section>`;
+    host.innerHTML = `<section class="debug-panel-view"><header><span>Debugger lifecycle, adapter stderr, hooks, telemetry, and optional redacted protocol tracing</span><input type="search" class="debug-panel-filter" aria-label="Filter Debug Output" placeholder="Filter" value="${escapeHTML(this.outputFilter)}" data-debug-output-filter><label class="debug-trace-toggle"><input type="checkbox" data-debug-trace ${session?.traceDAP ? "checked" : ""} ${session && !isTerminalSession(session) ? "" : "disabled"}> Trace Protocol</label><button type="button" data-output-action="clear"><span class="codicon codicon-clear-all"></span> Clear</button></header><div class="debug-console-output">${content || `<p class="debug-section-empty">No debugger diagnostics.</p>`}</div></section>`;
     this.applyPanelFilter(host, this.outputFilter);
   }
 

@@ -146,3 +146,16 @@ it.each([false, true])("renders a newly added watch after evaluation without ano
   else resolve({ body: { result: "42", type: "int", variablesReference: 0 } });
   await vi.waitFor(() => expect(host.querySelector(".debug-watch-row")?.textContent).toContain(fails ? "Unknown expression" : "42"));
 });
+
+it("omits terminated and failed sessions from the call stack", () => {
+  const terminated = { ...session, id: "old-run", configuration: "Old Run", status: "terminated" as const };
+  const failed = { ...session, id: "bad-run", configuration: "Bad Run", status: "failed" as const, error: "compile failed" };
+  view.acceptExternalSnapshot({ workspaceId: "workspace", sequence: 2, sessions: [terminated, failed, session], groups: [], state: { revision: 0 } });
+  const callStack = () => host.querySelector<HTMLElement>("[data-debug-section=callstack]")!.textContent || "";
+  expect(callStack()).toContain("Main");
+  expect(callStack()).not.toContain("Old Run");
+  expect(callStack()).not.toContain("Bad Run");
+
+  view.acceptExternalSnapshot({ workspaceId: "workspace", sequence: 3, sessions: [terminated, failed], groups: [], state: { revision: 0 } });
+  expect(callStack()).toContain("No debug sessions.");
+});
