@@ -22,7 +22,7 @@ import { editorSettingsWriter, indentationDefaults, indentationLabel, openIndent
 import { previewKindForPath, type PreviewKind } from "./preview";
 import {
   CODE_ROUTE, chatCompletionTargetFromHash, chatTargetRouteHash, codeOpenTargetFromHash, codeRouteHash,
-  codeSidebarFromHash, routePathFromHash, type ChatCompletionTarget, type ChatTarget, type CodeSidebar,
+  codeSidebarFromHash, routePathFromHash, type ChatCompletionTarget, type ChatTarget, type CodeOpenTarget, type CodeSidebar,
 } from "../navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 import { installChatMap } from "../chatMap";
@@ -187,6 +187,8 @@ class CodeView {
   private splitGitDiff = true;
   private leadingWhitespaceIndicators = true;
   private enableVimKeybindings = false;
+  private vimStatusBar: HTMLElement | null = null;
+  private vimAdapter: ReturnType<typeof initVimMode> | null = null;
   private editorFontSize = 13.5;
   private indentation: Indentation = indentationDefaults({});
   private closeIndentationPopover: (() => void) | null = null;
@@ -205,7 +207,6 @@ class CodeView {
   private explorerWidth = 280;
   private codeChatWidth = 360;
   private codeChatOpen = false;
-  private explorerCollapsed = false;
   private codeChatSurface: MountedChatSurface | null = null;
   private diffSelectionSides = new Map<string, "original" | "modified">();
   private restoredTreeScrollTop = 0;
@@ -218,7 +219,7 @@ class CodeView {
   private closeAddWorkspaceModal: (() => void) | null = null;
   private workspaceSwitching = false;
   private mediaTheme = window.matchMedia("(prefers-color-scheme: dark)");
-  private openTarget: FileRef | null;
+  private openTarget: CodeOpenTarget | null;
   private completionTarget: ChatCompletionTarget | null;
   private lsp: EchoLSPClient | null = null;
   private lspProfiles: LSPProfile[] = [];
@@ -280,7 +281,7 @@ class CodeView {
         ?? settingsData?.settings?.disableGitSplitDiffView;
       this.splitGitDiff = disableSplitDiff !== true;
       this.leadingWhitespaceIndicators = settingsData?.settings?.hideLeadingWhitespaceIndicators !== true;
-      this.enableVimKeybindings = settingsData?.settings?.enableVimKeybindings === true;
+      this.enableVimKeybindings = !!settingsData?.settings?.enableVimKeybindings;
       this.indentation = indentationDefaults(settingsData?.settings || {});
       this.editorFontSize = this.clampEditorFontSize((settingsData?.settings?.editorFontSize as number | undefined) || 13.5);
       this.lspProfiles = lspData.profiles || [];
@@ -327,9 +328,25 @@ class CodeView {
       });
       if (this.openTarget) {
         const target = this.openTarget;
+        const lineToReveal: number | undefined = target.line && target.line >= 1 ? target.line : undefined;
         this.openTarget = null;
         await this.openFile(target, true, false);
         if (this.abort.signal.aborted) return;
+        if (lineToReveal) {
+          const tab = this.tabs.find((candidate) => {
+            const candidateRef = this.worktreeRef(candidate);
+            return candidateRef && refKey(candidateRef) === refKey(target);
+          });
+          if (tab) {
+            this.activateTab(tab.id, false);
+            const editor = this.activeCodeEditor();
+            if (editor) {
+              const position = { lineNumber: lineToReveal, column: 1 };
+              editor.setPosition(position);
+              editor.revealPositionInCenter(position);
+            }
+          }
+        }
         await this.expandTo(target);
         if (this.abort.signal.aborted) return;
         window.history.replaceState(window.history.state, "", codeRouteHash("explorer"));
@@ -383,7 +400,6 @@ class CodeView {
                 <button type="button" title="Refresh Explorer" aria-label="Refresh Explorer" data-tree-action="refresh"><span class="codicon codicon-refresh"></span></button>
                 <button type="button" title="Collapse All" aria-label="Collapse All" data-tree-action="collapse-all"><span class="codicon codicon-collapse-all"></span></button>
                 <button type="button" title="Trash" aria-label="Trash" data-tree-action="trash"><span class="codicon codicon-trash"></span></button>
-                <button type="button" title="${this.explorerCollapsed ? 'Expand Explorer' : 'Collapse Explorer'}" aria-label="${this.explorerCollapsed ? 'Expand Explorer' : 'Collapse Explorer'}" data-explorer-collapse-btn><span class="codicon codicon-${this.explorerCollapsed ? 'chevron-right' : 'collapse-all'}"></span></button>
               </div>
             </header>
             <div class="code-workspace-title" title="${escapeHTML(workspaceName)}"><span class="codicon codicon-chevron-down"></span><strong>${escapeHTML(workspaceName)}</strong></div>
@@ -396,7 +412,6 @@ class CodeView {
           <aside class="code-debug-view" aria-label="Run and Debug" data-sidebar-view="debug"${this.activeSidebar === "debug" ? "" : " hidden"}></aside>
           </div>
           <div class="code-explorer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Explorer" tabindex="0"></div>
-          <button type="button" class="code-sidebar-expand-toggle" title="Show Sidebar" aria-label="Expand sidebar" data-sidebar-expand><span class="codicon codicon-chevron-right"></span></button>
           <main class="code-editor-column">
             <div class="code-tabs-scroll" role="tablist" aria-label="Open editors" data-code-tabs><div class="code-tabs" data-tabs-list></div></div>
             <div class="code-editor-workspace">
@@ -571,10 +586,6 @@ class CodeView {
       window.history.replaceState(window.history.state, "", codeRouteHash(view));
     }
     if (window.innerWidth <= 720) this.setMobileExplorer(true);
-    // Auto-expand sidebar when switching to it while collapsed
-    if (this.explorerCollapsed && (view === "explorer" || view === "git" || view === "search")) {
-      this.setExplorerCollapsed(false);
-    }
     if (view === "search") this.searchView?.open();
   }
 
@@ -779,16 +790,14 @@ class CodeView {
     this.editor.onDidChangeCursorPosition(() => { this.renderStatus(); this.observeNavigationLocation(true); });
     this.editor.onDidChangeCursorSelection(() => this.updateCodeChatSelectionNotice());
     this.editor.onDidScrollChange(() => { this.observeNavigationLocation(false); this.schedulePersist(); });
-    const vimStatusBar = this.enableVimKeybindings
-      ? (() => {
-          const el = document.createElement("div");
-          el.style.cssText = "position:absolute;bottom:0;left:0;right:0;height:24px;display:none;z-index:1000;background:#333;color:#ccc;font-size:12px;padding:2px 8px;font-family:monospace;";
-          this.root.querySelector<HTMLElement>(".code-editor-pane")!.appendChild(el);
-          return el;
-        })()
-      : null;
-    if (this.enableVimKeybindings && vimStatusBar) {
-      initVimMode(this.editor, vimStatusBar);
+    if (this.enableVimKeybindings) {
+      const editorArea = this.root.querySelector<HTMLElement>(".code-editor-area")!;
+      this.vimStatusBar = document.createElement("div");
+      this.vimStatusBar.style.cssText = "position:absolute;bottom:0;left:0;right:0;height:24px;display:none;z-index:10;background:#333;color:#ccc;font-size:12px;padding:2px 8px;font-family:monospace;border-top:1px solid #555;";
+      this.vimStatusBar.classList.add("code-vim-statusbar");
+      editorArea.appendChild(this.vimStatusBar);
+      this.vimAdapter = initVimMode(this.editor, this.vimStatusBar);
+      // Register :w ex command to save the current buffer immediately
       const vimApi = (VimMode as any).Vim;
       if (vimApi?.defineEx) {
         vimApi.defineEx("write", "w", () => {
@@ -858,7 +867,7 @@ class CodeView {
     });
     modifiedDiffEditor.onDidChangeCursorPosition(() => { this.renderStatus(); this.observeNavigationLocation(true); });
     this.diffEditor.getModifiedEditor().onDidScrollChange(() => { this.observeNavigationLocation(false); this.schedulePersist(); });
-    if (this.enableVimKeybindings && vimStatusBar) initVimMode(this.diffEditor.getModifiedEditor(), vimStatusBar);
+    if (this.enableVimKeybindings && this.vimStatusBar) initVimMode(this.diffEditor.getModifiedEditor(), this.vimStatusBar);
     this.updateDiffLayoutState();
     this.editorOpener = monaco.editor.registerEditorOpener({
       openCodeEditor: (_source, resource, selectionOrPosition) => this.openNavigationTarget(resource, selectionOrPosition),
@@ -3103,9 +3112,36 @@ class CodeView {
       { id: "editor.fold", label: "Editor: Fold", run: () => this.editor.trigger("echo", "editor.fold", null) },
       { id: "editor.unfold", label: "Editor: Unfold", run: () => this.editor.trigger("echo", "editor.unfold", null) },
       { id: "editor.bracket", label: "Editor: Go to Bracket", run: () => this.editor.trigger("echo", "editor.action.jumpToBracket", null) },
+      { id: "editor.toggleVimKeybindings", label: "Editor: Toggle Vim Keybindings", run: () => this.toggleVimKeybindings() },
     ];
     this.recentCommandIds = pruneRecentCommandIds(this.recentCommandIds, this.commands.map((command) => command.id));
     saveRecentCommandIds(this.recentCommandIds);
+  }
+
+  private toggleVimKeybindings(): void {
+    this.enableVimKeybindings = !this.enableVimKeybindings;
+    void this.saveEditorSettings({ enableVimKeybindings: this.enableVimKeybindings });
+    if (this.enableVimKeybindings) {
+      // Activate Vim mode on the live editor
+      if (!this.vimStatusBar) {
+        this.vimStatusBar = document.createElement("div");
+        this.vimStatusBar.style.cssText = "position:absolute;bottom:0;left:0;right:0;height:24px;display:none;z-index:10;background:#333;color:#ccc;font-size:12px;padding:2px 8px;font-family:monospace;border-top:1px solid #555;";
+        this.vimStatusBar.classList.add("code-vim-statusbar");
+        const editorArea = this.root.querySelector<HTMLElement>(".code-editor-area")!;
+        editorArea.appendChild(this.vimStatusBar);
+      }
+      this.vimAdapter = initVimMode(this.editor, this.vimStatusBar);
+      const diffModified = this.diffEditor?.getModifiedEditor();
+      if (diffModified && this.vimStatusBar) initVimMode(diffModified, this.vimStatusBar);
+      toast("Vim keybindings enabled");
+    } else {
+      // Deactivate Vim mode
+      this.vimAdapter?.dispose();
+      this.vimAdapter = null;
+      this.vimStatusBar?.remove();
+      this.vimStatusBar = null;
+      toast("Vim keybindings disabled");
+    }
   }
 
   private activeCodeEditor(): MonacoEditor.ICodeEditor | null {
@@ -3418,6 +3454,64 @@ class CodeView {
     const signal = this.abort.signal;
     window.addEventListener("popstate", (event) => { void this.handleNavigationTraversal(event.state); }, { signal });
     window.addEventListener("pagehide", () => this.codeNavigation?.dispose(this.captureNavigationLocation()), { signal });
+
+    // Handle file+line links clicked from the chat surface.
+    document.addEventListener("echo-file-link", async (event: Event) => {
+      const detail = (event as CustomEvent).detail as { path: string; line: number };
+      if (!this.workspace || !detail?.path) return;
+      // Resolve rootId by matching the file path against workspace roots.
+      let bestRoot: WorkspaceRoot | null = null;
+      let bestPrefix = "";
+      for (const root of this.roots) {
+        const hostPath = root.hostPath || "";
+        if (detail.path.includes(hostPath) && hostPath.length > bestPrefix.length) {
+          bestRoot = root;
+          bestPrefix = hostPath;
+        }
+      }
+      // If no host path match, try matching by label prefix.
+      if (!bestRoot) {
+        for (const root of this.roots) {
+          const label = `${root.label}/`;
+          if (detail.path.startsWith(label) && label.length > bestPrefix.length) {
+            bestRoot = root;
+            bestPrefix = label;
+          }
+        }
+      }
+      if (!bestRoot) return;
+
+      let resolvedPath = detail.path;
+      // Strip the host path prefix if it was matched.
+      if (resolvedPath.startsWith(bestRoot.hostPath)) {
+        const afterHost = resolvedPath.slice(bestRoot.hostPath.length);
+        resolvedPath = afterHost.startsWith("/") ? afterHost.slice(1) : afterHost;
+      } else if (resolvedPath.startsWith(`${bestRoot.label}/`)) {
+        resolvedPath = resolvedPath.slice(bestRoot.label.length + 1);
+      }
+
+      const fileRef: FileRef = { rootId: bestRoot.id, path: resolvedPath };
+      await this.recordCodeNavigation(async () => {
+        await this.openFile(fileRef, true);
+        if (detail.line && detail.line >= 1) {
+          const tab = this.tabs.find((candidate) => {
+            const candidateRef = this.worktreeRef(candidate);
+            return candidateRef && refKey(candidateRef) === refKey(fileRef);
+          });
+          if (tab) {
+            this.activateTab(tab.id, false);
+            const editor = this.activeCodeEditor();
+            if (editor) {
+              const position = { lineNumber: detail.line, column: 1 };
+              editor.setPosition(position);
+              editor.revealPositionInCenter(position);
+              editor.focus();
+            }
+          }
+        }
+      });
+    }, { signal });
+
     this.treeCanvas.addEventListener("click", (event) => {
       if ((event.target as Element).closest("[data-rename-input]")) return;
       const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
@@ -3524,12 +3618,6 @@ class CodeView {
     }, { signal });
     this.root.querySelector("[data-code-chat-backdrop]")?.addEventListener("click", () => {
       this.setCodeChatOpen(false, true);
-    }, { signal });
-    this.root.querySelector("[data-explorer-collapse-btn]")?.addEventListener("click", () => {
-      this.setExplorerCollapsed(!this.explorerCollapsed);
-    }, { signal });
-    this.root.querySelector("[data-sidebar-expand]")?.addEventListener("click", () => {
-      this.setExplorerCollapsed(false);
     }, { signal });
     this.root.querySelector("[data-diff-toolbar]")?.addEventListener("click", (event) => {
       const action = (event.target as Element).closest<HTMLElement>("[data-diff-action]")?.dataset.diffAction;
@@ -3772,9 +3860,6 @@ class CodeView {
     if (this.debugView?.handleKeydown(event)) return;
     if (event.key === "Escape" && this.root.querySelector("[data-chat-mention-picker]") && document.activeElement?.closest(".code-chat-surface")) return;
     if (event.key === "Escape" && this.codeChatOpen) {
-      // When Vim mode is active and the editor has focus, let monaco-vim
-      // handle Escape (exit insert mode) instead of closing the chat panel.
-      if (this.enableVimKeybindings && this.activeCodeEditor()?.hasTextFocus()) return;
       // When a file search/replace is active, Escape closes the search first;
       // only fall through to closing the code chat once the search is dismissed.
       if (this.searchIsActive()) return;
@@ -3788,30 +3873,15 @@ class CodeView {
       return;
     }
     // When vim mode is active and the editor has text focus, let monaco-vim
-    // handle normal-mode keystrokes, but intercept application-level shortcuts.
-    const vimActive = this.enableVimKeybindings && this.activeCodeEditor()?.hasTextFocus();
-    if (vimActive) {
-      const modifier = event.ctrlKey || event.metaKey;
-      const key = event.key.toLowerCase();
-      if (modifier && !event.shiftKey && key === "s") { event.preventDefault(); event.stopPropagation(); void this.saveTab(); return; }
-      if (modifier && event.shiftKey && key === "s") { event.preventDefault(); event.stopPropagation(); void this.saveAsActive(); return; }
-      if (modifier && event.shiftKey && key === "p") { event.preventDefault(); event.stopPropagation(); this.showCommandPalette(); return; }
-      if (modifier && !event.shiftKey && key === "p") { event.preventDefault(); event.stopPropagation(); this.showQuickOpen(); return; }
-      if (modifier && key === "w") { const tab = this.activeTab(); if (tab) { event.preventDefault(); event.stopPropagation(); void this.closeTab(tab); return; } }
-      if (modifier && key === "b") { event.preventDefault(); event.stopPropagation(); this.setExplorerCollapsed(!this.explorerCollapsed); return; }
-      if (modifier && !event.shiftKey && key === "e") { event.preventDefault(); event.stopPropagation(); this.setCodeChatOpen(!this.codeChatOpen); return; }
-      if (modifier && event.shiftKey && key === "a") { event.preventDefault(); event.stopPropagation(); this.setCodeChatOpen(!this.codeChatOpen); return; }
-      if (modifier && key === "tab") { event.preventDefault(); event.stopPropagation(); this.cycleCodeTabs(event.shiftKey); return; }
-      if (modifier && event.shiftKey && key === "f") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(); return; }
-      if (modifier && !event.shiftKey && key === "f" && this.activeCodeEditor()?.getModel()) { event.preventDefault(); event.stopPropagation(); this.showEditorFind(); return; }
-      if (modifier && event.shiftKey && key === "h") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(true); return; }
-      if (modifier && event.shiftKey && key === "o") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSymbols(); return; }
-      if (!modifier && event.altKey && !event.shiftKey && key === "arrowleft") { event.preventDefault(); event.stopPropagation(); window.history.back(); return; }
-      if (!modifier && event.altKey && !event.shiftKey && key === "arrowright") { event.preventDefault(); event.stopPropagation(); window.history.forward(); return; }
-      if (event.key === "F2" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); this.activeCodeEditor()?.trigger("echo", "editor.action.rename", null); return; }
-      if (event.key === "F4" && this.activeSidebar === "search") { event.preventDefault(); this.searchView?.navigateResult(event.shiftKey ? -1 : 1); return; }
+    // handle all keystrokes — except for global shortcuts that must always work.
+    if (this.enableVimKeybindings && this.activeCodeEditor()?.hasTextFocus()) {
+      const ctrl = event.ctrlKey || event.metaKey;
+      if (!(ctrl && !event.shiftKey && event.key.toLowerCase() === "s") && // Ctrl+S save
+          !(ctrl && !event.shiftKey && event.key.toLowerCase() === "p") && // Ctrl+P file search
+          !(ctrl && event.shiftKey && event.key.toLowerCase() === "p") && // Ctrl+Shift+P command palette
+          !(ctrl && event.shiftKey && event.key.toLowerCase() === "f"))     // Ctrl+Shift+F find in files
+        return;
     }
-    if (vimActive) return;
     const modifier = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
     const activeEditor = this.activeCodeEditor();
@@ -3834,8 +3904,7 @@ class CodeView {
       event.preventDefault();
       event.stopPropagation();
       activeEditor.trigger("echo", event.shiftKey ? "outdent" : "tab", null);
-    } else if (modifier && event.shiftKey && key === "a") { event.preventDefault(); event.stopPropagation(); this.setCodeChatOpen(!this.codeChatOpen); }
-    else if (modifier && event.shiftKey && key === "f") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(); }
+    } else if (modifier && event.shiftKey && key === "f") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(); }
     else if (modifier && !event.shiftKey && key === "f" && activeEditor?.getModel()) { event.preventDefault(); event.stopPropagation(); this.showEditorFind(); }
     else if (modifier && event.shiftKey && key === "o") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSymbols(); }
     else if (modifier && event.shiftKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.peekImplementation", null); }
@@ -3851,7 +3920,6 @@ class CodeView {
     else if (modifier && !event.shiftKey && key === "e") { event.preventDefault(); event.stopPropagation(); this.setCodeChatOpen(!this.codeChatOpen); }
     else if (modifier && key === "w") { const tab = this.activeTab(); if (tab) { event.preventDefault(); event.stopPropagation(); void this.closeTab(tab); } }
     else if (modifier && key === "n") { event.preventDefault(); event.stopPropagation(); this.newUntitled(); }
-    else if (modifier && key === "b") { event.preventDefault(); event.stopPropagation(); this.setExplorerCollapsed(!this.explorerCollapsed); }
     else if (modifier && !event.shiftKey && key === "d" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.duplicateSelection", null); }
     else if (modifier && key === "tab") {
       event.preventDefault();
@@ -4076,37 +4144,6 @@ class CodeView {
     });
   }
 
-  private setExplorerCollapsed(collapsed: boolean): void {
-    if (!this.workspace) return;
-    const shell = this.root.querySelector<HTMLElement>(".code-app-shell");
-    const sidebar = this.root.querySelector<HTMLElement>(".code-sidebar");
-    const resizer = this.root.querySelector<HTMLElement>(".code-explorer-resizer");
-    const toggle = this.root.querySelector<HTMLButtonElement>("[data-explorer-collapse-btn]");
-    const expandBtn = this.root.querySelector<HTMLElement>("[data-sidebar-expand]");
-    if (!shell || !sidebar || !resizer) return;
-    this.explorerCollapsed = collapsed;
-    shell.classList.toggle("is-explorer-collapsed", collapsed);
-    if (collapsed) {
-      shell.style.setProperty("--explorer-width", "0px");
-    } else {
-      shell.style.setProperty("--explorer-width", `${this.explorerWidth}px`);
-    }
-    expandBtn?.classList.toggle("is-visible", collapsed);
-    if (toggle) {
-      const chevron = toggle.querySelector(".codicon");
-      if (chevron) {
-        chevron.classList.toggle("codicon-chevron-right", collapsed);
-        chevron.classList.toggle("codicon-collapse-all", !collapsed);
-      }
-      toggle.title = collapsed ? "Expand Explorer" : "Collapse Explorer";
-      toggle.setAttribute("aria-label", collapsed ? "Expand Explorer" : "Collapse Explorer");
-    }
-    requestAnimationFrame(() => {
-      this.editor?.layout();
-      this.diffEditor?.layout();
-    });
-  }
-
   private async activateChatReference(reference: ChatReference): Promise<void> {
     if (reference.kind === "file") {
       await this.recordCodeNavigation(() => this.openFile(reference.ref, true));
@@ -4282,7 +4319,6 @@ class CodeView {
     this.applyCodeChatWidth(saved.codeChatWidth || 360);
     const shell = this.root.querySelector<HTMLElement>(".code-app-shell");
     shell?.style.setProperty("--explorer-width", `${this.explorerWidth}px`);
-    this.explorerCollapsed = saved.explorerCollapsed || false;
     this.expanded = new Set(saved.expanded || []);
     this.selectedTreeKey = saved.selectedTreeKey || null;
     for (const persisted of saved.tabs || []) {
@@ -4312,7 +4348,6 @@ class CodeView {
       }
     }
     this.restoredTreeScrollTop = saved.treeScrollTop || 0;
-    if (this.explorerCollapsed) this.setExplorerCollapsed(true);
   }
 
   private async restoreTab(persisted: PersistedTab): Promise<void> {
@@ -4475,7 +4510,7 @@ class CodeView {
       await saveSession(this.workspace.id, {
         version: 5, activeTabId: this.activeTabId, tabs, expanded: [...this.expanded],
         selectedTreeKey: this.selectedTreeKey,
-        explorerWidth: this.explorerWidth, explorerCollapsed: this.explorerCollapsed, codeChatWidth: this.codeChatWidth,
+        explorerWidth: this.explorerWidth, codeChatWidth: this.codeChatWidth,
         treeScrollTop: this.treeScroller?.scrollTop || 0,
       });
       this.persistenceFailed = false;

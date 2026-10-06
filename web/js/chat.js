@@ -126,6 +126,8 @@ export function openWorkspaceSession(log, workspaceId, options = {}) {
     sequence: 0, hasSnapshot: false,
     activeChatId: "", tabs: [], turns: new Map(), goal: null, scrollFollower,
   };
+  // Install delegated click handler for file+line links.
+  log.addEventListener("click", handleFileLinkClick);
   emitWorkspaceState();
   renderEmpty(log, workspaceId ? "Loading conversation…" : "Select a workspace to start chatting.");
   scrollFollower.reset();
@@ -152,6 +154,35 @@ ws.onState((state) => {
     });
   }
 });
+
+// Delegated click handler for file+line links in chat messages.
+function handleFileLinkClick(event) {
+  const link = event.target.closest("[data-file-link]");
+  if (!link) return;
+
+  const path = link.getAttribute("data-file-path");
+  const line = parseInt(link.getAttribute("data-file-line"), 10);
+  if (!path || isNaN(line)) return;
+
+  // If we have an onActivateFile callback (code surface), use it with line info.
+  if (binding?.onActivateFile) {
+    event.preventDefault();
+    try {
+      binding.onActivateFile({ rootId: "", path, line });
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Could not open the file.", { sticky: true });
+    }
+    return;
+  }
+
+  // Main chat surface: dispatch a custom event that the code view can listen for.
+  event.preventDefault();
+  const detail = { path, line };
+  document.dispatchEvent(new CustomEvent("echo-file-link", { detail }));
+}
+
+// Install on each new binding log.
+const originalOpenWorkspaceSession = openWorkspaceSession;
 
 ws.on("session_snapshot", (snapshot) => {
   const surface = snapshot.surface || "chat";

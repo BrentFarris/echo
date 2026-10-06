@@ -108,6 +108,7 @@ type Settings struct {
 	ThinkingCorrection                 bool              `json:"thinkingCorrection,omitempty"`
 	SystemPromptAppendage              string            `json:"systemPromptAppendage,omitempty"`
 	HideLeadingWhitespaceIndicators    bool              `json:"hideLeadingWhitespaceIndicators,omitempty"`
+	EnableVimKeybindings               bool              `json:"enableVimKeybindings,omitempty"`
 	EditorFontSize                     float64           `json:"editorFontSize"`
 	EditorInsertSpaces                 bool              `json:"editorInsertSpaces"`
 	EditorTabSize                      int               `json:"editorTabSize"`

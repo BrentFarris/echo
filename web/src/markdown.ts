@@ -116,6 +116,63 @@ function normalizeMarkdownFragment(fragment: DocumentFragment): void {
     image.loading = "lazy";
     image.decoding = "async";
   }
+
+  // Convert File: path, line N patterns into clickable links.
+  hyperlinksForFileReferences(fragment);
+}
+
+/** Walks text nodes looking for "File: path, line N" and wraps the path in a link. */
+function hyperlinksForFileReferences(root: Node): void {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+  const texts: Text[] = [];
+  while (walker.nextNode()) texts.push(walker.currentNode as Text);
+
+  for (const text of texts) {
+    // Avoid re-processing nodes we already converted.
+    if (text.parentElement?.hasAttribute("data-file-link")) continue;
+    const value = text.nodeValue ?? "";
+    const link = fileReferenceLink(value);
+    if (!link) continue;
+
+    const fragment = document.createDocumentFragment();
+    if (link.prefix) fragment.appendChild(document.createTextNode(link.prefix));
+
+    const anchor = document.createElement("a");
+    anchor.className = "chat-file-link";
+    anchor.setAttribute("data-file-link", "");
+    anchor.setAttribute("data-file-path", link.path);
+    anchor.setAttribute("data-file-line", String(link.line));
+    anchor.textContent = link.display;
+    fragment.appendChild(anchor);
+
+    if (link.suffix) fragment.appendChild(document.createTextNode(link.suffix));
+    text.replaceWith(fragment);
+  }
+}
+
+/** Parses a text span for "File: <path>, line ~<N>" and returns the decomposition. */
+function fileReferenceLink(text: string): { prefix: string; path: string; display: string; line: number; suffix: string } | null {
+  // Matches: "File: some/path/to/file.ext, line ~769" or "File: path, line 42"
+  const match = text.match(/(?:^|[\s\n])(?:File[:：]\s*)([^\s,;]+(?:\.[a-zA-Z0-9]+))(?:\s*,\s*)?(?:line[:：]?\s*[~]?)?(\d+)/i);
+  if (!match) return null;
+
+  const path = match[1];
+  const line = parseInt(match[2], 10);
+  if (isNaN(line) || line < 1) return null;
+
+  const fullMatch = match[0];
+  const prefixEnd = text.indexOf(fullMatch);
+  const suffixStart = prefixEnd + fullMatch.length;
+
+  // Reconstruct display text: "File: path, line N"
+  const display = fullMatch.trim();
+  return {
+    prefix: text.slice(0, prefixEnd),
+    path,
+    display,
+    line,
+    suffix: text.slice(suffixStart),
+  };
 }
 
 function isSafeHTTPURL(value: string): boolean {

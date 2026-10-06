@@ -608,7 +608,7 @@ export function mount(root) {
   const openMainWorkspaceSession = (workspaceId) => openWorkspaceSession(log, workspaceId, {
     onActivateFile: (ref) => {
       saveCurrentComposer();
-      location.hash = codeFileRouteHash(ref);
+      location.hash = codeFileRouteHash({ rootId: ref.rootId || "", path: ref.path, line: ref.line });
     },
   });
 

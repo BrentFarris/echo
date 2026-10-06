@@ -1626,6 +1626,26 @@ button.chat-prompt-resource-row:focus-visible {
   padding: var(--space-md) var(--space-lg);
 }
 
+/* File+line links in chat messages — clickable to open the code editor. */
+.chat-file-link {
+  color: var(--color-accent);
+  text-decoration: none;
+  cursor: pointer;
+  border-bottom: 1px dashed color-mix(in srgb, var(--color-accent) 50%, transparent);
+  transition: border-bottom-color 0.15s ease, color 0.15s ease;
+}
+
+.chat-file-link:hover {
+  color: color-mix(in srgb, var(--color-accent) 80%, white);
+  border-bottom-color: var(--color-accent);
+}
+
+@media (prefers-color-scheme: dark) {
+  .chat-file-link:hover {
+    color: color-mix(in srgb, var(--color-accent) 80%, black);
+  }
+}
+
 /* Assistant work is rendered chronologically while streaming. Model text from
    tool-producing turns, reasoning disclosures, and tool disclosures all live
    in this same flow. */

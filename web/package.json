@@ -21,7 +21,7 @@
     "dompurify": "3.4.13",
     "marked": "14.0.0",
     "monaco-editor": "0.56.0",
-    "monaco-vim": "^0.4.4"
+    "monaco-vim": "^0.4.2"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",

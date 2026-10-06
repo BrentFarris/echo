@@ -1,7 +1,10 @@
+import path from "node:path";
 import { defineConfig } from "vitest/config";
 import { resolve } from "path";
 
 const monacoDir = resolve(__dirname, "node_modules/monaco-editor/esm/vs");
+
+const projectRoot = __dirname;
 
 export default defineConfig({
   resolve: {
@@ -19,6 +22,14 @@ export default defineConfig({
     emptyOutDir: true,
     sourcemap: false,
     manifest: true,
+  },
+  resolve: {
+    alias: {
+      // monaco-vim imports from monaco-editor/esm/vs/... which are real files
+      // but not listed in monaco-editor's package.json "exports". Point Vite
+      // directly at the on-disk path so it can resolve them.
+      "monaco-editor/esm": path.resolve(projectRoot, "node_modules/monaco-editor/esm"),
+    },
   },
   server: {
     port: 5173,

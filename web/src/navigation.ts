@@ -4,7 +4,7 @@ export const CODE_ROUTE = "/code";
 export const CODE_NAVIGATION_HISTORY_STATE_KEY = "echoCodeNavigation";
 
 export type CodeSidebar = "explorer" | "search" | "git" | "debug";
-export type CodeOpenTarget = { rootId: string; path: string };
+export type CodeOpenTarget = { rootId: string; path: string; line?: number };
 export type ChatTarget = {
   workspaceId: string;
   chatId: string;
@@ -44,6 +44,7 @@ export function codeRouteHash(sidebar: CodeSidebar): string {
 /** Builds a transient Echo Code route that opens a specific workspace file. */
 export function codeFileRouteHash(target: CodeOpenTarget): string {
   const query = new URLSearchParams({ rootId: target.rootId, path: target.path });
+  if (target.line) query.set("line", String(target.line));
   return `#${CODE_ROUTE}?${query}`;
 }
 
@@ -55,7 +56,10 @@ export function codeOpenTargetFromHash(hash: string): CodeOpenTarget | null {
   const query = new URLSearchParams(hash.slice(queryIndex + 1));
   const rootId = query.get("rootId") || "";
   const path = query.get("path") || "";
-  return rootId && path ? { rootId, path } : null;
+  const lineStr = query.get("line");
+  const line = lineStr ? parseInt(lineStr, 10) : undefined;
+  if (!rootId && !path) return null;
+  return { rootId, path, ...(line ? { line } : {}) };
 }
 
 /** Builds a transient route that focuses one exact Main or Code chat. */
