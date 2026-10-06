@@ -73,6 +73,9 @@ describe("debug editor state", () => {
   it("uses the debug keymap only in an unobstructed Echo Code context", () => {
     const clear = { codeActive: true, modalOpen: false, inputFocused: false };
     expect(debugKeyAction({ key: "F5", ctrlKey: false, metaKey: false, shiftKey: false, altKey: false }, clear)).toBe("toggle");
+    expect(debugKeyAction({ key: "F5", ctrlKey: false, metaKey: false, shiftKey: true, altKey: false }, { ...clear, sessionActive: true })).toBe("stop");
+    expect(debugKeyAction({ key: "F5", ctrlKey: false, metaKey: false, shiftKey: true, altKey: false }, clear)).toBeNull();
+    expect(debugKeyAction({ key: "F5", ctrlKey: false, metaKey: false, shiftKey: true, altKey: false }, { ...clear, sessionActive: false })).toBeNull();
     expect(debugKeyAction({ key: "F8", ctrlKey: false, metaKey: false, shiftKey: true, altKey: false }, clear)).toBe("stop");
     expect(debugKeyAction({ key: "F8", ctrlKey: true, metaKey: false, shiftKey: true, altKey: false }, clear)).toBe("restart");
     expect(debugKeyAction({ key: "F8", ctrlKey: false, metaKey: false, shiftKey: false, altKey: false }, clear)).toBeNull();

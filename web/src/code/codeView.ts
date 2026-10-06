@@ -3491,7 +3491,7 @@ class CodeView {
       { id: "debug.startWithout", label: "Debug: Start Without Debugging", run: () => this.debugView?.launch(true) },
       { id: "debug.pauseAll", label: "Debug: Pause All Sessions", run: () => this.debugView?.controlAll("pause") },
       { id: "debug.continueAll", label: "Debug: Continue All Sessions", run: () => this.debugView?.controlAll("continue") },
-      { id: "debug.stop", label: "Debug: Stop", keybinding: "Shift+F8", run: () => this.debugView?.stopActive() },
+      { id: "debug.stop", label: "Debug: Stop", keybinding: "Shift+F5", run: () => this.debugView?.stopActive() },
       { id: "debug.restart", label: "Debug: Restart", keybinding: "Ctrl+Shift+F8", run: () => this.debugView?.restartActive() },
       { id: "debug.restartCompound", label: "Debug: Restart Compound", run: () => this.debugView?.restartActiveCompound() },
       { id: "debug.stopCompound", label: "Debug: Stop Compound", run: () => this.debugView?.stopActiveCompound() },

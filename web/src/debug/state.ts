@@ -89,6 +89,8 @@ export type DebugKeyContext = {
   codeActive: boolean;
   modalOpen: boolean;
   inputFocused: boolean;
+  /** True when a non-terminal debug session exists; Shift+F5 only captures stop while debugging. */
+  sessionActive?: boolean;
 };
 
 export function debugKeyAction(event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey">, context: DebugKeyContext): string | null {
@@ -96,6 +98,7 @@ export function debugKeyAction(event: Pick<KeyboardEvent, "key" | "ctrlKey" | "m
   const modifier = event.ctrlKey || event.metaKey;
   if (modifier && event.shiftKey && event.key === "F8") return "restart";
   if (!modifier && event.shiftKey && event.key === "F8") return "stop";
+  if (!modifier && event.shiftKey && event.key === "F5") return context.sessionActive ? "stop" : null;
   if (!modifier && !event.shiftKey && event.key === "F5") return "toggle";
   if (!modifier && !event.shiftKey && event.key === "F9") return "breakpoint";
   if (!modifier && !event.shiftKey && event.key === "F10") return "next";

@@ -155,10 +155,12 @@ export class DebugView {
 
   handleKeydown(event: KeyboardEvent): boolean {
     const target = event.target as HTMLElement | null;
+    const session = this.activeSession();
     const action = debugKeyAction(event, {
       codeActive: true,
       modalOpen: Boolean(document.querySelector(".code-modal-overlay, .code-picker-overlay, .debug-settings-overlay")),
       inputFocused: Boolean(target?.closest("input, textarea, select, [contenteditable=true]")),
+      sessionActive: Boolean(session && !isTerminalSession(session)),
     });
     if (!action) return false;
     event.preventDefault();
@@ -454,7 +456,7 @@ export class DebugView {
       ${commandSupported(session, "stepBack") ? `<button type="button" title="Step Back" aria-label="Step Back" data-debug-control="stepBack" ${stopped ? "" : "disabled"}><span class="codicon codicon-debug-step-back"></span></button>` : ""}
       ${commandSupported(session, "reverseContinue") ? `<button type="button" title="Reverse Continue" aria-label="Reverse Continue" data-debug-control="reverseContinue" ${stopped ? "" : "disabled"}><span class="codicon codicon-debug-continue-small"></span></button>` : ""}
       <button type="button" title="Restart (Ctrl+Shift+F8)" aria-label="Restart" data-debug-action="restart" ${controllable ? "" : "disabled"}><span class="codicon codicon-debug-restart"></span></button>
-      <button type="button" title="${session.request === "attach" ? "Disconnect" : "Stop"} (Shift+F8)" aria-label="${session.request === "attach" ? "Disconnect" : "Stop"}" data-debug-action="stop"><span class="codicon codicon-debug-${session.request === "attach" ? "disconnect" : "stop"}"></span></button>
+      <button type="button" title="${session.request === "attach" ? "Disconnect" : "Stop"} (Shift+F5)" aria-label="${session.request === "attach" ? "Disconnect" : "Stop"}" data-debug-action="stop"><span class="codicon codicon-debug-${session.request === "attach" ? "disconnect" : "stop"}"></span></button>
       ${session.request === "attach" && canTerminateDebuggee ? `<button type="button" title="Terminate Process" aria-label="Terminate Process" data-debug-action="terminate-debuggee"><span class="codicon codicon-debug-stop"></span></button>` : ""}
       ${session.groupId ? `<button type="button" title="Stop Compound" aria-label="Stop Compound" data-debug-action="stop-group" data-group-id="${session.groupId}"><span class="codicon codicon-circle-slash"></span></button>` : ""}
       ${session.groupId ? `<button type="button" title="Restart Compound" aria-label="Restart Compound" data-debug-action="restart-group" data-group-id="${session.groupId}"><span class="codicon codicon-debug-restart"></span></button>` : ""}

@@ -64,7 +64,8 @@ Default keys:
 | --- | --- |
 | `Ctrl+5` | Open Run and Debug |
 | `F5` | Start, pause, or continue the active session (overrides browser refresh when the Echo Code shortcut context is unobstructed) |
-| `Shift+F8` | Stop or disconnect the active session |
+| `Shift+F5` | Stop or disconnect the active session (only while a session is active; otherwise the browser hard-reload is kept) |
+| `Shift+F8` | Stop or disconnect the active session (alias) |
 | `Ctrl+Shift+F8` | Restart the active session |
 | `F9` | Toggle a source breakpoint |
 | `F10` | Step over |
