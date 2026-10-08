@@ -1363,6 +1363,12 @@ button.chat-prompt-resource-row:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-lg);
+  /* The whole bar toggles collapse (matches the collapsed chip affordance). */
+  cursor: pointer;
+}
+
+.chat-message-media-bar:hover > span {
+  color: var(--color-text);
 }
 
 .chat-message-media-bar > span {

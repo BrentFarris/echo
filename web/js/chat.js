@@ -1162,16 +1162,21 @@ function renderMediaZone(zone, ownerKey) {
   const label = mediaSummaryLabel(images, videos);
   const bar = document.createElement("div");
   bar.className = "chat-message-media-bar";
-  const barText = document.createElement("span");
-  barText.textContent = label;
+  // Collapse button sits at the LEFT edge of the bar, out of the top-right
+  // corner where the message action popup (copy/edit/rerun/delete) overlays
+  // the message and would swallow its clicks. The whole bar is also clickable
+  // (the button has no own handler — clicks bubble to the bar), so any part
+  // of the bar toggles collapse.
   const toggle = document.createElement("button");
   toggle.type = "button";
   toggle.className = "icon-button chat-media-toggle";
   toggle.title = "Hide media";
   toggle.setAttribute("aria-label", `Hide media: ${label}`);
   toggle.innerHTML = icons.collapse;
-  toggle.addEventListener("click", () => toggleMediaZone(zone, ownerKey));
-  bar.append(barText, toggle);
+  const barText = document.createElement("span");
+  barText.textContent = label;
+  bar.append(toggle, barText);
+  bar.addEventListener("click", () => toggleMediaZone(zone, ownerKey));
   zone.appendChild(bar);
 
   const gallery = document.createElement("div");
