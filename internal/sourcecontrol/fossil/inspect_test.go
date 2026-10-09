@@ -68,6 +68,8 @@ func TestParseInspectionTimelineFooters(t *testing.T) {
 		{name: "page without footer", output: record, count: 1},
 		{name: "last page", output: record + "+++ no more data (1) +++\n", count: 1},
 		{name: "unlimited", output: record + "+++ end of timeline (1) +++\n", count: 1},
+		{name: "entry limit reached", output: record + "--- entry limit (1) reached ---\n", count: 1},
+		{name: "empty entry limit", output: "--- entry limit (0) reached ---\n"},
 		{name: "windows", output: strings.ReplaceAll(record+"+++ no more data (1) +++\n", "\n", "\r\n"), count: 1},
 		{name: "empty page", output: "+++ no more data (0) +++\n"},
 		{name: "empty unlimited", output: "+++ end of timeline (0) +++\n"},

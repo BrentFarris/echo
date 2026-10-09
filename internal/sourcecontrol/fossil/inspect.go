@@ -27,7 +27,7 @@ const (
 	timelineRecordSeparator = "\x1e"
 )
 
-var timelineFooterPattern = regexp.MustCompile(`^\+\+\+ (?:no more data|end of timeline) \([0-9]+\) \+\+\+$`)
+var timelineFooterPattern = regexp.MustCompile(`^(?:\+\+\+ (?:no more data|end of timeline) \([0-9]+\) \+\+\+|--- entry limit \([0-9]+\) reached ---)$`)
 
 func (p *Provider) acquireInspectionState(ctx context.Context, workspaceID, repositoryID string) (*repositoryState, func(), error) {
 	state, err := p.repository(ctx, workspaceID, repositoryID)
