@@ -165,7 +165,9 @@ function updateFilename() {
 }
 
 function updateDirtyState() {
-  const dirty = draftTitle !== savedTitle || draftBody !== savedBody;
+  // Compare the trimmed title: a trailing space the user just typed is not a
+  // real unsaved change, because saveCurrentNote persists the trimmed title.
+  const dirty = draftTitle.trim() !== savedTitle || draftBody !== savedBody;
   elements.save.disabled = !dirty || noteMissing || indexLocked;
   if (!dirty) {
     showStatus("Saved");
@@ -305,7 +307,7 @@ async function saveCurrentNote() {
   if (savingPromise) {
     const previousSaved = await savingPromise;
     if (!previousSaved) return false;
-    if (draftTitle === savedTitle && draftBody === savedBody) return true;
+    if (draftTitle.trim() === savedTitle && draftBody === savedBody) return true;
   }
   const title = draftTitle.trim();
   if (!title) {
@@ -343,10 +345,10 @@ async function saveCurrentNote() {
       await writeIndex(nextNotes);
       notes = nextNotes;
       if (selectedID === snapshot.id) {
-        if (draftTitle.trim() === snapshot.title) {
-          draftTitle = snapshot.title;
-          elements.title.value = snapshot.title;
-        }
+        // Never rewrite elements.title.value here: the user may be mid-word,
+        // and resetting the field deletes the trailing space they just typed,
+        // merging the next word into the previous one. The stored title stays
+        // trimmed; the input keeps exactly what the user typed.
         savedTitle = snapshot.title;
         savedBody = snapshot.body;
         updateFilename();
@@ -373,7 +375,7 @@ async function saveCurrentNote() {
 async function flushSave() {
   window.clearTimeout(autosaveTimer);
   if (savingPromise && !(await savingPromise)) return false;
-  if (draftTitle === savedTitle && draftBody === savedBody) return true;
+  if (draftTitle.trim() === savedTitle && draftBody === savedBody) return true;
   return saveCurrentNote();
 }
 
