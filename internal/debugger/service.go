@@ -76,6 +76,8 @@ type session struct {
 	step                 *stepOperation
 	sources              map[string]adapterSource
 	cFrames              map[int]bool
+	debugBinDir          string
+	debugBinSandbox      bool
 }
 
 // Service owns every active debug adapter. Browser clients are observers of

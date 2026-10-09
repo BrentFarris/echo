@@ -45,6 +45,14 @@ func (s *Service) runSession(current *session) {
 	launchArguments, _ := expanded.(map[string]any)
 	prepareLaunchArguments(current.profile, current.configuration.Request, launchArguments)
 	adapterWorkingDirectory := launchAdapterWorkingDirectory(current.profile, current.configuration.Request, launchArguments, options)
+	sandboxed := workspace.Sandbox.Enabled
+	if delveBuildsBinary(current.profile, current.configuration.Request, launchArguments) {
+		s.mu.Lock()
+		current.debugBinDir = adapterWorkingDirectory
+		current.debugBinSandbox = sandboxed
+		s.mu.Unlock()
+		s.sweepDelveBinaries(current.workspaceID, adapterWorkingDirectory, sandboxed)
+	}
 	logOutput := func(category, output string) { s.appendOutput(current.workspaceID, current.id, category, output, nil) }
 	if err := s.runHook(current.ctx, workspace, current.configuration.PreLaunch, options, "lifecycle", logOutput); err != nil {
 		s.failSession(current.workspaceID, current.id, fmt.Errorf("pre-launch hook: %w", err))
@@ -385,6 +393,7 @@ func (s *Service) finishSession(workspaceID, sessionID, status, message string, 
 	configuration := current.configuration
 	startRequest := current.startRequest
 	groupID := current.groupID
+	debugBinDir, debugBinSandbox := current.debugBinDir, current.debugBinSandbox
 	var postContext context.Context
 	var postCancel context.CancelFunc
 	if runPost && configuration.PostDebug != nil {
@@ -403,6 +412,14 @@ func (s *Service) finishSession(workspaceID, sessionID, status, message string, 
 	}
 	if stopTerminals != nil {
 		stopTerminals(workspaceID, sessionID)
+	}
+	if debugBinDir != "" {
+		// The compiled __debug_bin* is deleted in the background: the process
+		// tree above has exited, but Windows may still hold the file lock for
+		// a moment. Removing it here keeps every stop path — the stop button,
+		// disconnect, the debuggee exiting, or server shutdown — from leaving
+		// debris behind. Failed removals are retried and then left alone.
+		go s.removeDelveBinariesAfterSession(workspaceID, sessionID, debugBinDir, debugBinSandbox)
 	}
 	s.publishSession(workspaceID, sessionID, status, nil, message)
 	if runPost && configuration.PostDebug != nil {
