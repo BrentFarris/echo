@@ -209,7 +209,12 @@ export function openWorkspaceDropdown(trigger, options = {}) {
     const height = Math.min(dropdown.offsetHeight || 320, window.innerHeight - margin * 2);
     const spaceBelow = window.innerHeight - rect.bottom - gap - margin;
     const spaceAbove = rect.top - gap - margin;
-    const openAbove = spaceBelow < Math.min(height, 180) && spaceAbove > spaceBelow;
+    // The mobile bottom nav sits at the bottom of the screen, so its triggers
+    // always open upward. Mobile browsers report innerHeight/trigger rects
+    // inconsistently while the URL bar collapses, so the space heuristic below
+    // cannot be trusted there (see the chat map popup for the same pattern).
+    const mobileNavTrigger = Boolean(trigger.closest(".mobile-bottom-nav"));
+    const openAbove = mobileNavTrigger || (spaceBelow < Math.min(height, 180) && spaceAbove > spaceBelow);
     const naturalTop = openAbove ? rect.top - height - gap : rect.bottom + gap;
     const top = Math.max(margin, Math.min(naturalTop, window.innerHeight - height - margin));
     const left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));

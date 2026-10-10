@@ -35,6 +35,32 @@ describe("workspace dropdown", () => {
     close();
   });
 
+  it("always opens above a mobile bottom navigation trigger", () => {
+    vi.stubGlobal("innerWidth", 390);
+    vi.stubGlobal("innerHeight", 844);
+    const nav = document.createElement("nav");
+    nav.className = "mobile-bottom-nav";
+    const trigger = document.createElement("button");
+    // Mid-screen rect: plenty of space below, so the space heuristic alone
+    // would open downward. The bottom-nav rule must win.
+    trigger.getBoundingClientRect = () => ({
+      x: 8, y: 400, right: 128, bottom: 444, left: 8,
+      width: 120, height: 44, top: 400, toJSON: () => ({}),
+    });
+    nav.append(trigger);
+    document.body.append(nav);
+
+    const close = openWorkspaceDropdown(trigger, {
+      items: [{ id: "echo", name: "Echo", mainPath: "C:\\echo", folders: [] }],
+      selectedId: "echo",
+    });
+    const anchor = document.querySelector<HTMLElement>(".workspace-dropdown-anchor");
+
+    expect(anchor?.dataset.placement).toBe("above");
+    expect(Number.parseFloat(anchor?.style.top || "-1")).toBeLessThan(400);
+    close();
+  });
+
   it("closes on Escape and returns focus to its trigger", () => {
     const trigger = document.createElement("button");
     trigger.getBoundingClientRect = () => ({

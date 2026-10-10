@@ -3924,6 +3924,10 @@ button.chat-file-change-row:focus-visible {
   .mobile-nav-tab {
     display: grid;
     place-items: center;
+    /* Positioning context for .plugin-count so the badge cannot escape the
+       .mobile-nav-tabs scroll clip and widen the document (mobile browsers
+       then zoom out to fit the overflow, leaving pannable empty space). */
+    position: relative;
     min-width: 44px;
     height: 44px;
     padding: 0;
