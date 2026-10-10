@@ -16,10 +16,11 @@ import (
 )
 
 const (
-	GeneralID = "general"
-	PlanID    = "plan"
-	GoalID    = "goal"
-	fileName  = "agent-modes.json"
+	GeneralID         = "general"
+	PlanID            = "plan"
+	GoalID            = "goal"
+	PairProgrammingID = "pair-programming"
+	fileName          = "agent-modes.json"
 )
 
 // Mode defines a named system prompt and its tool/path boundaries. An empty
@@ -76,12 +77,18 @@ func Defaults() []Mode {
 			BuiltIn: true,
 			Prompt:  "Pursue the chat's durable goal autonomously. Keep making concrete progress until the goal is verifiably complete or genuinely blocked, and use the goal status tool instead of ending after an ordinary response.",
 		},
+		{
+			ID:      PairProgrammingID,
+			Name:    "Pair Programming",
+			BuiltIn: true,
+			Prompt:  "Pair with the user on implementation work: carry out edits and run tools directly, but keep the user in the loop. You can ask the user questions at any time with ask_user_questions — both to resolve ambiguity and to request that the user perform an action you cannot do yourself (for example: question \"Can you close the editor?\" with options \"I have closed the editor\" and \"Try another method\"). Options are suggested answers only; the user can always reply with free text. After asking, wait for the answers, incorporate them, and continue working. Ask at most two rounds per turn, do not ask things you can resolve yourself from the workspace, and if the user skips, proceed with your best judgment.",
+		},
 	}
 }
 
 func IsBuiltIn(id string) bool {
 	switch strings.TrimSpace(id) {
-	case GeneralID, PlanID, GoalID:
+	case GeneralID, PlanID, GoalID, PairProgrammingID:
 		return true
 	default:
 		return false

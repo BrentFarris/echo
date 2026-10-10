@@ -496,7 +496,7 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		settings.ReasoningEffort = reasoningEffortOverride
 	}
 	planMode := mode.ID == agentmodes.PlanID
-	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, GoalMode: goalMode, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})))
+	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, PairingMode: mode.ID == agentmodes.PairProgrammingID, GoalMode: goalMode, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})))
 	if err != nil {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "invalid_request", err.Error(), requestID)
@@ -1114,7 +1114,7 @@ func (m *chatSessionManager) compress(c *client, workspaceID, chatID, surfaceVal
 	systemMessage, scopes, _ := m.server.agentModeContext(session.workspace, mode, lastTurn.UserContent, researchEnabled)
 	prefix := []llm.Message{systemMessage}
 	toolSchema := m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{
-		PlanMode: mode.ID == agentmodes.PlanID, GoalMode: mode.ID == agentmodes.GoalID,
+		PlanMode: mode.ID == agentmodes.PlanID, PairingMode: mode.ID == agentmodes.PairProgrammingID, GoalMode: mode.ID == agentmodes.GoalID,
 		ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID,
 	})
 	if session.transcript.ContextCheckpoint != nil {
@@ -1435,7 +1435,7 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 	visionMode := updated.Vision || messagesRequireMedia(messages)
 	settings, streamer := m.server.routeMediaChat(settings, messages, visionMode)
 	planMode := mode.ID == agentmodes.PlanID
-	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, GoalMode: mode.ID == agentmodes.GoalID, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})))
+	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, PairingMode: mode.ID == agentmodes.PairProgrammingID, GoalMode: mode.ID == agentmodes.GoalID, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})))
 	if err != nil {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "invalid_request", err.Error(), requestID)
@@ -2807,6 +2807,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 	transientStreamRetries := 0
 	truncationContinues := 0
 	planMode := mode.ID == agentmodes.PlanID
+	pairingMode := mode.ID == agentmodes.PairProgrammingID
 	goalMode := mode.ID == agentmodes.GoalID
 	goalTerminalPending := false
 	var research *chatResearchRun
@@ -2893,7 +2894,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 		}
 		toolSchema := []llm.Tool(nil)
 		if !forceFinalWithoutTools {
-			toolSchema = s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, GoalMode: goalMode, ResearchEnabled: research != nil, SandboxGUI: s.manager.server.sandboxGUIEnabled(s.workspace.ID), WorkspaceID: s.workspace.ID})
+			toolSchema = s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, PairingMode: pairingMode, GoalMode: goalMode, ResearchEnabled: research != nil, SandboxGUI: s.manager.server.sandboxGUIEnabled(s.workspace.ID), WorkspaceID: s.workspace.ID})
 			if checkpoint != nil {
 				toolSchema = append(toolSchema, contextHistorySearchToolSchema())
 			}
@@ -2927,7 +2928,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				usageSource = result.UsageSource
 				compressionCooldownRounds = 1
 				if !forceFinalWithoutTools {
-					toolSchema = s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, GoalMode: goalMode, ResearchEnabled: research != nil, SandboxGUI: s.manager.server.sandboxGUIEnabled(s.workspace.ID), WorkspaceID: s.workspace.ID})
+					toolSchema = s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, PairingMode: pairingMode, GoalMode: goalMode, ResearchEnabled: research != nil, SandboxGUI: s.manager.server.sandboxGUIEnabled(s.workspace.ID), WorkspaceID: s.workspace.ID})
 					toolSchema = append(toolSchema, contextHistorySearchToolSchema())
 				}
 			} else if compressionErr != nil {
@@ -3254,7 +3255,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			var goalUpdateError *tools.ExecutionError
 			if !finalGoalToolBatch && !mixedGoalTerminalCall && call.Function.Name == tools.AskUserQuestionsToolName {
 				questionRounds++
-				questionSet, prepareErr := preparePlanQuestions(callID, call.Function.Arguments, planMode, questionRounds)
+				questionSet, prepareErr := preparePlanQuestions(callID, call.Function.Arguments, planMode || pairingMode, questionRounds)
 				if prepareErr != nil {
 					questionError = prepareErr
 				} else {

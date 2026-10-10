@@ -11,7 +11,7 @@ func TestFossilInspectModeAvailabilityIsAdditiveAndExplicit(t *testing.T) {
 	for _, mode := range agentmodes.Defaults() {
 		allowed := toolScopesForAgentMode(mode).HasTool(tools.FossilInspectToolName)
 		switch mode.ID {
-		case agentmodes.GeneralID, agentmodes.PlanID:
+		case agentmodes.GeneralID, agentmodes.PlanID, agentmodes.PairProgrammingID:
 			if !allowed {
 				t.Fatalf("%s mode must expose fossil_inspect", mode.ID)
 			}

@@ -30,10 +30,10 @@ func TestAgentModesAPICRUD(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
 	}
-	if len(created.Data.Modes) != 4 || created.Data.Modes[3].Name != "Reviewer" {
+	if len(created.Data.Modes) != 5 || created.Data.Modes[4].Name != "Reviewer" {
 		t.Fatalf("unexpected create response: %+v", created.Data.Modes)
 	}
-	id := created.Data.Modes[3].ID
+	id := created.Data.Modes[4].ID
 
 	rr = doRequest(t, s, http.MethodGet, "/api/agent-modes?workspaceId="+workspace.ID)
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "filesystem_read_text") || !strings.Contains(rr.Body.String(), "Review the implementation") {

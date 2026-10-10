@@ -30,9 +30,9 @@ type planQuestionToolOutput struct {
 	Skipped bool                  `json:"skipped,omitempty"`
 }
 
-func preparePlanQuestions(callID, arguments string, planMode bool, questionRound int) (*sessions.PlanQuestionSet, *tools.ExecutionError) {
-	if !planMode {
-		return nil, &tools.ExecutionError{Code: "tool_not_allowed", Message: "ask_user_questions is only available in Plan mode"}
+func preparePlanQuestions(callID, arguments string, questionsAllowed bool, questionRound int) (*sessions.PlanQuestionSet, *tools.ExecutionError) {
+	if !questionsAllowed {
+		return nil, &tools.ExecutionError{Code: "tool_not_allowed", Message: "ask_user_questions is only available in Plan and Pair Programming modes"}
 	}
 	if questionRound > tools.MaxPlanQuestionRounds {
 		return nil, &tools.ExecutionError{

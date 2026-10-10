@@ -6,8 +6,8 @@ import (
 	"strings"
 )
 
-// AskUserQuestionsToolName is the plan-mode-only tool that lets the model ask
-// the user structured clarifying questions before finalizing a plan. The
+// AskUserQuestionsToolName is the tool that lets the model ask the user
+// structured clarifying questions (Plan and Pair Programming modes). The
 // actual execution is handled by the chat session (it must pause the turn for
 // interactive answers), so this registration only exposes the schema and name.
 const AskUserQuestionsToolName = "ask_user_questions"
@@ -42,7 +42,7 @@ func init() {
 	Register(ToolFunc{
 		Meta: Metadata{
 			Name:        AskUserQuestionsToolName,
-			Description: "Ask the user 1-3 structured clarifying questions (each with up to 3 suggested options; free-text is always available) when high-impact ambiguities in scope, target files, approach, constraints, or priorities cannot be resolved by reading the workspace. Answers arrive as the tool result and the user can skip. Plan mode only.",
+			Description: "Ask the user 1-3 structured clarifying questions (each with up to 3 suggested options; free-text is always available) when high-impact ambiguities in scope, target files, approach, constraints, or priorities cannot be resolved by reading the workspace, or to request that the user perform an action for you (the options then confirm completion or ask you to try another method). Answers arrive as the tool result and the user can skip. Plan and Pair Programming modes only.",
 			Parameters: Schema{
 				"type":                 "object",
 				"additionalProperties": false,
@@ -81,7 +81,7 @@ func init() {
 			},
 		},
 		Run: func(_ ExecutionContext, _ json.RawMessage) (any, error) {
-			return nil, fmt.Errorf("%s is handled by the plan chat session; it cannot be invoked directly", AskUserQuestionsToolName)
+			return nil, fmt.Errorf("%s is handled by the chat session; it cannot be invoked directly", AskUserQuestionsToolName)
 		},
 	})
 }

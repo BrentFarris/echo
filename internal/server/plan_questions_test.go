@@ -176,6 +176,74 @@ func TestPlanQuestionsPauseSubmitAndResumeChat(t *testing.T) {
 	}
 }
 
+// TestPairProgrammingQuestionsPauseSubmitAndResumeChat verifies the same
+// question pause/resume flow works in Pair Programming mode, which is an
+// allow-all mode rather than the read-only Plan allowlist.
+func TestPairProgrammingQuestionsPauseSubmitAndResumeChat(t *testing.T) {
+	server, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, server, "pair-questions")
+	streamer := &planQuestionsStreamer{}
+	server.llm = streamer
+
+	url := startWebSocketTestServer(t, server)
+	conn := dialSharedClient(t, url)
+	subscribeChat(t, conn, workspace.ID)
+	if err := conn.WriteJSON(map[string]any{
+		"type": "chat_send", "workspaceId": workspace.ID, "requestId": "pair-request",
+		"message": "Fix the failing test", "agentModeId": "pair-programming",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	toolCall := readUntilSessionEvent(t, conn, "tool_call")
+	if toolCall["tool"] != tools.AskUserQuestionsToolName || toolCall["status"] != "awaiting_input" {
+		t.Fatalf("unexpected question event: %#v", toolCall)
+	}
+
+	parent, err := server.sessions.get(workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent.mu.Lock()
+	chatID := parent.activeChatID
+	parent.mu.Unlock()
+	if err := conn.WriteJSON(map[string]any{
+		"type": "plan_questions_submit", "workspaceId": workspace.ID, "chatId": chatID,
+		"questionSetId": "call-questions", "requestId": "pair-answer-request",
+		"answers": []sessions.PlanAnswer{
+			{QuestionID: "scope", OptionIndex: 0},
+			{QuestionID: "language", OptionIndex: -1, Text: "I have closed the editor"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved := readUntilSessionEvent(t, conn, "plan_questions_resolved")
+	if resolved["skipped"] != false {
+		t.Fatalf("unexpected resolved event: %#v", resolved)
+	}
+	result := readUntilSessionEvent(t, conn, "tool_result")
+	if result["success"] != true {
+		t.Fatalf("question tool failed: %#v", result)
+	}
+	finished := readUntilSessionEvent(t, conn, "turn_finished")
+	if finished["status"] != "done" {
+		t.Fatalf("chat did not resume: %#v", finished)
+	}
+
+	requests := streamer.capturedRequests()
+	if len(requests) != 2 {
+		t.Fatalf("expected two model requests, got %d", len(requests))
+	}
+	foundSchema := false
+	for _, schema := range requests[0].Tools {
+		foundSchema = foundSchema || schema.Function.Name == tools.AskUserQuestionsToolName
+	}
+	if !foundSchema {
+		t.Fatal("Pair Programming request did not expose ask_user_questions")
+	}
+}
+
 func TestValidatePlanAnswers(t *testing.T) {
 	set := &sessions.PlanQuestionSet{
 		QuestionSetID: "call", Questions: []sessions.PlanQuestion{

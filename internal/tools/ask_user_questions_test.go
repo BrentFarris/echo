@@ -3,6 +3,8 @@ package tools
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/brent/echo/internal/llm"
 )
 
 func askUserQuestionArgs(t *testing.T, value any) json.RawMessage {
@@ -54,20 +56,31 @@ func TestParseAskUserQuestionsArgs(t *testing.T) {
 	}
 }
 
-func TestAskUserQuestionsOnlyAppearsInPlanChatSchema(t *testing.T) {
+func TestAskUserQuestionsOnlyAppearsInClarifyingChatSchemas(t *testing.T) {
 	scopes := NewToolScopeChecker([]ToolPermission{{Name: AskUserQuestionsToolName}})
 	for _, tool := range LLMSchemaForScopes(scopes) {
 		if tool.Function.Name == AskUserQuestionsToolName {
 			t.Fatalf("%s must be excluded from the standard chat schema", AskUserQuestionsToolName)
 		}
 	}
-	found := false
-	for _, tool := range ChatLLMSchemaForScopes(scopes, ChatSchemaOptions{PlanMode: true}) {
-		found = found || tool.Function.Name == AskUserQuestionsToolName
-	}
-	if !found {
+	if !schemaContains(ChatLLMSchemaForScopes(scopes, ChatSchemaOptions{PlanMode: true}), AskUserQuestionsToolName) {
 		t.Fatalf("%s missing from the Plan-mode chat schema", AskUserQuestionsToolName)
 	}
+	if !schemaContains(ChatLLMSchemaForScopes(scopes, ChatSchemaOptions{PairingMode: true}), AskUserQuestionsToolName) {
+		t.Fatalf("%s missing from the Pair Programming chat schema", AskUserQuestionsToolName)
+	}
+	if schemaContains(ChatLLMSchemaForScopes(scopes, ChatSchemaOptions{}), AskUserQuestionsToolName) {
+		t.Fatalf("%s must not appear without Plan or Pair Programming mode", AskUserQuestionsToolName)
+	}
+}
+
+func schemaContains(schema []llm.Tool, name string) bool {
+	for _, tool := range schema {
+		if tool.Function.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAskUserQuestionsCannotExecuteDirectly(t *testing.T) {

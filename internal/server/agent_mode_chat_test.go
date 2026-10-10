@@ -128,6 +128,29 @@ func TestAgentModeSystemMessageDisambiguatesMixedSourceControlWorkspace(t *testi
 	}
 }
 
+func TestPairProgrammingSystemMessageExplainsQuestionSystem(t *testing.T) {
+	s, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, s, "pair-programming-chat")
+
+	mode, err := s.modes.Resolve(workspace.MainPath, agentmodes.PairProgrammingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, scopes, _ := s.agentModeContext(workspace, mode, "fix the failing test", false)
+	for _, expected := range []string{"ask_user_questions", "Can you close the editor?", "I have closed the editor", "Try another method", "free text"} {
+		if !strings.Contains(message.Content, expected) {
+			t.Fatalf("Pair Programming system message missing %q: %q", expected, message.Content)
+		}
+	}
+	if !scopes.HasTool(tools.AskUserQuestionsToolName) {
+		t.Fatal("Pair Programming mode must allow ask_user_questions")
+	}
+	schema := s.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PairingMode: true, WorkspaceID: workspace.ID})
+	if !schemaContainsTool(schema, tools.AskUserQuestionsToolName) {
+		t.Fatal("Pair Programming chat schema must expose ask_user_questions")
+	}
+}
+
 func TestAgentModeContextFiltersIncompatibleSourceControlTools(t *testing.T) {
 	tests := []struct {
 		name           string

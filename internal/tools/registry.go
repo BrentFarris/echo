@@ -17,7 +17,7 @@ var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 var defaultRegistry = NewRegistry()
 
-var planModeOnlyToolNames = map[string]bool{
+var clarifyingQuestionToolNames = map[string]bool{
 	AskUserQuestionsToolName: true,
 }
 
@@ -51,6 +51,7 @@ var researchWorkerToolNames = map[string]bool{
 
 type ChatSchemaOptions struct {
 	PlanMode        bool
+	PairingMode     bool
 	GoalMode        bool
 	ResearchEnabled bool
 	SandboxGUI      bool
@@ -241,7 +242,7 @@ func (r *Registry) chatLLMSchemaForScopes(scopes *ToolScopeChecker, options Chat
 		if registration.owner != CoreToolOwner && (options.PlanMode || policy == nil || !policy(registration.owner, metadata.Name, options.WorkspaceID)) {
 			continue
 		}
-		if planModeOnlyToolNames[metadata.Name] && !options.PlanMode {
+		if clarifyingQuestionToolNames[metadata.Name] && !options.PlanMode && !options.PairingMode {
 			continue
 		}
 		if goalModeOnlyToolNames[metadata.Name] && !options.GoalMode {
