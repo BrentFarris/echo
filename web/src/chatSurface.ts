@@ -418,11 +418,14 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
       modelSelect.replaceChildren(new Option("Model", ""), ...endpoints.filter((endpoint) => endpoint.model).map((endpoint) => new Option(endpoint.name || endpoint.model!, endpoint.model!)));
       modelSelect.value = selected;
     }),
-    api("/api/agent-modes", { method: "GET", query: { workspaceId: options.workspaceId } }).then((data: { modes?: AgentMode[] }) => {
+    api("/api/agent-modes", { method: "GET", query: { workspaceId: options.workspaceId } }).then((data: { modes?: AgentMode[]; defaultModeId?: string }) => {
       const modes = data.modes || [];
       modeSelect.replaceChildren(...modes.map((mode) => new Option(mode.name, mode.id)));
       if (![...modeSelect.options].some((option) => option.value === "general")) modeSelect.prepend(new Option("General", "general"));
-      modeSelect.value = "general";
+      const defaultModeId = data.defaultModeId && [...modeSelect.options].some((option) => option.value === data.defaultModeId)
+        ? data.defaultModeId
+        : "general";
+      modeSelect.value = defaultModeId;
     }),
   ]).catch((error) => console.error("load code chat controls", error)).finally(() => {
     restoreDraft();

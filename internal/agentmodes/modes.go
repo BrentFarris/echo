@@ -34,6 +34,13 @@ type Mode struct {
 	BuiltIn     bool                            `json:"builtIn"`
 }
 
+// store is the on-disk shape of .echo/agent-modes.json. Older workspaces
+// persisted a bare JSON array of modes; load upgrades that shape in memory.
+type store struct {
+	DefaultModeID string `json:"defaultModeId,omitempty"`
+	Modes         []Mode `json:"modes"`
+}
+
 // Manager serializes reads and writes to workspace mode files.
 type Manager struct {
 	mu sync.Mutex
@@ -98,11 +105,11 @@ func IsBuiltIn(id string) bool {
 func (m *Manager) List(workspacePath string) ([]Mode, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	custom, err := load(workspacePath)
+	parsed, err := load(workspacePath)
 	if err != nil {
 		return nil, err
 	}
-	return append(cloneModes(Defaults()), custom...), nil
+	return append(cloneModes(Defaults()), cloneModes(parsed.Modes)...), nil
 }
 
 func (m *Manager) Resolve(workspacePath, id string) (Mode, error) {
@@ -125,10 +132,11 @@ func (m *Manager) Resolve(workspacePath, id string) (Mode, error) {
 func (m *Manager) Create(workspacePath string, mode Mode) ([]Mode, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	custom, err := load(workspacePath)
+	parsed, err := load(workspacePath)
 	if err != nil {
 		return nil, err
 	}
+	custom := parsed.Modes
 	mode, err = normalizeCustom(mode)
 	if err != nil {
 		return nil, err
@@ -139,7 +147,7 @@ func (m *Manager) Create(workspacePath string, mode Mode) ([]Mode, error) {
 	}
 	mode.ID = newID()
 	custom = append(custom, mode)
-	if err := save(workspacePath, custom); err != nil {
+	if err := save(workspacePath, store{DefaultModeID: parsed.DefaultModeID, Modes: custom}); err != nil {
 		return nil, err
 	}
 	return append(cloneModes(Defaults()), cloneModes(custom)...), nil
@@ -152,10 +160,11 @@ func (m *Manager) Update(workspacePath, id string, mode Mode) ([]Mode, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	custom, err := load(workspacePath)
+	parsed, err := load(workspacePath)
 	if err != nil {
 		return nil, err
 	}
+	custom := parsed.Modes
 	mode, err = normalizeCustom(mode)
 	if err != nil {
 		return nil, err
@@ -176,7 +185,7 @@ func (m *Manager) Update(workspacePath, id string, mode Mode) ([]Mode, error) {
 	if !found {
 		return nil, fmt.Errorf("agent mode %q not found", id)
 	}
-	if err := save(workspacePath, custom); err != nil {
+	if err := save(workspacePath, store{DefaultModeID: parsed.DefaultModeID, Modes: custom}); err != nil {
 		return nil, err
 	}
 	return append(cloneModes(Defaults()), cloneModes(custom)...), nil
@@ -189,10 +198,14 @@ func (m *Manager) Delete(workspacePath, id string) ([]Mode, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	custom, err := load(workspacePath)
+	parsed, err := load(workspacePath)
 	if err != nil {
 		return nil, err
 	}
+	if parsed.DefaultModeID == id {
+		parsed.DefaultModeID = ""
+	}
+	custom := parsed.Modes
 	next := make([]Mode, 0, len(custom))
 	found := false
 	for _, mode := range custom {
@@ -205,41 +218,103 @@ func (m *Manager) Delete(workspacePath, id string) ([]Mode, error) {
 	if !found {
 		return nil, fmt.Errorf("agent mode %q not found", id)
 	}
-	if err := save(workspacePath, next); err != nil {
+	if err := save(workspacePath, store{DefaultModeID: parsed.DefaultModeID, Modes: next}); err != nil {
 		return nil, err
 	}
 	return append(cloneModes(Defaults()), cloneModes(next)...), nil
+}
+
+// Default returns the workspace's configured default mode for new chat tabs.
+// Unset or invalid values resolve to General.
+func (m *Manager) Default(workspacePath string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	parsed, err := load(workspacePath)
+	if err != nil {
+		return "", err
+	}
+	return normalizeDefault(parsed.DefaultModeID, parsed.Modes), nil
+}
+
+// SetDefault validates and persists the workspace's default mode for new chat
+// tabs. An empty ID or "general" clears the explicit setting, which resolves
+// to General.
+func (m *Manager) SetDefault(workspacePath, id string) (string, error) {
+	id = strings.TrimSpace(id)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	parsed, err := load(workspacePath)
+	if err != nil {
+		return "", err
+	}
+	if id != "" && id != GeneralID {
+		all := append(Defaults(), parsed.Modes...)
+		if !modeIDExists(all, id) {
+			return "", fmt.Errorf("agent mode %q not found", id)
+		}
+		parsed.DefaultModeID = id
+	} else {
+		parsed.DefaultModeID = ""
+	}
+	if err := save(workspacePath, parsed); err != nil {
+		return "", err
+	}
+	return normalizeDefault(parsed.DefaultModeID, parsed.Modes), nil
+}
+
+func normalizeDefault(id string, custom []Mode) string {
+	if id != "" {
+		all := append(Defaults(), custom...)
+		if modeIDExists(all, id) {
+			return id
+		}
+	}
+	return GeneralID
+}
+
+func modeIDExists(modes []Mode, id string) bool {
+	for _, mode := range modes {
+		if mode.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func filePath(workspacePath string) string {
 	return filepath.Join(workspacePath, ".echo", fileName)
 }
 
-func load(workspacePath string) ([]Mode, error) {
+func load(workspacePath string) (store, error) {
 	path := filePath(workspacePath)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []Mode{}, nil
+			return store{}, nil
 		}
-		return nil, fmt.Errorf("read agent modes: %w", err)
+		return store{}, fmt.Errorf("read agent modes: %w", err)
 	}
-	var modes []Mode
-	if err := json.Unmarshal(data, &modes); err != nil {
-		return nil, fmt.Errorf("parse agent modes %q: %w", path, err)
+	var parsed store
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		// Legacy workspaces stored a bare JSON array of modes.
+		var modes []Mode
+		if legacyErr := json.Unmarshal(data, &modes); legacyErr != nil {
+			return store{}, fmt.Errorf("parse agent modes %q: %w", path, err)
+		}
+		parsed = store{Modes: modes}
 	}
-	for i := range modes {
-		modes[i].BuiltIn = false
+	for i := range parsed.Modes {
+		parsed.Modes[i].BuiltIn = false
 	}
-	return modes, nil
+	return parsed, nil
 }
 
-func save(workspacePath string, modes []Mode) error {
+func save(workspacePath string, parsed store) error {
 	path := filePath(workspacePath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create agent mode directory: %w", err)
 	}
-	data, err := json.MarshalIndent(modes, "", "  ")
+	data, err := json.MarshalIndent(parsed, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal agent modes: %w", err)
 	}

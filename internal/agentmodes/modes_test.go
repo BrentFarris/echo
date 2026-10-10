@@ -131,6 +131,89 @@ func TestPairProgrammingIsFourthImmutableBuiltIn(t *testing.T) {
 	}
 }
 
+func TestDefaultModePersistsAndResets(t *testing.T) {
+	workspace := t.TempDir()
+	manager := NewManager()
+
+	// Unset defaults resolve to General.
+	defaultID, err := manager.Default(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultID != GeneralID {
+		t.Fatalf("expected general fallback, got %q", defaultID)
+	}
+
+	modes, err := manager.Create(workspace, Mode{Name: "Reviewer", Prompt: "Review changes."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := modes[4].ID
+
+	// Setting the default persists it.
+	defaultID, err = manager.SetDefault(workspace, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultID != id {
+		t.Fatalf("expected %q, got %q", id, defaultID)
+	}
+	if reloaded, err := NewManager().Default(workspace); err != nil || reloaded != id {
+		t.Fatalf("default did not persist: %q %v", reloaded, err)
+	}
+
+	// Unknown IDs are rejected.
+	if _, err := manager.SetDefault(workspace, "missing"); err == nil {
+		t.Fatal("expected unknown mode to be rejected")
+	}
+
+	// Explicitly choosing General clears the stored setting.
+	if defaultID, err = manager.SetDefault(workspace, GeneralID); err != nil || defaultID != GeneralID {
+		t.Fatalf("expected general, got %q %v", defaultID, err)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, ".echo", fileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "defaultModeId") {
+		t.Fatalf("expected explicit General to clear the setting: %s", data)
+	}
+
+	// Deleting the default mode falls back to General.
+	if _, err := manager.SetDefault(workspace, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Delete(workspace, id); err != nil {
+		t.Fatal(err)
+	}
+	if defaultID, err = manager.Default(workspace); err != nil || defaultID != GeneralID {
+		t.Fatalf("expected general after delete, got %q %v", defaultID, err)
+	}
+}
+
+func TestLoadMigratesLegacyBareArrayFile(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, ".echo", fileName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `[{"id":"mode-legacy","name":"Legacy","prompt":"Old format.","builtIn":true}]`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager()
+	modes, err := manager.List(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(modes) != 5 || modes[4].ID != "mode-legacy" || modes[4].BuiltIn {
+		t.Fatalf("legacy modes not loaded: %+v", modes)
+	}
+	if defaultID, err := manager.Default(workspace); err != nil || defaultID != GeneralID {
+		t.Fatalf("expected general for legacy file, got %q %v", defaultID, err)
+	}
+}
+
 func TestPlanModeAllowsGitInspection(t *testing.T) {
 	plan := Defaults()[1]
 	if _, ok := plan.Permissions["git_inspect"]; !ok {

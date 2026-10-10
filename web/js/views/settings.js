@@ -123,6 +123,7 @@ const state = {
   // Endpoint currently being edited (id) or null.
   editingEndpointId: null,
   modes: [],
+  defaultModeId: "general",
   modeTools: [],
   modeWorkspaceId: "",
   modeWorkspaceName: "",
@@ -421,6 +422,18 @@ function renderAgentModes() {
       <p class="settings-card-help">Modes are saved in the active workspace${state.modeWorkspaceName ? `, <strong>${esc(state.modeWorkspaceName)}</strong>` : ""}. A mode changes the system instructions and can limit the tools and paths available to chat.</p>
       ${state.modeStatus ? `<p class="settings-status ${state.modeStatus.startsWith("Error:") ? "is-error" : ""}">${esc(state.modeStatus)}</p>` : ""}
       ${draft ? renderAgentModeEditor(draft) : ""}
+      <div class="settings-card">
+        <h3 class="settings-card-title">Default mode</h3>
+        <p class="settings-card-help">Agent mode preselected for new chat tabs in this workspace. Defaults to General until you choose one.</p>
+        <label class="field">
+          <span>Default mode for new tabs</span>
+          <select data-default-mode ${state.modeWorkspaceId ? "" : "disabled"}>
+            ${state.modes.map((m) => `
+              <option value="${esc(m.id)}" ${state.defaultModeId === m.id ? "selected" : ""}>${esc(m.name)}</option>
+            `).join("")}
+          </select>
+        </label>
+      </div>
       <div class="settings-card">
         <div class="agent-mode-list">
           ${state.modes.length ? state.modes.map((m) => `
@@ -1536,6 +1549,21 @@ function bindEvents(root) {
     });
   });
 
+  root.querySelectorAll("[data-default-mode]").forEach((select) => {
+    select.addEventListener("change", async () => {
+      if (!state.modeWorkspaceId) return;
+      try {
+        const data = await put("/api/agent-modes/default", { workspaceId: state.modeWorkspaceId, modeId: select.value });
+        state.defaultModeId = data.defaultModeId || "general";
+        const name = state.modes.find((m) => m.id === state.defaultModeId)?.name || "General";
+        state.modeStatus = `Default mode for new tabs set to ${name}.`;
+      } catch (err) {
+        state.modeStatus = `Error: ${err.message}`;
+      }
+      render();
+    });
+  });
+
   // Live-update the theme color swatch <-> hex pair.
   root.querySelectorAll(".theme-color-swatch").forEach((swatch) => {
     swatch.addEventListener("input", () => {
@@ -2390,6 +2418,7 @@ async function loadAgentModes() {
     if (!state.modeWorkspaceId) {
       state.modes = [];
       state.modeTools = [];
+      state.defaultModeId = "general";
       await loadLanguageServers();
       await loadGoTesting();
       return;
@@ -2397,6 +2426,7 @@ async function loadAgentModes() {
     const data = await get("/api/agent-modes", { query: { workspaceId: state.modeWorkspaceId } });
     state.modes = data.modes || [];
     state.modeTools = data.tools || [];
+    state.defaultModeId = data.defaultModeId || "general";
     state.modeStatus = "";
     await loadLanguageServers();
     await loadGoTesting();

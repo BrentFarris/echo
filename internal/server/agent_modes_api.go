@@ -30,6 +30,11 @@ func (s *Server) handleGetAgentModes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	defaultModeID, err := s.modes.Default(workspace.MainPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	registered := s.tools.Registered()
 	available := make([]agentModeTool, 0, len(registered))
 	for _, tool := range registered {
@@ -37,9 +42,37 @@ func (s *Server) handleGetAgentModes(w http.ResponseWriter, r *http.Request) {
 		available = append(available, agentModeTool{Name: metadata.Name, Description: metadata.Description})
 	}
 	writeData(w, http.StatusOK, map[string]any{
-		"workspaceId": workspace.ID,
-		"modes":       modes,
-		"tools":       available,
+		"workspaceId":   workspace.ID,
+		"modes":         modes,
+		"tools":         available,
+		"defaultModeId": defaultModeID,
+	})
+}
+
+type agentModeDefaultRequest struct {
+	WorkspaceID string `json:"workspaceId"`
+	ModeID      string `json:"modeId"`
+}
+
+func (s *Server) handleSetDefaultAgentMode(w http.ResponseWriter, r *http.Request) {
+	var body agentModeDefaultRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	workspace, err := s.agentModeWorkspace(body.WorkspaceID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	defaultModeID, err := s.modes.SetDefault(workspace.MainPath, body.ModeID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeData(w, http.StatusOK, map[string]any{
+		"workspaceId":   workspace.ID,
+		"defaultModeId": defaultModeID,
 	})
 }
 

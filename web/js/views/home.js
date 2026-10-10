@@ -41,6 +41,8 @@ let selectedModel = null;
 let defaultSelectedModel = null;
 let agentModes = [];
 let selectedAgentModeId = "general";
+// Workspace-configured default mode for new tabs (falls back to General).
+let defaultAgentModeId = "general";
 // Thinking level selected in the mode popup. "" means no override: the endpoint
 // settings (reasoning effort or thinking token budget) apply unchanged.
 let selectedThinking = "";
@@ -656,7 +658,7 @@ export function mount(root) {
     const key = tabStateKey(currentWorkspaceId, currentChatId);
     let state = tabComposerState.get(key);
     if (!state) {
-      state = { segments: [], model: defaultSelectedModel, agentModeId: "general", thinking: defaultThinkingLevel(), images: [], videos: [] };
+      state = { segments: [], model: defaultSelectedModel, agentModeId: defaultAgentModeId, thinking: defaultThinkingLevel(), images: [], videos: [] };
       tabComposerState.set(key, state);
     }
     state.images ||= [];
@@ -664,7 +666,7 @@ export function mount(root) {
     selectedModel = state.model || null;
     selectedAgentModeId = agentModes.some((mode) => mode.id === state.agentModeId)
       ? state.agentModeId
-      : "general";
+      : defaultAgentModeId;
     selectedThinking = typeof state.thinking === "string" ? state.thinking : defaultThinkingLevel();
     restoreComposer(input, state.segments || [], createReferenceChip);
     renderAttachmentDrafts();
@@ -1918,6 +1920,14 @@ async function loadAgentModes(workspaceId, label) {
   try {
     const data = await get("/api/agent-modes", { query: { workspaceId } });
     agentModes = data.modes || [];
+    defaultAgentModeId = agentModes.some((mode) => mode.id === data.defaultModeId)
+      ? data.defaultModeId
+      : "general";
+    // Carry-overs from another workspace (or before modes loaded) fall back to
+    // the workspace's configured default instead of a hardcoded General.
+    if (!agentModes.some((mode) => mode.id === selectedAgentModeId)) {
+      selectedAgentModeId = defaultAgentModeId;
+    }
     const selected = agentModes.find((mode) => mode.id === selectedAgentModeId);
     if (label) label.textContent = selected?.name || "General";
   } catch (err) {
