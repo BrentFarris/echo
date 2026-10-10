@@ -13,6 +13,7 @@ import { icons } from "./icons.js";
 import { del, post } from "./api.js";
 import { refreshPluginCatalog } from "../src/plugins/catalog.ts";
 import { createChatScrollFollower } from "../src/chatScroll.ts";
+import { makeImageZoomable } from "../src/imageLightbox.ts";
 
 let binding = null;
 let activeStream = null;
@@ -1221,6 +1222,9 @@ function buildMediaFigure(attachment) {
     media.playsInline = true;
   } else {
     media.alt = attachment.name || "Attached image";
+    // Clicking an image (user upload or AI-read/generated) opens the shared
+    // full-screen lightbox; Esc or the X button closes it.
+    makeImageZoomable(media, { name: attachment.name || "" });
   }
   if (isVideo) {
     const stage = document.createElement("div");

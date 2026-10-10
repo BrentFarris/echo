@@ -5112,6 +5112,81 @@ button.chat-file-change-row:focus-visible {
   border-top: 1px solid var(--color-border);
 }
 
+/* ---- Full-screen image lightbox ---- */
+
+.image-zoomable {
+  cursor: zoom-in;
+}
+
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: var(--space-2xl) 72px var(--space-2xl);
+  background: rgba(12, 12, 14, 0.88);
+  backdrop-filter: blur(6px);
+  animation: image-lightbox-in 120ms ease-out;
+}
+
+@keyframes image-lightbox-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.image-lightbox-image {
+  max-width: 100%;
+  max-height: calc(100dvh - 2 * var(--space-2xl));
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: var(--shadow-modal);
+  cursor: default;
+}
+
+.image-lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.image-lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.image-lightbox-close svg {
+  width: 20px;
+  height: 20px;
+}
+
+.image-lightbox-caption {
+  position: absolute;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  max-width: min(70vw, 640px);
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: var(--text-sm);
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+body.image-lightbox-open {
+  overflow: hidden;
+}
+
 .modal-error {
   flex: 1;
   color: var(--color-danger);

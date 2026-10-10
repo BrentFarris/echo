@@ -211,6 +211,9 @@ with counts + names, **not** the data URLs — trajectories are diagnostic, not 
    construction out of `appendUserMedia()` into `buildMediaFigure(attachment, kind)` so
    user uploads and tool-generated media render identically (img vs video element,
    caption with name + `mediaType · size`).
+   Images (user uploads, AI-read/generated tool output, composer drafts) are clickable:
+   `makeImageZoomable()` (`web/src/imageLightbox.ts`) opens a shared full-screen
+   lightbox closed via Esc, the top-right X, or a backdrop click.
 
 2. **One media zone per turn view.** Lazily create a single
    `<div class="chat-message-media" data-media-zone>` **inside the assistant message

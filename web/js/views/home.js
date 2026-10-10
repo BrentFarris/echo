@@ -24,6 +24,7 @@ import { installChatMap } from "../../src/chatMap.ts";
 import { watchGitBadge } from "../../src/gitBadge.ts";
 import { mountSpeechRecognition } from "../../src/speechRecognition.ts";
 import { showContextMenu, toast } from "../../src/code/ui.ts";
+import { makeImageZoomable } from "../../src/imageLightbox.ts";
 import { getRoots, revealEntry, searchEntries } from "../../src/code/editorApi.ts";
 import {
   activeMentionMatch, composerText, insertReferenceChip, restoreComposer, snapshotComposer,
@@ -947,6 +948,7 @@ export function mount(root) {
         const image = document.createElement("img");
         image.src = attachment.dataUrl;
         image.alt = "";
+        makeImageZoomable(image, { name: attachment.name || "" });
         preview.append(image);
       } else {
         preview.innerHTML = icons.video;
