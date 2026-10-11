@@ -146,12 +146,17 @@ func TestPrepareChatMediaSupportsFormatsResizesAndPreservesGIF(t *testing.T) {
 
 func TestPrepareChatMediaLimitsAndVideoTypes(t *testing.T) {
 	pngData := testPNGBytes(t)
-	tooMany := make([]chatMediaInput, maxChatImageAttachments+1)
+	const manyImages = 50
+	tooMany := make([]chatMediaInput, manyImages)
 	for index := range tooMany {
 		tooMany[index] = testMediaInput("image.png", "image/png", pngData)
 	}
-	if _, _, err := prepareChatMedia(tooMany, nil); err == nil || !strings.Contains(err.Error(), "at most 4 images") {
-		t.Fatalf("expected image count rejection, got %v", err)
+	images, _, err := prepareChatMedia(tooMany, nil)
+	if err != nil {
+		t.Fatalf("expected many images to be accepted, got %v", err)
+	}
+	if len(images) != manyImages {
+		t.Fatalf("expected %d images, got %d", manyImages, len(images))
 	}
 
 	large := append([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, make([]byte, maxChatImageBytes)...)
@@ -173,11 +178,13 @@ func TestPrepareChatMediaLimitsAndVideoTypes(t *testing.T) {
 	}
 	firstLargeVideo := append(append([]byte(nil), mp4...), make([]byte, 10<<20-len(mp4))...)
 	secondLargeVideo := append(append([]byte(nil), mp4...), make([]byte, (10<<20)+1-len(mp4))...)
+	oversizedVideo := append(append([]byte(nil), mp4...), make([]byte, maxChatMediaBytes+1-len(mp4))...)
 	if _, _, err := prepareChatMedia(nil, []chatMediaInput{
 		testMediaInput("first.mp4", "video/mp4", firstLargeVideo),
 		testMediaInput("second.mp4", "video/mp4", secondLargeVideo),
-	}); err == nil || !strings.Contains(err.Error(), "message limit") {
-		t.Fatalf("expected total media size rejection, got %v", err)
+		testMediaInput("oversized.mp4", "video/mp4", oversizedVideo),
+	}); err == nil || !strings.Contains(err.Error(), "larger") {
+		t.Fatalf("expected oversized video rejection, got %v", err)
 	}
 }
 

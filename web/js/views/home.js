@@ -66,8 +66,6 @@ const tabComposerState = new Map();
 const knownWorkspaceTabs = new Map();
 const tabViewState = new Map();
 const tabTrajectoryRevision = new Map();
-const maxChatImages = 4;
-const maxChatVideos = 4;
 const maxChatImageBytes = 10 * 1024 * 1024;
 const maxChatMediaBytes = 20 * 1024 * 1024;
 const imageMediaTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
@@ -988,7 +986,6 @@ export function mount(root) {
     if (!state) return;
     const images = [...(state.images || [])];
     const videos = [...(state.videos || [])];
-    let totalBytes = [...images, ...videos].reduce((total, attachment) => total + attachment.bytes, 0);
     let changed = false;
     for (const file of files) {
       const mediaType = mediaTypeForFile(file);
@@ -998,20 +995,12 @@ export function mount(root) {
         toast(`Unsupported media format: ${file.type || file.name || "unknown"}.`, { sticky: true });
         continue;
       }
-      if (isImage && images.length >= maxChatImages) {
-        toast(`A message can include at most ${maxChatImages} images.`, { sticky: true });
-        continue;
-      }
-      if (isVideo && videos.length >= maxChatVideos) {
-        toast(`A message can include at most ${maxChatVideos} videos.`, { sticky: true });
-        continue;
-      }
       if (isImage && file.size > maxChatImageBytes) {
         toast(`${file.name || "Image"} is larger than ${formatMediaBytes(maxChatImageBytes)}.`, { sticky: true });
         continue;
       }
-      if (file.size > maxChatMediaBytes || totalBytes + file.size > maxChatMediaBytes) {
-        toast(`Attached media cannot exceed ${formatMediaBytes(maxChatMediaBytes)} per message.`, { sticky: true });
+      if (isVideo && file.size > maxChatMediaBytes) {
+        toast(`${file.name || "Video"} is larger than ${formatMediaBytes(maxChatMediaBytes)}.`, { sticky: true });
         continue;
       }
       try {
@@ -1023,7 +1012,6 @@ export function mount(root) {
           dataUrl: await fileToDataURL(file, mediaType),
         };
         (isImage ? images : videos).push(attachment);
-        totalBytes += file.size;
         changed = true;
       } catch (error) {
         toast(error instanceof Error ? error.message : String(error), { sticky: true });

@@ -20,9 +20,6 @@ import (
 )
 
 const (
-	maxChatImageAttachments = 4
-	maxChatVideoAttachments = 4
-	maxChatMediaAttachments = 8
 	maxChatImageBytes       = 10 << 20
 	maxChatMediaBytes       = 20 << 20
 	maxChatImageDimension   = 2048
@@ -46,26 +43,11 @@ type chatMediaInput struct {
 }
 
 func prepareChatMedia(imageInputs, videoInputs []chatMediaInput) ([]sessions.MediaAttachment, []sessions.MediaAttachment, error) {
-	if len(imageInputs) > maxChatImageAttachments {
-		return nil, nil, fmt.Errorf("a message can include at most %d images", maxChatImageAttachments)
-	}
-	if len(videoInputs) > maxChatVideoAttachments {
-		return nil, nil, fmt.Errorf("a message can include at most %d videos", maxChatVideoAttachments)
-	}
-	if len(imageInputs)+len(videoInputs) > maxChatMediaAttachments {
-		return nil, nil, fmt.Errorf("a message can include at most %d media attachments", maxChatMediaAttachments)
-	}
-
-	var rawTotal int64
-	images := make([]sessions.MediaAttachment, 0, len(imageInputs))
+	var images []sessions.MediaAttachment
 	for index, input := range imageInputs {
 		mediaType, raw, err := parseChatDataURL(input, supportedChatImageTypes, maxChatImageBytes, "image")
 		if err != nil {
 			return nil, nil, fmt.Errorf("image %d: %w", index+1, err)
-		}
-		rawTotal += int64(len(raw))
-		if rawTotal > maxChatMediaBytes {
-			return nil, nil, fmt.Errorf("attached media is larger than the %d byte message limit", maxChatMediaBytes)
 		}
 		normalized, normalizedType, err := normalizeChatImage(raw, mediaType)
 		if err != nil {
@@ -77,15 +59,11 @@ func prepareChatMedia(imageInputs, videoInputs []chatMediaInput) ([]sessions.Med
 		})
 	}
 
-	videos := make([]sessions.MediaAttachment, 0, len(videoInputs))
+	var videos []sessions.MediaAttachment
 	for index, input := range videoInputs {
 		mediaType, raw, err := parseChatDataURL(input, supportedChatVideoTypes, maxChatMediaBytes, "video")
 		if err != nil {
 			return nil, nil, fmt.Errorf("video %d: %w", index+1, err)
-		}
-		rawTotal += int64(len(raw))
-		if rawTotal > maxChatMediaBytes {
-			return nil, nil, fmt.Errorf("attached media is larger than the %d byte message limit", maxChatMediaBytes)
 		}
 		videos = append(videos, sessions.MediaAttachment{
 			ID: newSessionID("vid"), Name: safeChatMediaName(input.Name, fmt.Sprintf("video-%d%s", index+1, chatMediaExtension(mediaType))),
