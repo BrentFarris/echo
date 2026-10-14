@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -262,5 +263,120 @@ func TestTabHistoriesRemainIndependent(t *testing.T) {
 	}
 	if len(stored.Tabs) != 2 || len(stored.Tabs[0].Turns) != 2 || len(stored.Tabs[1].Turns) != 1 {
 		t.Fatalf("tab turns were not persisted independently: %#v", stored.Tabs)
+	}
+}
+
+func TestChatTabForkCopiesHistoryUpToForkedMessage(t *testing.T) {
+	s, _ := newTestServer(t)
+	workspace := createChatWorkspace(t, s, "tab-fork")
+	fake := &historyStreamer{}
+	s.llm = fake
+	url := startWebSocketTestServer(t, s)
+	conn := dialSharedClient(t, url)
+	subscribeChat(t, conn, workspace.ID)
+	initial, err := sessions.NewWorkspaceStore(workspace.MainPath).Load(workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceID := initial.Tabs[0].ChatID
+
+	for index, prompt := range []string{"fork first prompt", "fork second prompt"} {
+		if err := conn.WriteJSON(map[string]any{
+			"type": "chat_send", "workspaceId": workspace.ID,
+			"requestId": fmt.Sprintf("fork-%d", index), "message": prompt,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		readSessionEventForChat(t, conn, sourceID, "turn_finished")
+	}
+	stored, err := sessions.NewWorkspaceStore(workspace.MainPath).Load(workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Tabs) != 1 || len(stored.Tabs[0].Turns) != 2 {
+		t.Fatalf("expected one tab with two turns before forking: %#v", stored.Tabs)
+	}
+
+	// Fork on the first turn's assistant message: the fork should keep only
+	// the first turn.
+	if err := conn.WriteJSON(map[string]any{
+		"type": "chat_tab_fork", "workspaceId": workspace.ID,
+		"chatId": stored.Tabs[0].ChatID, "turnId": stored.Tabs[0].Turns[0].ID,
+		"role": llm.RoleAssistant,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := readChatSnapshot(t, conn)
+	ids := snapshotChatIDs(t, snapshot)
+	if len(ids) != 2 || snapshot["activeChatId"] != ids[1] {
+		t.Fatalf("fork did not append and activate a new tab: %v", snapshot)
+	}
+	forkedTurns, _ := snapshot["turns"].([]any)
+	if len(forkedTurns) != 1 {
+		t.Fatalf("forked tab should contain only the first turn: %v", snapshot)
+	}
+
+	// A follow-up in the forked tab must not see the source tab's second turn.
+	if err := conn.WriteJSON(map[string]any{
+		"type": "chat_send", "workspaceId": workspace.ID, "chatId": ids[1],
+		"requestId": "fork-followup", "message": "forked followup",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	readSessionEventForChat(t, conn, ids[1], "turn_finished")
+	fake.mu.Lock()
+	modelRequests := append([]llm.ChatRequest(nil), fake.requests...)
+	fake.mu.Unlock()
+	if len(modelRequests) != 3 {
+		t.Fatalf("expected three model requests, got %d", len(modelRequests))
+	}
+	var contents []string
+	for _, message := range modelRequests[2].Messages {
+		contents = append(contents, message.Content)
+	}
+	joined := strings.Join(contents, "\n")
+	if !strings.Contains(joined, "fork first prompt") || !strings.Contains(joined, "answer-1") {
+		t.Fatalf("forked followup lost the forked history: %#v", modelRequests[2].Messages)
+	}
+	if strings.Contains(joined, "fork second prompt") || strings.Contains(joined, "answer-2") {
+		t.Fatalf("forked followup saw history after the fork point: %#v", modelRequests[2].Messages)
+	}
+
+	// The source tab must remain untouched and keep its full history.
+	stored, err = sessions.NewWorkspaceStore(workspace.MainPath).Load(workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Tabs) != 2 || len(stored.Tabs[0].Turns) != 2 || len(stored.Tabs[1].Turns) != 2 {
+		t.Fatalf("fork did not persist the copied history next to the intact source: %#v", stored.Tabs)
+	}
+
+	// Forking on a user message keeps only that message from its turn.
+	if err := conn.WriteJSON(map[string]any{
+		"type": "chat_tab_fork", "workspaceId": workspace.ID,
+		"chatId": stored.Tabs[0].ChatID, "turnId": stored.Tabs[0].Turns[1].ID,
+		"role": llm.RoleUser,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot = readChatSnapshot(t, conn)
+	userForkIDs := snapshotChatIDs(t, snapshot)
+	if len(userForkIDs) != 3 || snapshot["activeChatId"] != userForkIDs[2] {
+		t.Fatalf("user-message fork did not append and activate a new tab: %v", snapshot)
+	}
+	userForkTurns, _ := snapshot["turns"].([]any)
+	if len(userForkTurns) != 2 {
+		t.Fatalf("user-message fork should keep both turns: %v", snapshot)
+	}
+	stored, err = sessions.NewWorkspaceStore(workspace.MainPath).Load(workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userFork := stored.Tabs[2]
+	if len(userFork.Messages) != 3 || userFork.Messages[2].Role != llm.RoleUser {
+		t.Fatalf("user-message fork kept the assistant response: %#v", userFork.Messages)
+	}
+	if !userFork.Turns[1].AssistantDeleted {
+		t.Fatalf("user-message fork did not mark the response as deleted: %#v", userFork.Turns[1])
 	}
 }

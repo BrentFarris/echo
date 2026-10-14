@@ -58,7 +58,7 @@ describe("chat message actions", () => {
     document.body.replaceChildren();
   });
 
-  it("renders the four planned controls on user and assistant messages", () => {
+  it("renders the five planned controls on user and assistant messages", () => {
     snapshot([{
       id: "turn-actions",
       userContent: "Question",
@@ -69,8 +69,29 @@ describe("chat message actions", () => {
     for (const message of log.querySelectorAll(".chat-message")) {
       expect(Array.from(message.querySelectorAll("[data-message-action]")).map((button) =>
         (button as HTMLElement).dataset.messageAction,
-      )).toEqual(["copy", "edit", "rerun", "delete"]);
+      )).toEqual(["copy", "fork", "edit", "rerun", "delete"]);
     }
+  });
+
+  it("forks the chat from the selected message", () => {
+    snapshot([{
+      id: "turn-fork",
+      userContent: "Question",
+      status: "done",
+      assistantTurns: [{ number: 0, content: "Answer", hasToolCalls: false }],
+    }]);
+    socket.send.mockClear();
+
+    log.querySelector<HTMLButtonElement>(".chat-message-assistant [data-message-action='fork']")!.click();
+
+    expect(window.confirm).not.toHaveBeenCalled();
+    expect(socket.send).toHaveBeenCalledWith({
+      type: "chat_tab_fork",
+      workspaceId: "workspace-actions",
+      chatId: "chat-actions",
+      turnId: "turn-fork",
+      role: "assistant",
+    });
   });
 
   it("copies the raw user message", async () => {

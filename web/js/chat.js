@@ -927,6 +927,29 @@ function createMessageActions(message, role) {
     if (!sent) toast("Could not send the rerun request.", { sticky: true });
   });
 
+  const fork = messageActionButton({
+    action: "fork",
+    label: "Fork chat from this message",
+    icon: icons.fork,
+  });
+  fork.addEventListener("click", () => {
+    const turnId = message.dataset.turnId || "";
+    if (!binding?.workspaceId || !binding.activeChatId || !turnId) return;
+    if (activeStream) {
+      toast("Wait for the current response to finish before forking the chat.", { sticky: true });
+      return;
+    }
+    const sent = ws.send({
+      type: "chat_tab_fork",
+      workspaceId: binding.workspaceId,
+      chatId: binding.activeChatId,
+      turnId,
+      role,
+      ...(binding.surface === "code" ? { surface: "code" } : {}),
+    });
+    if (!sent) toast("Could not send the fork request.", { sticky: true });
+  });
+
   const edit = messageActionButton({
     action: "edit",
     label: role === "assistant" ? "Edit response" : "Edit message",
@@ -936,6 +959,7 @@ function createMessageActions(message, role) {
 
   actions.append(
     copy,
+    fork,
     edit,
     rerun,
     remove,

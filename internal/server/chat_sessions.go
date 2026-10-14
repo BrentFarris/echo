@@ -1916,6 +1916,122 @@ func (m *chatSessionManager) createTab(c *client, workspaceID string) {
 	parent.broadcastSnapshot(chatSurfaceMain)
 }
 
+// forkTab copies an existing chat tab's history up to and including the given
+// message into a brand-new tab and activates it. The source tab is untouched.
+func (m *chatSessionManager) forkTab(c *client, workspaceID, chatID, turnID, role, surfaceValue string) {
+	parent, err := m.get(workspaceID)
+	if err != nil {
+		m.commandError(c, workspaceID, "invalid_workspace", err.Error(), "")
+		return
+	}
+	surface, surfaceErr := normalizeChatSurface(surfaceValue)
+	if surfaceErr != nil {
+		m.commandError(c, workspaceID, "invalid_surface", surfaceErr.Error(), "")
+		return
+	}
+	source, resolved, err := parent.resolveSurfaceTab(chatID, surface)
+	if err != nil {
+		m.commandErrorForTabSurface(c, workspaceID, chatID, surface, "invalid_chat", err.Error(), "")
+		return
+	}
+	turnID = strings.TrimSpace(turnID)
+	source.mu.Lock()
+	if source.isBusyLocked() {
+		source.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "session_busy", "wait for the current response to finish before forking", "")
+		return
+	}
+	turnIndex := -1
+	for index := range source.transcript.Turns {
+		if source.transcript.Turns[index].ID == turnID {
+			turnIndex = index
+			break
+		}
+	}
+	if turnIndex < 0 {
+		source.mu.Unlock()
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "invalid_turn", "message was not found", "")
+		return
+	}
+	fork, forkErr := forkTranscriptAt(&source.transcript, turnIndex, role)
+	source.mu.Unlock()
+	if forkErr != nil {
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "invalid_fork", forkErr.Error(), "")
+		return
+	}
+	sequence := parent.chatSequence.Add(1)
+	_, err = parent.store.Update(workspaceID, func(stored *sessions.ChatWorkspace) error {
+		stored.Tabs = append(stored.Tabs, fork)
+		stored.ActiveChatID = fork.ChatID
+		advanceStoredRevision(stored, sequence)
+		return nil
+	})
+	if err != nil {
+		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "tab_fork_failed", err.Error(), "")
+		return
+	}
+	tab := m.newSession(parent, chatSurfaceMain, fork)
+	parent.mu.Lock()
+	parent.tabs[fork.ChatID] = tab
+	parent.tabOrder = append(parent.tabOrder, fork.ChatID)
+	parent.activeChatID = fork.ChatID
+	parent.mu.Unlock()
+	parent.broadcastSnapshot(chatSurfaceMain)
+}
+
+// forkTranscriptAt deep-copies a transcript and truncates it so the fork
+// contains every message up to and including the target turn. Forking on a
+// user message keeps only that message from its turn; forking on an assistant
+// message keeps the entire turn. Goal state is intentionally not inherited.
+func forkTranscriptAt(source *sessions.TabTranscript, turnIndex int, role string) (sessions.TabTranscript, error) {
+	if role != llm.RoleUser && role != llm.RoleAssistant {
+		return sessions.TabTranscript{}, fmt.Errorf("unsupported fork role %q", role)
+	}
+	raw, err := json.Marshal(source)
+	if err != nil {
+		return sessions.TabTranscript{}, fmt.Errorf("copy transcript: %w", err)
+	}
+	var fork sessions.TabTranscript
+	if err := json.Unmarshal(raw, &fork); err != nil {
+		return sessions.TabTranscript{}, fmt.Errorf("copy transcript: %w", err)
+	}
+	end := len(fork.Messages)
+	if role == llm.RoleUser {
+		// The fork ends at the forked user message, so drop the assistant
+		// half of the final turn.
+		turn := &fork.Turns[turnIndex]
+		if turn.UserDeleted {
+			return sessions.TabTranscript{}, fmt.Errorf("message was not found")
+		}
+		end = turn.UserMessageIndex + 1
+		turn.AssistantDeleted = true
+		turn.AssistantTurns = nil
+		turn.ResearchAgents = nil
+		turn.ResearchReasoning = nil
+		turn.ResearchTools = nil
+		turn.FileChanges = nil
+		turn.Error = ""
+		turn.Model = ""
+		turn.AgentModeID = ""
+		turn.AgentModeName = ""
+		turn.CompletedAt = nil
+	} else if turnIndex+1 < len(fork.Turns) {
+		end = fork.Turns[turnIndex+1].UserMessageIndex
+	}
+	if end < 0 || end > len(fork.Messages) {
+		return sessions.TabTranscript{}, fmt.Errorf("fork boundary is inconsistent")
+	}
+	fork.Messages = append([]llm.Message(nil), fork.Messages[:end]...)
+	fork.Turns = append([]sessions.Turn(nil), fork.Turns[:turnIndex+1]...)
+	if fork.ContextCheckpoint != nil && fork.ContextCheckpoint.CompactedThrough >= len(fork.Messages) {
+		fork.ContextCheckpoint = nil
+	}
+	fork.ChatID = newSessionID("chat")
+	fork.Goals = nil
+	fork.CurrentGoalID = ""
+	return fork, nil
+}
+
 func (m *chatSessionManager) activateTab(c *client, workspaceID, chatID string) {
 	parent, err := m.get(workspaceID)
 	if err != nil {

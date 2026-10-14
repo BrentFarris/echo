@@ -342,6 +342,8 @@ func (c *client) readPump(h *Hub) {
 			c.server.sessions.editMessage(c, msg.WorkspaceID, msg.ChatID, msg.Surface, msg.TurnID, msg.Role, msg.Message)
 		case "chat_tab_create":
 			c.server.sessions.createTab(c, msg.WorkspaceID)
+		case "chat_tab_fork":
+			c.server.sessions.forkTab(c, msg.WorkspaceID, msg.ChatID, msg.TurnID, msg.Role, msg.Surface)
 		case "chat_tab_activate":
 			c.server.sessions.activateTab(c, msg.WorkspaceID, msg.ChatID)
 		case "chat_tab_close":
