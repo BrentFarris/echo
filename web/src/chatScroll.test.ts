@@ -246,6 +246,28 @@ describe("chat scroll following", () => {
     expect(metrics.position).toBe(700);
   });
 
+  it("forceFollow re-engages following and jumps to the bottom after manual scrolling", () => {
+    const log = document.createElement("div");
+    const metrics = setScrollMetrics(log, { position: 800 });
+    const follower = create(log);
+
+    metrics.userScrollTo(300);
+    log.dispatchEvent(new Event("scroll"));
+    expect(follower.isFollowing()).toBe(false);
+
+    metrics.height = 1200;
+    follower.forceFollow();
+    expect(follower.isFollowing()).toBe(true);
+    expect(metrics.position).toBe(1000);
+
+    flushFrames();
+    metrics.height = 1300;
+    follower.contentChanged();
+    flushFrames();
+    expect(metrics.position).toBe(1100);
+    expect(follower.isFollowing()).toBe(true);
+  });
+
   it("follows delayed resize-driven growth and stops all work after disposal", () => {
     const log = document.createElement("div");
     const metrics = setScrollMetrics(log, { position: 800 });

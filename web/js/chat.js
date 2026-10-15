@@ -396,7 +396,7 @@ export function sendMessage(log, text, model, agentModeId, options = {}) {
   const references = Array.isArray(options.references) ? options.references : [];
   if ((!text && images.length === 0 && videos.length === 0) || activeStream || activeBindingChatBusy() || !binding?.workspaceId || !binding.activeChatId || binding.log !== log) return false;
   const requestId = globalThis.crypto?.randomUUID?.() || `request-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return ws.send({
+  const sent = ws.send({
     type: "chat_send", workspaceId: binding.workspaceId, chatId: binding.activeChatId, requestId,
     message: text, ...(model ? { model } : {}), ...(agentModeId ? { agentModeId } : {}),
     ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
@@ -405,6 +405,8 @@ export function sendMessage(log, text, model, agentModeId, options = {}) {
     ...(options.editorContext ? { editorContext: options.editorContext } : {}),
     ...(binding.surface === "code" && references.length ? { references } : {}),
   });
+  if (sent) binding?.scrollFollower?.forceFollow();
+  return sent;
 }
 
 export function stopStream() {
@@ -722,7 +724,9 @@ export function startGoal(log, text, model, options = {}) {
   if ((!text && images.length === 0 && videos.length === 0) || activeStream || activeBindingChatBusy()
     || ["active", "paused"].includes(binding?.goal?.status)
     || !binding?.workspaceId || !binding.activeChatId || binding.log !== log) return false;
-  return ws.send({ ...goalMessagePayload("goal_start", text, options), ...(model ? { model } : {}) });
+  const sent = ws.send({ ...goalMessagePayload("goal_start", text, options), ...(model ? { model } : {}) });
+  if (sent) binding?.scrollFollower?.forceFollow();
+  return sent;
 }
 
 export function steerGoal(log, text, options = {}) {
@@ -732,7 +736,9 @@ export function steerGoal(log, text, options = {}) {
   if ((!text && images.length === 0 && videos.length === 0) || !binding?.goal
     || !["active", "paused", "blocked"].includes(binding.goal.status)
     || !binding.workspaceId || !binding.activeChatId || binding.log !== log) return false;
-  return ws.send(goalMessagePayload("goal_steer", text, options));
+  const sent = ws.send(goalMessagePayload("goal_steer", text, options));
+  if (sent) binding?.scrollFollower?.forceFollow();
+  return sent;
 }
 
 function sendGoalControl(type, extra = {}) {

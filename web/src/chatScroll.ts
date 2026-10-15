@@ -5,6 +5,8 @@ export type ChatScrollFollower = {
   contentChanged(): void;
   reset(): void;
   isFollowing(): boolean;
+  /** Re-engages tail following and jumps to the bottom, e.g. after the user sends a message. */
+  forceFollow(): void;
   dispose(): void;
 };
 
@@ -73,6 +75,14 @@ export function createChatScrollFollower(element: HTMLElement): ChatScrollFollow
         if (contentGeneration === settledGeneration) layoutChangePending = false;
       });
     });
+  };
+
+  const forceFollow = () => {
+    if (disposed) return;
+    following = true;
+    element.scrollTop = element.scrollHeight;
+    lastScrollTop = element.scrollTop;
+    contentChanged();
   };
 
   const onScroll = () => {
@@ -168,6 +178,7 @@ export function createChatScrollFollower(element: HTMLElement): ChatScrollFollow
     contentChanged,
     reset,
     isFollowing: () => following,
+    forceFollow,
     dispose: () => {
       if (disposed) return;
       disposed = true;
