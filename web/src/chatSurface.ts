@@ -3,7 +3,7 @@ import { isCoarsePointer } from "./device";
 import {
   canClearChat, clearChat, clearGoal, closeWorkspaceSession, editGoal, isStreaming,
   onChatWorkspaceChange, onStreamingChange, openWorkspaceSession, pauseGoal, resumeGoal,
-  sendMessage, startGoal, steerGoal, stopStream,
+  revealChatTail, sendMessage, startGoal, steerGoal, stopStream,
 } from "../js/chat.js";
 import {
   composerText, restoreComposer, snapshotComposer,
@@ -388,7 +388,10 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
     if (!expectedChatResolved && options.expectedChatId && workspace?.hasSnapshot
       && workspace.workspaceId === options.workspaceId && workspace.surface === surface) {
       expectedChatResolved = true;
-      options.onExpectedChatResolved?.(workspace.activeChatId === options.expectedChatId);
+      const found = workspace.activeChatId === options.expectedChatId;
+      // Deep-link jump: an already-resolved target transcript lands on its tail.
+      if (found) revealChatTail(log);
+      options.onExpectedChatResolved?.(found);
     }
   });
   openWorkspaceSession(log, options.workspaceId, {

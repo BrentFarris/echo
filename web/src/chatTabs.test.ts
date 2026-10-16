@@ -37,6 +37,7 @@ const chat = vi.hoisted(() => {
     openWorkspaceSession: vi.fn(),
     pauseGoal: vi.fn(() => true),
     resumeGoal: vi.fn(() => true),
+    revealChatTail: vi.fn(() => true),
     sendMessage: vi.fn((_log: unknown, _text: string, _model?: string, _mode?: string, _options?: any) => true),
     startGoal: vi.fn(() => true),
     steerGoal: vi.fn(() => true),
@@ -350,7 +351,7 @@ describe("multi-chat tab UI", () => {
     mount(root);
     await Promise.resolve();
 
-    expect(chat.activateChatTab).toHaveBeenCalledWith("chat-two");
+    expect(chat.activateChatTab).toHaveBeenCalledWith("chat-two", { revealTail: true });
     chat.emitWorkspace(twoTabs("chat-two"));
     expect(window.location.hash).toBe("#/home");
   });

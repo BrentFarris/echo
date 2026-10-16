@@ -19,7 +19,7 @@ vi.mock("../js/ws.js", () => ({ on: socket.on, onState: socket.onState, send: so
 import {
   activateChatTab, canClearChat, canCompressChat, clearChat, compressChat, closeChatTab, closeWorkspaceSession,
   createChatTab, editGoal, getChatWorkspaceState, onChatWorkspaceChange, openWorkspaceSession,
-  pauseGoal, resumeGoal, sendMessage, startGoal, steerGoal, stopStream, clearGoal,
+  pauseGoal, resumeGoal, revealChatTail, sendMessage, startGoal, steerGoal, stopStream, clearGoal,
 } from "../js/chat.js";
 
 function emit(type: string, message: any) {
@@ -389,6 +389,72 @@ describe("multi-chat WebSocket protocol", () => {
     await new Promise((resolve) => window.setTimeout(resolve, 80));
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     expect(scrollPosition).toBe(1000);
+  });
+
+  it("lands on the latest message when a deep-link jump activates another chat", () => {
+    let scrollHeight = 1000;
+    let scrollPosition = 0;
+    Object.defineProperties(log, {
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      clientHeight: { configurable: true, get: () => 200 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollPosition,
+        set: (value: number) => { scrollPosition = Math.min(value, scrollHeight - 200); },
+      },
+    });
+    const snapshot = {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-one",
+      tabs: [
+        { chatId: "chat-one", preview: "First", busy: false },
+        { chatId: "chat-two", preview: "Second", busy: false },
+      ],
+      turns: [{
+        id: "stored", userContent: "Earlier question", status: "done",
+        assistantTurns: [{ number: 0, content: "Earlier answer", hasToolCalls: false }],
+      }],
+    };
+    emit("session_snapshot", snapshot);
+    expect(scrollPosition).toBe(0);
+
+    expect(activateChatTab("chat-two", { revealTail: true })).toBe(true);
+    expect(socket.send).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "chat_tab_activate", workspaceId: "workspace-tabs", chatId: "chat-two",
+    }));
+    emit("session_snapshot", { ...snapshot, sequence: 2, activeChatId: "chat-two" });
+    expect(scrollPosition).toBe(800);
+
+    // A plain tab activation never moves the transcript.
+    scrollPosition = 37;
+    expect(activateChatTab("chat-one")).toBe(true);
+    emit("session_snapshot", { ...snapshot, sequence: 3, activeChatId: "chat-one" });
+    expect(scrollPosition).toBe(37);
+  });
+
+  it("reveals the tail of an already-open transcript for deep-link jumps", () => {
+    let scrollHeight = 1000;
+    let scrollPosition = 37;
+    Object.defineProperties(log, {
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      clientHeight: { configurable: true, get: () => 200 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollPosition,
+        set: (value: number) => { scrollPosition = Math.min(value, scrollHeight - 200); },
+      },
+    });
+    emit("session_snapshot", {
+      type: "session_snapshot", workspaceId: "workspace-tabs", sequence: 1,
+      activeChatId: "chat-one", tabs: [{ chatId: "chat-one", preview: "Main", busy: false }],
+      turns: [{
+        id: "stored", userContent: "Earlier question", status: "done",
+        assistantTurns: [{ number: 0, content: "Earlier answer", hasToolCalls: false }],
+      }],
+    });
+    expect(revealChatTail(log)).toBe(true);
+    expect(scrollPosition).toBe(800);
+    expect(revealChatTail(document.createElement("div"))).toBe(false);
   });
 
   it("rewinds selected and later messages before rendering a rerun", () => {

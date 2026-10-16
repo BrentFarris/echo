@@ -109,9 +109,25 @@ export function createChatTab() {
   return ws.send({ type: "chat_tab_create", workspaceId: binding.workspaceId });
 }
 
-export function activateChatTab(chatId) {
+// Deep-link jumps (toast notifications, chat map, hash routes) request a tail
+// reveal: the next snapshot render for the target chat should land on the
+// latest message instead of the top. A short window keeps a stale request from
+// yanking the transcript later while the user is reading.
+const tailJumpWindowMs = 2000;
+let pendingTailJump = null;
+
+export function activateChatTab(chatId, options = {}) {
   if (!binding?.workspaceId || !chatId) return false;
+  if (options.revealTail) pendingTailJump = { chatId, requestedAt: Date.now() };
   return ws.send({ type: "chat_tab_activate", workspaceId: binding.workspaceId, chatId });
+}
+
+/** Jumps an already-open transcript to its latest message (deep-link reveal). */
+export function revealChatTail(log) {
+  if (!binding || binding.log !== log || !binding.activeChatId) return false;
+  pendingTailJump = { chatId: binding.activeChatId, requestedAt: Date.now() };
+  binding.scrollFollower?.forceFollow();
+  return true;
 }
 
 export function closeChatTab(chatId, stopIfBusy = false) {
@@ -192,6 +208,12 @@ ws.on("session_snapshot", (snapshot) => {
   for (const steering of binding.goal?.pendingInputs || []) renderPendingGoalSteering(steering);
   if (!binding.log.childElementCount) renderEmpty(binding.log, "Ask Echo to inspect, plan, or build in this workspace.");
   binding.scrollFollower?.reset();
+  if (pendingTailJump) {
+    const revealTail = pendingTailJump.chatId === binding.activeChatId
+      && Date.now() - pendingTailJump.requestedAt <= tailJumpWindowMs;
+    pendingTailJump = null;
+    if (revealTail) binding.scrollFollower?.forceFollow();
+  }
   setStreaming(activeStream != null);
   emitWorkspaceState();
 });

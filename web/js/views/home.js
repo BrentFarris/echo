@@ -9,7 +9,7 @@ import { get, post } from "../api.js";
 import {
   activateChatTab, canClearChat, canCompressChat, clearChat, compressChat, closeChatTab, closeWorkspaceSession,
   createChatTab, isStreaming, onChatCommandError, onChatWorkspaceChange,
-  onStreamingChange, openWorkspaceSession, sendMessage, startGoal, steerGoal,
+  onStreamingChange, openWorkspaceSession, revealChatTail, sendMessage, startGoal, steerGoal,
   pauseGoal, resumeGoal, editGoal, clearGoal, stopStream,
 } from "../chat.js";
 import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
@@ -1706,10 +1706,11 @@ export function mount(root) {
       if (!targetExists) {
         finishCompletionNavigation("That chat is no longer available.");
       } else if (currentChatId === completionTarget.chatId) {
+        revealChatTail(log);
         finishCompletionNavigation();
       } else if (!completionActivationRequested) {
         completionActivationRequested = true;
-        activateChatTab(completionTarget.chatId);
+        activateChatTab(completionTarget.chatId, { revealTail: true });
       }
     }
 
