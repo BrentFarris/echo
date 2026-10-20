@@ -94,19 +94,23 @@ function numberValue(value: unknown): number | undefined {
 }
 
 /**
- * Total tokens reported for one assistant message. Providers count reasoning
- * ("thinking") tokens inside completion_tokens, so total_tokens already
- * includes them; fall back to prompt + completion when total is absent.
+ * Running total reported for one assistant message. Providers count
+ * reasoning ("thinking") tokens inside completion_tokens, and each step's
+ * prompt_tokens contains the whole conversation so far, so total_tokens is
+ * cumulative for the run: the last message's total is the aggregate, not a
+ * per-step delta to sum. Falls back to prompt + completion when the provider
+ * omits total_tokens. Returns undefined when no usage was reported.
  */
-function usageTokens(data: Record<string, unknown> | undefined): number {
+function usageTotalTokens(data: Record<string, unknown> | undefined): number | undefined {
   const usage = data?.usage;
-  if (!usage || typeof usage !== "object") return 0;
+  if (!usage || typeof usage !== "object") return undefined;
   const record = usage as Record<string, unknown>;
   const total = numberValue(record.total_tokens) ?? numberValue(record.totalTokens);
   if (total !== undefined) return total;
-  const prompt = numberValue(record.prompt_tokens) ?? numberValue(record.promptTokens) ?? 0;
-  const completion = numberValue(record.completion_tokens) ?? numberValue(record.completionTokens) ?? 0;
-  return prompt + completion;
+  const prompt = numberValue(record.prompt_tokens) ?? numberValue(record.promptTokens);
+  const completion = numberValue(record.completion_tokens) ?? numberValue(record.completionTokens);
+  if (prompt === undefined && completion === undefined) return undefined;
+  return (prompt ?? 0) + (completion ?? 0);
 }
 
 function parseTime(value: unknown): number | undefined {
@@ -219,10 +223,16 @@ export function deriveTrajectoryTimeline(
   const researchToolCalls = new Map<string, TrajectoryTimelineEvent>();
   const completedResearchTools = new Set<string>();
 
-  let totalTokens = 0;
+  let parentTokenTotal: number | undefined;
+  const researchTokenTotals = new Map<string, number>();
   for (const event of events) {
-    if (event.type === "assistant/message" || event.type === "research/assistant_message") {
-      totalTokens += usageTokens(event.data);
+    if (event.type === "assistant/message") {
+      const total = usageTotalTokens(event.data);
+      if (total !== undefined) parentTokenTotal = total;
+    } else if (event.type === "research/assistant_message") {
+      const total = usageTotalTokens(event.data);
+      const job = researchJobKey(event);
+      if (total !== undefined && job !== null) researchTokenTotals.set(job, total);
     }
     if (event.type === "request/start") {
       const key = requestKey(event);
@@ -365,6 +375,9 @@ export function deriveTrajectoryTimeline(
     knownAgents.add(id);
     researchAgents.push({ id, name: textValue(event.data?.agentName) || id });
   }
+
+  let totalTokens = parentTokenTotal ?? 0;
+  for (const total of researchTokenTotals.values()) totalTokens += total;
 
   return {
     start: 0,

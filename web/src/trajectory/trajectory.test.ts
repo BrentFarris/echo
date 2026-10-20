@@ -164,7 +164,7 @@ describe("TrajectoryView", () => {
     expect(model?.compressedIdleMs).toBe(3_599_010);
   });
 
-  it("aggregates total tokens across chat and research assistant messages", () => {
+  it("reports the final running token total instead of summing per-step totals", () => {
     const tokenEvents: TrajectoryTimelineEvent[] = [
       {
         record: "event", sequence: 1, timestamp: "2026-08-19T12:00:00.000Z",
@@ -177,18 +177,30 @@ describe("TrajectoryView", () => {
       },
       {
         record: "event", sequence: 3, timestamp: "2026-08-19T12:00:00.020Z",
-        type: "research/assistant_message", turnId: "turn-1",
-        data: { agentId: "agent-1", agentName: "Docs", usage: { total_tokens: 18 } },
+        type: "assistant/message", turnId: "turn-1", step: 1,
+        data: { usage: { prompt_tokens: 110, completion_tokens: 30, total_tokens: 140 } },
       },
       {
         record: "event", sequence: 4, timestamp: "2026-08-19T12:00:00.030Z",
-        type: "assistant/message", turnId: "turn-1", step: 1,
-        data: { usage: { promptTokens: 5, completionTokens: 7 } },
+        type: "research/assistant_message", turnId: "turn-1",
+        data: { agentId: "agent-1", agentName: "Docs", jobId: "agent-1-job-1", round: 0, usage: { total_tokens: 18 } },
+      },
+      {
+        record: "event", sequence: 5, timestamp: "2026-08-19T12:00:00.040Z",
+        type: "research/assistant_message", turnId: "turn-1",
+        data: { agentId: "agent-1", agentName: "Docs", jobId: "agent-1-job-1", round: 1, usage: { total_tokens: 30 } },
+      },
+      {
+        record: "event", sequence: 6, timestamp: "2026-08-19T12:00:00.050Z",
+        type: "research/assistant_message", turnId: "turn-1",
+        data: { agentId: "agent-2", agentName: "Code", jobId: "agent-2-job-1", round: 0, usage: { total_tokens: 7 } },
       },
     ];
 
     const timeline = deriveTrajectoryTimeline(tokenEvents);
-    expect(timeline?.totalTokens).toBe(120 + 18 + 12);
+    // Parent context is cumulative across steps (last total wins); each
+    // research job contributes its own final running total.
+    expect(timeline?.totalTokens).toBe(140 + 30 + 7);
   });
 
   it("scrolls from a timeline block to its ledger row and clears a conflicting lane filter", async () => {
