@@ -470,7 +470,8 @@ export class TrajectoryView {
       const active = formatDuration(duration);
       const collapsed = model.compressedIdleMs > 0 ? ` · ${formatDuration(model.compressedIdleMs)} idle collapsed` : "";
       const turns = model.turnBoundaries.length ? ` · ${model.turnBoundaries.length} turn${model.turnBoundaries.length === 1 ? "" : "s"}` : "";
-      meta.textContent = `Active time ${active}${collapsed}${turns}`;
+      const tokens = model.totalTokens > 0 ? ` · ${model.totalTokens.toLocaleString()} tokens` : "";
+      meta.textContent = `Active time ${active}${collapsed}${turns}${tokens}`;
     }
     if (model.spans.some((span) => span.pending)) {
       this.overviewTimer = window.setTimeout(() => { this.overviewTimer = 0; this.renderOverview(); }, 1000);

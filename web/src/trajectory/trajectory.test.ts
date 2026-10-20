@@ -41,7 +41,7 @@ const events = [
   {
     record: "event", sequence: 4, timestamp: "2026-08-19T12:00:00.030Z",
     type: "assistant/message", turnId: "turn-1", step: 0,
-    data: { content: "Done", reasoning: "Checked it", durationMs: 20, ttftMs: 10 },
+    data: { content: "Done", reasoning: "Checked it", durationMs: 20, ttftMs: 10, usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } },
   },
 ];
 
@@ -88,6 +88,7 @@ describe("TrajectoryView", () => {
     expect(host.querySelector("[data-trajectory-status]")?.textContent).toContain("3 events loaded");
     expect(host.querySelectorAll("[data-trajectory-overview] [data-trajectory-sequence]")).toHaveLength(2);
     expect(host.querySelector('[data-trajectory-overview] [data-trajectory-sequence="2"]')).toBeNull();
+    expect(host.querySelector("[data-trajectory-overview-meta]")?.textContent).toContain("120 tokens");
 
     host.querySelector<HTMLElement>('[data-trajectory-overview] [data-trajectory-sequence="4"]')?.click();
     host.querySelector<HTMLButtonElement>('[data-inspector-tab="payload"]')?.click();
@@ -161,6 +162,33 @@ describe("TrajectoryView", () => {
     ]);
     expect(model?.end).toBe(1750);
     expect(model?.compressedIdleMs).toBe(3_599_010);
+  });
+
+  it("aggregates total tokens across chat and research assistant messages", () => {
+    const tokenEvents: TrajectoryTimelineEvent[] = [
+      {
+        record: "event", sequence: 1, timestamp: "2026-08-19T12:00:00.000Z",
+        type: "user/message", turnId: "turn-1", data: { content: "Go" },
+      },
+      {
+        record: "event", sequence: 2, timestamp: "2026-08-19T12:00:00.010Z",
+        type: "assistant/message", turnId: "turn-1", step: 0,
+        data: { usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } },
+      },
+      {
+        record: "event", sequence: 3, timestamp: "2026-08-19T12:00:00.020Z",
+        type: "research/assistant_message", turnId: "turn-1",
+        data: { agentId: "agent-1", agentName: "Docs", usage: { total_tokens: 18 } },
+      },
+      {
+        record: "event", sequence: 4, timestamp: "2026-08-19T12:00:00.030Z",
+        type: "assistant/message", turnId: "turn-1", step: 1,
+        data: { usage: { promptTokens: 5, completionTokens: 7 } },
+      },
+    ];
+
+    const timeline = deriveTrajectoryTimeline(tokenEvents);
+    expect(timeline?.totalTokens).toBe(120 + 18 + 12);
   });
 
   it("scrolls from a timeline block to its ledger row and clears a conflicting lane filter", async () => {

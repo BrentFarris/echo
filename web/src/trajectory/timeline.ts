@@ -39,6 +39,7 @@ export type TrajectoryTimelineModel = {
   turnBoundaries: TrajectoryTurnBoundary[];
   researchAgents: TrajectoryResearchAgent[];
   compressedIdleMs: number;
+  totalTokens: number;
 };
 
 const overviewTypes = new Set([
@@ -86,6 +87,26 @@ function spanKindFor(event: TrajectoryTimelineEvent, lane: TrajectoryLane): Traj
   if (event.type === "research/assistant_message" || event.type === "research/request_start" || lane === "model") return "model";
   if (lane === "input") return "input";
   return "system";
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Total tokens reported for one assistant message. Providers count reasoning
+ * ("thinking") tokens inside completion_tokens, so total_tokens already
+ * includes them; fall back to prompt + completion when total is absent.
+ */
+function usageTokens(data: Record<string, unknown> | undefined): number {
+  const usage = data?.usage;
+  if (!usage || typeof usage !== "object") return 0;
+  const record = usage as Record<string, unknown>;
+  const total = numberValue(record.total_tokens) ?? numberValue(record.totalTokens);
+  if (total !== undefined) return total;
+  const prompt = numberValue(record.prompt_tokens) ?? numberValue(record.promptTokens) ?? 0;
+  const completion = numberValue(record.completion_tokens) ?? numberValue(record.completionTokens) ?? 0;
+  return prompt + completion;
 }
 
 function parseTime(value: unknown): number | undefined {
@@ -198,7 +219,11 @@ export function deriveTrajectoryTimeline(
   const researchToolCalls = new Map<string, TrajectoryTimelineEvent>();
   const completedResearchTools = new Set<string>();
 
+  let totalTokens = 0;
   for (const event of events) {
+    if (event.type === "assistant/message" || event.type === "research/assistant_message") {
+      totalTokens += usageTokens(event.data);
+    }
     if (event.type === "request/start") {
       const key = requestKey(event);
       if (key !== null) requestStarts.set(key, event);
@@ -348,5 +373,6 @@ export function deriveTrajectoryTimeline(
     turnBoundaries,
     researchAgents,
     compressedIdleMs,
+    totalTokens,
   };
 }
