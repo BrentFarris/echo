@@ -1,6 +1,7 @@
 import { api } from "../../js/api.js";
 import { on as onSocket, onState as onSocketState, send as sendSocket } from "../../js/ws.js";
 import * as sourceControlAPI from "./sourceControlApi";
+import { revealEntry } from "./editorApi";
 import { actionKeys, updateSelection, type SelectionState } from "./sourceControlSelection";
 import type {
   SourceControlActionRequest, SourceControlActionResult, SourceControlChange, SourceControlChangeGroup,
@@ -462,6 +463,12 @@ export class SourceControlView {
       const row = (event.target as Element).closest<HTMLElement>("[data-git-change-index]");
       if (row && !(event.target as Element).closest("button")) void this.openChange(row, true);
     }, { signal: this.signal });
+    this.host.addEventListener("contextmenu", (event) => {
+      const row = (event.target as Element).closest<HTMLElement>("[data-git-change-index]");
+      if (!row) return;
+      event.preventDefault();
+      this.showChangeRowMenu(event, row);
+    }, { signal: this.signal });
     this.host.addEventListener("click", (event) => void this.handleClick(event), { signal: this.signal });
   }
 
@@ -591,6 +598,39 @@ export class SourceControlView {
       oldPath: context.change.oldPath, fileRef: context.change.ref,
       scope: diffScopeForGroup(this.statuses.get(repository.id)?.groups.find((group) => group.id === context.change.groupId)),
     }, keepOpen);
+  }
+
+  private showChangeRowMenu(event: MouseEvent, row: HTMLElement): void {
+    const repositoryId = row.closest<HTMLElement>("[data-git-list-key]")?.dataset.gitListRepository || "";
+    const repository = this.repositories.find((candidate) => candidate.id === repositoryId);
+    const context = this.changeContext(row);
+    if (!repository || !context) return;
+    const { scope, changes, change, index } = context;
+    // Right-clicking an unselected row selects just that row, mirroring the Code tab explorer.
+    if (!this.selection(repository.id, scope).selected.has(this.changeKey(change))) {
+      const ordered = changes.map((candidate) => this.changeKey(candidate));
+      this.selections.set(this.selectionKey(repository.id, scope), updateSelection(this.selection(repository.id, scope), ordered, this.changeKey(change), { toggle: false, range: false }));
+      this.render();
+    }
+    const group = this.statuses.get(repository.id)?.groups.find((candidate) => candidate.id === change.groupId);
+    const changeAction = group ? presentationFor(repository).changeAction(repository, group, change) : null;
+    const canDiscard = group?.actions.includes("discard") ?? false;
+    const busy = this.busyRepositories.has(repository.id);
+    showContextMenu(event.clientX, event.clientY, [
+      { label: "Open File", icon: "go-to-file", disabled: !change.ref || group?.role === "included", run: () => this.handleFileAction(repository, scope, changes, index, "open") },
+      ...(canDiscard ? [{ label: "Revert Changes", icon: "discard", danger: true, disabled: busy, run: () => this.handleFileAction(repository, scope, changes, index, "discard") }] : []),
+      ...(changeAction ? [{ label: changeAction.label, icon: changeAction.icon, disabled: busy, run: () => this.handleFileAction(repository, scope, changes, index, changeAction.action) }] : []),
+      { label: "Reveal in File Browser", icon: "folder-opened", separatorBefore: true, disabled: !change.ref, run: () => change.ref && this.revealChange(change.ref) },
+    ]);
+  }
+
+  private async revealChange(ref: FileRef): Promise<void> {
+    try {
+      await revealEntry(this.workspaceId, ref);
+      toast("Opened on Echo host");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error));
+    }
   }
 
   private async handleFileAction(repository: SourceControlRepository, scope: string, changes: SourceControlChange[], index: number, action: string): Promise<void> {
