@@ -42,7 +42,7 @@ What landed on this branch:
   configured default video workflow, imagePath/attachedImageIndex img2vid input,
   `{{FRAMES}}/{{FPS}}/{{FORMAT}}/{{DURATION}}/{{ASPECT_RATIO}}/{{MEGAPIXELS}}` template
   substitution, first-video fetch via `/view` with ComfyUI-reported storage type,
-  `LLMVideoContentProvider` + `VideoIDProvider` output). Unlike `comfyui_generate`,
+  `LLMVideoContentProvider` + `VideoIDProvider` output). Like `comfyui_generate`,
   an unset ComfyUI URL is a hard error (`missing_comfyui_url`).
 - `internal/tools/save_video.go` — `save_video` resolves `videoId` from the turn-local
   `GeneratedVideos` registry and writes the decoded payload into the workspace

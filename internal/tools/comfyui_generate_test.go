@@ -98,7 +98,23 @@ func TestComfyuiGenerateUsesContextURL(t *testing.T) {
 	}
 }
 
-func TestComfyuiGenerateUsesDefaultURLWhenEmpty(t *testing.T) {
+func TestComfyuiGenerateMissingURL(t *testing.T) {
+	result := Execute(ExecutionContext{
+		Context:    context.Background(),
+		ComfyuiURL: "", // Empty URL
+	}, "comfyui_generate", mustJSON(t, map[string]any{
+		"prompt": "a test image",
+	}))
+
+	if result.Error == nil {
+		t.Fatal("expected error when ComfyUI URL is not configured")
+	}
+	if result.Error.Code != "missing_comfyui_url" {
+		t.Fatalf("expected missing_comfyui_url, got %s", result.Error.Code)
+	}
+}
+
+func TestComfyuiGenerateUsesContextURLForDefaultWorkflow(t *testing.T) {
 	calledPrompt := false
 	pngData := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0xCC, 0xDD}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

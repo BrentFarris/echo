@@ -12,8 +12,6 @@ import (
 	"github.com/google/uuid"
 )
 
-const defaultComfyUIBaseURL = "http://localhost:8188"
-
 func init() {
 	Register(ToolFunc{
 		Meta: Metadata{
@@ -186,7 +184,7 @@ func comfyuiGenerate(ctx ExecutionContext, arguments json.RawMessage) (any, erro
 
 	baseURL := strings.TrimSpace(ctx.ComfyuiURL)
 	if baseURL == "" {
-		baseURL = defaultComfyUIBaseURL
+		return nil, SafeError{Code: "missing_comfyui_url", Message: "ComfyUI URL is not configured. Set ComfyuiURL in settings."}
 	}
 
 	// Cascade model resolution: explicit arg > context default checkpoint > hardcoded fallback
