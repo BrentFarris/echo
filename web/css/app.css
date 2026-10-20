@@ -3160,6 +3160,11 @@ button.chat-file-change-row:focus-visible {
   outline-offset: 2px;
 }
 
+/* Temperature slider directly under the thinking level slider. */
+.mode-dropdown-temperature {
+  padding-top: 0;
+}
+
 .mode-dropdown-settings {
   display: block;
   padding: 9px 12px;

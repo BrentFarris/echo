@@ -47,6 +47,9 @@ let defaultAgentModeId = "general";
 // Thinking level selected in the mode popup. "" means no override: the endpoint
 // settings (reasoning effort or thinking token budget) apply unchanged.
 let selectedThinking = "";
+// Temperature selected in the mode popup. Initialized from the active
+// endpoint's configured temperature and sent with every chat request.
+let selectedTemperature = 0.6;
 // Slider ladder: position 0 (leftmost) is Off, position 6 (rightmost) is Max.
 // "Default" sits in the middle and sends no override.
 const thinkingLadder = [
@@ -148,6 +151,25 @@ const defaultThinkingLevel = () => {
   const active = endpoints.find((e) => e.model === selectedModel || e.id === selectedModel)
     || endpoints.find((e) => e.model === defaultSelectedModel);
   return active?.reasoningEffort || "";
+};
+
+// defaultTemperature returns the temperature to start a fresh chat tab with:
+// the temperature configured on the chat endpoint, clamped to the slider
+// range (0-1), or the 0.6 default when the endpoint leaves it unset.
+const defaultTemperature = () => {
+  const active = endpoints.find((e) => e.model === selectedModel || e.id === selectedModel)
+    || endpoints.find((e) => e.model === defaultSelectedModel);
+  const temperature = Number(active?.temperature);
+  if (!Number.isFinite(temperature)) return 0.6;
+  return Math.min(1, Math.max(0, Math.round(temperature * 20) / 20));
+};
+
+// clampTemperature coerces a stored slider value back into the 0-1 range in
+// 0.05 steps, falling back to the endpoint default for anything non-numeric.
+const clampTemperature = (value) => {
+  const temperature = Number(value);
+  if (!Number.isFinite(temperature)) return defaultTemperature();
+  return Math.min(1, Math.max(0, Math.round(temperature * 20) / 20));
 };
 
 // loadEndpoints fetches the configured endpoints from the server so the model
@@ -631,6 +653,7 @@ export function mount(root) {
       model: selectedModel,
       agentModeId: selectedAgentModeId,
       thinking: selectedThinking,
+      temperature: selectedTemperature,
       images: existing?.images || [],
       videos: existing?.videos || [],
     });
@@ -647,8 +670,11 @@ export function mount(root) {
       updateModeLabel();
       saveCurrentComposer();
       setSendButtonBusy(streaming);
-      const reasoningOptions = selectedThinking ? { reasoningEffort: selectedThinking } : {};
-      return sendMessage(log, message, selectedModel || undefined, "general", reasoningOptions);
+      const requestOptions = {
+        ...(selectedThinking ? { reasoningEffort: selectedThinking } : {}),
+        temperature: selectedTemperature,
+      };
+      return sendMessage(log, message, selectedModel || undefined, "general", requestOptions);
     },
   });
 
@@ -657,7 +683,7 @@ export function mount(root) {
     const key = tabStateKey(currentWorkspaceId, currentChatId);
     let state = tabComposerState.get(key);
     if (!state) {
-      state = { segments: [], model: defaultSelectedModel, agentModeId: defaultAgentModeId, thinking: defaultThinkingLevel(), images: [], videos: [] };
+      state = { segments: [], model: defaultSelectedModel, agentModeId: defaultAgentModeId, thinking: defaultThinkingLevel(), temperature: defaultTemperature(), images: [], videos: [] };
       tabComposerState.set(key, state);
     }
     state.images ||= [];
@@ -667,6 +693,7 @@ export function mount(root) {
       ? state.agentModeId
       : defaultAgentModeId;
     selectedThinking = typeof state.thinking === "string" ? state.thinking : defaultThinkingLevel();
+    selectedTemperature = clampTemperature(state.temperature);
     restoreComposer(input, state.segments || [], createReferenceChip);
     renderAttachmentDrafts();
     updateModelLabel();
@@ -868,11 +895,22 @@ export function mount(root) {
         aria-label="Thinking level" aria-valuetext="Default"
         data-thinking-slider />
     </div>
+    <div class="mode-dropdown-thinking mode-dropdown-temperature">
+      <div class="mode-dropdown-thinking-head">
+        <span>Temperature</span>
+        <output data-temperature-label>0.60</output>
+      </div>
+      <input type="range" min="0" max="1" step="0.05" value="0.6"
+        aria-label="Temperature"
+        data-temperature-slider />
+    </div>
     <a class="mode-dropdown-settings" href="#/settings">Manage modes in Settings</a>
   `;
   const modeList = modeDropdown.querySelector("[data-mode-list]");
   const thinkingSlider = modeDropdown.querySelector("[data-thinking-slider]");
   const thinkingLabel = modeDropdown.querySelector("[data-thinking-label]");
+  const temperatureSlider = modeDropdown.querySelector("[data-temperature-slider]");
+  const temperatureLabel = modeDropdown.querySelector("[data-temperature-label]");
   document.body.appendChild(modeDropdown);
 
   const moreMenu = document.createElement("div");
@@ -921,7 +959,7 @@ export function mount(root) {
     const key = tabStateKey(currentWorkspaceId, currentChatId);
     let state = tabComposerState.get(key);
     if (!state) {
-      state = { segments: snapshotComposer(input), model: selectedModel, agentModeId: selectedAgentModeId, thinking: selectedThinking, images: [], videos: [] };
+      state = { segments: snapshotComposer(input), model: selectedModel, agentModeId: selectedAgentModeId, thinking: selectedThinking, temperature: selectedTemperature, images: [], videos: [] };
       tabComposerState.set(key, state);
     }
     state.images ||= [];
@@ -1116,6 +1154,7 @@ export function mount(root) {
     modelTrigger.disabled = locked;
     modeTrigger.disabled = locked;
     if (thinkingSlider) thinkingSlider.disabled = locked;
+    if (temperatureSlider) temperatureSlider.disabled = locked;
     if (locked) {
       selectedAgentModeId = "goal";
       modeLabel.textContent = "Goal";
@@ -1236,6 +1275,7 @@ export function mount(root) {
       </button>
     `).join("");
     syncThinkingControl();
+    syncTemperatureControl();
   };
 
   const syncThinkingControl = () => {
@@ -1256,6 +1296,20 @@ export function mount(root) {
     selectedThinking = step.value;
     if (thinkingLabel) thinkingLabel.textContent = step.label;
     thinkingSlider.setAttribute("aria-valuetext", step.label);
+    saveCurrentComposer();
+  };
+
+  const syncTemperatureControl = () => {
+    if (temperatureSlider) temperatureSlider.value = String(selectedTemperature);
+    if (temperatureLabel) temperatureLabel.textContent = selectedTemperature.toFixed(2);
+  };
+
+  const onTemperatureInput = () => {
+    if (!temperatureSlider) return;
+    const value = Number(temperatureSlider.value);
+    if (!Number.isFinite(value)) return;
+    selectedTemperature = Math.min(1, Math.max(0, Math.round(value * 20) / 20));
+    if (temperatureLabel) temperatureLabel.textContent = selectedTemperature.toFixed(2);
     saveCurrentComposer();
   };
 
@@ -1328,6 +1382,11 @@ export function mount(root) {
   const onThinkingSliderChange = (e) => {
     e.stopPropagation();
     onThinkingInput();
+  };
+
+  const onTemperatureSliderChange = (e) => {
+    e.stopPropagation();
+    onTemperatureInput();
   };
 
   const onModeListClick = (e) => {
@@ -1567,6 +1626,8 @@ export function mount(root) {
   modeList?.addEventListener("click", onModeListClick);
   thinkingSlider?.addEventListener("input", onThinkingInput);
   thinkingSlider?.addEventListener("change", onThinkingSliderChange);
+  temperatureSlider?.addEventListener("input", onTemperatureInput);
+  temperatureSlider?.addEventListener("change", onTemperatureSliderChange);
   moreTrigger?.addEventListener("click", onMoreTriggerClick);
   attachmentTrigger?.addEventListener("click", onAttachmentTriggerClick);
   attachmentMenu.addEventListener("click", onAttachmentMenuClick);
@@ -1605,14 +1666,17 @@ export function mount(root) {
     if (!text.trim() && images.length === 0 && videos.length === 0) return;
     prepareCompletionNotificationPermission();
     preparePlanQuestionNotificationPermission();
-    const reasoningOptions = selectedThinking ? { reasoningEffort: selectedThinking } : {};
+    const requestOptions = {
+      ...(selectedThinking ? { reasoningEffort: selectedThinking } : {}),
+      temperature: selectedTemperature,
+    };
     let sent = false;
     if (selectedAgentModeId === "goal") {
       sent = goalAcceptsSteering()
         ? steerGoal(log, text, { images, videos })
-        : startGoal(log, text, selectedModel || undefined, { images, videos, ...reasoningOptions });
+        : startGoal(log, text, selectedModel || undefined, { images, videos, ...requestOptions });
     } else {
-      sent = sendMessage(log, text, selectedModel || undefined, selectedAgentModeId, { images, videos, ...reasoningOptions });
+      sent = sendMessage(log, text, selectedModel || undefined, selectedAgentModeId, { images, videos, ...requestOptions });
     }
     if (sent) {
       startingNewGoal = false;
@@ -1841,6 +1905,8 @@ export function mount(root) {
     modeList?.removeEventListener("click", onModeListClick);
     thinkingSlider?.removeEventListener("input", onThinkingInput);
     thinkingSlider?.removeEventListener("change", onThinkingSliderChange);
+    temperatureSlider?.removeEventListener("input", onTemperatureInput);
+    temperatureSlider?.removeEventListener("change", onTemperatureSliderChange);
     moreTrigger?.removeEventListener("click", onMoreTriggerClick);
     attachmentTrigger?.removeEventListener("click", onAttachmentTriggerClick);
     attachmentMenu.removeEventListener("click", onAttachmentMenuClick);

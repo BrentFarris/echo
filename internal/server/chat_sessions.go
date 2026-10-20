@@ -426,6 +426,10 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 			return
 		}
 	}
+	if msg.Temperature != nil && (*msg.Temperature < 0 || *msg.Temperature > 1) {
+		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "invalid_temperature", "temperature must be between 0 and 1", requestID)
+		return
+	}
 	mode, err := m.server.modes.Resolve(session.workspace.MainPath, msg.AgentModeID)
 	if err != nil {
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "agent_mode_load_failed", err.Error(), requestID)
@@ -494,6 +498,9 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	settings, streamer := m.server.routeMediaChat(settings, messages, visionMode)
 	if reasoningEffortOverride != "" {
 		settings.ReasoningEffort = reasoningEffortOverride
+	}
+	if msg.Temperature != nil {
+		settings.Temperature = *msg.Temperature
 	}
 	planMode := mode.ID == agentmodes.PlanID
 	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, PairingMode: mode.ID == agentmodes.PairProgrammingID, GoalMode: goalMode, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})))

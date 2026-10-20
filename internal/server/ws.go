@@ -240,6 +240,7 @@ type inboundMessage struct {
 	Model           string                `json:"model,omitempty"`
 	AgentModeID     string                `json:"agentModeId,omitempty"`
 	ReasoningEffort string                `json:"reasoningEffort,omitempty"`
+	Temperature     *float64              `json:"temperature,omitempty"`
 	StopIfBusy      bool                  `json:"stopIfBusy,omitempty"`
 	QuestionSetID   string                `json:"questionSetId,omitempty"`
 	Answers         []sessions.PlanAnswer `json:"answers,omitempty"`
