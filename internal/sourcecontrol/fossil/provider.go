@@ -54,6 +54,15 @@ type repositoryState struct {
 	recoveryDiagnostic string
 	revision           atomic.Uint64
 	rootMu             *sync.RWMutex
+	// cacheMu guards the status/records snapshot caches and the background
+	// refresh bookkeeping. See status.go for the cache contract.
+	cacheMu          sync.Mutex
+	statusCache      *cachedStatus
+	recordsCache     *cachedRecords
+	computeMu        sync.Mutex
+	refreshScheduled bool
+	refreshTimer     *time.Timer
+	lastRefresh      time.Time
 }
 
 func (r *repositoryState) public(sandboxed bool) sourcecontrol.Repository {
@@ -103,6 +112,17 @@ type Provider struct {
 	uiStartupGrace       time.Duration
 	uiStopTimeout        time.Duration
 	uiClosed             bool
+	// permMu/permCache memoize immutable Fossil manifest permission lookups;
+	// see cachedManifestPermissions in hunks.go.
+	permMu    sync.Mutex
+	permCache map[string]manifestPermissions
+	// notify pushes source_control_status events for background refreshes;
+	// wired by sourcecontrol.Service.Register via NotifyingProvider.
+	notify func(sourcecontrol.Event)
+	// subscriptions tracks workspaces with an active frontend subscription.
+	// Status caching is only safe while change events flow (the workspace
+	// watcher invalidates caches); without one, every status recomputes.
+	subscribed map[string]bool
 }
 
 func New(workspaces *workspaces.Manager, fs *workspacefs.Service, sandboxManager *sandbox.Manager, checkpointRoots ...string) *Provider {
@@ -116,6 +136,7 @@ func New(workspaces *workspaces.Manager, fs *workspacefs.Service, sandboxManager
 		rootLocks: make(map[string]*sync.RWMutex), uiProcesses: make(map[string]*fossilUISession),
 		uiWorkspaceEpoch: make(map[string]uint64), uiStarter: startLocalFossilUI,
 		uiStartupGrace: fossilUIStartupGrace, uiStopTimeout: fossilUIStopTimeout,
+		subscribed: make(map[string]bool),
 	}
 }
 
@@ -317,9 +338,73 @@ func (p *Provider) repository(ctx context.Context, workspaceID, repositoryID str
 	return state, nil
 }
 
-func (p *Provider) Subscribe(context.Context, string) error { return nil }
-func (p *Provider) Unsubscribe(string)                      {}
-func (p *Provider) Close()                                  { p.closeFossilUIProcesses() }
+// SetNotifier receives the service-wide event sink so background status
+// refreshes can push source_control_status updates, mirroring the P4 provider.
+func (p *Provider) SetNotifier(notify func(sourcecontrol.Event)) {
+	p.mu.Lock()
+	p.notify = notify
+	p.mu.Unlock()
+}
+
+func (p *Provider) emitStatus(state *repositoryState, snapshot sourcecontrol.StatusSnapshot) {
+	p.mu.Lock()
+	notify := p.notify
+	p.mu.Unlock()
+	if notify == nil {
+		return
+	}
+	notify(sourcecontrol.Event{
+		Type: "source_control_status", WorkspaceID: state.workspaceID, RepositoryID: state.repositoryID(),
+		ProviderID: ID, Status: &snapshot,
+	})
+}
+
+// Subscribe pre-warms the status cache in the background so the first panel
+// open is served from the cache instead of paying a full checkout scan. While
+// a subscription is active, workspace file events keep the caches honest.
+func (p *Provider) Subscribe(ctx context.Context, workspaceID string) error {
+	p.mu.Lock()
+	p.subscribed[workspaceID] = true
+	states := make([]*repositoryState, 0, len(p.repos[workspaceID]))
+	for _, state := range p.repos[workspaceID] {
+		states = append(states, state)
+	}
+	p.mu.Unlock()
+	for _, state := range states {
+		if state.available {
+			p.queueStatusRefresh(state)
+		}
+	}
+	return nil
+}
+
+func (p *Provider) Unsubscribe(workspaceID string) {
+	p.mu.Lock()
+	delete(p.subscribed, workspaceID)
+	p.mu.Unlock()
+	p.mu.RLock()
+	states := make([]*repositoryState, 0, len(p.repos[workspaceID]))
+	for _, state := range p.repos[workspaceID] {
+		states = append(states, state)
+	}
+	p.mu.RUnlock()
+	for _, state := range states {
+		state.cacheMu.Lock()
+		if state.refreshTimer != nil {
+			state.refreshTimer.Stop()
+			state.refreshTimer = nil
+		}
+		state.cacheMu.Unlock()
+	}
+}
+
+// cachingAllowed reports whether status snapshots may be served from cache:
+// only while a subscription keeps file-event invalidation flowing.
+func (p *Provider) cachingAllowed(workspaceID string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.subscribed[workspaceID]
+}
 
 func (p *Provider) InvalidateWorkspace(workspaceID string) {
 	p.mu.RLock()
@@ -330,8 +415,10 @@ func (p *Provider) InvalidateWorkspace(workspaceID string) {
 	p.mu.RUnlock()
 	for _, state := range states {
 		state.revision.Add(1)
+		state.invalidateCaches()
 	}
 }
+func (p *Provider) Close()                                  { p.closeFossilUIProcesses() }
 
 func (p *Provider) ResetWorkspace(ctx context.Context, workspaceID string) error {
 	p.StopWorkspaceProcesses(workspaceID)

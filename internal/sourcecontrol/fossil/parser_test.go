@@ -67,10 +67,6 @@ func TestParseClassifiedChangesAndExtras(t *testing.T) {
 	if changes[6].group != "conflicts" || changes[8].group != "untracked" {
 		t.Fatalf("groups = %#v", changes)
 	}
-	extras := parseExtras("loose file.txt\n資料/notes.md\n")
-	if len(extras) != 2 || extras[1].path != "資料/notes.md" {
-		t.Fatalf("extras = %#v", extras)
-	}
 }
 
 func TestTimelinePhaseIsNotTreatedAsAParent(t *testing.T) {

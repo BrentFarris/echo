@@ -29,14 +29,9 @@ func (p *Provider) describeHunks(ctx context.Context, state *repositoryState, do
 	if err != nil || checkpointStale(manifest, state, info.Checkout) != "" {
 		return
 	}
-	records, err := p.rawStatus(ctx, state)
-	if err != nil {
+	conflicted, err := p.pathIsConflicted(ctx, state, target.Path)
+	if err != nil || conflicted {
 		return
-	}
-	for _, record := range records {
-		if pathIdentity(record.path) == pathIdentity(target.Path) && record.group == "conflicts" {
-			return
-		}
 	}
 	current, _, err := p.captureFileState(state, target.Path, target.OldPath, "", "")
 	if err != nil || current.Symlink {
@@ -53,7 +48,7 @@ func (p *Provider) describeHunks(ctx context.Context, state *repositoryState, do
 	} else if target.OldPath != "" {
 		basePath = target.OldPath
 	}
-	_, symlink, _, err := p.revisionPermissions(ctx, state, info.Checkout, basePath)
+	_, symlink, _, err := p.cachedManifestPermissions(ctx, state, info.Checkout, basePath)
 	if err != nil || symlink {
 		return
 	}
@@ -108,7 +103,7 @@ func (p *Provider) applyHunk(ctx context.Context, state *repositoryState, reques
 	entries := checkpointEntries(manifest)
 	entry, protected := entries[pathIdentity(target.Path)]
 	if !protected {
-		records, statusErr := p.rawStatus(ctx, state)
+		records, statusErr := p.rawStatusPaths(ctx, state, []string{target.Path})
 		if statusErr != nil {
 			return nil, statusErr
 		}
@@ -148,7 +143,7 @@ func (p *Provider) applyHunk(ctx context.Context, state *repositoryState, reques
 	if err != nil {
 		return nil, err
 	}
-	baselineMode, _, _, err := p.revisionPermissions(ctx, state, info.Checkout, basePath)
+	baselineMode, _, _, err := p.cachedManifestPermissions(ctx, state, info.Checkout, basePath)
 	if err != nil {
 		return nil, err
 	}
@@ -204,6 +199,69 @@ func (p *Provider) applyHunk(ctx context.Context, state *repositoryState, reques
 		return nil, &sourcecontrol.Error{Code: "protected_changes_write_failed", Message: "Protected Changes could not be saved safely", Cause: err}
 	}
 	return []string{target.Path}, nil
+}
+
+// pathIsConflicted reports whether a single path currently has merge
+// conflicts. Fresh change records answer without spawning; otherwise it
+// scopes `fossil changes` to the path. (Either way the underlying command is
+// O(checkout) — see the cache contract in status.go — so the cached path is
+// what keeps diffs fast.)
+func (p *Provider) pathIsConflicted(ctx context.Context, state *repositoryState, path string) (bool, error) {
+	if p.cachingAllowed(state.workspaceID) {
+		if records, ok := state.freshRecords(); ok {
+			for _, record := range records {
+				if pathIdentity(record.path) == pathIdentity(path) && record.group == "conflicts" {
+					return true, nil
+				}
+			}
+			return false, nil
+		}
+	}
+	args := append([]string{"changes", "--classify", "--dotfiles", "--hash", "--rel-paths"}, fossilPaths([]string{path})...)
+	output, err := p.run(ctx, state.workspaceID, state.root, false, args...)
+	if err != nil {
+		return false, err
+	}
+	for _, record := range parseClassifiedChanges(string(output)) {
+		if pathIdentity(record.path) == pathIdentity(path) && record.group == "conflicts" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// manifestPermissions is a cached F-card answer. Fossil artifacts are
+// immutable, so a (revision, path) permission never changes.
+type manifestPermissions struct {
+	mode    uint32
+	symlink bool
+	found   bool
+}
+
+const manifestPermissionCacheLimit = 4096
+
+// cachedManifestPermissions memoizes revisionPermissions. Without the cache
+// every diff and hunk apply re-fetched and re-parsed the entire check-in
+// manifest just to read one file's x/l bits.
+func (p *Provider) cachedManifestPermissions(ctx context.Context, state *repositoryState, revision, path string) (uint32, bool, bool, error) {
+	key := revision + "\x00" + pathIdentity(path)
+	p.permMu.Lock()
+	if cached, ok := p.permCache[key]; ok {
+		p.permMu.Unlock()
+		return cached.mode, cached.symlink, cached.found, nil
+	}
+	p.permMu.Unlock()
+	mode, symlink, found, err := p.revisionPermissions(ctx, state, revision, path)
+	if err != nil {
+		return 0, false, false, err
+	}
+	p.permMu.Lock()
+	if p.permCache == nil || len(p.permCache) >= manifestPermissionCacheLimit {
+		p.permCache = make(map[string]manifestPermissions)
+	}
+	p.permCache[key] = manifestPermissions{mode: mode, symlink: symlink, found: found}
+	p.permMu.Unlock()
+	return mode, symlink, found, nil
 }
 
 // F cards carry permissions that cannot be recovered from a deleted worktree

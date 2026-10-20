@@ -4,6 +4,7 @@ import type {
 } from "./sourceControlTypes";
 import { shouldShowSyncAction } from "./gitPrimaryAction";
 import { predictGitStatus } from "./gitState";
+import { predictFossilStatus } from "./fossilState";
 
 export type CommitPresentation = {
   action: string;
@@ -95,7 +96,7 @@ const fossilPresentation: SourceControlPresentationAdapter = {
   id: "fossil",
   workflow: "fossil",
   usesStagingArea: false,
-  supportsOptimisticStatus: false,
+  supportsOptimisticStatus: true,
   supportsRemoteAdministration: false,
   supportsTagAdministration: false,
   promotesPendingSync: true,
@@ -109,6 +110,9 @@ const fossilPresentation: SourceControlPresentationAdapter = {
       && !status.state.mergeInProgress
       && !status.state.rebaseInProgress
       && !status.state.cherryPickInProgress;
+  },
+  predictStatus(current, request, result) {
+    return predictFossilStatus(current, request, result);
   },
   repositoryActions(repository) {
     return supports(repository, "webUI") ? [{ action: "open_ui", label: "Fossil UI", icon: "globe" }] : [];

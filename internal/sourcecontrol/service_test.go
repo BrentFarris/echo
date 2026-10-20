@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 )
 
 type contractProvider struct {
@@ -143,8 +144,24 @@ func TestActionEventsAndStaleRevision(t *testing.T) {
 		t.Fatal("stale action reached mutation")
 	}
 	events = nil
+	statusEvents := make(chan Event, 4)
+	service.SetNotifier(func(event Event) {
+		events = append(events, event)
+		if event.Type == "source_control_status" {
+			statusEvents <- event
+		}
+	})
 	if _, err := service.Action(ctx, "workspace", repositoryID, ActionRequest{RequestID: "fresh", Action: "commit", ExpectedRevision: 9}); err != nil {
 		t.Fatal(err)
+	}
+	// The post-action status recompute is asynchronous; wait for its push.
+	select {
+	case event := <-statusEvents:
+		if event.Type != "source_control_status" {
+			t.Fatalf("event = %#v", event)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("events = %#v", events)
 	}
 	if len(events) != 3 || events[0].Type != "source_control_operation" || events[1].Type != "source_control_operation" || events[2].Type != "source_control_status" {
 		t.Fatalf("events = %#v", events)

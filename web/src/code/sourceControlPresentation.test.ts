@@ -117,6 +117,63 @@ describe("Source Control presentation adapters", () => {
   });
 });
 
+describe("Fossil optimistic status prediction", () => {
+  const predict = presentationFor(fossilRepository).predictStatus!;
+  const result = { requestId: "r", repositoryId: fossilRepository.id, revision: 2 };
+  const change = (path: string, kind = "modified") => ({ path, status: "Modified", statusCode: "EDITED", kind, groupId: "working" });
+
+  it("moves protected rows out of the working group immediately after the action", () => {
+    const current = fossilStatus([
+      { id: "working", label: "Changes", role: "working", actions: ["protect"], changes: [change("a.txt"), change("b.txt")] },
+    ]);
+    const predicted = predict(current, { requestId: "r", action: "protect", paths: ["a.txt"] }, { ...result, affectedPaths: ["a.txt"] });
+    expect(predicted.revision).toBe(2);
+    const protectedGroup = predicted.groups.find((group) => group.id === "protected");
+    expect(protectedGroup?.changes.map((row) => row.path)).toEqual(["a.txt"]);
+    expect(predicted.groups.find((group) => group.id === "working")?.changes.map((row) => row.path)).toEqual(["b.txt"]);
+    expect(predicted.totalChangeCount).toBe(2);
+  });
+
+  it("returns the current status when the revision did not advance", () => {
+    const current = fossilStatus([{ id: "working", label: "Changes", role: "working", actions: [], changes: [change("a.txt")] }]);
+    expect(predict(current, { requestId: "r", action: "protect", paths: ["a.txt"] }, { ...result, revision: 1 })).toBe(current);
+  });
+
+  it("returns unprotected added files to the untracked group", () => {
+    const current = fossilStatus([
+      { id: "protected", label: "Protected Changes", role: "included", actions: ["unprotect", "commit_protected"], changes: [{ ...change("new.txt", "added"), groupId: "protected" }] },
+    ]);
+    const predicted = predict(current, { requestId: "r", action: "unprotect", paths: ["new.txt"] }, { ...result, affectedPaths: ["new.txt"] });
+    expect(predicted.groups.some((group) => group.id === "protected")).toBe(false);
+    expect(predicted.groups.find((group) => group.id === "untracked")?.changes.map((row) => row.path)).toEqual(["new.txt"]);
+  });
+
+  it("clears the protected target after a protected commit", () => {
+    const current = fossilStatus([
+      { id: "protected", label: "Protected Changes", role: "included", actions: ["unprotect", "commit_protected"], changes: [{ ...change("frozen.txt"), groupId: "protected" }] },
+      { id: "working", label: "Changes", role: "working", actions: ["protect"], changes: [change("later.txt")] },
+    ]);
+    const predicted = predict(current, { requestId: "r", action: "commit_protected" }, result);
+    expect(predicted.groups.some((group) => group.id === "protected")).toBe(false);
+    expect(predicted.groups.find((group) => group.id === "working")?.changes.map((row) => row.path)).toEqual(["later.txt"]);
+  });
+
+  it("drops discarded rows including restored protected versions", () => {
+    const current = fossilStatus([
+      { id: "protected", label: "Protected Changes", role: "included", actions: ["unprotect", "commit_protected"], changes: [{ ...change("a.txt"), groupId: "protected" }] },
+      { id: "working", label: "Changes", role: "working", actions: ["discard", "protect"], changes: [change("a.txt")] },
+    ]);
+    const predicted = predict(current, { requestId: "r", action: "discard", paths: ["a.txt"] }, { ...result, affectedPaths: ["a.txt"] });
+    expect(predicted.groups.find((group) => group.id === "working")?.changes).toHaveLength(0);
+    expect(predicted.totalChangeCount).toBe(0);
+  });
+
+  it("ignores actions it cannot mirror", () => {
+    const current = fossilStatus([{ id: "working", label: "Changes", role: "working", actions: [], changes: [change("a.txt")] }]);
+    expect(predict(current, { requestId: "r", action: "commit_all" }, result)).toBe(current);
+  });
+});
+
 describe("Source Control activity identity", () => {
   it("deduplicates Git and Fossil changes for the same workspace file", () => {
     const git = { ...fossilRepository, id: "git-repository", providerId: "git", providerLabel: "Git" };

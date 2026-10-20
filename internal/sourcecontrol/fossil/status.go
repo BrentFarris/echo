@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/brent/echo/internal/sourcecontrol"
 )
@@ -19,36 +20,200 @@ type statusRecord struct {
 
 var fossilRenameSeparator = regexp.MustCompile(`\s+->\s+`)
 
+// Cache contract: `fossil changes` costs O(checkout size) (~25µs/file measured)
+// no matter how few paths it is scoped to, so interactive requests must never
+// wait on one. Status serves the last computed snapshot for the current
+// revision and refreshes in the background (emitting source_control_status
+// when done); a cold cache computes synchronously. Change records are reused
+// for a short window by protect and the diff conflict check, which is what
+// makes those paths spawn-free in practice. Caches are invalidated whenever
+// the revision advances through a checkout-changing action or a file event.
+const (
+	statusFreshInterval  = 2 * time.Second
+	recordsFreshInterval = 5 * time.Second
+	refreshMinInterval   = 3 * time.Second
+)
+
+type cachedStatus struct {
+	snapshot sourcecontrol.StatusSnapshot
+	revision uint64
+	at       time.Time
+}
+
+type cachedRecords struct {
+	records []statusRecord
+	at      time.Time
+}
+
+// cachedStatus returns a snapshot whose revision matches the current token
+// and that is younger than statusFreshInterval.
+func (r *repositoryState) cachedStatus() (sourcecontrol.StatusSnapshot, bool) {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	if r.statusCache == nil || r.statusCache.revision != r.revision.Load() {
+		return sourcecontrol.StatusSnapshot{}, false
+	}
+	if time.Since(r.statusCache.at) > statusFreshInterval {
+		return sourcecontrol.StatusSnapshot{}, false
+	}
+	return r.statusCache.snapshot, true
+}
+
+// staleStatus returns a revision-matching snapshot of any age, for
+// stale-while-revalidate serving.
+func (r *repositoryState) staleStatus() (sourcecontrol.StatusSnapshot, bool) {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	if r.statusCache == nil || r.statusCache.revision != r.revision.Load() {
+		return sourcecontrol.StatusSnapshot{}, false
+	}
+	return r.statusCache.snapshot, true
+}
+
+func (r *repositoryState) storeStatus(snapshot sourcecontrol.StatusSnapshot, revision uint64) {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	r.statusCache = &cachedStatus{snapshot: snapshot, revision: revision, at: time.Now()}
+}
+
+// freshRecords returns change records young enough to reuse for protect and
+// the diff conflict check. Records are dropped on any checkout-changing
+// mutation or file event, so age is only a safety net.
+func (r *repositoryState) freshRecords() ([]statusRecord, bool) {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	if r.recordsCache == nil || time.Since(r.recordsCache.at) > recordsFreshInterval {
+		return nil, false
+	}
+	return r.recordsCache.records, true
+}
+
+func (r *repositoryState) storeRecords(records []statusRecord) {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	r.recordsCache = &cachedRecords{records: records, at: time.Now()}
+}
+
+func (r *repositoryState) invalidateCaches() {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	r.statusCache, r.recordsCache = nil, nil
+}
+
 func (p *Provider) Status(ctx context.Context, workspaceID, repositoryID string) (sourcecontrol.StatusSnapshot, error) {
 	state, err := p.repository(ctx, workspaceID, repositoryID)
 	if err != nil {
 		return sourcecontrol.StatusSnapshot{}, err
 	}
 	state.rootMu.Lock()
-	if err := p.recoverProtectedCommitState(ctx, state); err != nil {
-		state.rootMu.Unlock()
-		return sourcecontrol.StatusSnapshot{}, err
-	}
+	journal, _ := p.checkpoints.LoadJournal(state.workspaceID, ID, state.repositoryID())
+	recoveryErr := p.recoverProtectedCommitState(ctx, state)
 	state.rootMu.Unlock()
+	if recoveryErr != nil {
+		return sourcecontrol.StatusSnapshot{}, recoveryErr
+	}
+	if journal != nil {
+		// Recovery restored checkout state; anything cached before it is stale.
+		state.invalidateCaches()
+	}
+	if p.cachingAllowed(workspaceID) {
+		if snapshot, ok := state.cachedStatus(); ok {
+			return snapshot, nil
+		}
+		if snapshot, stale := state.staleStatus(); stale {
+			// Serve last-known state immediately and push a fresh snapshot when
+			// the background refresh completes.
+			p.queueStatusRefresh(state)
+			return snapshot, nil
+		}
+	}
+	return p.computeStatus(ctx, state)
+}
+
+// computeStatus builds and caches a fresh snapshot. Concurrent callers share
+// one computation via double-checked locking instead of each spawning their
+// own checkout-wide `fossil changes`.
+func (p *Provider) computeStatus(ctx context.Context, state *repositoryState) (sourcecontrol.StatusSnapshot, error) {
+	state.computeMu.Lock()
+	defer state.computeMu.Unlock()
+	if p.cachingAllowed(state.workspaceID) {
+		if snapshot, ok := state.cachedStatus(); ok {
+			return snapshot, nil
+		}
+	}
 	state.rootMu.RLock()
 	defer state.rootMu.RUnlock()
-	return p.loadStatus(ctx, state)
+	snapshot, err := p.loadStatus(ctx, state)
+	if err != nil {
+		return sourcecontrol.StatusSnapshot{}, err
+	}
+	state.storeStatus(snapshot, state.revision.Load())
+	return snapshot, nil
+}
+
+// queueStatusRefresh recomputes the snapshot in the background at a throttled
+// rate and pushes the result to subscribers. Single-flight per repository.
+func (p *Provider) queueStatusRefresh(state *repositoryState) {
+	state.cacheMu.Lock()
+	if state.refreshScheduled {
+		state.cacheMu.Unlock()
+		return
+	}
+	state.refreshScheduled = true
+	delay := time.Duration(0)
+	if !state.lastRefresh.IsZero() {
+		if elapsed := time.Since(state.lastRefresh); elapsed < refreshMinInterval {
+			delay = refreshMinInterval - elapsed
+		}
+	}
+	state.cacheMu.Unlock()
+	refresh := func() {
+		state.cacheMu.Lock()
+		state.lastRefresh = time.Now()
+		state.cacheMu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), localCommandTimeout)
+		defer cancel()
+		snapshot, err := p.computeStatus(ctx, state)
+		state.cacheMu.Lock()
+		state.refreshScheduled = false
+		state.cacheMu.Unlock()
+		if err == nil {
+			p.emitStatus(state, snapshot)
+		}
+	}
+	if delay > 0 {
+		state.cacheMu.Lock()
+		state.refreshTimer = time.AfterFunc(delay, refresh)
+		state.cacheMu.Unlock()
+		return
+	}
+	go refresh()
 }
 
 func (p *Provider) loadStatus(ctx context.Context, state *repositoryState) (sourcecontrol.StatusSnapshot, error) {
-	info, err := p.checkoutInfo(ctx, state.workspaceID, state.root)
+	// `fossil info` and `fossil changes` are independent; run them concurrently
+	// so a status refresh costs one spawn latency instead of two.
+	type checkoutInfoResult struct {
+		info checkoutInfo
+		err  error
+	}
+	infoResultCh := make(chan checkoutInfoResult, 1)
+	go func() {
+		info, err := p.checkoutInfo(ctx, state.workspaceID, state.root)
+		infoResultCh <- checkoutInfoResult{info, err}
+	}()
+	records, err := p.rawStatus(ctx, state)
+	infoResult := <-infoResultCh
 	if err != nil {
 		return sourcecontrol.StatusSnapshot{}, err
 	}
-	changesOutput, err := p.run(ctx, state.workspaceID, state.root, false, "changes", "--classify", "--differ", "--dotfiles", "--hash", "--rel-paths")
-	if err != nil {
-		return sourcecontrol.StatusSnapshot{}, err
+	if infoResult.err != nil {
+		return sourcecontrol.StatusSnapshot{}, infoResult.err
 	}
-	records := parseClassifiedChanges(string(changesOutput))
-	extrasOutput, extrasErr := p.run(ctx, state.workspaceID, state.root, false, "extras", "--dotfiles", "--rel-paths")
-	if extrasErr == nil {
-		records = append(records, parseExtras(string(extrasOutput))...)
-	}
+	return p.buildStatus(ctx, state, infoResult.info, records)
+}
+
+func (p *Provider) buildStatus(ctx context.Context, state *repositoryState, info checkoutInfo, records []statusRecord) (sourcecontrol.StatusSnapshot, error) {
 	manifest, err := p.loadCheckpoint(state)
 	if err != nil {
 		return sourcecontrol.StatusSnapshot{}, err
@@ -220,17 +385,6 @@ func parseClassifiedChanges(output string) []statusRecord {
 		}
 		if record.path != "" {
 			result = append(result, record)
-		}
-	}
-	return result
-}
-
-func parseExtras(output string) []statusRecord {
-	result := []statusRecord{}
-	for _, raw := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
-		pathValue := filepathClean(strings.TrimSpace(raw))
-		if pathValue != "" {
-			result = append(result, statusRecord{code: "EXTRA", path: pathValue, group: "untracked", kind: "untracked"})
 		}
 	}
 	return result

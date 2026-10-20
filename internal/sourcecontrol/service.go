@@ -291,9 +291,16 @@ func (s *Service) Action(ctx context.Context, workspaceID, repositoryID string, 
 		}
 		s.Emit(Event{Type: "source_control_operation", WorkspaceID: workspaceID, RepositoryID: repositoryID, ProviderID: descriptor.ID, Operation: &operation})
 		if resultErr == nil {
-			if snapshot, statusErr := s.Status(context.Background(), workspaceID, repositoryID); statusErr == nil {
-				s.Emit(Event{Type: "source_control_status", WorkspaceID: workspaceID, RepositoryID: repositoryID, ProviderID: descriptor.ID, Status: &snapshot})
-			}
+			// The status recompute can cost a full VCS scan (Fossil hashes the
+			// whole checkout); do it off the request path. Clients already
+			// reconcile via the pushed source_control_status event.
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				if snapshot, statusErr := s.Status(ctx, workspaceID, repositoryID); statusErr == nil {
+					s.Emit(Event{Type: "source_control_status", WorkspaceID: workspaceID, RepositoryID: repositoryID, ProviderID: descriptor.ID, Status: &snapshot})
+				}
+			}()
 		}
 	}()
 	return capability.Action(ctx, workspaceID, repositoryID, request)

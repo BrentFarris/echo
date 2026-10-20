@@ -96,25 +96,47 @@ func checkpointStale(manifest *checkpoint.Manifest, state *repositoryState, chec
 	return ""
 }
 
-func (p *Provider) protect(ctx context.Context, state *repositoryState, request sourcecontrol.ActionRequest) ([]string, error) {
+// protect reuses the manifest and checkout info already resolved by
+// executeAction so the hot protect path does not re-run `fossil info` and
+// re-read the checkpoint manifest.
+func (p *Provider) protect(ctx context.Context, state *repositoryState, request sourcecontrol.ActionRequest, manifest *checkpoint.Manifest, sharedInfo *checkoutInfo) ([]string, error) {
 	paths, err := state.validatePaths(request.Paths)
 	if err != nil {
 		return nil, err
 	}
-	info, err := p.checkoutInfo(ctx, state.workspaceID, state.root)
-	if err != nil {
-		return nil, err
+	var info checkoutInfo
+	if sharedInfo != nil {
+		info = *sharedInfo
+	} else {
+		fetched, err := p.checkoutInfo(ctx, state.workspaceID, state.root)
+		if err != nil {
+			return nil, err
+		}
+		info = fetched
 	}
-	manifest, err := p.loadCheckpoint(state)
-	if err != nil {
-		return nil, err
+	if manifest == nil {
+		loaded, err := p.loadCheckpoint(state)
+		if err != nil {
+			return nil, err
+		}
+		manifest = loaded
 	}
 	if diagnostic := checkpointStale(manifest, state, info.Checkout); diagnostic != "" {
 		return nil, &sourcecontrol.Error{Code: "protected_changes_stale", Message: diagnostic}
 	}
-	records, err := p.rawStatus(ctx, state)
+	// The requested paths are usually a small selection, so scope the status
+	// to them. Fall back to a full scan only when a requested path has no
+	// record, which happens when a later-change row still names a rename's
+	// frozen endpoint (fossil reports the record under the new name).
+	records, err := p.rawStatusPaths(ctx, state, paths)
 	if err != nil {
 		return nil, err
+	}
+	if missingRecord(records, paths) {
+		records, err = p.rawStatus(ctx, state)
+		if err != nil {
+			return nil, err
+		}
 	}
 	byPath := make(map[string]statusRecord)
 	for _, record := range records {

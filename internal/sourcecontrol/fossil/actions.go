@@ -43,7 +43,13 @@ func (p *Provider) Action(ctx context.Context, workspaceID, repositoryID string,
 	// A failed VCS command may still have changed checkout state (for example,
 	// a merge that stops on conflicts), so every accepted mutation attempt
 	// advances the token. Stale requests return above without changing it.
-	defer func() { result.Revision = state.revision.Add(1) }()
+	defer func() {
+		revision := state.revision.Add(1)
+		result.Revision = revision
+		if resultErr == nil {
+			p.afterMutation(ctx, state, request, revision)
+		}
+	}()
 	paths, trashIDs, err := p.executeAction(ctx, state, request)
 	if err != nil {
 		return sourcecontrol.ActionResult{}, err
@@ -56,12 +62,14 @@ func (p *Provider) executeAction(ctx context.Context, state *repositoryState, re
 	if err != nil {
 		return nil, nil, err
 	}
+	var info *checkoutInfo
 	if manifest != nil && request.Action != "unprotect" && request.Action != "unprotect_all" && request.Action != "sync" && request.Action != "pull" && request.Action != "push" {
-		info, infoErr := p.checkoutInfo(ctx, state.workspaceID, state.root)
+		infoValue, infoErr := p.checkoutInfo(ctx, state.workspaceID, state.root)
 		if infoErr != nil {
 			return nil, nil, infoErr
 		}
-		if diagnostic := checkpointStale(manifest, state, info.Checkout); diagnostic != "" {
+		info = &infoValue
+		if diagnostic := checkpointStale(manifest, state, infoValue.Checkout); diagnostic != "" {
 			return nil, nil, &sourcecontrol.Error{Code: "protected_changes_stale", Message: diagnostic}
 		}
 	}
@@ -76,7 +84,7 @@ func (p *Provider) executeAction(ctx context.Context, state *repositoryState, re
 		paths, err := p.applyHunk(ctx, state, request)
 		return paths, nil, err
 	case "protect", "protect_all":
-		paths, err := p.protect(ctx, state, request)
+		paths, err := p.protect(ctx, state, request, manifest, info)
 		return paths, nil, err
 	case "unprotect", "unprotect_all":
 		paths, err := p.unprotect(state, request)
@@ -229,6 +237,44 @@ func blockedWhileProtected(action string) bool {
 	default:
 		return false
 	}
+}
+
+// afterMutation keeps the status cache honest after an accepted action.
+// Checkpoint-only actions do not touch checkout files, so the cached change
+// records stay valid and the snapshot can be rebuilt instantly; anything that
+// may have changed the checkout or its baseline invalidates everything and
+// lets the next status recompute (the service pushes it asynchronously).
+func (p *Provider) afterMutation(ctx context.Context, state *repositoryState, request sourcecontrol.ActionRequest, revision uint64) {
+	switch request.Action {
+	case "protect", "protect_all", "unprotect", "unprotect_all", "protect_hunk", "unprotect_hunk":
+		p.rebuildStatusCache(ctx, state, revision)
+	default:
+		state.invalidateCaches()
+	}
+}
+
+// rebuildStatusCache re-derives the snapshot from records that are still valid
+// plus the manifest the action just wrote, so the status request that follows
+// a protect/unprotect is served from cache. Called with rootMu held by the
+// action; buildStatus must not take it. On any doubt the caches are dropped.
+func (p *Provider) rebuildStatusCache(ctx context.Context, state *repositoryState, revision uint64) {
+	records, ok := state.freshRecords()
+	if !ok || !p.cachingAllowed(state.workspaceID) {
+		state.invalidateCaches()
+		return
+	}
+	info, err := p.checkoutInfo(ctx, state.workspaceID, state.root)
+	if err != nil {
+		state.invalidateCaches()
+		return
+	}
+	snapshot, err := p.buildStatus(ctx, state, info, records)
+	if err != nil {
+		state.invalidateCaches()
+		return
+	}
+	snapshot.Revision = revision
+	state.storeStatus(snapshot, revision)
 }
 
 func (p *Provider) discard(ctx context.Context, state *repositoryState, request sourcecontrol.ActionRequest) ([]string, []string, error) {
@@ -406,16 +452,65 @@ func (p *Provider) commit(ctx context.Context, state *repositoryState, request s
 	return paths, nil, err
 }
 
+// statusChangesArgs lists every changed and extra file in the checkout.
+// --differ makes `fossil changes` include extra (untracked) files, so no
+// separate `fossil extras` spawn is needed. --hash is required: without it
+// fossil relies on recorded mtime/size and silently misses same-size edits.
+var statusChangesArgs = []string{"changes", "--classify", "--differ", "--dotfiles", "--hash", "--rel-paths"}
+
 func (p *Provider) rawStatus(ctx context.Context, state *repositoryState) ([]statusRecord, error) {
-	changes, err := p.run(ctx, state.workspaceID, state.root, false, "changes", "--classify", "--differ", "--dotfiles", "--hash", "--rel-paths")
+	if p.cachingAllowed(state.workspaceID) {
+		if records, ok := state.freshRecords(); ok {
+			return records, nil
+		}
+	}
+	changes, err := p.run(ctx, state.workspaceID, state.root, false, statusChangesArgs...)
 	if err != nil {
 		return nil, err
 	}
 	records := parseClassifiedChanges(string(changes))
-	if extras, extrasErr := p.run(ctx, state.workspaceID, state.root, false, "extras", "--dotfiles", "--rel-paths"); extrasErr == nil {
-		records = append(records, parseExtras(string(extras))...)
-	}
+	state.storeRecords(records)
 	return records, nil
+}
+
+// rawStatusPaths is rawStatus scoped to specific paths, for callers that only
+// need the state of a handful of files. --hash stays: hashing a few files is
+// cheap, and it is what detects same-size edits. A fresh full scan answers
+// from cache; otherwise the scoped spawn runs and its partial result is not
+// cached (fossil searches directories recursively, so this still costs an
+// O(checkout) walk — see the cache contract in status.go).
+func (p *Provider) rawStatusPaths(ctx context.Context, state *repositoryState, paths []string) ([]statusRecord, error) {
+	if p.cachingAllowed(state.workspaceID) {
+		if records, ok := state.freshRecords(); ok {
+			return records, nil
+		}
+	}
+	args := append([]string(nil), statusChangesArgs...)
+	args = append(args, fossilPaths(paths)...)
+	changes, err := p.run(ctx, state.workspaceID, state.root, false, args...)
+	if err != nil {
+		return nil, err
+	}
+	return parseClassifiedChanges(string(changes)), nil
+}
+
+// missingRecord reports whether any requested path has neither a change
+// record nor a rename alias in records, so the caller can retry with a
+// full-checkout scan before concluding the path is unchanged.
+func missingRecord(records []statusRecord, paths []string) bool {
+	known := make(map[string]bool, len(records))
+	for _, record := range records {
+		known[pathIdentity(record.path)] = true
+		if record.oldPath != "" {
+			known[pathIdentity(record.oldPath)] = true
+		}
+	}
+	for _, pathValue := range paths {
+		if !known[pathIdentity(pathValue)] {
+			return true
+		}
+	}
+	return false
 }
 
 func fossilPaths(paths []string) []string {
