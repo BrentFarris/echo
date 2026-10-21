@@ -4258,6 +4258,10 @@ button.chat-file-change-row:focus-visible {
   accent-color: var(--color-accent);
 }
 
+.settings-toggle strong {
+  margin-right: var(--space-xl);
+}
+
 /* Buttons */
 .secondary-button {
   display: inline-flex;
