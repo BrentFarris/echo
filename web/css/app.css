@@ -2403,6 +2403,12 @@ button.chat-file-change-row:focus-visible {
   color: var(--color-warning);
 }
 
+.chat-decision-note {
+  margin: var(--space-xs) var(--space-lg);
+  font-size: var(--text-sm, 12px);
+  color: var(--color-text-muted);
+}
+
 /* ==========================================================================
    Chat composer.
    ========================================================================== */

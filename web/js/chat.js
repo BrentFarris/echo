@@ -326,6 +326,7 @@ function applyEvent(event) {
         references: event.references, editorContext: event.editorContext,
         goalId: event.goalId, goalOrigin: event.goalOrigin,
         agentModeId: event.agentModeId, agentModeName: event.agentModeName,
+        decisionTemperature: event.decisionTemperature,
       });
       binding.turns.set(event.turnId, stream);
       activeStream = stream;
@@ -339,6 +340,7 @@ function applyEvent(event) {
       const stream = createTurnView(event.turnId, event.message || "", event.images || [], event.videos || [], {
         references: event.references, editorContext: event.editorContext,
         agentModeId: event.agentModeId, agentModeName: event.agentModeName,
+        decisionTemperature: event.decisionTemperature,
       });
       binding.turns.set(event.turnId, stream);
       activeStream = stream;
@@ -1030,6 +1032,12 @@ function createTurnView(turnId, userText, images = [], videos = [], options = {}
     }
   }
   if (!options.assistantDeleted) binding.log.appendChild(el);
+  if (typeof options.decisionTemperature === "number") {
+    const note = document.createElement("div");
+    note.className = "chat-decision-note";
+    note.textContent = `Decision model set temperature to ${options.decisionTemperature.toFixed(2)}`;
+    el.querySelector(".chat-timeline")?.appendChild(note);
+  }
   if (options.goalId) {
     for (const message of [user, el]) {
       message.classList.add("is-goal-message");
@@ -1046,6 +1054,7 @@ function createTurnView(turnId, userText, images = [], videos = [], options = {}
     researchAgents: new Map(), researchReasoning: new Map(), researchStatusContainer: null,
     goalId: options.goalId || "", goalOrigin: options.goalOrigin || "", goalGuidance: new Map(),
     agentModeId: String(options.agentModeId || ""), agentModeName: String(options.agentModeName || ""),
+    decisionTemperature: typeof options.decisionTemperature === "number" ? options.decisionTemperature : null,
     assistantDeleted: Boolean(options.assistantDeleted),
   };
 }

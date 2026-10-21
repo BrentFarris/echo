@@ -430,6 +430,14 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "invalid_temperature", "temperature must be between 0 and 1", requestID)
 		return
 	}
+	// Dynamic per-prompt temperature (Phase 2). An explicit per-message
+	// temperature from the client always wins. The decision-model call runs
+	// before the session lock is taken so a slow endpoint cannot stall
+	// session events; it fails open to the endpoint's configured temperature.
+	decisionTemperature, decisionTemperatureOK := 0.0, false
+	if msg.Temperature == nil {
+		decisionTemperature, decisionTemperatureOK = m.server.decisionModelTemperature(settings, visibleText)
+	}
 	mode, err := m.server.modes.Resolve(session.workspace.MainPath, msg.AgentModeID)
 	if err != nil {
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "agent_mode_load_failed", err.Error(), requestID)
@@ -501,6 +509,8 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	}
 	if msg.Temperature != nil {
 		settings.Temperature = *msg.Temperature
+	} else if decisionTemperatureOK {
+		settings.Temperature = decisionTemperature
 	}
 	planMode := mode.ID == agentmodes.PlanID
 	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, PairingMode: mode.ID == agentmodes.PairProgrammingID, GoalMode: goalMode, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})))
@@ -566,6 +576,11 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		"agentModeName": mode.Name, "startedAt": session.active.StartedAt, "origin": "send",
 		"reasoningEffort": settings.ReasoningEffort,
 	})
+	if decisionTemperatureOK {
+		session.appendTrajectoryLocked("decision/temperature", turnID, nil, map[string]any{
+			"temperature": decisionTemperature, "source": "decision-model",
+		})
+	}
 	session.appendTrajectoryLocked("user/message", turnID, nil, map[string]any{
 		"content": visibleText, "modelContent": modelText, "images": images, "videos": videos,
 		"editorContext": msg.EditorContext, "references": references,
@@ -600,6 +615,9 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	}
 	if len(references) > 0 {
 		startedEvent["references"] = references
+	}
+	if decisionTemperatureOK {
+		startedEvent["decisionTemperature"] = decisionTemperature
 	}
 	if editorSummary != nil {
 		startedEvent["editorContext"] = editorSummary
@@ -1409,6 +1427,10 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 	modelText := chatMediaTextContent(visibleText, images, videos)
 	requestID := newSessionID("request")
 
+	// Dynamic per-prompt temperature (Phase 2), resolved before the session
+	// lock is taken; fails open to the endpoint's configured temperature.
+	decisionTemperature, decisionTemperatureOK := m.server.decisionModelTemperature(settings, visibleText)
+
 	session.mu.Lock()
 	if session.isBusyLocked() {
 		session.mu.Unlock()
@@ -1441,6 +1463,9 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 	messages := append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, updated.ContextCheckpoint)...)
 	visionMode := updated.Vision || messagesRequireMedia(messages)
 	settings, streamer := m.server.routeMediaChat(settings, messages, visionMode)
+	if decisionTemperatureOK {
+		settings.Temperature = decisionTemperature
+	}
 	planMode := mode.ID == agentmodes.PlanID
 	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, PairingMode: mode.ID == agentmodes.PairProgrammingID, GoalMode: mode.ID == agentmodes.GoalID, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})))
 	if err != nil {
@@ -1490,6 +1515,11 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 		"requestId": requestID, "model": request.Model, "agentModeId": mode.ID,
 		"agentModeName": mode.Name, "startedAt": session.active.StartedAt, "origin": origin,
 	})
+	if decisionTemperatureOK {
+		session.appendTrajectoryLocked("decision/temperature", newTurnID, nil, map[string]any{
+			"temperature": decisionTemperature, "source": "decision-model",
+		})
+	}
 	session.appendTrajectoryLocked("user/message", newTurnID, nil, map[string]any{
 		"content": visibleText, "modelContent": modelText, "images": images, "videos": videos, "references": references,
 	})
@@ -1503,6 +1533,9 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 		"type": eventType, "fromTurnId": turnID, "turnId": newTurnID, "requestId": requestID,
 		"message": visibleText, "images": images, "videos": videos,
 		"model": request.Model, "agentModeId": mode.ID, "agentModeName": mode.Name, "startedAt": session.active.StartedAt,
+	}
+	if decisionTemperatureOK {
+		startedEvent["decisionTemperature"] = decisionTemperature
 	}
 	if len(references) > 0 {
 		startedEvent["references"] = references
