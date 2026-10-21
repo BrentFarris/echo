@@ -19,6 +19,7 @@ import (
 	"github.com/brent/echo/internal/appdata"
 	"github.com/brent/echo/internal/auth"
 	"github.com/brent/echo/internal/ctest"
+	"github.com/brent/echo/internal/decision"
 	"github.com/brent/echo/internal/debugconfig"
 	"github.com/brent/echo/internal/debugger"
 	"github.com/brent/echo/internal/echoupdate"
@@ -76,6 +77,7 @@ type Server struct {
 	loginLimiter     *loginRateLimiter
 	modes            *agentmodes.Manager
 	sessions         *chatSessionManager
+	decisionModel    *decision.Client
 	llm              chatStreamer
 	llmCompleter     chatCompleter
 	llmSettings      llm.Settings
@@ -358,6 +360,7 @@ func (s *Server) initLLM() {
 	}
 	cfg = cfg.NormalizedEndpointProfiles()
 	s.settings = cfg
+	s.decisionModel = decision.New(cfg.DecisionModelURL, cfg.DecisionModelName)
 	s.llmSettings = cfg.ForInteraction(llm.InteractionChat)
 	s.researchSettings = cfg.ForInteraction(llm.InteractionResearch)
 	s.visionSettings = cfg.ForInteraction(llm.InteractionVision)

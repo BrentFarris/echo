@@ -4070,6 +4070,7 @@ func (s *chatSession) toolContext(ctx context.Context, turnID string, scopes *to
 	roots := s.manager.server.confinedToolRoots(s.workspace)
 	return tools.ExecutionContext{
 		Context: ctx, WorkspaceID: s.workspace.ID, WorkspacePath: s.workspace.MainPath, WorkspaceRoots: roots, SearxngURL: settings.SearxngURL,
+		DecisionModel:             s.manager.server.decisionModel,
 		Sandbox:                   s.manager.server.sandbox,
 		SandboxEnabled:            s.workspace.Sandbox.Enabled,
 		TurnID:                    turnID,

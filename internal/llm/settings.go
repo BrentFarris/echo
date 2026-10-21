@@ -21,6 +21,7 @@ const (
 	MaxResearchAgentConcurrency     = 8
 	DefaultMaxChatRounds            = 0
 	DefaultSearxngURL               = "http://localhost:8080/"
+	DefaultDecisionModelName        = "clef-flash"
 	DefaultStreamIdleTimeoutSeconds = 600
 	defaultTimout                   = 600
 	DefaultEditorFontSize           = 13.5
@@ -129,9 +130,21 @@ type Settings struct {
 	// ComfyuiVideoWorkflow is a workspace-relative path to the default video
 	// generation workflow JSON (e.g., AnimateDiff, SVD) used by
 	// comfyui_generate_video when no explicit workflow is supplied.
-	ComfyuiVideoWorkflow string            `json:"comfyuiVideoWorkflow,omitempty"`
-	Theme                Theme             `json:"theme,omitempty"`
-	Headers              map[string]string `json:"headers,omitempty"`
+	ComfyuiVideoWorkflow string `json:"comfyuiVideoWorkflow,omitempty"`
+	// DecisionModelURL is the base URL of a decision-model endpoint (for
+	// example "http://192.168.50.231:11434/v1"). Echo appends the /systemone
+	// classify path. Empty disables every decision-model feature.
+	DecisionModelURL string `json:"decisionModelUrl"`
+	// DecisionModelName is the model name sent in the request body.
+	DecisionModelName string `json:"decisionModelName"`
+	// DecisionModel feature gates. Each enables one integration point; all
+	// are inert unless DecisionModelURL is configured.
+	DecisionModelLLMTool      bool `json:"decisionModelLlmTool,omitempty"`
+	DecisionModelAgentMode    bool `json:"decisionModelAgentMode,omitempty"`
+	DecisionModelTemperature  bool `json:"decisionModelTemperature,omitempty"`
+	DecisionModelToolFiltering bool `json:"decisionModelToolFiltering,omitempty"`
+	Theme                     Theme             `json:"theme,omitempty"`
+	Headers                   map[string]string `json:"headers,omitempty"`
 }
 
 type Theme struct {
@@ -205,6 +218,11 @@ func (s Settings) normalized(endpointProfilesAuthoritative bool) Settings {
 	s.ComfyuiTxt2imgWorkflow = strings.TrimSpace(s.ComfyuiTxt2imgWorkflow)
 	s.ComfyuiImg2imgWorkflow = strings.TrimSpace(s.ComfyuiImg2imgWorkflow)
 	s.ComfyuiVideoWorkflow = strings.TrimSpace(s.ComfyuiVideoWorkflow)
+	s.DecisionModelURL = strings.TrimSpace(s.DecisionModelURL)
+	s.DecisionModelName = strings.TrimSpace(s.DecisionModelName)
+	if s.DecisionModelName == "" {
+		s.DecisionModelName = DefaultDecisionModelName
+	}
 	s.Theme = s.Theme.Normalized()
 	if len(s.EditorColumnGuides) == 0 {
 		s.EditorColumnGuides = []int{80, 90}
@@ -360,6 +378,11 @@ func (s Settings) Validate() error {
 	}
 	if s.ComfyuiURL != "" {
 		if err := validateHTTPURL(s.ComfyuiURL, "comfyui url"); err != nil {
+			return err
+		}
+	}
+	if s.DecisionModelURL != "" {
+		if err := validateHTTPURL(s.DecisionModelURL, "decision model url"); err != nil {
 			return err
 		}
 	}

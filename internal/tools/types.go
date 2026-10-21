@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/brent/echo/internal/decision"
 	"github.com/brent/echo/internal/sandbox"
 	"github.com/brent/echo/internal/sourcecontrol"
 	"github.com/brent/echo/internal/workspacefs"
@@ -105,6 +106,10 @@ type ExecutionContext struct {
 	ResolveWorkspaceChildPath func(string) (string, error)
 	// SearxngURL is the configured SearXNG endpoint used by the web_search tool.
 	SearxngURL string
+	// DecisionModel is the configured decision-model client used by the
+	// decision_model tool. It is nil or disabled when no endpoint is set;
+	// the tool then fails soft with decision_model_disabled.
+	DecisionModel *decision.Client
 	// ComfyuiURL is the configured ComfyUI server base URL used by
 	// comfyui_generate (e.g. "http://localhost:8188").
 	ComfyuiURL string

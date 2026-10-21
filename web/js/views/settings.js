@@ -74,6 +74,7 @@ const sections = [
   { id: "modes", label: "Agent Modes", icon: icons.tasks },
   { id: "plugins", label: "Plugins", icon: icons.dashboard },
   { id: "external", label: "External Connections", icon: icons.git },
+  { id: "decision-model", label: "Decision Model", icon: icons.dashboard },
   { id: "messaging", label: "Messaging", icon: icons.mic },
   { id: "code", label: "Code", icon: icons.code },
   { id: "source-control", label: "Source Control", icon: icons.git },
@@ -139,6 +140,16 @@ const state = {
     comfyuiTxt2imgWorkflow: "",
     comfyuiImg2imgWorkflow: "",
     comfyuiVideoWorkflow: "",
+  },
+  // Decision Model settings. An empty URL disables every decision-model
+  // feature; the checkboxes gate individual integrations.
+  decisionModel: {
+    url: "",
+    name: "",
+    llmTool: false,
+    agentMode: false,
+    temperature: false,
+    toolFiltering: false,
   },
   rawSettings: {},
   settingsLoaded: false,
@@ -543,6 +554,46 @@ function renderExternal() {
             <input type="text" value="${esc(state.external.comfyuiVideoWorkflow)}" placeholder="Path to default video workflow JSON (used by comfyui_generate_video)" autocomplete="off" data-external-field="comfyuiVideoWorkflow" />
           </label>
         </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderDecisionModel() {
+  const dm = state.decisionModel;
+  const configured = Boolean(dm.url);
+  const toggles = [
+    { key: "llmTool", label: "LLM Tool", help: "Adds a decision_model tool the LLM can call to get fast probabilistic answers." },
+    { key: "agentMode", label: "Agent Mode", help: "Dynamically select which agent mode consumes the user's prompt." },
+    { key: "temperature", label: "Temperature", help: "Dynamically set the AI model temperature for the user's prompt." },
+    { key: "toolFiltering", label: "Tool Filtering", help: "Filter the tool list sent to the LLM so the request is not spammed with useless tools." },
+  ];
+  return `
+    <section class="settings-section">
+      <h2 class="settings-section-title">Decision Model</h2>
+      <div class="settings-card">
+        <h3 class="settings-card-title">Endpoint</h3>
+        <p class="settings-card-help">A fast probabilistic model that answers typed questions with a probability for each possible outcome. Leave the endpoint empty to disable every decision-model feature.</p>
+        <div class="settings-grid">
+          <label class="field field-wide">
+            <span>Endpoint URL</span>
+            <input type="url" value="${esc(dm.url)}" placeholder="http://192.168.50.231:11434/v1" autocomplete="off" data-decision-model-field="url" />
+          </label>
+          <label class="field field-wide">
+            <span>Model</span>
+            <input type="text" value="${esc(dm.name)}" placeholder="clef-flash" autocomplete="off" data-decision-model-field="name" />
+          </label>
+        </div>
+      </div>
+      <div class="settings-card">
+        <h3 class="settings-card-title">Usage</h3>
+        <p class="settings-card-help">Choose where the decision model is used. Features activate once an endpoint is configured.</p>
+        ${toggles.map((t) => `
+          <label class="settings-toggle">
+            <span><strong>${esc(t.label)}</strong><span class="field-help">${esc(t.help)}</span></span>
+            <input type="checkbox" data-decision-model-toggle="${t.key}" ${dm[t.key] ? "checked" : ""} ${configured ? "" : "disabled"} />
+          </label>
+        `).join("")}
       </div>
     </section>
   `;
@@ -1146,6 +1197,7 @@ const renderers = {
   modes: renderAgentModes,
   plugins: renderPlugins,
   external: renderExternal,
+  "decision-model": renderDecisionModel,
   messaging: renderMessaging,
   code: renderCode,
   "source-control": renderSourceControl,
@@ -1449,6 +1501,23 @@ function bindEvents(root) {
       state.external[field.dataset.externalField] = field.value;
     });
     field.addEventListener("blur", () => {
+      saveSettings();
+    });
+  });
+
+  // Decision Model fields. Toggling the URL re-renders so the usage
+  // checkboxes enable/disable with configuration.
+  root.querySelectorAll("[data-decision-model-field]").forEach((field) => {
+    field.addEventListener("input", () => {
+      state.decisionModel[field.dataset.decisionModelField] = field.value;
+    });
+    field.addEventListener("blur", () => {
+      saveSettings();
+    });
+  });
+  root.querySelectorAll("[data-decision-model-toggle]").forEach((field) => {
+    field.addEventListener("change", () => {
+      state.decisionModel[field.dataset.decisionModelToggle] = field.checked;
       saveSettings();
     });
   });
@@ -2331,6 +2400,9 @@ function captureExternalFields(root) {
   root.querySelectorAll("[data-external-field]").forEach((field) => {
     state.external[field.dataset.externalField] = field.value;
   });
+  root.querySelectorAll("[data-decision-model-field]").forEach((field) => {
+    state.decisionModel[field.dataset.decisionModelField] = field.value;
+  });
 }
 
 // applySettings copies the loaded settings into the view state and re-renders.
@@ -2361,6 +2433,14 @@ function applySettings(cfg) {
     comfyuiTxt2imgWorkflow: s.comfyuiTxt2imgWorkflow || "",
     comfyuiImg2imgWorkflow: s.comfyuiImg2imgWorkflow || "",
     comfyuiVideoWorkflow: s.comfyuiVideoWorkflow || "",
+  };
+  state.decisionModel = {
+    url: s.decisionModelUrl || "",
+    name: s.decisionModelName || "",
+    llmTool: s.decisionModelLlmTool === true,
+    agentMode: s.decisionModelAgentMode === true,
+    temperature: s.decisionModelTemperature === true,
+    toolFiltering: s.decisionModelToolFiltering === true,
   };
   state.editorFontSize = clampEditorFontSize(Number(s.editorFontSize) || 13.5);
   state.indentation = indentationDefaults(s);
@@ -2487,6 +2567,12 @@ function buildSettings() {
     comfyuiTxt2imgWorkflow: state.external.comfyuiTxt2imgWorkflow,
     comfyuiImg2imgWorkflow: state.external.comfyuiImg2imgWorkflow,
     comfyuiVideoWorkflow: state.external.comfyuiVideoWorkflow,
+    decisionModelUrl: state.decisionModel.url,
+    decisionModelName: state.decisionModel.name,
+    decisionModelLlmTool: state.decisionModel.llmTool,
+    decisionModelAgentMode: state.decisionModel.agentMode,
+    decisionModelTemperature: state.decisionModel.temperature,
+    decisionModelToolFiltering: state.decisionModel.toolFiltering,
     hideLeadingWhitespaceIndicators: !state.sourceControl.leadingWhitespaceIndicators,
     disableSourceControlSplitDiffView: !state.sourceControl.splitDiffView,
     disableNotificationSounds: !state.messaging.notificationSounds,
