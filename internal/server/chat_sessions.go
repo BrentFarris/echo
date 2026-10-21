@@ -448,6 +448,21 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "invalid_goal", "goal objective must contain at most 4000 characters", requestID)
 		return
 	}
+	// Dynamic agent-mode selection (Phase 3). The decision model may override
+	// the user's mode; the override is surfaced in the turn_started event and
+	// trajectory so it stays visible. Explicit goal starts are never
+	// overridden, and the decision model can never select Goal mode (see
+	// decisionModelAgentMode), so goalMode above remains authoritative. The
+	// call fails open to the resolved mode on any error or timeout.
+	decisionAgentModeConfidence := 0.0
+	decisionAgentModeSelected := false
+	if msg.AgentModeID != agentmodes.GoalID && mode.ID != agentmodes.GoalID {
+		if chosen, confidence, ok := m.server.decisionModelAgentMode(settings, session.workspace.MainPath, visibleText); ok {
+			mode = chosen
+			decisionAgentModeConfidence = confidence
+			decisionAgentModeSelected = true
+		}
+	}
 	_, researchStreamer := m.server.researchChat()
 	researchEnabled := m.server.settings.ResearchAgentConcurrency > 0 && researchStreamer != nil && modeAllowsResearch(mode)
 	systemMessage, scopes, sourceControlProfile := m.server.agentModeContext(session.workspace, mode, visibleText, researchEnabled)
@@ -581,6 +596,12 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 			"temperature": decisionTemperature, "source": "decision-model",
 		})
 	}
+	if decisionAgentModeSelected {
+		session.appendTrajectoryLocked("decision/agent-mode", turnID, nil, map[string]any{
+			"agentModeId": mode.ID, "agentModeName": mode.Name,
+			"confidence": decisionAgentModeConfidence, "source": "decision-model",
+		})
+	}
 	session.appendTrajectoryLocked("user/message", turnID, nil, map[string]any{
 		"content": visibleText, "modelContent": modelText, "images": images, "videos": videos,
 		"editorContext": msg.EditorContext, "references": references,
@@ -618,6 +639,11 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	}
 	if decisionTemperatureOK {
 		startedEvent["decisionTemperature"] = decisionTemperature
+	}
+	if decisionAgentModeSelected {
+		startedEvent["decisionAgentMode"] = map[string]any{
+			"id": mode.ID, "name": mode.Name, "confidence": decisionAgentModeConfidence,
+		}
 	}
 	if editorSummary != nil {
 		startedEvent["editorContext"] = editorSummary
@@ -1411,14 +1437,29 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "agent_mode_load_failed", err.Error(), "")
 		return
 	}
-	_, researchStreamer := m.server.researchChat()
-	researchEnabled := m.server.settings.ResearchAgentConcurrency > 0 && researchStreamer != nil && modeAllowsResearch(mode)
 	images := append([]sessions.MediaAttachment(nil), selected.Images...)
 	videos := append([]sessions.MediaAttachment(nil), selected.Videos...)
 	visibleText := strings.TrimSpace(selected.UserContent)
 	if editing {
 		visibleText = strings.TrimSpace(replacement)
 	}
+	// Dynamic agent-mode selection (Phase 3), mirroring send: the decision
+	// model may override the recorded mode for the regenerated prompt. This
+	// must run before agentModeContext so the system prompt, tool scopes,
+	// and research gating reflect the final mode. Explicit goal turns are
+	// never overridden and Goal can never be selected; the call fails open
+	// to the resolved mode.
+	decisionAgentModeConfidence := 0.0
+	decisionAgentModeSelected := false
+	if selected.AgentModeID != agentmodes.GoalID && mode.ID != agentmodes.GoalID {
+		if chosen, confidence, ok := m.server.decisionModelAgentMode(settings, session.workspace.MainPath, visibleText); ok {
+			mode = chosen
+			decisionAgentModeConfidence = confidence
+			decisionAgentModeSelected = true
+		}
+	}
+	_, researchStreamer := m.server.researchChat()
+	researchEnabled := m.server.settings.ResearchAgentConcurrency > 0 && researchStreamer != nil && modeAllowsResearch(mode)
 	systemMessage, scopes, sourceControlProfile := m.server.agentModeContext(session.workspace, mode, visibleText, researchEnabled)
 	var references []sessions.PromptReference
 	if !editing {
@@ -1520,6 +1561,12 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 			"temperature": decisionTemperature, "source": "decision-model",
 		})
 	}
+	if decisionAgentModeSelected {
+		session.appendTrajectoryLocked("decision/agent-mode", newTurnID, nil, map[string]any{
+			"agentModeId": mode.ID, "agentModeName": mode.Name,
+			"confidence": decisionAgentModeConfidence, "source": "decision-model",
+		})
+	}
 	session.appendTrajectoryLocked("user/message", newTurnID, nil, map[string]any{
 		"content": visibleText, "modelContent": modelText, "images": images, "videos": videos, "references": references,
 	})
@@ -1536,6 +1583,11 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 	}
 	if decisionTemperatureOK {
 		startedEvent["decisionTemperature"] = decisionTemperature
+	}
+	if decisionAgentModeSelected {
+		startedEvent["decisionAgentMode"] = map[string]any{
+			"id": mode.ID, "name": mode.Name, "confidence": decisionAgentModeConfidence,
+		}
 	}
 	if len(references) > 0 {
 		startedEvent["references"] = references

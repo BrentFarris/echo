@@ -327,6 +327,7 @@ function applyEvent(event) {
         goalId: event.goalId, goalOrigin: event.goalOrigin,
         agentModeId: event.agentModeId, agentModeName: event.agentModeName,
         decisionTemperature: event.decisionTemperature,
+        decisionAgentMode: event.decisionAgentMode,
       });
       binding.turns.set(event.turnId, stream);
       activeStream = stream;
@@ -341,6 +342,7 @@ function applyEvent(event) {
         references: event.references, editorContext: event.editorContext,
         agentModeId: event.agentModeId, agentModeName: event.agentModeName,
         decisionTemperature: event.decisionTemperature,
+        decisionAgentMode: event.decisionAgentMode,
       });
       binding.turns.set(event.turnId, stream);
       activeStream = stream;
@@ -1038,6 +1040,14 @@ function createTurnView(turnId, userText, images = [], videos = [], options = {}
     note.textContent = `Decision model set temperature to ${options.decisionTemperature.toFixed(2)}`;
     el.querySelector(".chat-timeline")?.appendChild(note);
   }
+  if (options.decisionAgentMode?.name) {
+    const note = document.createElement("div");
+    note.className = "chat-decision-note";
+    const confidence = typeof options.decisionAgentMode.confidence === "number"
+      ? ` (${Math.round(options.decisionAgentMode.confidence * 100)}%)` : "";
+    note.textContent = `Decision model selected ${options.decisionAgentMode.name} mode${confidence}`;
+    el.querySelector(".chat-timeline")?.appendChild(note);
+  }
   if (options.goalId) {
     for (const message of [user, el]) {
       message.classList.add("is-goal-message");
@@ -1055,6 +1065,7 @@ function createTurnView(turnId, userText, images = [], videos = [], options = {}
     goalId: options.goalId || "", goalOrigin: options.goalOrigin || "", goalGuidance: new Map(),
     agentModeId: String(options.agentModeId || ""), agentModeName: String(options.agentModeName || ""),
     decisionTemperature: typeof options.decisionTemperature === "number" ? options.decisionTemperature : null,
+    decisionAgentMode: options.decisionAgentMode && options.decisionAgentMode.name ? { ...options.decisionAgentMode } : null,
     assistantDeleted: Boolean(options.assistantDeleted),
   };
 }
