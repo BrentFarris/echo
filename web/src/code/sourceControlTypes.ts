@@ -209,13 +209,16 @@ export function normalizeStatus(status: Omit<SourceControlStatus, "conflicts" | 
   ];
   const convert = (group: SourceControlChangeGroup, scope: string): SourceControlChange[] =>
     (group.changes || []).map((change) => ({ ...change, groupId: group.id, scope }));
+  // Providers must always send an actions array; a Go nil slice marshals to
+  // null and callers do group.actions.includes(...).
+  const safeGroups = groups.map((group) => ({ ...group, actions: group.actions ?? [] }));
   const conflictGroups = groups.filter((group) => group.role === "conflicts");
   const includedGroups = groups.filter((group) => group.role === "included");
   const workingGroups = groups.filter((group) => group.role === "working" || group.role === "untracked");
   return {
     ...status,
     providerId: status.providerId || "git",
-    groups,
+    groups: safeGroups,
     conflicts: conflictGroups.flatMap((group) => convert(group, (status.providerId || "git") === "git" ? "conflict" : group.id)),
     staged: includedGroups.flatMap((group) => convert(group, (status.providerId || "git") === "git" ? "staged" : group.id)),
     unstaged: workingGroups.flatMap((group) => convert(group, (status.providerId || "git") === "git" ? "unstaged" : group.id)),
