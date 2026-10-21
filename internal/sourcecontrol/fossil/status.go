@@ -322,15 +322,17 @@ func (p *Provider) buildStatus(ctx context.Context, state *repositoryState, info
 		protectedActions = append(protectedActions, "unprotect")
 		if protectedDiagnostic == "" {
 			protectedActions = append(protectedActions, "commit_protected")
-		} else {
-			workingActions = nil
-			untrackedActions = nil
+			} else {
+				// Keep these as empty slices, never nil: a nil slice marshals
+				// to JSON null and the frontend calls .includes on actions.
+				workingActions = []string{}
+				untrackedActions = []string{}
+			}
 		}
-	}
-	conflictActions := []string{"discard"}
-	if protectedDiagnostic != "" {
-		conflictActions = nil
-	}
+		conflictActions := []string{"discard"}
+		if protectedDiagnostic != "" {
+			conflictActions = []string{}
+		}
 	return sourcecontrol.StatusSnapshot{
 		WorkspaceID: state.workspaceID, RepositoryID: sourcecontrol.RepositoryID(state.workspaceID, ID, state.root), ProviderID: ID,
 		Revision: state.revision.Load(), Branch: info.Branch, Head: info.Checkout,
