@@ -7,6 +7,9 @@ import (
 	"github.com/brent/echo/internal/decision"
 )
 
+// DecisionModelToolName is the registry name of the decision-model tool.
+const DecisionModelToolName = "decision_model"
+
 // decision_model asks the configured Decision Model — a fast probabilistic
 // endpoint — one or more typed questions about a piece of state and returns a
 // probability distribution for each possible outcome. Use it for routing,
@@ -14,7 +17,7 @@ import (
 func init() {
 	Register(ToolFunc{
 		Meta: Metadata{
-			Name: "decision_model",
+			Name: DecisionModelToolName,
 			Description: "Ask the configured Decision Model (a fast probabilistic classifier) typed questions about a piece of state and get a probability for each possible outcome. " +
 				"Use it for quick routing, triage, urgency, or yes/no judgments instead of a full reasoning turn. " +
 				"Question types: \"choice\" (pick one option from a criteria map of label -> description), \"noul\" (yes/no probability), " +

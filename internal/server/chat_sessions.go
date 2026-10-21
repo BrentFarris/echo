@@ -466,6 +466,17 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	_, researchStreamer := m.server.researchChat()
 	researchEnabled := m.server.settings.ResearchAgentConcurrency > 0 && researchStreamer != nil && modeAllowsResearch(mode)
 	systemMessage, scopes, sourceControlProfile := m.server.agentModeContext(session.workspace, mode, visibleText, researchEnabled)
+	// Dynamic tool filtering (Phase 4). The decision model classifies which
+	// tool capability categories the prompt needs; the rest are removed from
+	// the schema for this turn. The classification runs before the session
+	// lock is taken (like the other decision-model calls) and fails open to
+	// the unfiltered schema. Goal mode is exempt: autonomous runs must keep
+	// their full toolset. The schema is rebuilt from the same inputs below
+	// when the request is constructed; classification only needs the shape.
+	decisionToolFilter, decisionToolFiltering := map[string]bool(nil), false
+	if !goalMode {
+		decisionToolFilter, decisionToolFiltering = m.server.decisionModelToolFilter(settings, visibleText, m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: mode.ID == agentmodes.PlanID, PairingMode: mode.ID == agentmodes.PairProgrammingID, GoalMode: goalMode, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID}))
+	}
 
 	session.mu.Lock()
 	if parent.loadErr != nil {
@@ -528,7 +539,13 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 		settings.Temperature = decisionTemperature
 	}
 	planMode := mode.ID == agentmodes.PlanID
-	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, PairingMode: mode.ID == agentmodes.PairProgrammingID, GoalMode: goalMode, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})))
+	chatSchema := m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, PairingMode: mode.ID == agentmodes.PairProgrammingID, GoalMode: goalMode, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})
+	decisionToolFilterRemoved := []string(nil)
+	if decisionToolFiltering {
+		decisionToolFilterRemoved = filteredOutCategories(chatSchema, decisionToolFilter)
+		chatSchema = filterToolSchemaByCategories(chatSchema, decisionToolFilter)
+	}
+	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(chatSchema))
 	if err != nil {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "invalid_request", err.Error(), requestID)
@@ -602,6 +619,13 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 			"confidence": decisionAgentModeConfidence, "source": "decision-model",
 		})
 	}
+	if decisionToolFiltering {
+		session.appendTrajectoryLocked("decision/tool-filter", turnID, nil, map[string]any{
+			"keptCategories":      keptCategoryNames(decisionToolFilter),
+			"filteredCategories":  decisionToolFilterRemoved,
+			"source":              "decision-model",
+		})
+	}
 	session.appendTrajectoryLocked("user/message", turnID, nil, map[string]any{
 		"content": visibleText, "modelContent": modelText, "images": images, "videos": videos,
 		"editorContext": msg.EditorContext, "references": references,
@@ -645,6 +669,12 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 			"id": mode.ID, "name": mode.Name, "confidence": decisionAgentModeConfidence,
 		}
 	}
+	if decisionToolFiltering {
+		startedEvent["decisionToolFilter"] = map[string]any{
+			"keptCategories":     keptCategoryNames(decisionToolFilter),
+			"filteredCategories": decisionToolFilterRemoved,
+		}
+	}
 	if editorSummary != nil {
 		startedEvent["editorContext"] = editorSummary
 	}
@@ -654,7 +684,7 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		session.run(ctx, streamer, settings, prefix, canonical, cloneContextCheckpoint(session.transcript.ContextCheckpoint), turnID, scopes, mode, researchEnabled, sourceControlProfile)
+		session.run(ctx, streamer, settings, prefix, canonical, cloneContextCheckpoint(session.transcript.ContextCheckpoint), turnID, scopes, mode, researchEnabled, sourceControlProfile, decisionToolFilter)
 	}()
 }
 
@@ -935,7 +965,7 @@ func (m *chatSessionManager) resumeGoal(c *client, workspaceID, chatID, surfaceV
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		session.run(ctx, streamer, settings, prefix, canonical, checkpoint, turnID, scopes, mode, researchEnabled, sourceControlProfile)
+		session.run(ctx, streamer, settings, prefix, canonical, checkpoint, turnID, scopes, mode, researchEnabled, sourceControlProfile, nil) // goal resume: no decision-model tool filtering
 	}()
 }
 
@@ -1472,6 +1502,14 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 	// lock is taken; fails open to the endpoint's configured temperature.
 	decisionTemperature, decisionTemperatureOK := m.server.decisionModelTemperature(settings, visibleText)
 
+	// Dynamic tool filtering (Phase 4), mirroring send: classify before the
+	// session lock is taken; fails open to the unfiltered schema. Goal mode
+	// is exempt, matching send.
+	decisionToolFilter, decisionToolFiltering := map[string]bool(nil), false
+	if mode.ID != agentmodes.GoalID {
+		decisionToolFilter, decisionToolFiltering = m.server.decisionModelToolFilter(settings, visibleText, m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: mode.ID == agentmodes.PlanID, PairingMode: mode.ID == agentmodes.PairProgrammingID, GoalMode: mode.ID == agentmodes.GoalID, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID}))
+	}
+
 	session.mu.Lock()
 	if session.isBusyLocked() {
 		session.mu.Unlock()
@@ -1508,7 +1546,11 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 		settings.Temperature = decisionTemperature
 	}
 	planMode := mode.ID == agentmodes.PlanID
-	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, PairingMode: mode.ID == agentmodes.PairProgrammingID, GoalMode: mode.ID == agentmodes.GoalID, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})))
+	chatSchema := m.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, PairingMode: mode.ID == agentmodes.PairProgrammingID, GoalMode: mode.ID == agentmodes.GoalID, ResearchEnabled: researchEnabled, SandboxGUI: m.server.sandboxGUIEnabled(session.workspace.ID), WorkspaceID: session.workspace.ID})
+	if decisionToolFiltering {
+		chatSchema = filterToolSchemaByCategories(chatSchema, decisionToolFilter)
+	}
+	request, err := llm.NewChatRequest(settings, messages, llm.WithStream(true), llm.WithTools(chatSchema))
 	if err != nil {
 		session.mu.Unlock()
 		m.commandErrorForTabSurface(c, workspaceID, resolved, surface, "invalid_request", err.Error(), requestID)
@@ -1567,6 +1609,12 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 			"confidence": decisionAgentModeConfidence, "source": "decision-model",
 		})
 	}
+	if decisionToolFiltering {
+		session.appendTrajectoryLocked("decision/tool-filter", newTurnID, nil, map[string]any{
+			"keptCategories": keptCategoryNames(decisionToolFilter),
+			"source":         "decision-model",
+		})
+	}
 	session.appendTrajectoryLocked("user/message", newTurnID, nil, map[string]any{
 		"content": visibleText, "modelContent": modelText, "images": images, "videos": videos, "references": references,
 	})
@@ -1604,7 +1652,7 @@ func (m *chatSessionManager) regenerateMessage(c *client, workspaceID, chatID, s
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		session.run(ctx, streamer, settings, prefix, canonical, cloneContextCheckpoint(updated.ContextCheckpoint), newTurnID, scopes, mode, researchEnabled, sourceControlProfile)
+		session.run(ctx, streamer, settings, prefix, canonical, cloneContextCheckpoint(updated.ContextCheckpoint), newTurnID, scopes, mode, researchEnabled, sourceControlProfile, decisionToolFilter)
 	}()
 }
 
@@ -3003,7 +3051,7 @@ func (b *streamTrajectoryBuffer) hasData() bool {
 // with a different event type and actor metadata.
 type assistantTrajectoryBuffer = streamTrajectoryBuffer
 
-func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings llm.Settings, prefix, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint, turnID string, scopes *tools.ToolScopeChecker, mode agentmodes.Mode, researchEnabled bool, sourceControlProfile workspaceSourceControlProfile) {
+func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings llm.Settings, prefix, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint, turnID string, scopes *tools.ToolScopeChecker, mode agentmodes.Mode, researchEnabled bool, sourceControlProfile workspaceSourceControlProfile, toolFilter map[string]bool) {
 	ctx = s.sandboxRequestContext(ctx)
 	questionRounds := 0
 	// Media produced by tools during this turn, keyed by the provider-reported
@@ -3106,6 +3154,9 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			if checkpoint != nil {
 				toolSchema = append(toolSchema, contextHistorySearchToolSchema())
 			}
+			// Decision-model tool filtering (Phase 4): the per-turn category
+			// decision was made in send; apply it to every round's schema.
+			toolSchema = filterToolSchemaByCategories(toolSchema, toolFilter)
 		}
 		manualCompression, manualCompressionID, manualCompressionModel := s.takeManualCompressionPending(turnID)
 		messages := append(cloneContextMessages(prefix), buildCompressedModelHistory(canonical, checkpoint)...)
@@ -3138,6 +3189,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				if !forceFinalWithoutTools {
 					toolSchema = s.manager.server.tools.ChatLLMSchemaForScopes(scopes, tools.ChatSchemaOptions{PlanMode: planMode, PairingMode: pairingMode, GoalMode: goalMode, ResearchEnabled: research != nil, SandboxGUI: s.manager.server.sandboxGUIEnabled(s.workspace.ID), WorkspaceID: s.workspace.ID})
 					toolSchema = append(toolSchema, contextHistorySearchToolSchema())
+					toolSchema = filterToolSchemaByCategories(toolSchema, toolFilter)
 				}
 			} else if compressionErr != nil {
 				// The attempt failed or could not reclaim anything (summary
@@ -3571,6 +3623,11 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 				}
 			case call.Function.Name == contextHistorySearchToolName:
 				result = s.executeContextHistorySearch(canonical, checkpoint, json.RawMessage(call.Function.Arguments))
+			case toolFilteredForTurn(call.Function.Name, toolFilter):
+				// The decision model removed this tool's category from the
+				// schema for the turn, but the model called it anyway. Answer
+				// with a soft error so the turn can continue and adapt.
+				result = tools.ExecutionResult{Tool: call.Function.Name, Error: &tools.ExecutionError{Code: "tool_filtered", Message: fmt.Sprintf("tool %q was filtered out for this turn and is unavailable right now", call.Function.Name)}}
 			default:
 				toolCtx := s.toolContext(ctx, turnID, scopes, generatedImages, generatedVideos)
 				toolCtx.ToolCallID = callID
