@@ -2107,7 +2107,8 @@ function finishStream(stream, outcome, message = "") {
 
 // A completed Plan-mode turn with a real final response gets two follow-up
 // actions: implement the plan, or implement it and commit the changes. Both
-// send an explicit text message while flipping the composer to General mode.
+// send an explicit text message while flipping the composer to Pair
+// Programming mode with a zero temperature.
 function isPlanTurn(stream) {
   return Boolean(stream && stream.agentModeId === "plan" && !stream.assistantDeleted && !stream.goalId);
 }
@@ -2133,7 +2134,7 @@ function renderPlanActions(stream) {
       }
       const sent = typeof binding?.onPlanAction === "function"
         ? binding.onPlanAction(message)
-        : sendMessage(binding?.log || stream.el.closest(".chat-log"), message, undefined, "general");
+        : sendMessage(binding?.log || stream.el.closest(".chat-log"), message, undefined, "pair-programming", { temperature: 0 });
       if (!sent) toast("Could not send the plan instruction.", { sticky: true });
     });
     actions.appendChild(button);

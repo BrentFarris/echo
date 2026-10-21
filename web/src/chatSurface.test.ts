@@ -35,7 +35,7 @@ const chat = vi.hoisted(() => {
 vi.mock("../js/chat.js", () => chat);
 vi.mock("../js/api.js", () => ({
   api: vi.fn((path: string) => Promise.resolve(path === "/api/agent-modes"
-    ? { modes: [{ id: "general", name: "General" }, { id: "goal", name: "Goal" }] }
+    ? { modes: [{ id: "general", name: "General" }, { id: "goal", name: "Goal" }, { id: "pair-programming", name: "Pair Programming" }] }
     : { settings: {} })),
 }));
 vi.mock("./code/editorApi", () => ({
@@ -351,19 +351,19 @@ describe("compact chat surface", () => {
     surface.dispose();
   });
 
-  it("forwards plan follow-up actions through General mode on the code surface", async () => {
+  it("forwards plan follow-up actions through Pair Programming mode on the code surface", async () => {
     const surface = mountChatSurface(host, { workspaceId: "workspace-plan", surface: "code" });
     await vi.waitFor(() => expect(chat.openWorkspaceSession).toHaveBeenCalled());
     const options = chat.openWorkspaceSession.mock.calls.at(-1)?.[2];
     expect(options.onPlanAction).toBeTypeOf("function");
     const mode = host.querySelector<HTMLSelectElement>("[data-code-chat-mode]")!;
-    expect(mode.value).toBe("general");
+    await vi.waitFor(() => expect([...mode.options].map((option) => option.value)).toContain("pair-programming"));
     expect(options.onPlanAction("Implement the plan")).toBe(true);
     expect(chat.sendMessage).toHaveBeenCalledWith(
-      expect.any(HTMLElement), "Implement the plan", undefined, "general", {},
+      expect.any(HTMLElement), "Implement the plan", undefined, "pair-programming", { temperature: 0 },
     );
-    // The mode selector was flipped back to General.
-    expect(mode.value).toBe("general");
+    // The mode selector was flipped to Pair Programming.
+    expect(mode.value).toBe("pair-programming");
     surface.dispose();
   });
 });

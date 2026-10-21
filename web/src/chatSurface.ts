@@ -397,11 +397,11 @@ export function mountChatSurface(host: HTMLElement, options: ChatSurfaceOptions)
   openWorkspaceSession(log, options.workspaceId, {
     surface,
     onPlanAction: (message: string) => {
-      modeSelect.value = "general";
+      modeSelect.value = "pair-programming";
       startingNewGoal = false;
       saveDraft();
       setBusy(streaming);
-      return sendMessage(log, message, modelSelect.value || undefined, "general", {});
+      return sendMessage(log, message, modelSelect.value || undefined, "pair-programming", { temperature: 0 });
     },
     onActivateFile: (ref: FileRef) => options.onActivateReference?.({
       workspaceId: options.workspaceId,

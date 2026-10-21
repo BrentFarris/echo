@@ -665,16 +665,16 @@ export function mount(root) {
       location.hash = codeFileRouteHash(ref);
     },
     onPlanAction: (message) => {
-      selectedAgentModeId = "general";
+      selectedAgentModeId = "pair-programming";
       startingNewGoal = false;
       updateModeLabel();
       saveCurrentComposer();
       setSendButtonBusy(streaming);
       const requestOptions = {
         ...(selectedThinking ? { reasoningEffort: selectedThinking } : {}),
-        temperature: selectedTemperature,
+        temperature: 0,
       };
-      return sendMessage(log, message, selectedModel || undefined, "general", requestOptions);
+      return sendMessage(log, message, selectedModel || undefined, "pair-programming", requestOptions);
     },
   });
 

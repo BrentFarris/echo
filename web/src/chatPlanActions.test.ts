@@ -107,7 +107,7 @@ describe("Plan-mode follow-up actions", () => {
     expect(onPlanAction).toHaveBeenCalledOnce();
   });
 
-  it("falls back to sendMessage with General mode when no callback is registered", () => {
+  it("falls back to sendMessage with Pair Programming mode and zero temperature when no callback is registered", () => {
     snapshot([planTurn()]);
     log.querySelector<HTMLButtonElement>(".chat-plan-actions button")!.click();
     expect(socket.send).toHaveBeenCalledWith(expect.objectContaining({
@@ -115,7 +115,8 @@ describe("Plan-mode follow-up actions", () => {
       workspaceId: "workspace-plan",
       chatId: "chat-plan",
       message: "Implement the plan",
-      agentModeId: "general",
+      agentModeId: "pair-programming",
+      temperature: 0,
     }));
   });
 
