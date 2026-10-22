@@ -347,6 +347,7 @@ func runCommand(ctx context.Context, dir string, output io.Writer, name string, 
 
 func sanitizeArguments(arguments []string) []string {
 	cleaned := make([]string, 0, len(arguments))
+	hasNoOpen := false
 	for _, argument := range arguments {
 		name := strings.TrimLeft(argument, "-")
 		if separator := strings.IndexByte(name, '='); separator >= 0 {
@@ -355,7 +356,17 @@ func sanitizeArguments(arguments []string) []string {
 		if name == "reset-auth" {
 			continue
 		}
+		if name == "no-open" {
+			hasNoOpen = true
+		}
 		cleaned = append(cleaned, argument)
+	}
+	if !hasNoOpen {
+		// A relaunch must not spawn a second app window: the window that
+		// requested the relaunch stays open and reloads itself once the
+		// replacement server is up. Only launching the exe separately opens
+		// the app.
+		cleaned = append(cleaned, "-no-open")
 	}
 	return cleaned
 }

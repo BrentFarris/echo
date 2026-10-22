@@ -125,9 +125,9 @@ describe("Development Echo update", () => {
     expect(root.querySelector<HTMLButtonElement>("[data-action=rebuild-relaunch]")!.disabled).toBe(true);
 
     finish({ instanceId: "old-instance", logPath: "C:\\Echo\\rebuild-relaunch.log" });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let index = 0; index < 10; index += 1) {
+      await Promise.resolve();
+    }
 
     expect(replacement.waitForReplacementServer).toHaveBeenCalledWith("old-instance");
     expect(replacement.reloadForReplacementServer).toHaveBeenCalledOnce();

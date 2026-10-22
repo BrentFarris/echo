@@ -1024,7 +1024,7 @@ function renderDevelopment() {
         <p class="settings-card-help">Rebuilds the Echo application and relaunches it. Requires the Echo source workspace to be added.</p>
         <button class="secondary-button danger-button" type="button" data-action="rebuild-relaunch" ${developmentBusy ? "disabled aria-busy=\"true\"" : ""}>${state.rebuild.running ? "Rebuilding Echo…" : "Rebuild &amp; Relaunch"}</button>
         <button class="secondary-button" type="button" data-action="relaunch-echo" ${developmentBusy ? "disabled aria-busy=\"true\"" : ""}>${state.relaunch.running ? "Relaunching Echo…" : "Relaunch"}</button>
-        <p class="field-help">Relaunches the currently running Echo binary without rebuilding it.</p>
+        <p class="field-help">Relaunches the currently running Echo binary without rebuilding it. This window reloads when Echo is back; a second window is not opened.</p>
         ${state.rebuild.status ? `<p class="settings-status ${rebuildError ? "is-error" : ""}" data-rebuild-status>${esc(state.rebuild.status)}</p>` : ""}
         ${state.rebuild.logPath ? `<p class="field-help">Log: <code>${esc(state.rebuild.logPath)}</code></p>` : ""}
         ${state.relaunch.status ? `<p class="settings-status ${relaunchError ? "is-error" : ""}" data-relaunch-status>${esc(state.relaunch.status)}</p>` : ""}

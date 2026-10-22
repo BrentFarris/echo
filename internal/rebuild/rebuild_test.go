@@ -109,7 +109,7 @@ func TestBuildAndPrepareRunsFrontendThenServerAndSanitizesRelaunch(t *testing.T)
 	if launched.ProcessID != 42 {
 		t.Fatalf("launcher pid = %d", launched.ProcessID)
 	}
-	if strings.Join(launched.Arguments, "|") != "-port|4872|-data=C:\\Echo Data\\echo.json" {
+	if strings.Join(launched.Arguments, "|") != "-port|4872|-data=C:\\Echo Data\\echo.json|-no-open" {
 		t.Fatalf("launcher arguments = %#v", launched.Arguments)
 	}
 	if result.SourcePath != source || result.LogPath != filepath.Join(dataDir, "rebuild-relaunch.log") {
@@ -120,9 +120,15 @@ func TestBuildAndPrepareRunsFrontendThenServerAndSanitizesRelaunch(t *testing.T)
 	}
 }
 
-func TestSanitizeArgumentsDropsResetAuthOnly(t *testing.T) {
+func TestSanitizeArgumentsAlwaysSuppressesReopenOnRelaunch(t *testing.T) {
 	got := sanitizeArguments([]string{"-port", "4872", "--reset-auth"})
-	if strings.Join(got, "|") != "-port|4872" {
+	if strings.Join(got, "|") != "-port|4872|-no-open" {
+		t.Fatalf("sanitizeArguments = %#v", got)
+	}
+
+	// An explicit -no-open must not be duplicated.
+	got = sanitizeArguments([]string{"-port", "4872", "-no-open"})
+	if strings.Join(got, "|") != "-port|4872|-no-open" {
 		t.Fatalf("sanitizeArguments = %#v", got)
 	}
 }
@@ -324,7 +330,7 @@ func TestRelaunchOnlyReusesRunningBinaryWithoutBuilding(t *testing.T) {
 	if launched.ProcessID != 99 || launched.StagedPath != launched.BinaryPath {
 		t.Fatalf("launcher spec = %#v", launched)
 	}
-	if strings.Join(launched.Arguments, "|") != "-port|4872" {
+	if strings.Join(launched.Arguments, "|") != "-port|4872|-no-open" {
 		t.Fatalf("launcher arguments = %#v", launched.Arguments)
 	}
 	if launched.WorkingDir == "" || result.BinaryPath != launched.BinaryPath || result.LogPath != filepath.Join(dataDir, "rebuild-relaunch.log") {

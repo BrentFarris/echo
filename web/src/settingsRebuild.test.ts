@@ -53,6 +53,14 @@ describe("Development rebuild and relaunch", () => {
     replacement.reloadForReplacementServer.mockClear();
   });
 
+  // The relaunch handlers await several promises in sequence after the POST
+  // resolves; flush enough microtask ticks for the whole chain to settle.
+  const flush = async () => {
+    for (let index = 0; index < 10; index += 1) {
+      await Promise.resolve();
+    }
+  };
+
   it("builds, waits for the new server identity, and reloads", async () => {
     let finish!: (value: { instanceId: string; logPath: string }) => void;
     api.post.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
@@ -65,9 +73,7 @@ describe("Development rebuild and relaunch", () => {
     expect(root.querySelector("[data-rebuild-status]")?.textContent).toContain("Building");
 
     finish({ instanceId: "old-instance", logPath: "C:\\Echo\\rebuild-relaunch.log" });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
 
     expect(replacement.waitForReplacementServer).toHaveBeenCalledWith("old-instance");
     expect(replacement.reloadForReplacementServer).toHaveBeenCalledOnce();
@@ -107,9 +113,7 @@ describe("Development rebuild and relaunch", () => {
     expect(root.querySelector("[data-relaunch-status]")?.textContent).toContain("relaunch");
 
     finish({ instanceId: "old-instance" });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
 
     expect(replacement.waitForReplacementServer).toHaveBeenCalledWith("old-instance");
     expect(replacement.reloadForReplacementServer).toHaveBeenCalledOnce();
