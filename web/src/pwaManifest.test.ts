@@ -21,6 +21,7 @@ type EchoManifest = {
   background_color: string;
   theme_color: string;
   prefer_related_applications: boolean;
+  protocol_handlers?: { protocol: string; url: string }[];
   icons: ManifestIcon[];
 };
 
@@ -52,6 +53,13 @@ describe("Echo PWA manifest", () => {
       theme_color: "#f7f3f1",
       prefer_related_applications: false,
     });
+
+    // The echo: protocol handler is what lets the echo process open the
+    // installed PWA on startup (echo://open?port=...) instead of a browser
+    // tab. It must stay registered in the manifest.
+    expect(manifest.protocol_handlers).toEqual([
+      { protocol: "echo", url: "/?echo=%s" },
+    ]);
 
     expect(manifest.icons).toEqual([
       { src: "/icons/echo-48.png", sizes: "48x48", type: "image/png", purpose: "any" },

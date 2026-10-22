@@ -13,6 +13,7 @@ import { startDebugStopNotifications } from "../src/debug/debugNotifications.ts"
 import { recordNavigationRoute, routePathFromHash, shouldReuseCodeView } from "../src/navigation.ts";
 import { initializePluginHost, mountPluginPage, resetPluginHost } from "../src/plugins/pluginHost.ts";
 import { installPrimaryNavShortcuts } from "../src/primaryNavShortcuts.ts";
+import { applyProtocolLaunch } from "../src/protocolLaunch.ts";
 
 // Route table: hash path -> () => Promise<view module>.
 // Views are lazy-loaded so the shell stays light.
@@ -30,6 +31,10 @@ let mountedRoute = null;
 let renderGeneration = 0;
 
 installPrimaryNavShortcuts(document);
+
+// When Echo is opened through its echo:// scheme (installed PWA), clean the
+// launch parameter off the URL before the router runs.
+applyProtocolLaunch();
 
 function currentRoute() {
   return routePathFromHash(location.hash);

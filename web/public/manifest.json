@@ -6,6 +6,12 @@
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "protocol_handlers": [
+    {
+      "protocol": "echo",
+      "url": "/?echo=%s"
+    }
+  ],
   "background_color": "#f7f3f1",
   "theme_color": "#f7f3f1",
   "prefer_related_applications": false,

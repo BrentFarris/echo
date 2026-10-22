@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/brent/echo/internal/launch"
 	"github.com/brent/echo/internal/server"
 )
 
@@ -25,6 +26,7 @@ func main() {
 	dataPath := flag.String("data", "", "path to Echo's application-data JSON (defaults to the platform config directory)")
 	resetAuth := flag.Bool("reset-auth", false, "clear the owner password and remembered sessions")
 	safeMode := flag.Bool("safe-mode", false, "start with all optional plugins disabled")
+	noOpen := flag.Bool("no-open", false, "do not open the Echo app or browser on startup")
 	flag.Parse()
 
 	addr := fmt.Sprintf(":%d", *port)
@@ -54,6 +56,13 @@ func main() {
 		log.Printf("Echo web server listening on http://localhost:%d", *port)
 		errCh <- srv.ListenAndServe()
 	}()
+
+	// Open the installed Echo PWA (echo:// scheme) once the server answers,
+	// falling back to the default browser when the PWA is not installed.
+	// launch.Open logs its own failures and never blocks startup.
+	if !*noOpen {
+		go launch.Open(*port)
+	}
 
 	// Wait for an interrupt or a fatal serve error.
 	stop := make(chan os.Signal, 1)

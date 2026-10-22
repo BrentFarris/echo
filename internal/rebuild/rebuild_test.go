@@ -120,6 +120,13 @@ func TestBuildAndPrepareRunsFrontendThenServerAndSanitizesRelaunch(t *testing.T)
 	}
 }
 
+func TestSanitizeArgumentsDropsResetAuthOnly(t *testing.T) {
+	got := sanitizeArguments([]string{"-port", "4872", "--reset-auth"})
+	if strings.Join(got, "|") != "-port|4872" {
+		t.Fatalf("sanitizeArguments = %#v", got)
+	}
+}
+
 func TestBuildFailureDoesNotPrepareLauncher(t *testing.T) {
 	coordinator := NewCoordinator()
 	coordinator.run = func(_ context.Context, _ string, _ io.Writer, _ string, args ...string) error {
