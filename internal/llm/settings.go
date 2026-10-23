@@ -42,8 +42,6 @@ const (
 	InteractionChat            Interaction = "chat"
 	InteractionResearch        Interaction = "research"
 	InteractionVision          Interaction = "vision"
-	InteractionKanbanDecompose Interaction = "kanbanDecompose"
-	InteractionKanban          Interaction = "kanban"
 	InteractionInlineCode      Interaction = "inlineCode"
 )
 
@@ -73,12 +71,10 @@ type LLMEndpoint struct {
 }
 
 type EndpointSelection struct {
-	Chat            string `json:"chat"`
-	Research        string `json:"research"`
-	Vision          string `json:"vision"`
-	KanbanDecompose string `json:"kanbanDecompose"`
-	Kanban          string `json:"kanban"`
-	InlineCode      string `json:"inlineCode"`
+	Chat       string `json:"chat"`
+	Research   string `json:"research"`
+	Vision     string `json:"vision"`
+	InlineCode string `json:"inlineCode"`
 }
 
 type Settings struct {
@@ -115,8 +111,6 @@ type Settings struct {
 	DisablePlanQuestionSounds          bool              `json:"disablePlanQuestionSounds,omitempty"`
 	EnablePlanQuestionNotifications    *bool             `json:"enablePlanQuestionNotifications,omitempty"`
 	EnableChatCompletionNotifications  *bool             `json:"enableChatCompletionNotifications,omitempty"`
-	EnableKanbanCompleteNotifications  bool              `json:"enableKanbanCompleteNotifications,omitempty"`
-	LimitKanbanConcurrency             bool              `json:"limitKanbanConcurrency,omitempty"`
 	ResearchAgentConcurrency           int               `json:"researchAgentConcurrency"`
 	MaxChatRounds                      int               `json:"maxChatRounds,omitempty"`
 	DisableSourceControlSplitDiffView  *bool             `json:"disableSourceControlSplitDiffView,omitempty"`
@@ -305,10 +299,6 @@ func (s Settings) ForInteraction(interaction Interaction) Settings {
 		endpointID = s.EndpointSelection.Research
 	case InteractionVision:
 		endpointID = s.EndpointSelection.Vision
-	case InteractionKanbanDecompose:
-		endpointID = s.EndpointSelection.KanbanDecompose
-	case InteractionKanban:
-		endpointID = s.EndpointSelection.Kanban
 	case InteractionInlineCode:
 		endpointID = s.EndpointSelection.InlineCode
 	}
@@ -463,8 +453,6 @@ func defaultEndpointSelection(endpointID string) EndpointSelection {
 		Chat:            endpointID,
 		Research:        endpointID,
 		Vision:          endpointID,
-		KanbanDecompose: endpointID,
-		Kanban:          endpointID,
 		InlineCode:      endpointID,
 	}
 }
@@ -710,8 +698,6 @@ func normalizeEndpointSelection(selection EndpointSelection, endpoints []LLMEndp
 	selection.Chat = normalizeSelectedEndpointID(selection.Chat, fallback, endpoints)
 	selection.Research = normalizeSelectedEndpointID(selection.Research, selection.Chat, endpoints)
 	selection.Vision = normalizeSelectedEndpointID(selection.Vision, selection.Chat, endpoints)
-	selection.Kanban = normalizeSelectedEndpointID(selection.Kanban, fallback, endpoints)
-	selection.KanbanDecompose = normalizeSelectedEndpointID(selection.KanbanDecompose, selection.Kanban, endpoints)
 	selection.InlineCode = normalizeSelectedEndpointID(selection.InlineCode, fallback, endpoints)
 	return selection
 }

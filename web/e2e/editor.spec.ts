@@ -167,7 +167,7 @@ test("first-run auth and the real Monaco filesystem workflow", async ({ page }) 
     settings.endpoints = [endpoint];
     settings.endpointSelection = {
       chat: endpoint.id, research: endpoint.id, vision: endpoint.id,
-      kanbanDecompose: endpoint.id, kanban: endpoint.id, inlineCode: endpoint.id,
+      inlineCode: endpoint.id,
     };
     const saved = await fetch("/api/settings", {
       method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ settings }),

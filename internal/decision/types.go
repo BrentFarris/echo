@@ -3,7 +3,7 @@
 // state and returns a probability distribution for each possible outcome.
 //
 // The package is intentionally self-contained: it depends only on the Go
-// standard library so any Echo subsystem (chat, tools, kanban, notifications)
+// standard library so any Echo subsystem (chat, tools, notifications)
 // can call it without creating import cycles or scattering business logic.
 // Consumers use the fluent builder (Client.Ask) and the typed accessors on
 // Response/Answer instead of hand-rolling request JSON.
