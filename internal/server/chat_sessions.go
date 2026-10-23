@@ -4415,6 +4415,9 @@ func (s *Server) agentModeSystemMessageWithSourceControl(workspace workspaces.Wo
 	var prompt strings.Builder
 	prompt.WriteString(sandboxSystemGuidance(workspace))
 	prompt.WriteString("You are Echo, an AI assistant working inside the user's active workspace. Use the available tools when workspace facts or changes are needed. Carry out requested implementation work directly, verify meaningful changes, and keep the final response concrete and concise.")
+	if mode.ID != agentmodes.PlanID {
+		prompt.WriteString("\n\nReopen every file you write. Check it against the source before you call it done.")
+	}
 	if len(workspace.Folders) > 0 {
 		prompt.WriteString("\n\nWorkspace folders are addressed by their labels: ")
 		roots := workspaceToolRoots(workspace)
