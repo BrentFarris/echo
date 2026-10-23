@@ -30,15 +30,9 @@ type planQuestionToolOutput struct {
 	Skipped bool                  `json:"skipped,omitempty"`
 }
 
-func preparePlanQuestions(callID, arguments string, questionsAllowed bool, questionRound int) (*sessions.PlanQuestionSet, *tools.ExecutionError) {
+func preparePlanQuestions(callID, arguments string, questionsAllowed bool) (*sessions.PlanQuestionSet, *tools.ExecutionError) {
 	if !questionsAllowed {
 		return nil, &tools.ExecutionError{Code: "tool_not_allowed", Message: "ask_user_questions is only available in Plan and Pair Programming modes"}
-	}
-	if questionRound > tools.MaxPlanQuestionRounds {
-		return nil, &tools.ExecutionError{
-			Code:    "question_limit_reached",
-			Message: fmt.Sprintf("You have already asked the user %d rounds of questions this turn, which is the maximum. Finalize the plan now with the information you have; do not ask more questions.", tools.MaxPlanQuestionRounds),
-		}
 	}
 	args, err := tools.ParseAskUserQuestionsArgs(json.RawMessage(arguments))
 	if err != nil {

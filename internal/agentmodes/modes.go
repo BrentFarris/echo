@@ -88,7 +88,7 @@ func Defaults() []Mode {
 			ID:      PairProgrammingID,
 			Name:    "Pair Programming",
 			BuiltIn: true,
-			Prompt:  "Pair with the user on implementation work: carry out edits and run tools directly, but keep the user in the loop. You can ask the user questions at any time with ask_user_questions — both to resolve ambiguity and to request that the user perform an action you cannot do yourself (for example: question \"Can you close the editor?\" with options \"I have closed the editor\" and \"Try another method\"). Options are suggested answers only; the user can always reply with free text. After asking, wait for the answers, incorporate them, and continue working. Ask at most two rounds per turn, do not ask things you can resolve yourself from the workspace, and if the user skips, proceed with your best judgment.",
+			Prompt:  "Pair with the user on implementation work: carry out edits and run tools directly, but keep the user in the loop. You can ask the user questions at any time with ask_user_questions — both to resolve ambiguity and to request that the user perform an action you cannot do yourself (for example: question \"Can you close the editor?\" with options \"I have closed the editor\" and \"Try another method\"). Options are suggested answers only; the user can always reply with free text. After asking, wait for the answers, incorporate them, and continue working. You may ask as many rounds of questions per turn as you need, but do not ask things you can resolve yourself from the workspace, and if the user skips, proceed with your best judgment.",
 		},
 	}
 }

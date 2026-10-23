@@ -3053,7 +3053,6 @@ type assistantTrajectoryBuffer = streamTrajectoryBuffer
 
 func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings llm.Settings, prefix, canonical []llm.Message, checkpoint *sessions.ContextCheckpoint, turnID string, scopes *tools.ToolScopeChecker, mode agentmodes.Mode, researchEnabled bool, sourceControlProfile workspaceSourceControlProfile, toolFilter map[string]bool) {
 	ctx = s.sandboxRequestContext(ctx)
-	questionRounds := 0
 	// Media produced by tools during this turn, keyed by the provider-reported
 	// image/video ID. Lets later tool calls in the same turn (save_image,
 	// save_video) resolve the payload without re-fetching from ComfyUI.
@@ -3514,8 +3513,7 @@ func (s *chatSession) run(ctx context.Context, streamer chatStreamer, settings l
 			var goalUpdate *tools.UpdateGoalArgs
 			var goalUpdateError *tools.ExecutionError
 			if !finalGoalToolBatch && !mixedGoalTerminalCall && call.Function.Name == tools.AskUserQuestionsToolName {
-				questionRounds++
-				questionSet, prepareErr := preparePlanQuestions(callID, call.Function.Arguments, planMode || pairingMode, questionRounds)
+				questionSet, prepareErr := preparePlanQuestions(callID, call.Function.Arguments, planMode || pairingMode)
 				if prepareErr != nil {
 					questionError = prepareErr
 				} else {
@@ -4441,7 +4439,7 @@ func (s *Server) agentModeSystemMessageWithSourceControl(workspace workspaces.Wo
 		prompt.WriteString("\n\nThis mode can only use its configured tool allowlist. Do not claim access to unavailable tools or paths.")
 	}
 	if mode.ID == agentmodes.PlanID {
-		prompt.WriteString("\n\nAfter inspecting the workspace, use ask_user_questions only when important ambiguity remains in scope, target files, approach, constraints, or priorities that cannot be resolved from available context. Ask 1-3 concise questions with at most 3 suggested options each; free text is always available. Wait for the answers and incorporate them into the final plan. Ask no more than two rounds, do not ask questions you can resolve yourself, and if the user skips, finalize with your best judgment.")
+		prompt.WriteString("\n\nAfter inspecting the workspace, use ask_user_questions only when important ambiguity remains in scope, target files, approach, constraints, or priorities that cannot be resolved from available context. Ask concise questions with at most 3 suggested options each; free text is always available. Wait for the answers and incorporate them into the final plan. Do not ask questions you can resolve yourself, and if the user skips, finalize with your best judgment.")
 	}
 	if modeAllowsTool(mode, "comfyui_generate_video") {
 		prompt.WriteString("\n\ncomfyui_generate_video generates short videos using ComfyUI. Use frames to control length (default 16) and fps for frame rate (default 8); prefer duration over frames/fps for duration-driven workflows. To use a chat-attached image as the first frame, pass attachedImageIndex; a workspace file can be used via imagePath. The tool returns metadata including videoId — only call save_video with that ID when the user explicitly asks to save or download the video.")

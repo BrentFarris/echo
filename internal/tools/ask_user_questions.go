@@ -12,15 +12,13 @@ import (
 // interactive answers), so this registration only exposes the schema and name.
 const AskUserQuestionsToolName = "ask_user_questions"
 
-// maxPlanQuestionsPerCall and maxPlanQuestionOptions bound the structured
-// question payload the model may emit in a single ask_user_questions call.
+// maxPlanQuestionOptions bounds the structured question payload the model may
+// emit in a single ask_user_questions call.
 const (
-	MaxPlanQuestionsPerCall  = 3
 	MaxPlanQuestionOptions   = 3
 	maxPlanQuestionIDLen     = 64
 	maxPlanQuestionTextLen   = 500
 	maxPlanQuestionOptionLen = 200
-	MaxPlanQuestionRounds    = 2
 	MaxPlanAnswerTextLen     = 2000
 )
 
@@ -42,7 +40,7 @@ func init() {
 	Register(ToolFunc{
 		Meta: Metadata{
 			Name:        AskUserQuestionsToolName,
-			Description: "Ask the user 1-3 structured clarifying questions (each with up to 3 suggested options; free-text is always available) when high-impact ambiguities in scope, target files, approach, constraints, or priorities cannot be resolved by reading the workspace, or to request that the user perform an action for you (the options then confirm completion or ask you to try another method). Answers arrive as the tool result and the user can skip. Plan and Pair Programming modes only.",
+			Description: "Ask the user structured clarifying questions (each with up to 3 suggested options; free-text is always available) when high-impact ambiguities in scope, target files, approach, constraints, or priorities cannot be resolved by reading the workspace, or to request that the user perform an action for you (the options then confirm completion or ask you to try another method). Answers arrive as the tool result and the user can skip. Plan and Pair Programming modes only.",
 			Parameters: Schema{
 				"type":                 "object",
 				"additionalProperties": false,
@@ -50,9 +48,8 @@ func init() {
 				"properties": map[string]any{
 					"questions": map[string]any{
 						"type":        "array",
-						"description": "1-3 clarifying questions to ask the user.",
+						"description": "The clarifying questions to ask the user.",
 						"minItems":    1,
-						"maxItems":    MaxPlanQuestionsPerCall,
 						"items": map[string]any{
 							"type":                 "object",
 							"additionalProperties": false,
@@ -99,9 +96,6 @@ func ParseAskUserQuestionsArgs(raw json.RawMessage) (AskUserQuestionsArgs, error
 	}
 	if len(args.Questions) == 0 {
 		return args, fmt.Errorf("ask_user_questions requires at least one question")
-	}
-	if len(args.Questions) > MaxPlanQuestionsPerCall {
-		return args, fmt.Errorf("ask_user_questions supports at most %d questions per call", MaxPlanQuestionsPerCall)
 	}
 	seen := make(map[string]bool, len(args.Questions))
 	for _, question := range args.Questions {

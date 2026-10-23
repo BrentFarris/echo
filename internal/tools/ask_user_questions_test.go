@@ -33,12 +33,6 @@ func TestParseAskUserQuestionsArgs(t *testing.T) {
 	invalid := []any{
 		map[string]any{},
 		map[string]any{"questions": []any{}},
-		map[string]any{"questions": []any{
-			map[string]any{"id": "1", "question": "One"},
-			map[string]any{"id": "2", "question": "Two"},
-			map[string]any{"id": "3", "question": "Three"},
-			map[string]any{"id": "4", "question": "Four"},
-		}},
 		map[string]any{"questions": []any{map[string]any{"question": "Missing ID"}}},
 		map[string]any{"questions": []any{map[string]any{"id": "q"}}},
 		map[string]any{"questions": []any{
