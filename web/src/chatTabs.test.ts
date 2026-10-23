@@ -340,7 +340,7 @@ describe("multi-chat tab UI", () => {
     editor.textContent = "Start a fresh goal";
     root.querySelector<HTMLButtonElement>(".send-button")!.click();
     expect(chat.startGoal).toHaveBeenCalledWith(
-      expect.any(HTMLElement), "Start a fresh goal", "model-fast", { images: [], videos: [] },
+      expect.any(HTMLElement), "Start a fresh goal", "model-fast", { images: [], videos: [], temperature: 0.6 },
     );
   });
 

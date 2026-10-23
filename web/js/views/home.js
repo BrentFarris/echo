@@ -667,7 +667,11 @@ export function mount(root) {
     onPlanAction: (message) => {
       selectedAgentModeId = "pair-programming";
       startingNewGoal = false;
+      // Keep the composer temperature in sync with the zero-temperature
+      // request so the mode dropdown reflects it instead of the stale value.
+      selectedTemperature = 0;
       updateModeLabel();
+      syncTemperatureControl();
       saveCurrentComposer();
       setSendButtonBusy(streaming);
       const requestOptions = {
