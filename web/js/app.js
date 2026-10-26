@@ -23,6 +23,7 @@ const routes = {
   "/settings": () => import("./views/settings.js"),
   "/code": () => import("../src/code/codeView.ts"),
   "/sandbox": () => import("../src/sandbox/sandboxView.ts"),
+  "/map": () => import("../src/echoMapView.ts"),
 };
 
 const app = document.getElementById("app");

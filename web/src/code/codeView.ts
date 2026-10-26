@@ -26,10 +26,9 @@ import { isMarkdownPath, MarkdownPreview, restoreMarkdownViewState } from "./mar
 import "./markdownPreview.css";
 import {
   CODE_ROUTE, chatCompletionTargetFromHash, chatTargetRouteHash, codeOpenTargetFromHash, codeRouteHash,
-  codeSidebarFromHash, routePathFromHash, type ChatCompletionTarget, type ChatTarget, type CodeSidebar,
+  codeSidebarFromHash, echoMapRouteHash, routePathFromHash, type ChatCompletionTarget, type ChatTarget, type CodeSidebar,
 } from "../navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
-import { installChatMap } from "../chatMap";
 import { setSourceControlBadgeCount } from "../gitBadge";
 import { randomUUID } from "../randomUUID";
 import {
@@ -480,7 +479,9 @@ class CodeView {
 
   private installNavigation(): void {
     const signal = this.abort.signal;
-    installChatMap(this.root, { signal, navigate: (target) => this.navigateToChat(target) });
+    this.root.querySelectorAll("[data-nav=map]").forEach((button) => {
+      button.addEventListener("click", () => { location.hash = echoMapRouteHash(); }, { signal });
+    });
     this.root.querySelectorAll("[data-nav=chat]").forEach((button) => {
       button.addEventListener("click", () => { location.hash = "#/home"; }, { signal });
     });

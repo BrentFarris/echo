@@ -13,9 +13,8 @@ import { hasDirtySessions } from "../../src/code/persistence.ts";
 import { indentationDefaults } from "../../src/code/indentation.ts";
 import { lineEndingsOnSave } from "../../src/code/lineEndings.ts";
 import { columnGuideSettings, guideColumnsError, parseGuideColumns } from "../../src/code/columnGuides.ts";
-import { installChatMap } from "../../src/chatMap.ts";
 import { getEchoUpdateSnapshot, refreshEchoUpdateStatus, syncEchoUpdateBadges } from "../../src/echoUpdate.ts";
-import { chatTargetRouteHash, codeRouteHash, navigateBackFromSettings } from "../../src/navigation.ts";
+import { codeRouteHash, echoMapRouteHash, navigateBackFromSettings } from "../../src/navigation.ts";
 import { renderMobilePrimaryNav } from "../../src/primaryNav.ts";
 import { reloadForReplacementServer, waitForReplacementServer } from "../../src/rebuildRelaunch.ts";
 import {
@@ -1282,9 +1281,10 @@ function bindEvents(root) {
     });
   };
 
-  disposeSettingsChatMap = installChatMap(root, {
-    navigate: (target) => leaveSettings(chatTargetRouteHash(target)),
-  });
+  const mapButtons = [...root.querySelectorAll("[data-nav=map]")];
+  const onMapClick = () => { void leaveSettings(echoMapRouteHash()); };
+  mapButtons.forEach((button) => button.addEventListener("click", onMapClick));
+  disposeSettingsChatMap = () => mapButtons.forEach((button) => button.removeEventListener("click", onMapClick));
 
   root.querySelectorAll("[data-nav='chat']").forEach((button) => {
     button.addEventListener("click", () => { void leaveSettings("#/home"); });

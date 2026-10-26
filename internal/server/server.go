@@ -519,6 +519,7 @@ func (s *Server) routes() http.Handler {
 	// Workspace endpoints.
 	mux.HandleFunc("GET /api/workspaces", s.handleGetWorkspaces)
 	mux.HandleFunc("GET /api/chats", s.handleGetChats)
+	mux.HandleFunc("GET /api/echo-map", s.handleGetEchoMap)
 	mux.HandleFunc("POST /api/workspaces", s.handleCreateWorkspace)
 	mux.HandleFunc("PUT /api/workspaces/active", s.handleSetActiveWorkspace)
 	mux.HandleFunc("PUT /api/workspaces/{id}", s.handleUpdateWorkspace)

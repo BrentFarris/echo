@@ -14,13 +14,12 @@ import {
 } from "../chat.js";
 import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
 import {
-  chatCompletionTargetFromHash, codeFileRouteHash, codeRouteHash,
+  chatCompletionTargetFromHash, codeFileRouteHash, codeRouteHash, echoMapRouteHash,
 } from "../../src/navigation.ts";
 import { prepareCompletionNotificationPermission } from "../../src/completionNotifications.ts";
 import { preparePlanQuestionNotificationPermission } from "../../src/planQuestionNotifications.ts";
 import { isCoarsePointer } from "../../src/device.ts";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../../src/primaryNav.ts";
-import { installChatMap } from "../../src/chatMap.ts";
 import { watchGitBadge } from "../../src/gitBadge.ts";
 import { mountSpeechRecognition } from "../../src/speechRecognition.ts";
 import { showContextMenu, toast } from "../../src/code/ui.ts";
@@ -811,7 +810,9 @@ export function mount(root) {
   const onDebugClick = () => { location.hash = codeRouteHash("debug"); };
   debugButtons.forEach((button) => button.addEventListener("click", onDebugClick));
   sandboxButtons.forEach((button) => button.addEventListener("click", () => { location.hash = "#/sandbox"; }));
-  const disposeChatMap = installChatMap(root);
+  const mapButtons = [...root.querySelectorAll("[data-nav=map]")];
+  const onMapClick = () => { location.hash = echoMapRouteHash(); };
+  mapButtons.forEach((button) => button.addEventListener("click", onMapClick));
 
   // Workspace selector: open the dropdown, and the "+ Add a workspace" modal.
   const workspaceTriggers = [...root.querySelectorAll(".workspace-dropdown-trigger")];
@@ -1897,7 +1898,7 @@ export function mount(root) {
     codeButtons.forEach((button) => button.removeEventListener("click", onCodeClick));
     searchButtons.forEach((button) => button.removeEventListener("click", onSearchClick));
     gitButtons.forEach((button) => button.removeEventListener("click", onGitClick));
-    disposeChatMap();
+    mapButtons.forEach((button) => button.removeEventListener("click", onMapClick));
     workspaceTriggers.forEach((trigger) => trigger.removeEventListener("click", onWorkspaceTriggerClick));
     if (closeWorkspaceDropdown) {
       closeWorkspaceDropdown();

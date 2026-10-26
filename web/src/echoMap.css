@@ -1,0 +1,302 @@
+/* Echo Map dashboard — replaces the former chat map popup. */
+
+.echo-map-shell {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: var(--color-bg);
+  overflow: hidden;
+}
+
+.echo-map-main {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: clamp(18px, 2.4vw, 34px);
+  background:
+    radial-gradient(circle at 18% -10%, color-mix(in srgb, var(--color-accent) 12%, transparent), transparent 32%),
+    var(--color-bg);
+}
+
+.echo-map-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.echo-map-header h1 {
+  margin: 2px 0 0;
+  font-size: clamp(24px, 3vw, 38px);
+  letter-spacing: -0.03em;
+}
+
+.echo-map-eyebrow {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+}
+
+.echo-map-subtitle {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.echo-map-content {
+  display: grid;
+  gap: 22px;
+  min-width: 0;
+}
+
+.echo-map-loading,
+.echo-map-section-empty {
+  margin: 0;
+  padding: 13px;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.echo-map-warning {
+  margin: 0;
+  padding: 11px 13px;
+  border: 1px solid color-mix(in srgb, var(--color-warning) 40%, var(--color-border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-warning) 8%, var(--color-surface));
+  color: var(--color-warning);
+  font-size: 12px;
+}
+
+.echo-map-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid color-mix(in srgb, var(--color-danger) 40%, var(--color-border));
+  border-radius: 10px;
+  color: var(--color-danger);
+  font-size: 13px;
+}
+
+.echo-map-error p { margin: 0; }
+
+.echo-map-section {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.echo-map-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.echo-map-section-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.echo-map-section-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  padding: 1px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.echo-map-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.echo-map-card {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+}
+
+.echo-map-card-pending_questions {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.echo-map-card-workspace {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.echo-map-workspace-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.echo-map-workspace-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.echo-map-card-workspace-name {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+}
+
+.echo-map-card-surface {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.echo-map-card-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.echo-map-card-close:hover,
+.echo-map-card-close:focus-visible {
+  background: var(--color-surface-muted);
+  color: var(--color-danger);
+  outline: none;
+}
+
+.echo-map-card-title {
+  overflow: hidden;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.echo-map-card-title:hover,
+.echo-map-card-title:focus-visible {
+  color: var(--color-accent);
+  outline: none;
+}
+
+/* Fixed-size scrolling turns area keeps every card uniform. */
+.echo-map-card-turns {
+  height: 300px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  padding: 8px 10px;
+}
+
+.echo-map-card-empty {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.echo-map-card-pending {
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface));
+  color: var(--color-accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.echo-map-card-pending:hover,
+.echo-map-card-pending:focus-visible {
+  background: color-mix(in srgb, var(--color-accent) 20%, var(--color-surface));
+  outline: none;
+}
+
+.echo-map-question-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Compact chat rendering inside the card turns area. */
+.echo-map-card-turns .chat-message { margin: 0 0 10px; }
+.echo-map-card-turns .chat-message:last-child { margin-bottom: 0; }
+.echo-map-card-turns .chat-message-content { font-size: 12.5px; }
+.echo-map-card-turns .chat-message-content > :first-child { margin-top: 0; }
+.echo-map-card-turns .chat-message-content > :last-child { margin-bottom: 0; }
+.echo-map-card-turns .chat-activity-item { font-size: 12px; }
+.echo-map-card-turns .chat-code-block { margin: 8px 0; }
+.echo-map-card-turns .chat-code-block pre {
+  max-height: 200px;
+  overflow: auto;
+  margin: 0;
+}
+
+@media (max-width: 720px) {
+  .echo-map-shell { display: block; padding-bottom: 62px; overflow: auto; }
+  .echo-map-shell > .left-nav { display: none; }
+  .echo-map-main { min-height: calc(100dvh - 62px); padding: 14px; overflow: visible; }
+  .echo-map-shell > .mobile-bottom-nav { position: fixed; inset: auto 0 0; z-index: 20; }
+  .echo-map-grid { grid-template-columns: minmax(0, 1fr); }
+  .echo-map-card-turns { height: 230px; }
+  .echo-map-header { align-items: flex-start; }
+}

@@ -1,7 +1,6 @@
 import { post } from "../../js/api.js";
 import * as socket from "../../js/ws.js";
-import { codeRouteHash } from "../navigation";
-import { installChatMap } from "../chatMap";
+import { codeRouteHash, echoMapRouteHash } from "../navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 import {
   clearPluginCatalog,
@@ -329,10 +328,8 @@ export async function mountPluginPage(root: HTMLElement, pluginId: string, viewI
   }
   main.replaceChildren(context.iframe);
   bindPageCoreNavigation(root);
-  const disposeChatMap = installChatMap(root);
   return { unmount: () => {
     disposed = true;
-    disposeChatMap();
     if (!context) return;
     frames.delete(context);
     context.iframe.remove();
@@ -350,6 +347,7 @@ function bindPageCoreNavigation(root: HTMLElement): void {
     else if (nav === "git") location.hash = codeRouteHash("git");
     else if (nav === "debug") location.hash = codeRouteHash("debug");
     else if (nav === "sandbox") location.hash = "#/sandbox";
+    else if (nav === "map") location.hash = echoMapRouteHash();
   }));
 }
 

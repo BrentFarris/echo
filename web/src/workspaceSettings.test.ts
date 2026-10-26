@@ -63,7 +63,6 @@ const api = vi.hoisted(() => ({
 vi.mock("../js/api.js", () => api);
 vi.mock("./auth/authGate.ts", () => ({ logout: vi.fn() }));
 vi.mock("./code/persistence.ts", () => ({ hasDirtySessions: vi.fn(async () => false) }));
-vi.mock("./chatMap.ts", () => ({ installChatMap: vi.fn(() => vi.fn()) }));
 vi.mock("./echoUpdate.ts", () => ({
   getEchoUpdateSnapshot: () => ({ status: null, checking: false, error: "" }),
   refreshEchoUpdateStatus: vi.fn(), syncEchoUpdateBadges: vi.fn(),
