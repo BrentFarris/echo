@@ -75,6 +75,10 @@ type chatResearchRun struct {
 	updates chan struct{}
 	closed  bool
 	wg      sync.WaitGroup
+
+	// workerPathClaims maps claimed workspace paths to the owning worker
+	// agent ID (Phase 2 of docs/worker-subagents-design.md). Guarded by mu.
+	workerPathClaims map[string]string
 }
 
 type chatResearchAgentRun struct {
@@ -379,6 +383,7 @@ func (r *chatResearchRun) Close() {
 		if agent.currentCancel != nil {
 			agent.currentCancel()
 		}
+		r.releaseWorkerPathClaimsLocked(agent.id)
 	}
 	r.mu.Unlock()
 	for _, data := range terminal {
@@ -587,6 +592,7 @@ func (r *chatResearchRun) cancelAgents(agentIDs []string, kind string) ([]tools.
 		if agent.currentCancel != nil {
 			agent.currentCancel()
 		}
+		r.releaseWorkerPathClaimsLocked(agent.id)
 	}
 	snapshots := make([]tools.ResearchAgentSnapshot, 0, len(selected))
 	for _, agent := range selected {
@@ -831,6 +837,7 @@ func (r *chatResearchRun) runWorker(agent *chatResearchAgentRun) {
 				agent.status = "canceled"
 				agent.phase = ""
 			}
+			r.releaseWorkerPathClaimsLocked(agent.id)
 			r.mu.Unlock()
 			r.publishAgent(agent)
 			r.notify()
@@ -920,6 +927,7 @@ func (r *chatResearchRun) runWorker(agent *chatResearchAgentRun) {
 		r.publishAgent(agent)
 		r.notify()
 		if !more {
+			r.releaseWorkerPathClaims(agent.id)
 			return
 		}
 	}
@@ -945,6 +953,7 @@ func (r *chatResearchRun) finishCanceledAgent(agent *chatResearchAgentRun, job *
 	}
 	agent.pending = nil
 	agent.currentJob = nil
+	r.releaseWorkerPathClaimsLocked(agent.id)
 	r.mu.Unlock()
 	for _, data := range terminal {
 		r.appendJobTerminal(data, completedAt, true)
@@ -1188,6 +1197,16 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 				result = tools.ExecutionResult{Tool: call.Function.Name, Error: &tools.ExecutionError{Code: "user_control_interrupted", Message: sandboxResumedGuidance}}
 			} else if call.Function.Name == contextHistorySearchToolName {
 				result = r.session.executeContextHistorySearch(canonical, checkpoint, json.RawMessage(call.Function.Arguments))
+			} else if agent.kind == subagentKindWorker {
+				if owner, path, claimed := r.claimWorkerPaths(agent.id, call.Function.Name, call.Function.Arguments); claimed {
+					result = tools.ExecutionResult{Tool: call.Function.Name, Error: &tools.ExecutionError{
+						Code: workerPathClaimConflictCode,
+						Message: fmt.Sprintf("workspace path %s is already claimed by worker %s; do not modify files outside your assigned scope; "+
+							"report this conflict in your final report instead of proceeding", path, owner),
+					}}
+				} else {
+					result = r.session.manager.server.tools.Execute(toolCtx, call.Function.Name, json.RawMessage(call.Function.Arguments))
+				}
 			} else {
 				result = r.session.manager.server.tools.Execute(toolCtx, call.Function.Name, json.RawMessage(call.Function.Arguments))
 			}
