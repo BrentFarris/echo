@@ -2709,7 +2709,7 @@ func (w *chatWorkspaceSession) sendSnapshot(c *client, surface chatSurface) {
 				ChatID: codeChat.transcript.ChatID, Preview: preview, Busy: codeChat.isBusyLocked(),
 				Revision: codeChat.transcript.Revision, GoalStatus: codeChat.currentGoalStatusLocked(),
 			}},
-			Turns: codeChat.transcriptTurnsForSnapshotLocked(), ActiveTurn: codeChat.active, ExecutionHeld: codeChat.executionHeld, Goal: codeChat.goalSnapshotLocked(),
+			Turns: redactTurnsForSnapshot(codeChat.transcriptTurnsForSnapshotLocked()), ActiveTurn: redactActiveTurnForSnapshot(codeChat.active), ExecutionHeld: codeChat.executionHeld, Goal: codeChat.goalSnapshotLocked(),
 		}
 		c.sendJSON(snapshot)
 		codeChat.mu.Unlock()
@@ -2738,8 +2738,8 @@ func (w *chatWorkspaceSession) sendSnapshot(c *client, surface chatSurface) {
 		if chatID == w.activeChatID {
 			active = tab
 			snapshot.Revision = tab.transcript.Revision
-			snapshot.Turns = tab.transcriptTurnsForSnapshotLocked()
-			snapshot.ActiveTurn = tab.active
+			snapshot.Turns = redactTurnsForSnapshot(tab.transcriptTurnsForSnapshotLocked())
+			snapshot.ActiveTurn = redactActiveTurnForSnapshot(tab.active)
 			snapshot.ExecutionHeld = tab.executionHeld
 			snapshot.Goal = tab.goalSnapshotLocked()
 		} else {
@@ -2877,7 +2877,7 @@ func snapshotGoal(goal *sessions.GoalState) *goalSnapshot {
 	}
 	for _, steering := range goal.PendingSteering {
 		snapshot.PendingInputs = append(snapshot.PendingInputs, goalSteeringView{
-			ID: steering.ID, Content: steering.Content, Images: steering.Images, Videos: steering.Videos,
+			ID: steering.ID, Content: steering.Content, Images: redactMediaAttachments(steering.Images), Videos: redactMediaAttachments(steering.Videos),
 			References: steering.References, EditorContext: steering.EditorContext, CreatedAt: steering.CreatedAt,
 		})
 	}
@@ -4467,7 +4467,7 @@ func (s *Server) agentModeSystemMessageWithSourceControl(workspace workspaces.Wo
 		prompt.WriteString("\n\nAfter inspecting the workspace, use ask_user_questions only when important ambiguity remains in scope, target files, approach, constraints, or priorities that cannot be resolved from available context. Ask concise questions with at most 3 suggested options each; free text is always available. Wait for the answers and incorporate them into the final plan. Do not ask questions you can resolve yourself, and if the user skips, finalize with your best judgment.")
 	}
 	if modeAllowsTool(mode, "comfyui_generate_video") {
-		prompt.WriteString("\n\ncomfyui_generate_video generates short videos using ComfyUI. Use frames to control length (default 16) and fps for frame rate (default 8); prefer duration over frames/fps for duration-driven workflows. To use a chat-attached image as the first frame, pass attachedImageIndex; a workspace file can be used via imagePath. The tool returns metadata including videoId ΓÇö only call save_video with that ID when the user explicitly asks to save or download the video.")
+		prompt.WriteString("\n\ncomfyui_generate_video generates short videos using ComfyUI. Use frames to control length (default 16) and fps for frame rate (default 8); prefer duration over frames/fps for duration-driven workflows. To use a chat-attached image as the first frame, pass attachedImageIndex; a workspace file can be used via imagePath. The tool returns metadata including videoId — only call save_video with that ID when the user explicitly asks to save or download the video.")
 	}
 	if researchEnabled {
 		prompt.WriteString("\n\n")
@@ -4661,7 +4661,7 @@ func toolResultVideoMessage(toolName string, result tools.ExecutionResult) (llm.
 		label = "video"
 	}
 	text := fmt.Sprintf("Video returned by tool %s: %s (%s, %d bytes).", toolName, label, video.MediaType, video.Bytes)
-	// Return text-only ΓÇö do not embed the full base64 video data URL into the
+	// Return text-only — do not embed the full base64 video data URL into the
 	// LLM context (videos are megabytes and exceed context windows). The chat
 	// UI renders the video inline from the tool_result event's structured
 	// videos[] attachments (see extractToolMedia), so the model never needs

@@ -8,6 +8,9 @@ import { icons } from "../js/icons.js";
 type LightboxOptions = {
   name?: string;
   alt?: string;
+  // fullSrc is the full-size source to open in the lightbox when the inline
+  // image is a downscaled preview variant. Falls back to the image's own src.
+  fullSrc?: string;
 };
 
 let active: {
@@ -84,7 +87,7 @@ export function closeImageLightbox(): void {
 export function makeImageZoomable(image: HTMLImageElement, options: LightboxOptions = {}): void {
   image.classList.add("image-zoomable");
   image.title = "Click to view full screen";
-  image.addEventListener("click", () => openImageLightbox(image.src, {
+  image.addEventListener("click", () => openImageLightbox(options.fullSrc || image.src, {
     name: options.name || image.alt,
     alt: options.alt || image.alt,
   }));

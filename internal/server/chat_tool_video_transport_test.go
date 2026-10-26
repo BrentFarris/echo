@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -174,6 +175,7 @@ func TestChatToolVideoTransportEmitsAndPersists(t *testing.T) {
 	if _, hasImages := toolResult["images"]; hasImages {
 		t.Fatalf("unexpected images key on tool_result: %#v", toolResult)
 	}
+	attachmentID, _ := video["id"].(string)
 
 	// 2. The finished transcript persists media on the assistant turn.
 	transcript := loadActiveTabTranscript(t, ws)
@@ -215,6 +217,7 @@ func TestChatToolVideoTransportEmitsAndPersists(t *testing.T) {
 		t.Fatalf("expected one snapshot turn, got %d", len(snapshotTurns))
 	}
 	turn, _ := snapshotTurns[0].(map[string]any)
+	chatID, _ := snapshot["chatId"].(string)
 	assistantArr, _ := turn["assistantTurns"].([]any)
 	restored := false
 	for _, rawAssistant := range assistantArr {
@@ -222,13 +225,29 @@ func TestChatToolVideoTransportEmitsAndPersists(t *testing.T) {
 		rawVideos, _ := assistant["videos"].([]any)
 		for _, rawVideo := range rawVideos {
 			vid, _ := rawVideo.(map[string]any)
-			if vid["name"] == "cat.mp4" && strings.HasPrefix(asString(vid["dataUrl"]), "data:video/mp4;base64,") {
+			// Snapshots are metadata-only: the attachment rides with its ID
+			// but the base64 payload is redacted and fetched on demand.
+			if vid["name"] == "cat.mp4" && asString(vid["id"]) == attachmentID && asString(vid["dataUrl"]) == "" {
 				restored = true
 			}
 		}
 	}
 	if !restored {
-		t.Fatalf("fresh subscriber did not receive restored video: %#v", snapshotTurns[0])
+		t.Fatalf("fresh subscriber did not receive restored video metadata: %#v", snapshotTurns[0])
+	}
+
+	// 3b. The redacted payload is fetchable on demand from the attachment endpoint.
+	attachmentReq := httptest.NewRequest(http.MethodGet, "/api/workspaces/"+ws.ID+"/chats/"+chatID+"/attachments/"+attachmentID, nil)
+	attachmentRR := httptest.NewRecorder()
+	s.routes().ServeHTTP(attachmentRR, attachmentReq)
+	if attachmentRR.Code != http.StatusOK {
+		t.Fatalf("attachment fetch status %d: %s", attachmentRR.Code, attachmentRR.Body.String())
+	}
+	if contentType := attachmentRR.Header().Get("Content-Type"); contentType != "video/mp4" {
+		t.Fatalf("expected video/mp4 content type, got %q", contentType)
+	}
+	if !bytes.Equal(attachmentRR.Body.Bytes(), mp4Data) {
+		t.Fatalf("attachment payload mismatch: got %d bytes, expected %d", attachmentRR.Body.Len(), len(mp4Data))
 	}
 
 	// 4. Context hygiene: the follow-up request must carry the video tool

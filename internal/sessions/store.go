@@ -219,6 +219,9 @@ type AssistantTurn struct {
 	Number         int            `json:"number"`
 	Content        string         `json:"content,omitempty"`
 	Reasoning      string         `json:"reasoning,omitempty"`
+	// ReasoningTruncated is a wire-only snapshot flag: Reasoning was omitted
+	// from the payload and must be fetched on demand. It is never persisted.
+	ReasoningTruncated bool       `json:"reasoningTruncated,omitempty"`
 	HasToolCalls   bool           `json:"hasToolCalls,omitempty"`
 	GoalCheckpoint bool           `json:"goalCheckpoint,omitempty"`
 	GoalOrigin     string         `json:"goalOrigin,omitempty"`
@@ -239,6 +242,10 @@ type ToolActivity struct {
 	Status        string           `json:"status"`
 	Success       bool             `json:"success"`
 	Result        string           `json:"result,omitempty"`
+	// ResultTruncated is a wire-only snapshot flag: Result was cut to a
+	// preview and the full value must be fetched on demand. It is never
+	// persisted.
+	ResultTruncated bool           `json:"resultTruncated,omitempty"`
 	PlanQuestions *PlanQuestionSet `json:"planQuestions,omitempty"`
 	Answers       []PlanAnswer     `json:"answers,omitempty"`
 	Skipped       bool             `json:"skipped,omitempty"`

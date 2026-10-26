@@ -2115,6 +2115,19 @@ button.chat-prompt-resource-row:focus-visible {
   line-height: 1.45;
 }
 
+/* Fetch-on-expand affordances for metadata-only snapshots. */
+.chat-tool-result-more {
+  margin-top: var(--space-sm);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-style: italic;
+}
+
+.chat-reasoning-item.is-reasoning-deferred .chat-reasoning-content {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
 .chat-plugin-approval-card { display: grid; gap: 10px; margin: 12px 0; padding: 15px; border: 1px solid color-mix(in srgb, var(--color-warning) 55%, var(--color-border)); border-radius: 11px; background: color-mix(in srgb, var(--color-surface) 92%, var(--color-warning)); box-shadow: var(--shadow-soft); }
 .chat-plugin-approval-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .chat-plugin-approval-heading > div { display: grid; gap: 3px; }

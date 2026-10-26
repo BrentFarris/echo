@@ -1,6 +1,9 @@
 package server
 
 import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +78,7 @@ func TestChatToolMediaTransportEmitsAndPersists(t *testing.T) {
 	if _, hasVideos := toolResult["videos"]; hasVideos {
 		t.Fatalf("unexpected videos key on tool_result: %#v", toolResult)
 	}
+	attachmentID, _ := image["id"].(string)
 
 	// 2. The finished transcript persists media on the assistant turn.
 	transcript := loadActiveTabTranscript(t, ws)
@@ -120,6 +124,7 @@ func TestChatToolMediaTransportEmitsAndPersists(t *testing.T) {
 		t.Fatalf("expected one snapshot turn, got %d", len(snapshotTurns))
 	}
 	turn, _ := snapshotTurns[0].(map[string]any)
+	chatID, _ := snapshot["chatId"].(string)
 	assistantArr, _ := turn["assistantTurns"].([]any)
 	restored := false
 	for _, rawAssistant := range assistantArr {
@@ -127,13 +132,29 @@ func TestChatToolMediaTransportEmitsAndPersists(t *testing.T) {
 		rawImages, _ := assistant["images"].([]any)
 		for _, rawImage := range rawImages {
 			img, _ := rawImage.(map[string]any)
-			if img["name"] == "pic.png" && strings.HasPrefix(asString(img["dataUrl"]), "data:image/png;base64,") {
+			// Snapshots are metadata-only: the attachment rides with its ID
+			// but the base64 payload is redacted and fetched on demand.
+			if img["name"] == "pic.png" && asString(img["id"]) == attachmentID && asString(img["dataUrl"]) == "" {
 				restored = true
 			}
 		}
 	}
 	if !restored {
-		t.Fatalf("fresh subscriber did not receive restored media: %#v", snapshotTurns[0])
+		t.Fatalf("fresh subscriber did not receive restored media metadata: %#v", snapshotTurns[0])
+	}
+
+	// 4. The redacted payload is fetchable on demand from the attachment endpoint.
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/"+ws.ID+"/chats/"+chatID+"/attachments/"+attachmentID, nil)
+	rr := httptest.NewRecorder()
+	s.routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("attachment fetch status %d: %s", rr.Code, rr.Body.String())
+	}
+	if contentType := rr.Header().Get("Content-Type"); contentType != "image/png" {
+		t.Fatalf("expected image/png content type, got %q", contentType)
+	}
+	if !bytes.Equal(rr.Body.Bytes(), pngBytes) {
+		t.Fatalf("attachment payload mismatch: got %d bytes, expected %d", rr.Body.Len(), len(pngBytes))
 	}
 }
 

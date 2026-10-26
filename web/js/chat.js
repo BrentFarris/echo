@@ -10,7 +10,7 @@ import {
 import { copyText, toast } from "../src/code/ui.ts";
 import { attachVideoVolumeControl } from "../src/mediaVolume.ts";
 import { icons } from "./icons.js";
-import { del, post } from "./api.js";
+import { del, get, post } from "./api.js";
 import { refreshPluginCatalog } from "../src/plugins/catalog.ts";
 import { createChatScrollFollower } from "../src/chatScroll.ts";
 import { makeImageZoomable } from "../src/imageLightbox.ts";
@@ -463,7 +463,11 @@ function renderStoredTurn(turn, active) {
   }
   for (const assistant of turn.assistantDeleted ? [] : (turn.assistantTurns || [])) {
     startTurn(stream, assistant.number);
-    appendReasoning(stream, assistant.number, assistant.reasoning || "");
+    if (assistant.reasoningTruncated && !assistant.reasoning) {
+      appendReasoningPlaceholder(stream, assistant.number, turn.id);
+    } else {
+      appendReasoning(stream, assistant.number, assistant.reasoning || "");
+    }
     appendTurnText(stream, assistant.number, assistant.content || "");
     endTurn(stream, assistant.number, Boolean(assistant.hasToolCalls), Boolean(assistant.goalCheckpoint));
     for (const tool of assistant.tools || []) {
@@ -471,6 +475,7 @@ function renderStoredTurn(turn, active) {
         turn: assistant.number, callId: tool.callId, callOrder: tool.callOrder,
         tool: tool.name, arguments: tool.arguments || "", status: tool.status,
         planQuestions: tool.planQuestions, answers: tool.answers, skipped: Boolean(tool.skipped),
+        resultTruncated: Boolean(tool.resultTruncated),
       };
       appendToolCall(stream, data, assistant.number);
       if (tool.status === "answered") {
@@ -495,6 +500,7 @@ function renderStoredTurn(turn, active) {
       callId: tool.callId, callOrder: tool.callOrder, tool: tool.name,
       arguments: tool.arguments || "", status: tool.status, agentId: tool.agentId,
       agentName: tool.agentName, research: true,
+      resultTruncated: Boolean(tool.resultTruncated),
     };
     appendToolCall(stream, data);
     if (tool.status !== "running") {
@@ -1170,6 +1176,23 @@ function beginMessageEdit(message, role) {
 // expanded header bar plus the figures. Media defaults to collapsed; expand
 // state is runtime-only per turn (not persisted), matching the Wails app.
 
+// Snapshots are metadata-only: attachments arrive without their base64
+// payloads and are fetched from the attachment endpoint when rendered.
+// Previews use a downscaled variant; the lightbox loads the full image.
+const mediaPreviewWidth = 384;
+
+// attachmentSrc resolves the <img>/<video> source for one attachment. Live
+// events and composer drafts carry an inline dataUrl; snapshot-restored
+// attachments only carry an id and are served from the chat attachment
+// endpoint (chatId is captured at render time, when it is authoritative).
+function attachmentSrc(attachment, { full = false } = {}) {
+  if (attachment.dataUrl) return attachment.dataUrl;
+  const chatId = binding?.activeChatId;
+  if (!binding?.workspaceId || !chatId || !attachment.id) return "";
+  const base = `/api/workspaces/${encodeURIComponent(binding.workspaceId)}/chats/${encodeURIComponent(chatId)}/attachments/${encodeURIComponent(attachment.id)}`;
+  return full ? base : `${base}?width=${mediaPreviewWidth}`;
+}
+
 let userMediaCounter = 0;
 const nextUserMediaId = () => `user-media-${++userMediaCounter}`;
 
@@ -1287,7 +1310,11 @@ function buildMediaFigure(attachment) {
   const figure = document.createElement("figure");
   figure.className = `chat-message-media-item ${isVideo ? "is-video" : "is-image"}`;
   const media = document.createElement(isVideo ? "video" : "img");
-  media.src = attachment.dataUrl || "";
+  // Snapshot-restored attachments have no inline payload: images load a
+  // downscaled preview variant, videos stream the full bytes with
+  // preload="metadata". The lightbox always opens the full-size source.
+  const fullSrc = attachmentSrc(attachment, { full: true });
+  media.src = isVideo ? fullSrc : attachmentSrc(attachment);
   if (isVideo) {
     media.controls = true;
     media.loop = true;
@@ -1298,7 +1325,7 @@ function buildMediaFigure(attachment) {
     media.alt = attachment.name || "Attached image";
     // Clicking an image (user upload or AI-read/generated) opens the shared
     // full-screen lightbox; Esc or the X button closes it.
-    makeImageZoomable(media, { name: attachment.name || "" });
+    makeImageZoomable(media, { name: attachment.name || "", fullSrc });
   }
   if (isVideo) {
     const stage = document.createElement("div");
@@ -1468,6 +1495,69 @@ function createReasoningItem() {
   body.className = "chat-activity-body chat-reasoning-content";
   details.appendChild(body);
   return { details, label, body, text: "", complete: false };
+}
+
+// appendReasoningPlaceholder renders the "Thinking" disclosure for a
+// snapshot-restored assistant turn whose reasoning text was omitted from the
+// metadata-only payload. The full text is fetched once on first expand.
+function appendReasoningPlaceholder(stream, turnNumber, turnId) {
+  if (!stream) return;
+  const turn = ensureTurn(stream, Number.isInteger(turnNumber) ? turnNumber : 0);
+  const item = createReasoningItem();
+  item.details.classList.remove("is-running");
+  item.label.textContent = "Thinking";
+  item.details.classList.add("is-reasoning-deferred");
+  item.body.textContent = "Expand to load the full thinking text.";
+  const chatId = binding?.activeChatId;
+  item.details.addEventListener("toggle", () => {
+    if (item.details.open) fetchFullReasoning(chatId, turnId, turn.number, item);
+  });
+  turn.el.appendChild(item.details);
+  turn.reasoning = item;
+  turn.lastKind = "reasoning";
+}
+
+async function fetchFullReasoning(chatId, turnId, assistantNumber, item) {
+  if (!item || item.reasoningLoaded || item.reasoningLoading) return;
+  if (!binding?.workspaceId || !chatId || !turnId) return;
+  item.reasoningLoading = true;
+  try {
+    const data = await get(`/api/workspaces/${encodeURIComponent(binding.workspaceId)}/chats/${encodeURIComponent(chatId)}/reasoning/${encodeURIComponent(turnId)}?assistant=${encodeURIComponent(assistantNumber)}`);
+    item.reasoningLoaded = true;
+    item.body.textContent = String(data?.reasoning || "");
+    item.details.classList.remove("is-reasoning-deferred");
+  } catch (error) {
+    item.reasoningLoading = false;
+    item.body.textContent = "Could not load the thinking text — expand again to retry.";
+  }
+}
+
+// installResearchReasoningExpansion wires fetch-on-expand for research-agent
+// thinking that arrived truncated (snapshot redaction or the live 128KB cap).
+function installResearchReasoningExpansion(stream, item, agentId) {
+  if (!item || item.reasoningExpansionInstalled) return;
+  item.reasoningExpansionInstalled = true;
+  const chatId = binding?.activeChatId;
+  const turnId = stream?.id || "";
+  item.details.addEventListener("toggle", () => {
+    if (!item.details.open) return;
+    fetchResearchReasoning(chatId, turnId, agentId, item);
+  });
+}
+
+async function fetchResearchReasoning(chatId, turnId, agentId, item) {
+  if (!item || item.reasoningLoaded || item.reasoningLoading) return;
+  if (!binding?.workspaceId || !chatId || !turnId || !agentId) return;
+  item.reasoningLoading = true;
+  try {
+    const data = await get(`/api/workspaces/${encodeURIComponent(binding.workspaceId)}/chats/${encodeURIComponent(chatId)}/reasoning/${encodeURIComponent(turnId)}?agentId=${encodeURIComponent(agentId)}`);
+    item.reasoningLoaded = true;
+    item.text = String(data?.reasoning || "");
+    item.body.textContent = item.text;
+    item.details.classList.remove("is-truncated");
+  } catch (error) {
+    item.reasoningLoading = false;
+  }
 }
 
 function ensureCompressionTimeline(stream) {
@@ -1645,7 +1735,10 @@ function appendResearchReasoning(stream, data, complete = false) {
   }
   item.text = data.replace ? data.content : item.text + data.content;
   item.body.textContent = item.text;
-  if (data.truncated) item.details.classList.add("is-truncated");
+  if (data.truncated) {
+    item.details.classList.add("is-truncated");
+    installResearchReasoningExpansion(stream, item, data.agentId);
+  }
   if (complete) {
     item.details.classList.remove("is-running");
     item.label.textContent = `${item.agentName} thinking`;
@@ -1910,11 +2003,48 @@ function completeToolCall(stream, data, turnNumber) {
   item.details.classList.add(succeeded ? "is-success" : "is-error");
   item.status.textContent = succeeded ? "Completed" : "Failed";
   item.result.textContent = formatStructured(data.content) || "No result";
+  if (data.resultTruncated) installToolResultExpansion(item, callId);
   if (succeeded && item.toolName === "echo_plugin_stage") {
     const stage = pluginStageFromToolResult(data.content);
     if (stage && !stream.timeline.querySelector(`[data-plugin-approval-stage="${CSS.escape(stage.id)}"]`)) {
       stream.timeline.appendChild(createPluginApprovalCard(stage));
     }
+  }
+}
+
+// installToolResultExpansion wires fetch-on-expand for snapshot-restored tool
+// calls whose result was truncated to a preview. The full output is fetched
+// once from the tool-results endpoint and cached on the item; re-expanding
+// never refetches. If the disclosure is already open (result arrived while
+// expanded), the fetch starts immediately.
+function installToolResultExpansion(item, callId) {
+  if (!item || item.resultTruncatedInstalled) return;
+  item.resultTruncatedInstalled = true;
+  const chatId = binding?.activeChatId;
+  const marker = document.createElement("div");
+  marker.className = "chat-tool-result-more";
+  marker.textContent = "Result truncated — expand to load the full output.";
+  item.result.after(marker);
+  item.resultMarker = marker;
+  item.details.addEventListener("toggle", () => {
+    if (item.details.open) fetchFullToolResult(chatId, item, callId);
+  });
+  if (item.details.open) fetchFullToolResult(chatId, item, callId);
+}
+
+async function fetchFullToolResult(chatId, item, callId) {
+  if (!item?.resultTruncatedInstalled || item.resultTruncated === false || item.resultLoading) return;
+  if (!binding?.workspaceId || !chatId) return;
+  item.resultLoading = true;
+  try {
+    const data = await get(`/api/workspaces/${encodeURIComponent(binding.workspaceId)}/chats/${encodeURIComponent(chatId)}/tool-results/${encodeURIComponent(callId)}`);
+    item.resultTruncated = false;
+    item.result.textContent = formatStructured(data?.content) || "No result";
+    item.resultMarker?.remove();
+    item.resultMarker = null;
+  } catch (error) {
+    item.resultLoading = false;
+    if (item.resultMarker) item.resultMarker.textContent = "Could not load the full result — expand again to retry.";
   }
 }
 
