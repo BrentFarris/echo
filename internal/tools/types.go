@@ -149,6 +149,10 @@ type ExecutionContext struct {
 	// ResearchAgents is attached only to a parent chat turn. Child research
 	// agents never receive it, which prevents recursive agent spawning.
 	ResearchAgents ResearchAgentCoordinator
+	// WorkerAgents is attached only to a parent chat turn when worker
+	// subagents are enabled for the mode. Child agents never receive it,
+	// which prevents recursive agent spawning.
+	WorkerAgents WorkerAgentCoordinator
 	// PluginAuthoring exposes non-approving core plugin-development operations.
 	// It can scaffold, inspect, and stage, but never approve or execute a stage.
 	PluginAuthoring PluginAuthoringProvider
@@ -223,6 +227,23 @@ type ResearchAgentCoordinator interface {
 	SendResearchAgentMessage(context.Context, string, string) (ResearchAgentSnapshot, error)
 	WaitResearchAgents(context.Context, []string, string, time.Duration) (ResearchAgentWaitResult, error)
 	CancelResearchAgents(context.Context, []string) ([]ResearchAgentSnapshot, error)
+}
+
+// WorkerAgentSpec describes one implementation worker. The task should state
+// the goal and the file scope the worker may touch; the orchestrator is
+// responsible for assigning non-overlapping scopes across workers.
+type WorkerAgentSpec struct {
+	Name string `json:"name,omitempty"`
+	Task string `json:"task"`
+}
+
+// WorkerAgentCoordinator is the parent-turn-only entry point for worker
+// subagents. Snapshots and wait results are shared with research agents.
+type WorkerAgentCoordinator interface {
+	SpawnWorkerAgents(context.Context, []WorkerAgentSpec) ([]ResearchAgentSnapshot, error)
+	SendWorkerAgentMessage(context.Context, string, string) (ResearchAgentSnapshot, error)
+	WaitWorkerAgents(context.Context, []string, string, time.Duration) (ResearchAgentWaitResult, error)
+	CancelWorkerAgents(context.Context, []string) ([]ResearchAgentSnapshot, error)
 }
 
 // AgentModeCreationRequest carries the model-provided definition for a custom

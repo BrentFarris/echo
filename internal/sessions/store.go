@@ -255,6 +255,10 @@ type ResearchAgent struct {
 	Phase     string `json:"phase,omitempty"`
 	TaskLabel string `json:"taskLabel,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Kind distinguishes "research" (read-only) from "worker"
+	// (implementation) subagents. Empty means research for compatibility
+	// with older clients.
+	Kind string `json:"kind,omitempty"`
 }
 
 // ResearchReasoning is bounded, attributed reasoning retained with the turn

@@ -32,6 +32,41 @@ var researchAgentToolNames = map[string]bool{
 	ResearchAgentsCancelToolName: true,
 }
 
+var workerAgentToolNames = map[string]bool{
+	WorkerAgentsSpawnToolName:  true,
+	WorkerAgentSendToolName:    true,
+	WorkerAgentsWaitToolName:   true,
+	WorkerAgentsCancelToolName: true,
+}
+
+// workerChildToolNames is the explicit allowlist of tools an implementation
+// worker subagent may use. It is allowlist-based so newly registered tools
+// stay unavailable to workers until reviewed here. Excluded: agent-mode
+// creation, plugin staging/approval, user questions, goal status, media
+// generation, and all subagent orchestration (recursion is also blocked by a
+// nil coordinator on child tool contexts).
+var workerChildToolNames = map[string]bool{
+	"filesystem_create_text":      true,
+	"filesystem_delete_file":      true,
+	"filesystem_edit_text":        true,
+	"filesystem_list":             true,
+	"filesystem_move":             true,
+	"filesystem_read_image":       true,
+	"filesystem_read_text":        true,
+	"filesystem_read_video":       true,
+	"filesystem_search_text":      true,
+	"filesystem_search_workspace": true,
+	"filesystem_stat":             true,
+	"git_inspect":                 true,
+	"fossil_inspect":              true,
+	SourceControlInspectToolName:  true,
+	"shell_command":               true,
+	"web_fetch":                   true,
+	"web_search":                  true,
+	"workspace_skill_read":        true,
+	"workspace_skill_search":      true,
+}
+
 var researchWorkerToolNames = map[string]bool{
 	"filesystem_list":             true,
 	"filesystem_read_image":       true,
@@ -54,6 +89,7 @@ type ChatSchemaOptions struct {
 	PairingMode     bool
 	GoalMode        bool
 	ResearchEnabled bool
+	WorkersEnabled  bool
 	SandboxGUI      bool
 	WorkspaceID     string
 }
@@ -210,8 +246,18 @@ func ResearchLLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
 	return defaultRegistry.researchLLMSchemaForScopes(scopes)
 }
 
+// WorkerLLMSchemaForScopes returns the implementation tools available to a
+// child worker subagent. Subagent orchestration is always excluded.
+func WorkerLLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
+	return defaultRegistry.workerLLMSchemaForScopes(scopes)
+}
+
 func IsResearchAgentToolName(name string) bool {
 	return researchAgentToolNames[name]
+}
+
+func IsWorkerAgentToolName(name string) bool {
+	return workerAgentToolNames[name]
 }
 
 func IsResearchWorkerToolName(name string) bool {
@@ -234,6 +280,10 @@ func (r *Registry) ResearchLLMSchemaForScopes(scopes *ToolScopeChecker) []llm.To
 	return r.researchLLMSchemaForScopes(scopes)
 }
 
+func (r *Registry) WorkerLLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
+	return r.workerLLMSchemaForScopes(scopes)
+}
+
 func (r *Registry) chatLLMSchemaForScopes(scopes *ToolScopeChecker, options ChatSchemaOptions) []llm.Tool {
 	registered, policy := r.registrations()
 	schema := make([]llm.Tool, 0, len(registered))
@@ -249,6 +299,9 @@ func (r *Registry) chatLLMSchemaForScopes(scopes *ToolScopeChecker, options Chat
 			continue
 		}
 		if researchAgentToolNames[metadata.Name] && !options.ResearchEnabled {
+			continue
+		}
+		if workerAgentToolNames[metadata.Name] && !options.WorkersEnabled {
 			continue
 		}
 		if sandboxGUIToolNames[metadata.Name] && (options.PlanMode || !options.SandboxGUI) {
@@ -289,6 +342,27 @@ func (r *Registry) researchLLMSchemaForScopes(scopes *ToolScopeChecker) []llm.To
 		}
 		metadata := registration.tool.Metadata()
 		if !researchWorkerToolNames[metadata.Name] || (scopes != nil && !scopes.HasTool(metadata.Name)) {
+			continue
+		}
+		schema = append(schema, llm.Tool{
+			Type: "function",
+			Function: llm.ToolFunction{
+				Name: metadata.Name, Description: metadata.Description, Parameters: cloneSchema(metadata.Parameters),
+			},
+		})
+	}
+	return schema
+}
+
+func (r *Registry) workerLLMSchemaForScopes(scopes *ToolScopeChecker) []llm.Tool {
+	registered, _ := r.registrations()
+	schema := make([]llm.Tool, 0, len(workerChildToolNames))
+	for _, registration := range registered {
+		if registration.owner != CoreToolOwner {
+			continue
+		}
+		metadata := registration.tool.Metadata()
+		if !workerChildToolNames[metadata.Name] || (scopes != nil && !scopes.HasTool(metadata.Name)) {
 			continue
 		}
 		schema = append(schema, llm.Tool{

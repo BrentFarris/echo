@@ -34,7 +34,25 @@ Keep raw tool output in this private research thread. Your final response is a c
 Include findings, evidence with exact URLs or workspace paths and line numbers when available, uncertainties, conflicts, and useful follow-up questions.
 Do not claim that a source was checked unless you actually inspected it.`
 
+const workerAgentSystemPrompt = `You are a focused implementation worker subagent working for a parent chat orchestrator.
+Carry out only the assigned task. You may edit workspace files and run commands (builds, tests) needed to complete and verify it.
+Do not create agent modes, stage plugins, ask the user questions, mutate remote source control, or spawn other agents.
+Only touch files within the assigned scope; if the task seems to require touching anything else, stop and report the conflict instead of proceeding.
+If a file tool fails with path_claimed_by_agent, another worker already owns that path: do not retry it, work around it if possible, and report the conflict in your final response.
+Keep raw tool output in this private worker thread. Your final response is a concise handoff to the parent model.
+Include what you changed (exact workspace paths), commands you ran and their outcomes, test results, any deviations from the task, and open questions.
+Do not claim a change or test result without actually performing it.`
+
 const researchOrchestratorGuidance = `You can delegate independent read-only investigations to research agents. Use research_agents_spawn for focused, non-overlapping branches, research_agents_wait to collect every report needed for synthesis, research_agent_send for a focused follow-up, and research_agents_cancel for work that is no longer needed. Child transcripts remain private; rely on their bounded reports and do not finalize while required agents are still running or have uncollected reports.`
+
+const workerOrchestratorGuidance = `You can delegate implementation work to worker subagents so this thread stays focused. Use worker_agents_spawn for tasks with non-overlapping file scopes (state each worker's allowed files in its task), worker_agents_wait to collect bounded reports, worker_agent_send for a focused follow-up, and worker_agents_cancel for work that is no longer needed. Overlapping writes are enforced: the first worker to modify a path claims it, and other workers' file tools fail with path_claimed_by_agent until the owner finishes. Worker transcripts and tool output remain private; you receive only their bounded reports. Do not finalize while required workers are still running or have uncollected reports, and verify or review worker changes before presenting them as done.`
+
+// Subagent kinds sharing the run lifecycle. Research agents are read-only;
+// workers may edit files and run commands.
+const (
+	subagentKindResearch = "research"
+	subagentKindWorker   = "worker"
+)
 
 type chatResearchRun struct {
 	session        *chatSession
@@ -43,8 +61,11 @@ type chatResearchRun struct {
 	turnID         string
 	settings       llm.Settings
 	parentSettings llm.Settings
+	workerSettings llm.Settings
 	streamer       chatStreamer
+	workerStreamer chatStreamer
 	toolScopes     *tools.ToolScopeChecker
+	workerScopes   *tools.ToolScopeChecker
 	sourceControl  workspaceSourceControlProfile
 	semaphore      chan struct{}
 
@@ -58,6 +79,7 @@ type chatResearchRun struct {
 
 type chatResearchAgentRun struct {
 	id                string
+	kind              string
 	name              string
 	task              string
 	status            string
@@ -102,9 +124,9 @@ type researchStreamResult struct {
 	completedAt      time.Time
 }
 
-func newChatResearchRun(parent context.Context, session *chatSession, turnID string, settings, parentSettings llm.Settings, streamer chatStreamer, mode agentmodes.Mode, sourceControlProfile workspaceSourceControlProfile) *chatResearchRun {
+func newChatResearchRun(parent context.Context, session *chatSession, turnID string, settings, workerSettings, parentSettings llm.Settings, streamer, workerStreamer chatStreamer, mode agentmodes.Mode, sourceControlProfile workspaceSourceControlProfile) *chatResearchRun {
 	ctx, cancel := context.WithCancel(parent)
-	concurrency := settings.Normalized().ResearchAgentConcurrency
+	concurrency := max(settings.Normalized().ResearchAgentConcurrency, workerSettings.Normalized().WorkerAgentConcurrency)
 	if concurrency < 1 {
 		concurrency = 1
 	}
@@ -113,12 +135,40 @@ func newChatResearchRun(parent context.Context, session *chatSession, turnID str
 	}
 	toolScopes := researchToolScopes(mode)
 	sourceControlProfile.restrictToolScopes(toolScopes)
+	workerScopes := workerToolScopes(mode)
+	sourceControlProfile.restrictToolScopes(workerScopes)
 	return &chatResearchRun{
 		session: session, ctx: ctx, cancel: cancel, turnID: turnID,
-		settings: settings, parentSettings: parentSettings, streamer: streamer,
-		toolScopes: toolScopes, sourceControl: sourceControlProfile, semaphore: make(chan struct{}, concurrency),
-		agents: make(map[string]*chatResearchAgentRun), updates: make(chan struct{}, 1),
+		settings: settings, workerSettings: workerSettings, parentSettings: parentSettings,
+		streamer: streamer, workerStreamer: workerStreamer,
+		toolScopes: toolScopes, workerScopes: workerScopes, sourceControl: sourceControlProfile,
+		semaphore: make(chan struct{}, concurrency),
+		agents:    make(map[string]*chatResearchAgentRun), updates: make(chan struct{}, 1),
 	}
+}
+
+// childModel returns the LLM settings and streamer for a child agent of the
+// given kind. Workers use the parent turn's chat model; researchers use the
+// configured research model.
+func (r *chatResearchRun) childModel(kind string) (llm.Settings, chatStreamer) {
+	if kind == subagentKindWorker {
+		return r.workerSettings, r.workerStreamer
+	}
+	return r.settings, r.streamer
+}
+
+func (r *chatResearchRun) childScopes(kind string) *tools.ToolScopeChecker {
+	if kind == subagentKindWorker {
+		return r.workerScopes
+	}
+	return r.toolScopes
+}
+
+func (r *chatResearchRun) childToolSchema(kind string) []llm.Tool {
+	if kind == subagentKindWorker {
+		return r.session.manager.server.tools.WorkerLLMSchemaForScopes(r.childScopes(kind))
+	}
+	return r.session.manager.server.tools.ResearchLLMSchemaForScopes(r.childScopes(kind))
 }
 
 func (r *chatResearchRun) newJobLocked(agent *chatResearchAgentRun, prompt, kind string) *chatResearchJob {
@@ -132,7 +182,7 @@ func (r *chatResearchRun) newJobLocked(agent *chatResearchAgentRun, prompt, kind
 }
 
 func researchJobData(agent *chatResearchAgentRun, job *chatResearchJob) map[string]any {
-	data := map[string]any{"agentId": agent.id, "agentName": agent.name}
+	data := map[string]any{"agentId": agent.id, "agentName": agent.name, "kind": agent.kind}
 	if job != nil {
 		data["jobId"] = job.id
 		data["jobNumber"] = job.number
@@ -240,6 +290,28 @@ func researchToolScopes(mode agentmodes.Mode) *tools.ToolScopeChecker {
 	return tools.NewToolScopeChecker(permissions)
 }
 
+func workerToolScopes(mode agentmodes.Mode) *tools.ToolScopeChecker {
+	permissions := make([]tools.ToolPermission, 0)
+	for _, schema := range tools.WorkerLLMSchemaForScopes(nil) {
+		name := schema.Function.Name
+		if len(mode.Permissions) == 0 {
+			if name == tools.FossilInspectToolName && !mode.BuiltIn {
+				continue
+			}
+			permissions = append(permissions, tools.ToolPermission{Name: name})
+			continue
+		}
+		if permission, ok := mode.Permissions[name]; ok {
+			permission.Name = name
+			permissions = append(permissions, permission)
+		}
+	}
+	if len(permissions) == 0 {
+		return tools.NewDenyAllToolScopeChecker()
+	}
+	return tools.NewToolScopeChecker(permissions)
+}
+
 func modeAllowsResearch(mode agentmodes.Mode) bool {
 	if len(mode.Permissions) == 0 {
 		return true
@@ -247,6 +319,21 @@ func modeAllowsResearch(mode agentmodes.Mode) bool {
 	for _, name := range []string{
 		tools.ResearchAgentsSpawnToolName, tools.ResearchAgentSendToolName,
 		tools.ResearchAgentsWaitToolName, tools.ResearchAgentsCancelToolName,
+	} {
+		if _, ok := mode.Permissions[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func modeAllowsWorkers(mode agentmodes.Mode) bool {
+	if len(mode.Permissions) == 0 {
+		return true
+	}
+	for _, name := range []string{
+		tools.WorkerAgentsSpawnToolName, tools.WorkerAgentSendToolName,
+		tools.WorkerAgentsWaitToolName, tools.WorkerAgentsCancelToolName,
 	} {
 		if _, ok := mode.Permissions[name]; ok {
 			return true
@@ -311,17 +398,29 @@ func (r *chatResearchRun) Close() {
 }
 
 func (r *chatResearchRun) SpawnResearchAgents(ctx context.Context, specs []tools.ResearchAgentSpec) ([]tools.ResearchAgentSnapshot, error) {
+	return r.spawnAgents(ctx, specs, subagentKindResearch)
+}
+
+func (r *chatResearchRun) SpawnWorkerAgents(ctx context.Context, specs []tools.WorkerAgentSpec) ([]tools.ResearchAgentSnapshot, error) {
+	converted := make([]tools.ResearchAgentSpec, 0, len(specs))
+	for _, spec := range specs {
+		converted = append(converted, tools.ResearchAgentSpec{Name: spec.Name, Task: spec.Task})
+	}
+	return r.spawnAgents(ctx, converted, subagentKindWorker)
+}
+
+func (r *chatResearchRun) spawnAgents(ctx context.Context, specs []tools.ResearchAgentSpec, kind string) ([]tools.ResearchAgentSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
-		return nil, errors.New("research turn is closed")
+		return nil, errors.New("subagent turn is closed")
 	}
 	if len(specs) == 0 || len(r.agents)+len(specs) > tools.MaxResearchAgentsPerTurn {
 		r.mu.Unlock()
-		return nil, fmt.Errorf("a chat turn can own at most %d research agents", tools.MaxResearchAgentsPerTurn)
+		return nil, fmt.Errorf("a chat turn can own at most %d subagents", tools.MaxResearchAgentsPerTurn)
 	}
 	created := make([]*chatResearchAgentRun, 0, len(specs))
 	createdJobs := make([]*chatResearchJob, 0, len(specs))
@@ -329,11 +428,11 @@ func (r *chatResearchRun) SpawnResearchAgents(ctx context.Context, specs []tools
 	createdAt := make([]time.Time, 0, len(specs))
 	for _, spec := range specs {
 		id := fmt.Sprintf("agent-%d", len(r.order)+1)
-		name := normalizeResearchAgentName(spec.Name, len(r.order)+1)
+		name := normalizeResearchAgentName(spec.Name, len(r.order)+1, kind)
 		task := strings.TrimSpace(spec.Task)
 		agent := &chatResearchAgentRun{
-			id: id, name: name, task: task, status: "queued", phase: "waiting for a research slot",
-			messages: []llm.Message{r.researchSystemMessage(task)},
+			id: id, kind: kind, name: name, task: task, status: "queued", phase: "waiting for a subagent slot",
+			messages: []llm.Message{r.childSystemMessage(kind, task)},
 		}
 		job := r.newJobLocked(agent, task, "initial")
 		r.agents[id] = agent
@@ -364,14 +463,22 @@ func (r *chatResearchRun) SpawnResearchAgents(ctx context.Context, specs []tools
 }
 
 func (r *chatResearchRun) SendResearchAgentMessage(ctx context.Context, agentID, message string) (tools.ResearchAgentSnapshot, error) {
+	return r.sendAgentMessage(ctx, agentID, message, subagentKindResearch)
+}
+
+func (r *chatResearchRun) SendWorkerAgentMessage(ctx context.Context, agentID, message string) (tools.ResearchAgentSnapshot, error) {
+	return r.sendAgentMessage(ctx, agentID, message, subagentKindWorker)
+}
+
+func (r *chatResearchRun) sendAgentMessage(ctx context.Context, agentID, message, kind string) (tools.ResearchAgentSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return tools.ResearchAgentSnapshot{}, err
 	}
 	r.mu.Lock()
 	agent := r.agents[strings.TrimSpace(agentID)]
-	if agent == nil {
+	if agent == nil || agent.kind != kind {
 		r.mu.Unlock()
-		return tools.ResearchAgentSnapshot{}, fmt.Errorf("research agent %q was not found", agentID)
+		return tools.ResearchAgentSnapshot{}, fmt.Errorf("%s agent %q was not found", kind, agentID)
 	}
 	if r.closed || agent.canceled {
 		r.mu.Unlock()
@@ -399,11 +506,19 @@ func (r *chatResearchRun) SendResearchAgentMessage(ctx context.Context, agentID,
 }
 
 func (r *chatResearchRun) WaitResearchAgents(ctx context.Context, agentIDs []string, waitFor string, timeout time.Duration) (tools.ResearchAgentWaitResult, error) {
+	return r.waitAgents(ctx, agentIDs, waitFor, timeout, subagentKindResearch)
+}
+
+func (r *chatResearchRun) WaitWorkerAgents(ctx context.Context, agentIDs []string, waitFor string, timeout time.Duration) (tools.ResearchAgentWaitResult, error) {
+	return r.waitAgents(ctx, agentIDs, waitFor, timeout, subagentKindWorker)
+}
+
+func (r *chatResearchRun) waitAgents(ctx context.Context, agentIDs []string, waitFor string, timeout time.Duration, kind string) (tools.ResearchAgentWaitResult, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	for {
 		r.mu.Lock()
-		selected, err := r.selectedAgentsLocked(agentIDs)
+		selected, err := r.selectedAgentsLocked(agentIDs, kind)
 		if err != nil {
 			r.mu.Unlock()
 			return tools.ResearchAgentWaitResult{}, err
@@ -424,7 +539,7 @@ func (r *chatResearchRun) WaitResearchAgents(ctx context.Context, agentIDs []str
 		case <-r.updates:
 		case <-timer.C:
 			r.mu.Lock()
-			selected, err := r.selectedAgentsLocked(agentIDs)
+			selected, err := r.selectedAgentsLocked(agentIDs, kind)
 			if err != nil {
 				r.mu.Unlock()
 				return tools.ResearchAgentWaitResult{}, err
@@ -438,8 +553,16 @@ func (r *chatResearchRun) WaitResearchAgents(ctx context.Context, agentIDs []str
 }
 
 func (r *chatResearchRun) CancelResearchAgents(_ context.Context, agentIDs []string) ([]tools.ResearchAgentSnapshot, error) {
+	return r.cancelAgents(agentIDs, subagentKindResearch)
+}
+
+func (r *chatResearchRun) CancelWorkerAgents(_ context.Context, agentIDs []string) ([]tools.ResearchAgentSnapshot, error) {
+	return r.cancelAgents(agentIDs, subagentKindWorker)
+}
+
+func (r *chatResearchRun) cancelAgents(agentIDs []string, kind string) ([]tools.ResearchAgentSnapshot, error) {
 	r.mu.Lock()
-	selected, err := r.selectedAgentsLocked(agentIDs)
+	selected, err := r.selectedAgentsLocked(agentIDs, kind)
 	if err != nil {
 		r.mu.Unlock()
 		return nil, err
@@ -480,14 +603,19 @@ func (r *chatResearchRun) CancelResearchAgents(_ context.Context, agentIDs []str
 	return snapshots, nil
 }
 
-func (r *chatResearchRun) selectedAgentsLocked(ids []string) ([]*chatResearchAgentRun, error) {
+func (r *chatResearchRun) selectedAgentsLocked(ids []string, kind string) ([]*chatResearchAgentRun, error) {
 	if len(r.agents) == 0 {
-		return nil, errors.New("no research agents exist in this chat turn")
+		return nil, fmt.Errorf("no %s agents exist in this chat turn", kind)
 	}
 	if len(ids) == 0 {
 		selected := make([]*chatResearchAgentRun, 0, len(r.order))
 		for _, id := range r.order {
-			selected = append(selected, r.agents[id])
+			if kind == "" || r.agents[id].kind == kind {
+				selected = append(selected, r.agents[id])
+			}
+		}
+		if len(selected) == 0 {
+			return nil, fmt.Errorf("no %s agents exist in this chat turn", kind)
 		}
 		return selected, nil
 	}
@@ -499,8 +627,8 @@ func (r *chatResearchRun) selectedAgentsLocked(ids []string) ([]*chatResearchAge
 			continue
 		}
 		agent := r.agents[id]
-		if agent == nil {
-			return nil, fmt.Errorf("research agent %q was not found", id)
+		if agent == nil || (kind != "" && agent.kind != kind) {
+			return nil, fmt.Errorf("%s agent %q was not found", kind, id)
 		}
 		seen[id] = true
 		selected = append(selected, agent)
@@ -623,10 +751,14 @@ func (r *chatResearchRun) notify() {
 	}
 }
 
-func normalizeResearchAgentName(name string, index int) string {
+func normalizeResearchAgentName(name string, index int, kind string) string {
 	name = strings.Join(strings.Fields(strings.TrimSpace(name)), " ")
 	if name == "" {
-		name = fmt.Sprintf("Researcher %d", index)
+		if kind == subagentKindWorker {
+			name = fmt.Sprintf("Worker %d", index)
+		} else {
+			name = fmt.Sprintf("Researcher %d", index)
+		}
 	}
 	return limitResearchText(name, 48)
 }
@@ -642,9 +774,13 @@ func limitResearchText(value string, maxBytes int) string {
 	return value
 }
 
-func (r *chatResearchRun) researchSystemMessage(task string) llm.Message {
+func (r *chatResearchRun) childSystemMessage(kind, task string) llm.Message {
 	var prompt strings.Builder
-	prompt.WriteString(researchAgentSystemPrompt)
+	if kind == subagentKindWorker {
+		prompt.WriteString(workerAgentSystemPrompt)
+	} else {
+		prompt.WriteString(researchAgentSystemPrompt)
+	}
 	prompt.WriteString(sandboxSystemGuidance(r.session.workspace))
 	roots := workspaceToolRoots(r.session.workspace)
 	if len(roots) > 0 {
@@ -657,11 +793,15 @@ func (r *chatResearchRun) researchSystemMessage(task string) llm.Message {
 		}
 		prompt.WriteString(".")
 	}
-	if guidance := sourceControlSystemGuidance(r.sourceControl, r.toolScopes); guidance != "" {
+	if guidance := sourceControlSystemGuidance(r.sourceControl, r.childScopes(kind)); guidance != "" {
 		prompt.WriteString("\n\n")
 		prompt.WriteString(guidance)
 	}
-	prompt.WriteString("\n\nAssigned investigation:\n")
+	if kind == subagentKindWorker {
+		prompt.WriteString("\n\nAssigned task:\n")
+	} else {
+		prompt.WriteString("\n\nAssigned investigation:\n")
+	}
 	prompt.WriteString(strings.TrimSpace(task))
 	return llm.Message{Role: llm.RoleSystem, Name: "echo-research-agent", Content: prompt.String()}
 }
@@ -832,8 +972,7 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 	checkpoint := cloneContextCheckpoint(agent.checkpoint)
 	r.mu.Unlock()
 	canonical = append(canonical, llm.Message{Role: llm.RoleUser, Content: strings.TrimSpace(job.prompt)})
-	settings := r.settings
-	streamer := r.streamer
+	settings, streamer := r.childModel(agent.kind)
 	emptyAssistantRetries := 0
 	transientStreamRetries := 0
 	truncationContinues := 0
@@ -853,7 +992,7 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 			canonical = append(canonical, sandboxResumeMessage())
 			contextGeneration = roundGeneration
 		}
-		toolSchema := r.session.manager.server.tools.ResearchLLMSchemaForScopes(r.toolScopes)
+		toolSchema := r.childToolSchema(agent.kind)
 		if checkpoint != nil {
 			toolSchema = append(toolSchema, contextHistorySearchToolSchema())
 		}
@@ -874,7 +1013,7 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 			if updated != nil {
 				checkpoint = updated
 				messages = buildCompressedModelHistory(canonical, checkpoint)
-				toolSchema = r.session.manager.server.tools.ResearchLLMSchemaForScopes(r.toolScopes)
+				toolSchema = r.childToolSchema(agent.kind)
 				toolSchema = append(toolSchema, contextHistorySearchToolSchema())
 				compressionCooldownRounds = 1
 			} else if compressionErr != nil {
@@ -1037,11 +1176,12 @@ func (r *chatResearchRun) runAgentTurn(ctx context.Context, agent *chatResearchA
 			toolCallData["startedAt"] = toolStartedAt
 			r.appendTrajectoryAt("research/tool_call", toolStartedAt, toolCallData, true)
 			r.updateResearchToolActivity(agent, callID, callOrder, call.Function.Name, call.Function.Arguments, "", false, false)
-			toolCtx := r.session.toolContext(ctx, r.turnID, r.toolScopes, nil, nil)
+			toolCtx := r.session.toolContext(ctx, r.turnID, r.childScopes(agent.kind), nil, nil)
 			toolCtx.ToolCallID = callID
 			toolCtx.ResearchAgents = nil
+			toolCtx.WorkerAgents = nil
 			toolCtx.AIGeneration = &roundGeneration
-			toolCtx.TurnID = r.turnID + ":research:" + agent.id
+			toolCtx.TurnID = r.turnID + ":" + agent.kind + ":" + agent.id
 			toolCtx.AgentModes = nil
 			var result tools.ExecutionResult
 			if manager := r.session.manager.server.sandbox; manager != nil && manager.AdmitAIAction(r.session.workspace.ID, roundGeneration) != nil {
@@ -1301,7 +1441,7 @@ func (r *chatResearchRun) publishAgent(agent *chatResearchAgentRun) {
 	r.mu.Lock()
 	public := sessions.ResearchAgent{
 		ID: agent.id, Name: agent.name, Status: agent.status, Phase: agent.phase,
-		TaskLabel: limitResearchText(agent.task, 160), Error: agent.errText,
+		TaskLabel: limitResearchText(agent.task, 160), Error: agent.errText, Kind: agent.kind,
 	}
 	job := agent.currentJob
 	if job == nil && public.Status == "queued" && len(agent.pending) > 0 {

@@ -1606,8 +1606,9 @@ function updateResearchAgentStatus(stream, agent) {
     stream.researchAgents.set(agent.id, chip);
     stream.researchStatusContainer.appendChild(chip);
   }
-  chip.className = `chat-research-status is-${status}`;
-  chip.textContent = `${agent.name || "Researcher"}${agent.phase ? ` · ${agent.phase}` : ` · ${status}`}`;
+  chip.className = `chat-research-status is-${status}${agent.kind === "worker" ? " is-worker" : ""}`;
+  const kindPrefix = agent.kind === "worker" ? "Worker · " : "";
+  chip.textContent = `${kindPrefix}${agent.name || "Researcher"}${agent.phase ? ` · ${agent.phase}` : ` · ${status}`}`;
   chip.title = agent.taskLabel || agent.error || chip.textContent;
 }
 

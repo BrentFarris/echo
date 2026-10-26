@@ -83,6 +83,18 @@ describe("research agent activity", () => {
     expect(log.querySelector(".chat-final-content")?.textContent).toContain("Final synthesis.");
   });
 
+  it("labels worker subagents distinctly from researchers", () => {
+    sessionEvent(2, { type: "turn_started", turnId: "turn-worker", message: "Delegate" });
+    sessionEvent(3, {
+      type: "research_agent_status", turnId: "turn-worker",
+      researchAgent: { id: "agent-1", name: "Fixture builder", kind: "worker", status: "running", phase: "investigating", taskLabel: "Inspect workspace" },
+    });
+    const chip = log.querySelector(".chat-research-status");
+    expect(chip?.textContent).toContain("Worker · Fixture builder");
+    expect(chip?.classList.contains("is-worker")).toBe(true);
+    sessionEvent(4, { type: "research_agents_clear", turnId: "turn-worker" });
+  });
+
   it("restores persisted attributed research work", () => {
     emit("session_snapshot", {
       type: "session_snapshot", workspaceId: "workspace-research", sequence: 20,

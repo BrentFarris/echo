@@ -19,6 +19,8 @@ const (
 	MaxCompressionThreshold         = 99
 	DefaultResearchAgentConcurrency = 4
 	MaxResearchAgentConcurrency     = 8
+	DefaultWorkerAgentConcurrency   = 2
+	MaxWorkerAgentConcurrency       = 8
 	DefaultMaxChatRounds            = 0
 	DefaultSearxngURL               = "http://localhost:8080/"
 	DefaultDecisionModelName        = "clef-flash"
@@ -39,10 +41,10 @@ const (
 type Interaction string
 
 const (
-	InteractionChat            Interaction = "chat"
-	InteractionResearch        Interaction = "research"
-	InteractionVision          Interaction = "vision"
-	InteractionInlineCode      Interaction = "inlineCode"
+	InteractionChat       Interaction = "chat"
+	InteractionResearch   Interaction = "research"
+	InteractionVision     Interaction = "vision"
+	InteractionInlineCode Interaction = "inlineCode"
 )
 
 type LLMEndpoint struct {
@@ -112,6 +114,7 @@ type Settings struct {
 	EnablePlanQuestionNotifications    *bool             `json:"enablePlanQuestionNotifications,omitempty"`
 	EnableChatCompletionNotifications  *bool             `json:"enableChatCompletionNotifications,omitempty"`
 	ResearchAgentConcurrency           int               `json:"researchAgentConcurrency"`
+	WorkerAgentConcurrency             int               `json:"workerAgentConcurrency"`
 	MaxChatRounds                      int               `json:"maxChatRounds,omitempty"`
 	DisableSourceControlSplitDiffView  *bool             `json:"disableSourceControlSplitDiffView,omitempty"`
 	// DisableGitSplitDiffView is read for one compatibility release. New clients
@@ -133,12 +136,12 @@ type Settings struct {
 	DecisionModelName string `json:"decisionModelName"`
 	// DecisionModel feature gates. Each enables one integration point; all
 	// are inert unless DecisionModelURL is configured.
-	DecisionModelLLMTool      bool `json:"decisionModelLlmTool,omitempty"`
-	DecisionModelAgentMode    bool `json:"decisionModelAgentMode,omitempty"`
-	DecisionModelTemperature  bool `json:"decisionModelTemperature,omitempty"`
-	DecisionModelToolFiltering bool `json:"decisionModelToolFiltering,omitempty"`
-	Theme                     Theme             `json:"theme,omitempty"`
-	Headers                   map[string]string `json:"headers,omitempty"`
+	DecisionModelLLMTool       bool              `json:"decisionModelLlmTool,omitempty"`
+	DecisionModelAgentMode     bool              `json:"decisionModelAgentMode,omitempty"`
+	DecisionModelTemperature   bool              `json:"decisionModelTemperature,omitempty"`
+	DecisionModelToolFiltering bool              `json:"decisionModelToolFiltering,omitempty"`
+	Theme                      Theme             `json:"theme,omitempty"`
+	Headers                    map[string]string `json:"headers,omitempty"`
 }
 
 type Theme struct {
@@ -172,6 +175,7 @@ func DefaultSettings() Settings {
 		EditorColumnGuides:                 []int{80, 90},
 		ThinkingTokenBudget:                -1,
 		ResearchAgentConcurrency:           DefaultResearchAgentConcurrency,
+		WorkerAgentConcurrency:             DefaultWorkerAgentConcurrency,
 		MaxChatRounds:                      DefaultMaxChatRounds,
 	}
 }
@@ -271,6 +275,12 @@ func normalizeSettingsGeneration(s Settings) Settings {
 	}
 	if s.ResearchAgentConcurrency > MaxResearchAgentConcurrency {
 		s.ResearchAgentConcurrency = MaxResearchAgentConcurrency
+	}
+	if s.WorkerAgentConcurrency < 0 {
+		s.WorkerAgentConcurrency = 0
+	}
+	if s.WorkerAgentConcurrency > MaxWorkerAgentConcurrency {
+		s.WorkerAgentConcurrency = MaxWorkerAgentConcurrency
 	}
 	if s.MaxChatRounds < 0 {
 		s.MaxChatRounds = 0
@@ -450,10 +460,10 @@ func defaultLLMEndpoint() LLMEndpoint {
 
 func defaultEndpointSelection(endpointID string) EndpointSelection {
 	return EndpointSelection{
-		Chat:            endpointID,
-		Research:        endpointID,
-		Vision:          endpointID,
-		InlineCode:      endpointID,
+		Chat:       endpointID,
+		Research:   endpointID,
+		Vision:     endpointID,
+		InlineCode: endpointID,
 	}
 }
 
