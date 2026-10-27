@@ -7,6 +7,7 @@ import { ReferenceSearch } from './referenceSearch';
 import { endpointForm, endpointValues } from './modelSettings';
 import { mountDevelopment } from './development';
 import { mountHosting } from './hosting';
+import { setupPWA } from './pwa';
 import { composerMarkup, icons, autosizeComposer, wireComposerMenus, attachmentCard, previewAttachment, releaseAttachments, type DraftAttachment } from './composer';
 import { activeMention, escapeHTML as esc, groupChats } from './helpers';
 import type { Attachment, Bot, Chat, Endpoint, Generation, Message, Plugin, Schedule, Segment, State } from './types';
@@ -16,6 +17,7 @@ import './references.css';
 import './conversation.css';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
+const pwa = setupPWA(notice);
 let state: State = { bots: [], chats: [], endpoints: [], plugins: [], schedules: [], occurrences: [], runs: [] };
 let chatId = location.hash.slice(1), messages: Message[] = [], references: Segment[] = [];
 let generation: Generation = { endpointId: '', model: '', thinking: '', temperature: .6 };
@@ -50,10 +52,11 @@ function currentBot(id?: string) { return state.bots.find(b => b.id === id); }
 function pluginEnabled(id: string, botId?: string) { const plugin = state.plugins.find(p => p.id === id); return !!plugin?.enabled && !plugin.pending && (plugin.scope !== 'echo' || botId === 'echo') && currentBot(botId)?.plugins[id] !== false; }
 
 function shell() {
-  app.innerHTML = `<aside id="sidebar" class="sidebar"><div class="brand"><span class="brand-mark" aria-hidden="true">E</span>Echo<button class="icon sidebar-close" aria-label="Close sidebar">×</button></div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button></div><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="missed-button" hidden>Missed jobs</button><button id="settings-button">⚙ Settings</button></div></aside><div class="sidebar-backdrop" aria-hidden="true"></div>
+  app.innerHTML = `<aside id="sidebar" class="sidebar"><div class="brand"><span class="brand-mark" aria-hidden="true">E</span>Echo<button class="icon sidebar-close" aria-label="Close sidebar">×</button></div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button></div><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="install-echo" hidden>Install Echo</button><button id="missed-button" hidden>Missed jobs</button><button id="settings-button">⚙ Settings</button></div></aside><div class="sidebar-backdrop" aria-hidden="true"></div>
   <main class="main"><header class="chat-header"><button class="icon mobile-menu" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">☰</button><strong id="chat-title">Echo</strong><span id="connection" class="subtle">Connecting…</span></header><div class="chat-log" role="log" aria-label="Conversation"></div>
   ${composerMarkup}</main>`;
   q('#new-chat').onclick = action(newChat); q('#settings-button').onclick = () => settings(); q('#missed-button').onclick = showMissed;
+  pwa.mount(q<HTMLButtonElement>('#install-echo'));
   q('.mobile-menu').onclick = () => setSidebarOpen(!q('.sidebar').classList.contains('open'));
   q('.sidebar-close').onclick = q('.sidebar-backdrop').onclick = () => setSidebarOpen(false);
   app.onkeydown = e => { if (e.key === 'Escape' && q('.sidebar').classList.contains('open')) { e.preventDefault(); setSidebarOpen(false); } };

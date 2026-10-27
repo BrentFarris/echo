@@ -14,6 +14,14 @@ Run `echo.exe`, then open **http://localhost:3740**. The app is named Echo; data
 
 Connect an existing compatible model server in **Settings → Local Models**, using its API base URL, for example `http://127.0.0.1:1234/v1`. Echo does not download or launch models. Model Settings contains connection/model selection, thinking and temperature; each send snapshots the selection for all recipients. Automatic context compaction can be enabled per connection and never deletes stored history.
 
+### Install Echo on your desktop
+
+Open **http://localhost:3740** in Edge or Chrome and choose **Install Echo** in the sidebar when offered, or use the browser's app installation option. Echo opens in its own desktop window with the artwork from `echo.png` as its app icon and favicon. Keep using the same address and port for the installed app. Remote installations require HTTPS; local `localhost` and `127.0.0.1` addresses work over HTTP.
+
+Keep `echo.exe` running when using the installed app. If the server is unreachable, Echo shows a reconnect page. Only that public page is cached for offline use; chats, credentials, attachments and API responses are not cached by the service worker. App code is fetched from the server on each launch so builds and relaunches load the current version.
+
+The icon files in `web/public/icons` are generated from the repository's `echo.png`. After replacing the source image, run `powershell -File .\scripts\generate-icons.ps1` and rebuild.
+
 The composer follows the original Echo layout: compact controls, upward-opening menus, a single paper-plane/stop icon, and a text area that grows until the composer occupies half the chat height. Enter sends; Shift+Enter inserts a new line. Use **+ → Image / Video / File**, paste an image from the clipboard, or drop files onto the composer. Attachment cards show previews, filenames and sizes; click a preview to enlarge it, or remove it before sending. Draft attachments stay with their chat while switching conversations.
 
 Uploads support PNG, JPEG, GIF, WebP, MP4, WebM, MOV, PDF, and UTF-8 text/code files. Limits are eight files, 32 MiB per file, 64 MiB per message, and 1 MiB for text. Images/video/PDFs are sent using the compatible provider's multimodal content format; the selected model must support that format. Unsupported media capabilities return the provider's error. Text files are included as text. Accepted attachments persist once as compressed blobs, survive reload/restart, and are deleted with their chat. Unsent uploaded files expire after 24 hours when uploads next run. Custom WASI providers retain their 4 MiB input limit.

@@ -288,6 +288,17 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("/", static)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/", "/index.html", "/sw.js", "/manifest.webmanifest", "/offline.html":
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		// Windows MIME registrations do not consistently recognize PWA assets.
+		switch r.URL.Path {
+		case "/manifest.webmanifest":
+			w.Header().Set("Content-Type", "application/manifest+json")
+		case "/sw.js":
+			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Frame-Options", "DENY")
