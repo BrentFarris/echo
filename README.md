@@ -181,6 +181,8 @@ Requires Go 1.26+, Node.js compatible with Vite 8, and npm. Windows release acce
 .\scripts\test-development.ps1 -Coordinated # Also verify a real pinned update and recovery
 ```
 
+The Windows build reinstalls frontend dependencies with `npm ci`. Stop this checkout's Vite or Vitest processes before building: they can lock native modules on Windows. `build.ps1` reports detected locking Node process IDs before installation. If an earlier build failed with `EPERM`/`unlink`, stop the process holding the file and rerun the build to restore the dependency installation.
+
 ```sh
 sh build.sh                           # Native Linux/macOS executable
 sh build.sh --output /tmp/staged-echo  # Alternate output

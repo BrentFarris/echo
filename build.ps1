@@ -20,8 +20,21 @@ try {
     }
     Push-Location web
     try {
+        # npm ci removes node_modules first. Windows cannot remove native modules
+        # loaded by Vite/Vitest, and a failed cleanup leaves a partial install.
+        $modulesRoot = [IO.Path]::GetFullPath((Join-Path $PWD.Path 'node_modules')).TrimEnd('\') + '\'
+        $lockingProcesses = @(Get-Process -Name node -ErrorAction SilentlyContinue | ForEach-Object {
+            $nodeProcess = $_
+            try { $loadedModules = @($nodeProcess.Modules) } catch { $loadedModules = @() }
+            if ($loadedModules | Where-Object {
+                $_.FileName -and $_.FileName.StartsWith($modulesRoot, [StringComparison]::OrdinalIgnoreCase)
+            }) { $nodeProcess.Id }
+        })
+        if ($lockingProcesses.Count) {
+            throw "Frontend dependencies are in use by Node process(es): $($lockingProcesses -join ', '). Stop this checkout's Vite/Vitest processes and rerun build.ps1. npm ci has not been started."
+        }
         npm ci --ignore-scripts --prefer-offline
-        if ($LASTEXITCODE) { throw 'Frontend dependency installation failed' }
+        if ($LASTEXITCODE) { throw 'Frontend dependency installation failed. For EPERM/unlink errors, stop processes using this checkout (such as Vite or Vitest), then rerun build.ps1.' }
         npm run build
         if ($LASTEXITCODE) { throw 'Frontend build failed' }
         if ($Test) { npm test; if ($LASTEXITCODE) { throw 'Frontend tests failed' } }
