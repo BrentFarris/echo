@@ -14,7 +14,8 @@ test('Development saves a server repository and keeps source-free controls avail
   await page.request.put('/api/v1/development', { data: { repositoryPath: '' } });
   await openDevelopment(page);
   const sections = await page.locator('.settings-nav button').allTextContents();
-  expect(sections.indexOf('Development')).toBe(sections.indexOf('Cloud Models') + 1);
+  expect(sections.at(-1)).toBe('Development');
+  await expect(page.locator('.settings-nav > hr + button')).toHaveText('Development');
   await expect(page.getByRole('button', { name: 'Relaunch', exact: true })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Terminate Echo', exact: true })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Build & Relaunch', exact: true })).toBeDisabled();
@@ -26,6 +27,7 @@ test('Development saves a server repository and keeps source-free controls avail
   await page.getByRole('button', { name: 'Save repository path' }).click();
   await expect(page.locator('[data-development-status]')).toHaveText('Repository path saved.');
   await expect(page.getByRole('button', { name: 'Build & Relaunch', exact: true })).toBeEnabled();
+  await page.locator('.settings-nav [data-section="development"]').scrollIntoViewIfNeeded();
   await page.screenshot({ path: test.info().outputPath('development-desktop.png') });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByRole('button', { name: 'Terminate Echo', exact: true })).toBeVisible();
