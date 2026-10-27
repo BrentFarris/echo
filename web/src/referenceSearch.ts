@@ -1,10 +1,10 @@
-import type { FileEntry } from './types';
+import type { FileEntry, Segment } from './types';
 
 export type ReferenceResults = { entries: FileEntry[]; indexing: boolean; incomplete: boolean };
 export type ReferenceSearchState = ReferenceResults & { loading?: boolean; error?: string };
 
-async function fetchReferences(content: string, query: string, signal: AbortSignal): Promise<ReferenceResults> {
-  const response = await fetch('/api/v1/references', { method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content, query }) });
+async function fetchReferences(content: string, query: string, signal: AbortSignal, segments: Segment[] = []): Promise<ReferenceResults> {
+  const response = await fetch('/api/v1/references', { method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content, query, segments }) });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `File search failed (HTTP ${response.status})`);
   return { entries: data, indexing: response.headers.get('X-Echo-Reference-Indexing') === 'true', incomplete: response.headers.get('X-Echo-Reference-Incomplete') === 'true' };
@@ -25,14 +25,14 @@ export class ReferenceSearch {
     this.controller?.abort();
   }
 
-  search(content: string, query: string, notify: (state: ReferenceSearchState) => void) {
+  search(content: string, query: string, notify: (state: ReferenceSearchState) => void, segments: Segment[] = []) {
     this.close();
     const version = this.version;
     const controller = this.controller = new AbortController();
     notify({ entries: [], indexing: false, incomplete: false, loading: true });
     const run = async () => {
       try {
-        const result = await this.request(content, query, controller.signal);
+        const result = await this.request(content, query, controller.signal, segments);
         if (version !== this.version) return;
         notify(result);
         if (result.indexing) this.timer = setTimeout(() => { void run(); }, 300);

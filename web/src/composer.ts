@@ -1,4 +1,5 @@
 import { escapeHTML as esc } from './helpers';
+import type { ReferenceInput } from './referenceEditor';
 import type { Attachment } from './types';
 
 const svg = (body: string) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
@@ -14,9 +15,9 @@ export const icons = {
 };
 
 export const composerMarkup = `<form class="composer">
-  <div class="picker" id="reference-picker" role="listbox" aria-label="File and bot suggestions" hidden></div><div class="refs"></div>
+  <div class="picker" id="reference-picker" role="listbox" aria-label="File and bot suggestions" hidden></div>
   <div class="attachment-drafts" aria-label="Attachments" hidden></div>
-  <textarea id="composer" aria-label="Message" aria-controls="reference-picker" aria-expanded="false" aria-autocomplete="list" rows="1" placeholder="Ask Echo, mention @bots, or reference #files…"></textarea>
+  <reference-input role="textbox" contenteditable="true" aria-multiline="true" data-empty id="composer" aria-label="Message" aria-controls="reference-picker" aria-expanded="false" aria-autocomplete="list" data-placeholder="Ask Echo, mention @bots, or reference #files…"></reference-input>
   <div class="composer-bottom">
     <details class="attachment-menu composer-menu"><summary class="toolbar-icon" title="Attach file" aria-label="Attach file" aria-haspopup="menu">${icons.plus}</summary>
       <div class="attachment-popup popover" role="menu" aria-label="Attachment types">
@@ -57,7 +58,7 @@ export function previewAttachment(name: string, type: string, url: string) {
 }
 
 export function autosizeComposer() {
-  const input = document.querySelector<HTMLTextAreaElement>('#composer');
+  const input = document.querySelector<ReferenceInput>('#composer');
   const form = document.querySelector<HTMLElement>('.composer'), main = document.querySelector<HTMLElement>('.main');
   if (!input || !form || !main) return;
   input.style.height = '0px';
@@ -94,7 +95,7 @@ export function wireComposerMenus(onFiles: (files: File[]) => void) {
     input.onchange = () => { onFiles([...input.files || []]); input.remove(); }; input.oncancel = () => input.remove();
     input.hidden = true; document.body.append(input); input.click();
   };
-  const input = document.querySelector<HTMLTextAreaElement>('#composer')!;
+  const input = document.querySelector<ReferenceInput>('#composer')!;
   input.addEventListener('paste', e => {
     const files = [...e.clipboardData?.files || []];
     if (files.length) { e.preventDefault(); onFiles(files); }

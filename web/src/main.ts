@@ -1,3 +1,5 @@
+import { ReferenceInput, trimmedDraft } from './referenceEditor';
+import { referenceIcons, referenceFromElement, renderMessageReferences, showBotDetails } from './references';
 import { Renderers } from './renderers';
 import { conversationItems, type ResponseGroup } from './conversation';
 import { fileChangesFooter } from './fileChanges';
@@ -9,6 +11,7 @@ import { activeMention, escapeHTML as esc, groupChats } from './helpers';
 import type { Attachment, Bot, Chat, Endpoint, Generation, Message, Plugin, Schedule, Segment, State } from './types';
 import './style.css';
 import './composer.css';
+import './references.css';
 import './conversation.css';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
@@ -56,9 +59,15 @@ function shell() {
   q<HTMLFormElement>('.composer').onsubmit = e => { e.preventDefault(); action(async () => { if (busy()) { await api(`/chats/${chatId}/stop`, 'POST', {}); await refresh(); } else await send(); })(); };
   wireComposerMenus(addFiles);
   q('#manage-models').onclick = () => { q<HTMLDetailsElement>('.model-settings').open = false; settings('models'); };
-  const composer = q<HTMLTextAreaElement>('#composer'); composer.oninput = () => { autosizeComposer(); rememberDraft(); updateSendButton(); void showPicker(); clearTimeout(referenceTimer); referenceTimer = window.setTimeout(() => action(validateReferences)(), 180); };
+  const composer = q<ReferenceInput>('#composer'); composer.bots = () => state.bots; composer.oninput = e => {
+    ++referenceVersion; references = composer.snapshot().references; autosizeComposer(); rememberDraft(); updateSendButton(); clearTimeout(referenceTimer);
+    if ((e as InputEvent).isComposing) { closePicker(); return; }
+    void showPicker(); referenceTimer = window.setTimeout(() => action(validateReferences)(), 180);
+  };
   composer.onkeydown = e => {
     if (e.isComposing) return;
+    const chip = (e.target as HTMLElement).closest<HTMLElement>('[data-reference]');
+    if (chip && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); e.stopPropagation(); void activateReference(chip); return; }
     if (!q('.picker').hidden) {
       if (e.key === 'Escape') { e.preventDefault(); closePicker(); return; }
       if (suggestions.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); selectedSuggestion = (selectedSuggestion + (e.key === 'ArrowDown' ? 1 : -1) + suggestions.length) % suggestions.length; renderPicker(); q('[aria-selected="true"]', q('.picker')).scrollIntoView({ block: 'nearest' }); return; }
@@ -67,7 +76,9 @@ function shell() {
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); action(send)(); }
   };
-  composer.onclick = () => showPicker();
+  composer.onclick = e => { const chip = (e.target as HTMLElement).closest<HTMLElement>('[data-reference]'); if (chip) { closePicker(); void activateReference(chip); } else showPicker(); };
+  q('.chat-log').addEventListener('click', e => { const chip = (e.target as HTMLElement).closest<HTMLElement>('[data-reference]'); if (chip) void activateReference(chip); });
+  q('.chat-log').addEventListener('keydown', e => { const chip = (e.target as HTMLElement).closest<HTMLElement>('[data-reference]'); if (chip && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); void activateReference(chip); } });
   composer.onkeyup = e => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) showPicker(); };
   q<HTMLInputElement>('#model').oninput = () => { generation.model = q<HTMLInputElement>('#model').value; q('#model-name').textContent = generation.model; rememberDraft(); };
   q<HTMLInputElement>('#thinking').oninput = () => { generation.thinking = thinking[Number(q<HTMLInputElement>('#thinking').value)]; q('#thinking-label').textContent = thinkingLabel(); rememberDraft(); };
@@ -82,7 +93,7 @@ function setSidebarOpen(open: boolean, restoreFocus = true) {
   if (open) q('.sidebar-close').focus();
   else if (wasOpen && restoreFocus) q('.mobile-menu').focus();
 }
-function rememberDraft() { drafts.set(chatId, { text: q<HTMLTextAreaElement>('#composer').value, references: [...references], generation: { ...generation }, attachments: [...attachments] }); }
+function rememberDraft() { const draft = q<ReferenceInput>('#composer').snapshot(); references = draft.references; drafts.set(chatId, { ...draft, generation: { ...generation }, attachments: [...attachments] }); }
 function saveGeneration() {
   if (!chatId || !generation.endpointId) return;
   const id = chatId, value = { ...generation };
@@ -91,20 +102,20 @@ function saveGeneration() {
 }
 async function newChat() {
   if (submitting) return;
-  rememberDraft(); const composer = q<HTMLTextAreaElement>('#composer'); composer.disabled = true;
+  rememberDraft(); const composer = q<ReferenceInput>('#composer'); composer.disabled = true;
   try { const c = await api<Chat>('/chats', 'POST', {}); await refresh(); await selectChat(c.id); }
   finally { composer.disabled = false; composer.focus(); }
 }
 async function selectChat(id: string) {
   if (submitting) return;
-  closePicker();
+  closePicker(); ++referenceVersion; clearTimeout(referenceTimer); document.querySelector('.bot-details')?.dispatchEvent(new Event('dismiss'));
   if (id !== chatId) rememberDraft(); chatId = id; history.replaceState(null, '', '#' + id); const c = state.chats.find(c => c.id === id), draft = drafts.get(id);
-  generation = { ...(draft?.generation || c?.generation || generation) }; references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<HTMLTextAreaElement>('#composer').value = draft?.text || ''; renderModels(); renderRefs(); renderAttachments(); renderSidebar(); updateSendButton(); autosizeComposer(); setSidebarOpen(false, false);
-  messages = id ? await api<Message[]>(`/chats/${id}/messages`) : []; renderMessages(true); q<HTMLTextAreaElement>('#composer').focus();
+  generation = { ...(draft?.generation || c?.generation || generation) }; references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references }); renderModels(); renderRefs(); renderAttachments(); renderSidebar(); updateSendButton(); autosizeComposer(); setSidebarOpen(false, false);
+  messages = id ? await api<Message[]>(`/chats/${id}/messages`) : []; renderMessages(true); q<ReferenceInput>('#composer').focus();
 }
 async function send() {
-  if (busy() || submitting) return; const content = q<HTMLTextAreaElement>('#composer').value.trim(); if (!content && !attachments.length) return;
-  submitting = true; q<HTMLTextAreaElement>('#composer').disabled = true; updateSendButton();
+  if (busy() || submitting) return; const draft = trimmedDraft(q<ReferenceInput>('#composer').snapshot()), content = draft.text; if (!content && !attachments.length) return;
+  submitting = true; q<ReferenceInput>('#composer').disabled = true; updateSendButton();
   try {
     if (!chatId) { const c = await api<Chat>('/chats', 'POST', {}); chatId = c.id; drafts.delete(''); history.replaceState(null, '', '#' + chatId); }
     for (const draft of attachments) {
@@ -114,17 +125,17 @@ async function send() {
       const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Unable to upload attachment');
       draft.uploaded = result as Attachment; rememberDraft();
     }
-    const segments = references.filter(ref => content.includes('#' + ref.text));
+    const segments = draft.references;
     await generationSaves.get(chatId);
     await api(`/chats/${chatId}/messages`, 'POST', { content, segments, attachments: attachments.map(a => a.uploaded!.id), generation, requestId: crypto.randomUUID() });
-    q<HTMLTextAreaElement>('#composer').value = ''; references = []; releaseAttachments(attachments); attachments = []; drafts.delete(chatId); renderRefs(); renderAttachments(); autosizeComposer(); closePicker(); await refresh(); messages = await api(`/chats/${chatId}/messages`); renderMessages(true);
-  } finally { submitting = false; q<HTMLTextAreaElement>('#composer').disabled = false; updateSendButton(); q<HTMLTextAreaElement>('#composer').focus(); }
+    q<ReferenceInput>('#composer').value = ''; references = []; releaseAttachments(attachments); attachments = []; drafts.delete(chatId); renderRefs(); renderAttachments(); autosizeComposer(); closePicker(); await refresh(); messages = await api(`/chats/${chatId}/messages`); renderMessages(true);
+  } finally { submitting = false; q<ReferenceInput>('#composer').disabled = false; updateSendButton(); q<ReferenceInput>('#composer').focus(); }
 }
 function updateSendButton() {
   const button = q<HTMLButtonElement>('#send'), active = busy();
   const label = active ? 'Stop response' : submitting ? 'Sending message' : 'Send message';
   button.innerHTML = active ? icons.stop : icons.send; button.setAttribute('aria-label', label); button.title = label;
-  button.disabled = submitting || (!active && !q<HTMLTextAreaElement>('#composer').value.trim() && !attachments.length);
+  button.disabled = submitting || (!active && !q<ReferenceInput>('#composer').value.trim() && !attachments.length);
 }
 function addFiles(files: File[]) {
   if (submitting) return;
@@ -135,7 +146,7 @@ function addFiles(files: File[]) {
     const safePreview = /^image\/(png|jpeg|gif|webp)$/.test(file.type);
     attachments.push({ file, url: URL.createObjectURL(safePreview || file.type.startsWith('video/') ? file : new Blob([file], { type: 'application/octet-stream' })) });
   }
-  renderAttachments(); rememberDraft(); autosizeComposer(); updateSendButton(); q<HTMLTextAreaElement>('#composer').focus();
+  renderAttachments(); rememberDraft(); autosizeComposer(); updateSendButton(); q<ReferenceInput>('#composer').focus();
 }
 function renderAttachments() {
   const root = q('.attachment-drafts'); root.hidden = !attachments.length; root.replaceChildren();
@@ -155,7 +166,7 @@ async function refresh() {
       chatId = state.chats[0]?.id || ''; history.replaceState(null, '', chatId ? '#' + chatId : location.pathname);
       const draft = drafts.get(chatId);
       if (chatId) generation = { ...(draft?.generation || state.chats[0].generation) };
-      references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<HTMLTextAreaElement>('#composer').value = draft?.text || '';
+      references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references });
       renderRefs(); renderAttachments(); autosizeComposer(); messages = chatId ? await api(`/chats/${chatId}/messages`) : []; renderMessages();
     }
     renderSidebar(); renderModels(); renderRunErrors(); if (rendering() !== beforeRendering) { renderers.sync(state.plugins); renderMessages(false, true); } updateSendButton();
@@ -168,7 +179,7 @@ function renderSidebar() {
   const markup = groupChats(state.chats).map(group => `<section><div class="group-label">${esc(group.label)}</div>${group.chats.map(c => `<div class="chat-row ${c.id === chatId ? 'active' : ''}"><button class="chat-link" data-chat="${esc(c.id)}" title="${esc(c.title)}">${esc(c.title)}</button><button class="icon chat-remove" data-delete="${esc(c.id)}" aria-label="Delete ${esc(c.title)}">×</button></div>`).join('')}</section>`).join('') || '<p class="empty-list">Your chats will appear here.</p>';
   if (markup !== sidebarMarkup) { q('.chat-groups').innerHTML = markup; sidebarMarkup = markup; }
   for (const el of document.querySelectorAll<HTMLButtonElement>('[data-chat]')) el.onclick = action(() => selectChat(el.dataset.chat!));
-  for (const el of document.querySelectorAll<HTMLButtonElement>('[data-delete]')) el.onclick = action(async () => { if (submitting) return; await api(`/chats/${el.dataset.delete}`, 'DELETE'); releaseAttachments(drafts.get(el.dataset.delete!)?.attachments || []); drafts.delete(el.dataset.delete!); if (chatId === el.dataset.delete) { attachments = []; references = []; q<HTMLTextAreaElement>('#composer').value = ''; renderAttachments(); renderRefs(); autosizeComposer(); } await refresh(); });
+  for (const el of document.querySelectorAll<HTMLButtonElement>('[data-delete]')) el.onclick = action(async () => { if (submitting) return; await api(`/chats/${el.dataset.delete}`, 'DELETE'); releaseAttachments(drafts.get(el.dataset.delete!)?.attachments || []); drafts.delete(el.dataset.delete!); if (chatId === el.dataset.delete) { attachments = []; references = []; q<ReferenceInput>('#composer').value = ''; renderAttachments(); renderRefs(); autosizeComposer(); } await refresh(); });
   const count = state.occurrences.filter(j => j.status === 'missed').length; q('#missed-button').hidden = !count; q('#missed-button').textContent = `Missed jobs (${count})`;
 }
 function chooseEndpoint(endpoint: Endpoint) { generation = { endpointId: endpoint.id, model: endpoint.model, temperature: endpoint.temperature ?? .6, thinking: '' }; renderModels(); rememberDraft(); saveGeneration(); }
@@ -196,7 +207,7 @@ function rememberDisclosures(root: HTMLElement) { for (const details of root.que
 function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.dataset.grouped === 'true', final = existing?.dataset.final === 'true') {
   const previous = messageMarkup.get(m.id), output = liveToolOutput.get(m.id);
   const el = existing || previous?.element || document.createElement('article');
-  if (previous?.element === el && previous.grouped === grouped && previous.final === final && previous.output === output && (['content', 'reasoning', 'status', 'author', 'role', 'toolCalls', 'attachments'] as const).every(key => previous.message[key] === m[key])) return el;
+  if (previous?.element === el && previous.grouped === grouped && previous.final === final && previous.output === output && (['content', 'segments', 'reasoning', 'status', 'author', 'role', 'toolCalls', 'attachments'] as const).every(key => previous.message[key] === m[key])) return el;
   messageMarkup.set(m.id, { message: { ...m }, element: el, grouped, final, output });
   el.id = 'message-' + m.id; el.className = 'message ' + m.role;
   el.dataset.grouped = String(grouped); el.dataset.final = String(final); el.setAttribute('aria-label', m.author);
@@ -221,6 +232,7 @@ function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.da
     el.append(root);
   }
   restoreDisclosures(el);
+  if (m.content && m.role === 'user') renderMessageReferences(q('.message-content', el), m, state.bots);
   if (m.content) renderers.paint(m);
   return el;
 }
@@ -306,11 +318,26 @@ function connect() {
 }
 
 async function validateReferences() {
-  if (!references.length) return; const version = ++referenceVersion;
-  const content = q<HTMLTextAreaElement>('#composer').value;
-  references = references.filter(ref => content.includes('#' + ref.text));
-  const updated = await api<Segment[]>('/references/validate', 'POST', { content, segments: references });
-  if (version === referenceVersion) { references = updated; renderRefs(); rememberDraft(); }
+  const composer = q<ReferenceInput>('#composer'), draft = composer.snapshot();
+  if (!draft.references.some(ref => ref.type === 'file')) return;
+  const version = ++referenceVersion, selectedChat = chatId;
+  try {
+    const updated = await api<Segment[]>('/references/validate', 'POST', { content: draft.text, segments: draft.references });
+    if (version !== referenceVersion || selectedChat !== chatId || composer.value !== draft.text) return;
+    composer.updateReferences(updated.map(ref => ({ ...ref, allowedBots: ref.allowedBots || [] }))); rememberDraft();
+  } catch (error) { if (version === referenceVersion && selectedChat === chatId) notice(error, true); }
+}
+
+async function activateReference(chip: HTMLElement) {
+  const ref = referenceFromElement(chip);
+  if (ref.type === 'bot') { showBotDetails(chip, ref, state.bots, bot => editBot(bot)); return; }
+  try {
+    const article = chip.closest<HTMLElement>('.message');
+    const message = article && messages.find(m => 'message-' + m.id === article.id);
+    const draft = q<ReferenceInput>('#composer').snapshot();
+    const result = await api<{ fallback: boolean; path: string }>(message ? `/chats/${encodeURIComponent(message.chatId)}/references/reveal` : '/references/reveal', 'POST', message ? { messageId: message.id, path: ref.path } : { content: draft.text, segments: draft.references, path: ref.path });
+    if (result.fallback) notice('The reference no longer exists. Opened its containing folder in File Explorer.');
+  } catch (error) { notice(error, true); }
 }
 
 function closePicker() {
@@ -319,31 +346,36 @@ function closePicker() {
   q('#composer').setAttribute('aria-expanded', 'false'); q('#composer').removeAttribute('aria-activedescendant');
 }
 function showPicker() {
-  const composer = q<HTMLTextAreaElement>('#composer'), match = activeMention(composer.value, composer.selectionStart);
+  const composer = q<ReferenceInput>('#composer'), match = activeMention(composer.value, composer.selectionStart);
   closePicker();
   if (!match) return;
+  if (composer.snapshot().references.some(ref => ref.range && ref.range.start <= match.start && ref.range.end > match.start)) return;
   selectedSuggestion = 0;
   if (match.type === '@') {
-    suggestions = state.bots.filter(b => `${b.handle} ${b.name}`.toLowerCase().includes(match.query.toLowerCase())).map(b => ({ label: '@' + b.handle, hint: b.roots?.length ? b.roots.join(', ') : 'Unbound', insert: '@' + b.handle }));
+    suggestions = state.bots.filter(b => `${b.handle} ${b.name}`.toLowerCase().includes(match.query.toLowerCase())).map(b => ({ label: '@' + b.handle, hint: b.name + ' · ' + (b.roots?.length ? b.roots.join(', ') : 'Unrestricted host access'), insert: '@' + b.handle, ref: { type: 'bot', botId: b.id, text: '@' + b.handle } }));
     pickerStatus = suggestions.length ? '' : 'No matching bots.'; renderPicker();
   } else referenceSearch.search(composer.value, match.query, result => {
     const selected = suggestions[selectedSuggestion]?.ref?.path;
-    suggestions = result.entries.map(e => ({ label: (e.directory ? '▣ ' : '') + e.name, hint: e.allowedBots.map(id => currentBot(id)?.handle || id).join(', ') + ' · ' + e.path, insert: '#' + e.name, ref: { type: 'file', path: e.path, text: e.name, allowedBots: e.allowedBots } }));
+    suggestions = result.entries.map(e => ({ label: e.name, hint: e.allowedBots.map(id => currentBot(id)?.handle || id).join(', ') + ' · ' + e.path, insert: '#' + e.name, ref: { type: 'file', kind: e.directory ? 'directory' : 'file', path: e.path, text: e.name, allowedBots: e.allowedBots } }));
     selectedSuggestion = Math.max(0, suggestions.findIndex(s => s.ref?.path === selected));
     pickerLoading = !!result.loading || result.indexing;
     pickerStatus = result.error || (result.loading ? 'Searching files and folders…' : result.indexing ? 'Searching workspace… more matches may appear.' : result.incomplete ? 'Some folders could not be searched. Try a full path.' : suggestions.length ? '' : 'No matching files or folders. Try a name or full path.');
     renderPicker();
-  });
+  }, composer.snapshot().references);
 }
 function renderPicker() {
   const picker = q('.picker'); picker.hidden = false;
   picker.setAttribute('aria-busy', String(pickerLoading)); q('#composer').setAttribute('aria-expanded', 'true');
-  picker.innerHTML = (pickerStatus ? `<p class="picker-status" role="status">${esc(pickerStatus)}</p>` : '') + suggestions.map((s, i) => `<button type="button" id="reference-option-${i}" role="option" aria-selected="${i === selectedSuggestion}" class="${i === selectedSuggestion ? 'selected' : ''}" data-suggestion="${i}"><span>${esc(s.label)}</span><small title="${esc(s.hint)}">${esc(s.hint)}</small></button>`).join('');
+  picker.innerHTML = (pickerStatus ? `<p class="picker-status" role="status">${esc(pickerStatus)}</p>` : '') + suggestions.map((s, i) => `<button type="button" id="reference-option-${i}" role="option" aria-selected="${i === selectedSuggestion}" class="${i === selectedSuggestion ? 'selected' : ''}" data-suggestion="${i}">${referenceIcons[s.ref?.type === 'bot' ? 'bot' : s.ref?.kind === 'directory' ? 'directory' : 'file']}<span class="picker-name"><strong>${esc(s.label)}</strong><small title="${esc(s.hint)}">${esc(s.hint)}</small></span><span class="picker-kind">${s.ref?.type === 'bot' ? 'Bot' : s.ref?.kind === 'directory' ? 'Folder' : 'File'}</span></button>`).join('');
   if (suggestions.length) q('#composer').setAttribute('aria-activedescendant', `reference-option-${selectedSuggestion}`); else q('#composer').removeAttribute('aria-activedescendant');
   for (const el of picker.querySelectorAll<HTMLButtonElement>('button')) { el.onmousedown = e => e.preventDefault(); el.onclick = () => chooseSuggestion(Number(el.dataset.suggestion)); }
 }
-function chooseSuggestion(index: number) { const composer = q<HTMLTextAreaElement>('#composer'), match = activeMention(composer.value, composer.selectionStart), item = suggestions[index]; if (!match || !item) return; composer.setRangeText(item.insert + ' ', match.start, match.end, 'end'); if (item.ref && !references.some(r => r.path === item.ref!.path)) references.push(item.ref); closePicker(); renderRefs(); rememberDraft(); autosizeComposer(); updateSendButton(); composer.focus(); }
-function renderRefs() { q('.refs').innerHTML = references.map(r => `<span class="ref" title="${esc(r.path)}">#${esc(r.text)} · ${esc(r.allowedBots?.map(id => currentBot(id)?.handle || id).join(', '))}</span>`).join(''); }
+function chooseSuggestion(index: number) {
+  const composer = q<ReferenceInput>('#composer'), match = activeMention(composer.value, composer.selectionStart), item = suggestions[index];
+  if (!match || !item) return;
+  composer.replace(item.insert + ' ', match.start, match.end, item.ref); closePicker(); composer.focus();
+}
+function renderRefs() { q<ReferenceInput>('#composer').updateReferences(references); }
 
 function dialog(title: string, body: string) { const el = document.createElement('dialog'); el.innerHTML = `<div class="dialog-heading"><h2>${esc(title)}</h2><button class="icon" aria-label="Close">×</button></div>${body}`; document.body.append(el); q('.dialog-heading button', el).onclick = () => el.close(); el.addEventListener('close', () => el.remove()); el.showModal(); return el; }
 function settings(section = 'bots') {

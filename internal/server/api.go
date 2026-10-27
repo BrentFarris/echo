@@ -236,14 +236,15 @@ func (s *Server) routes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /api/v1/references", func(w http.ResponseWriter, r *http.Request) {
 		var a struct {
-			Content string `json:"content"`
-			Query   string `json:"query"`
+			Content  string           `json:"content"`
+			Query    string           `json:"query"`
+			Segments []domain.Segment `json:"segments"`
 		}
 		if e := decode(w, r, &a); e != nil {
 			respond(w, nil, e)
 			return
 		}
-		bots, e := s.recipients(SendRequest{Content: a.Content})
+		bots, e := s.recipients(SendRequest{Content: a.Content, Segments: a.Segments})
 		if e != nil {
 			respond(w, nil, e)
 			return
@@ -264,21 +265,21 @@ func (s *Server) routes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
+		if e := s.validateFileSegments(&a, bots, false); e != nil {
+			respond(w, nil, e)
+			return
+		}
 		out := []domain.Segment{}
 		for _, ref := range a.Segments {
 			if ref.Type != "file" {
 				continue
 			}
-			ref.AllowedBots = []string{}
-			for _, bot := range bots {
-				if s.Files.Allowed(bot, ref.Path) {
-					ref.AllowedBots = append(ref.AllowedBots, bot.ID)
-				}
-			}
 			out = append(out, ref)
 		}
 		respond(w, out, nil)
 	})
+	mux.HandleFunc("POST /api/v1/references/reveal", s.revealDraftReference)
+	mux.HandleFunc("POST /api/v1/chats/{id}/references/reveal", s.revealMessageReference)
 	mux.HandleFunc("PATCH /api/v1/plugins/{id}", func(w http.ResponseWriter, r *http.Request) {
 		m, e := s.Plugins.Get(r.PathValue("id"))
 		if e != nil {

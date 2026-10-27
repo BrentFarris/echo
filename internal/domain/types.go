@@ -65,11 +65,19 @@ type Attachment struct {
 	Size      int64  `json:"size"`
 }
 type Segment struct {
-	Type        string   `json:"type"`
-	Text        string   `json:"text,omitempty"`
-	BotID       string   `json:"botId,omitempty"`
-	Path        string   `json:"path,omitempty"`
-	AllowedBots []string `json:"allowedBots,omitempty"`
+	Type        string        `json:"type"`
+	Text        string        `json:"text,omitempty"`
+	BotID       string        `json:"botId,omitempty"`
+	Path        string        `json:"path,omitempty"`
+	AllowedBots []string      `json:"allowedBots,omitempty"`
+	Kind        string        `json:"kind,omitempty"`
+	Range       *SegmentRange `json:"range,omitempty"`
+}
+
+// SegmentRange uses half-open UTF-16 offsets, matching browser string indexes.
+type SegmentRange struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
 }
 type Chat struct {
 	ID         string            `json:"id"`

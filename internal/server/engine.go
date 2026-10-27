@@ -26,7 +26,8 @@ func structuredSegments(req SendRequest, bots []domain.Bot) []domain.Segment {
 	for _, b := range bots {
 		lookup[b.Handle] = b.ID
 	}
-	masked := codeBlocks.ReplaceAllStringFunc(req.Content, func(v string) string { return strings.Repeat(" ", len(v)) })
+	content, _ := referenceContent(req)
+	masked := codeBlocks.ReplaceAllStringFunc(content, func(v string) string { return strings.Repeat(" ", len(v)) })
 	for _, match := range mentions.FindAllStringSubmatchIndex(masked, -1) {
 		start, end := match[2]-1, match[3]
 		id := lookup[strings.ToLower(req.Content[match[2]:end])]
@@ -36,7 +37,7 @@ func structuredSegments(req SendRequest, bots []domain.Bot) []domain.Segment {
 		if start > last {
 			segments = append(segments, domain.Segment{Type: "text", Text: req.Content[last:start]})
 		}
-		segments = append(segments, domain.Segment{Type: "bot", Text: req.Content[start:end], BotID: id})
+		segments = append(segments, domain.Segment{Type: "bot", Text: req.Content[start:end], BotID: id, Range: &domain.SegmentRange{Start: utf16Offset(req.Content[:start]), End: utf16Offset(req.Content[:end])}})
 		last = end
 	}
 	if last < len(req.Content) {
@@ -54,6 +55,10 @@ func (s *Server) recipients(req SendRequest) ([]domain.Bot, error) {
 	if req.scheduledBot != "" {
 		b, e := s.Bot(req.scheduledBot)
 		return []domain.Bot{b}, e
+	}
+	content, err := referenceContent(req)
+	if err != nil {
+		return nil, err
 	}
 	bots, e := s.Bots()
 	if e != nil {
@@ -82,7 +87,7 @@ func (s *Server) recipients(req SendRequest) ([]domain.Bot, error) {
 			add(b)
 		}
 	}
-	for _, m := range mentions.FindAllStringSubmatch(codeBlocks.ReplaceAllString(req.Content, ""), -1) {
+	for _, m := range mentions.FindAllStringSubmatch(codeBlocks.ReplaceAllString(content, ""), -1) {
 		b, ok := byName[strings.ToLower(m[1])]
 		if !ok {
 			return nil, fmt.Errorf("unknown bot @%s", m[1])
@@ -152,19 +157,8 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 			}
 		}
 	}
-	for i := range req.Segments {
-		seg := &req.Segments[i]
-		if seg.Type == "file" {
-			seg.AllowedBots = nil
-			for _, b := range bots {
-				if s.Files.Allowed(b, seg.Path) {
-					seg.AllowedBots = append(seg.AllowedBots, b.ID)
-				}
-			}
-			if len(seg.AllowedBots) == 0 {
-				return nil, fmt.Errorf("file reference is unavailable to all recipients: %s", seg.Path)
-			}
-		}
+	if e := s.validateFileSegments(&req, bots, true); e != nil {
+		return nil, e
 	}
 	s.mu.Lock()
 	if s.closingChats[chatID] > 0 {

@@ -2,8 +2,8 @@
 .chat-header{flex-shrink:0;font-weight:400}.chat-header strong{font-weight:500}
 .welcome{margin:12vh auto 0;text-align:center;font-size:14px;max-width:720px}.welcome p{font-size:14px;line-height:1.5}.welcome button{margin-top:8px}
 .composer{flex:none;display:flex;flex-direction:column;margin:0 16px 16px;padding:0 8px;border-top:1px solid var(--border);gap:0;min-width:0}
-.composer textarea{display:block;box-sizing:border-box;flex:none;min-height:0;max-height:none;height:42px;line-height:1.45;font-size:15px;padding:14px 8px 10px;border-radius:0;overflow-x:hidden;overflow-y:hidden;resize:none}
-.composer textarea::placeholder{color:var(--subtle);opacity:.6}
+.composer reference-input{display:block;box-sizing:border-box;flex:none;min-height:0;max-height:none;height:42px;line-height:1.45;font-size:15px;padding:14px 8px 10px;border-radius:0;overflow-x:hidden;overflow-y:hidden;resize:none}
+.composer reference-input[data-empty]::before{content:attr(data-placeholder);color:var(--subtle);opacity:.6;pointer-events:none}
 .composer-bottom{display:flex;min-width:0;gap:4px;padding-top:3px;align-items:center;height:38px;flex:none}
 .composer-bottom #model-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;margin-left:7px;min-width:0;max-width:36%}
 .composer-bottom .spacer{flex:1}.composer-menu{position:relative;flex:none}
@@ -41,5 +41,5 @@ button.send-button:hover:not(:disabled){filter:brightness(1.08)}button.send-butt
 .drag-over{outline:2px dashed var(--accent);outline-offset:-2px;background:var(--muted)}
 .picker .picker-status{margin:0;padding:10px 12px;color:var(--subtle);font-size:12px}
 .endpoint-editor{width:min(900px,94vw)}.endpoint-identity{display:grid;grid-template-columns:1fr 1fr;gap:14px}.endpoint-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.endpoint-form label{font-weight:600;font-size:13px}.endpoint-form label input,.endpoint-form label select{font-weight:400}.endpoint-form .field-wide{grid-column:1 / -1}.endpoint-form p{margin:0;font-size:12px;line-height:1.5}.endpoint-form>button{justify-self:start}.compression-setting input{width:100%;margin:auto 0}.endpoint-form .compression-setting span{display:flex;gap:6px}
-@media(max-width:760px){.composer{margin:0 12px 12px;padding:0 3px}.composer textarea{font-size:16px;padding-left:4px}.composer-bottom #model-name{max-width:28%;font-size:11px}.model-popup{left:-30px;width:min(340px,calc(100vw - 28px))}.welcome{margin:12vh 8px 0}.endpoint-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:760px){.composer{margin:0 12px 12px;padding:0 3px}.composer reference-input{font-size:16px;padding-left:4px}.composer-bottom #model-name{max-width:28%;font-size:11px}.model-popup{left:-30px;width:min(340px,calc(100vw - 28px))}.welcome{margin:12vh 8px 0}.endpoint-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:480px){.endpoint-identity,.endpoint-grid{grid-template-columns:1fr}.attachment-drafts{max-height:100px}.composer-menu summary{font-size:11px;padding:5px}.composer-bottom #model-name{max-width:24%}}

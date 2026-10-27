@@ -116,13 +116,13 @@ test('composer pastes images, attaches files, preserves drafts and renders persi
   await input.press('Control+V');
   await expect(page.locator('.attachment-drafts .attachment-card')).toHaveCount(1);
   await expect(page.locator('.attachment-drafts img')).toBeVisible();
-  await expect(input).toHaveValue('Inspect this attachment');
+  await expect(input).toHaveText('Inspect this attachment');
   const oldChat = new URL(page.url()).hash.slice(1);
   await page.getByRole('button', { name: '＋ New chat', exact: true }).click();
   await expect(page.locator('.attachment-drafts')).toBeHidden();
   await page.locator(`[data-chat="${oldChat}"]`).click();
   await expect(page.locator('.attachment-drafts .attachment-card')).toHaveCount(1);
-  await expect(input).toHaveValue('Inspect this attachment');
+  await expect(input).toHaveText('Inspect this attachment');
   await page.locator('.attachment-drafts .attachment-preview').click();
   await expect(page.locator('.attachment-viewer img')).toBeVisible(); await page.getByRole('button', { name: 'Close preview' }).click();
   await page.getByLabel('Attach file', { exact: true }).click();
@@ -141,7 +141,7 @@ test('composer pastes images, attaches files, preserves drafts and renders persi
   await input.press('Control+V'); await expect(page.locator('.attachment-drafts .attachment-card')).toHaveCount(1);
   await page.request.delete('/api/v1/chats/' + oldChat);
   expect((await page.request.get(imageURL!)).status()).toBe(404);
-  await expect(input).toHaveValue(''); await expect(page.locator('.attachment-drafts')).toBeHidden();
+  await expect(input).toHaveText(''); await expect(page.locator('.attachment-drafts')).toBeHidden();
 });
 
 test('composer grows to half height, opens upward menus and uses one send/stop icon', async ({ page }) => {

@@ -36,6 +36,8 @@ All paths below are under `/api/v1`. Local bootstrap requires a loopback connect
 | `GET /chats/{id}/messages` | Complete stored transcript plus active stream buffers |
 | `GET /chats/{id}/snapshot` | Transcript plus sequence watermark for reconnect recovery |
 | `POST /references`, `POST /references/validate` | Lazy file suggestions and recipient-specific revalidation |
+| `POST /references/reveal` | `{content, segments, path}`; local-owner native reveal of a draft reference with current recipient scope checks |
+| `POST /chats/{id}/references/reveal` | `{messageId, path}`; local-owner native reveal of a saved user-message reference, rechecking its recorded recipients' current scopes |
 | `PATCH /plugins/{id}` | Owner settings and activation |
 | `POST /plugins/{id}/approve` | Approve `{digest}`; stale package reviews are rejected |
 | `POST /plugins/{id}/rollback` | Restore the previous package |
@@ -52,6 +54,8 @@ All paths below are under `/api/v1`. Local bootstrap requires a loopback connect
 Development operations use the same owner sessions and Origin checks for local and remote users, and are not exposed through bot tools or plugin bridges. `internal/development` serializes operations and settings changes, runs builds independently of request lifetimes, and retains logs beneath the profile. Operation states are `running`, `succeeded`, `failed`, `restarting`, and `stopping`; concurrent actions return 409. Operation status is process-local; settings persist without a database schema migration. Update checks fetch only the configured upstream and compare immutable commits; applying an update revalidates the branch/upstream/HEAD and merges fast-forward-only with autostash disabled. The Windows launcher reports readiness before the host shuts down, waits for that process handle to exit, and replaces the staged executable. Restart polling uses process identity rather than requiring an observed outage.
 
 Clients buffer incoming events during recovery, apply a snapshot, then replay events newer than its watermark. Slow subscribers disconnect and recover from persisted state and active buffers. The event log itself is not written per token.
+
+The core composer stores plain text plus atomic bot/file reference segments. Optional segment `range: {start, end}` values are half-open UTF-16 offsets into `content`; file segments also carry a server-derived `kind` (`file` or `directory`). Each file occurrence retains its own path, including when labels repeat. The server validates file ranges, masks those spans when detecting bot recipients, and recomputes access on send. Existing messages without ranges remain readable; the UI only associates legacy file descriptors with unambiguous text occurrences. Native reveal remains Windows-only and loopback-only, with the same filesystem containment checks as changed-file reveal. No database migration is needed because segments are stored in the existing serialized message.
 
 ## Plugin ABI and package sources
 

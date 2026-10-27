@@ -122,6 +122,26 @@ func (f *Files) Allowed(bot domain.Bot, path string) bool {
 	_, e = r.Stat(p)
 	return e == nil
 }
+
+// ReferenceKind validates through the same rooted filesystem as file tools.
+func (f *Files) ReferenceKind(bot domain.Bot, path string) (string, error) {
+	r, p, err := f.resolve(bot, path)
+	if err != nil {
+		return "", err
+	}
+	defer r.Close()
+	info, err := r.Stat(p)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "directory", nil
+	}
+	if info.Mode().IsRegular() {
+		return "file", nil
+	}
+	return "", errors.New("not a file or folder")
+}
 func (f *Files) Read(bot domain.Bot, path string) (map[string]any, error) {
 	r, p, e := f.resolve(bot, path)
 	if e != nil {
