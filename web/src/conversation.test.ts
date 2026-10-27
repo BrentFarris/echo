@@ -1,10 +1,32 @@
 import { expect, test } from 'vitest';
-import { conversationItems } from './conversation';
+import { conversationItems, conversationThreads, threadMessages } from './conversation';
 import type { Message, Run } from './types';
 
 const message = (id: string, extra: Partial<Message> = {}): Message => ({ id, chatId: 'chat', runId: 'run', botId: 'bot', author: 'Kaiju', role: 'assistant', status: 'completed', content: '', createdAt: '', ...extra });
 const run = (status: string, id = 'run'): Run => ({ id, chatId: 'chat', botId: 'bot', status });
 const response = (messages: Message[], runs: Run[]) => conversationItems(messages, runs).flatMap(item => item.kind === 'response' ? [item.group] : []);
+
+test('bot threads include queued and historical bots in prompt order', () => {
+  const messages = [message('prompt', { botId: undefined, runId: undefined, role: 'user', recipients: ['bot', 'b'] }), message('answer', { author: 'Historical name' })];
+  const threads = conversationThreads(undefined, messages, [run('completed'), { ...run('queued', 'b-run'), botId: 'b' }], []);
+  expect(threads).toEqual([{ id: 'bot', name: 'Historical name', status: 'completed' }, { id: 'b', name: 'b', status: 'queued' }]);
+});
+
+test('each thread keeps its prompts, tools and handoffs without another bot’s messages', () => {
+  const messages = [
+    message('shared', { botId: undefined, runId: undefined, role: 'user', recipients: ['bot', 'b'] }),
+    message('only-b', { botId: undefined, runId: undefined, role: 'user', recipients: ['b'] }),
+    message('a-work'), message('a-tool', { role: 'tool' }),
+    message('b-handoff', { botId: 'b', runId: 'b-run', role: 'user' }),
+    message('b-answer', { botId: 'b', runId: 'b-run' }),
+    message('legacy-a-tool', { botId: undefined, role: 'tool' }),
+    message('legacy-prompt', { botId: undefined, runId: undefined, role: 'user' }),
+  ];
+  const runs = [run('completed'), { ...run('completed', 'b-run'), botId: 'b' }];
+  expect(threadMessages(messages, 'bot', runs).map(m => m.id)).toEqual(['shared', 'a-work', 'a-tool', 'legacy-a-tool', 'legacy-prompt']);
+  expect(threadMessages(messages, 'b', runs).map(m => m.id)).toEqual(['shared', 'only-b', 'b-handoff', 'b-answer', 'legacy-prompt']);
+  expect(threadMessages(messages)).toBe(messages);
+});
 
 test('folds reasoning, progress and tools behind the final answer without changing the transcript', () => {
   const messages = [message('user', { runId: undefined, role: 'user', content: 'Build it' }), message('progress', { reasoning: 'Inspect the folder', content: 'Working', toolCalls: [{}] }), message('tool', { role: 'tool', content: 'Result' }), message('final', { content: 'Done', reasoning: 'Check the result' })];

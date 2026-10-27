@@ -1,4 +1,23 @@
 .chat-header{height:40px;padding:0 14px}
+.conversation-panel{display:flex;flex-direction:column;flex:1;min-height:0;min-width:0}
+.bot-tabs-shell{display:grid;grid-template-columns:minmax(0,1fr);flex:none;min-width:0;height:32px;border-bottom:1px solid var(--border)}
+.bot-tabs-shell[hidden]{display:none}.bot-tabs-shell.has-overflow{grid-template-columns:26px minmax(0,1fr) 26px}
+.bot-tabs{display:flex;min-width:0;height:32px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;overscroll-behavior-x:contain;touch-action:pan-x}
+.bot-tabs::-webkit-scrollbar{display:none}
+.bot-tabs [role=tab]{position:relative;display:flex;align-items:center;gap:7px;flex:0 1 220px;min-width:120px;max-width:220px;height:32px;border:0;border-radius:0;background:transparent;padding:0 7px 0 10px;color:var(--subtle);font-size:11.84px;cursor:default}
+.bot-tabs [role=tab]::after{position:absolute;right:0;bottom:0;left:0;height:2px;background:var(--accent);content:"";opacity:0}
+.bot-tabs [role=tab][aria-selected=true]{color:var(--text)}.bot-tabs [role=tab][aria-selected=true]::after{opacity:1}
+.bot-tabs [role=tab]:hover,.bot-tabs [role=tab]:focus-visible{background:color-mix(in srgb,var(--text) 6%,transparent)}
+.bot-tab-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bot-tabs [role=tab]:focus-visible,.bot-tabs-scroll:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.bot-tab-busy-dot{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:#9a6700;box-shadow:0 0 0 2px #9a670029;animation:bot-tab-breathe 1.7s ease-in-out infinite}
+@keyframes bot-tab-breathe{0%,100%{opacity:.48;transform:scale(.82)}50%{opacity:1;transform:scale(1)}}
+@media(prefers-reduced-motion:reduce){.bot-tab-busy-dot{animation:none}}
+@media(prefers-color-scheme:dark){.bot-tab-busy-dot{background:#d29922;box-shadow:0 0 0 2px #d2992229}}
+.bot-tabs-scroll{display:none;z-index:1;width:26px;height:31px;padding:7px;border:0;border-radius:0;background:var(--surface);color:var(--subtle);place-items:center}
+.bot-tabs-shell.has-overflow .bot-tabs-scroll{display:grid}.bot-tabs-scroll:disabled{opacity:.3;cursor:default}
+.bot-tabs-scroll:hover:not(:disabled){background:var(--muted);color:var(--text)}
+.bot-tabs-scroll svg{width:13px;height:13px}.bot-tabs-scroll.previous svg{transform:rotate(90deg)}.bot-tabs-scroll.next svg{transform:rotate(-90deg)}
 .chat-log{padding:10px 14px;scrollbar-gutter:auto}
 .message,.response-group{min-width:0;border:1px solid var(--border);border-radius:7px;margin:0 0 8px;padding:8px 10px;background:var(--bg);overflow-wrap:anywhere}
 .message-meta{align-items:center;gap:7px;margin-bottom:4px;line-height:1.4;font-size:11px}

@@ -1,7 +1,7 @@
 import { ReferenceInput, trimmedDraft } from './referenceEditor';
 import { referenceIcons, referenceFromElement, renderMessageReferences, showBotDetails } from './references';
 import { Renderers } from './renderers';
-import { conversationItems, type ResponseGroup } from './conversation';
+import { conversationItems, conversationThreads, threadMessages, type ResponseGroup } from './conversation';
 import { fileChangesFooter } from './fileChanges';
 import { ReferenceSearch } from './referenceSearch';
 import { endpointForm, endpointValues } from './modelSettings';
@@ -53,7 +53,7 @@ function pluginEnabled(id: string, botId?: string) { const plugin = state.plugin
 
 function shell() {
   app.innerHTML = `<aside id="sidebar" class="sidebar"><div class="brand"><span class="brand-mark" aria-hidden="true">E</span>Echo<button class="icon sidebar-close" aria-label="Close sidebar">×</button></div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button></div><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="install-echo" hidden>Install Echo</button><button id="missed-button" hidden>Missed jobs</button><button id="settings-button">⚙ Settings</button></div></aside><div class="sidebar-backdrop" aria-hidden="true"></div>
-  <main class="main"><header class="chat-header"><button class="icon mobile-menu" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">☰</button><strong id="chat-title">Echo</strong><span id="connection" class="subtle">Connecting…</span></header><div class="chat-log" role="log" aria-label="Conversation"></div>
+  <main class="main"><header class="chat-header"><button class="icon mobile-menu" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">☰</button><strong id="chat-title">Echo</strong><span id="connection" class="subtle">Connecting…</span></header><div class="bot-tabs-shell" hidden><button type="button" class="bot-tabs-scroll previous" aria-label="Scroll tabs left" title="Scroll tabs left">${icons.chevron}</button><div class="bot-tabs" role="tablist" aria-label="Bot threads"></div><button type="button" class="bot-tabs-scroll next" aria-label="Scroll tabs right" title="Scroll tabs right">${icons.chevron}</button></div><div id="bot-thread-panel" class="conversation-panel"><div class="chat-log" role="log" aria-label="Conversation"></div></div>
   ${composerMarkup}</main>`;
   q('#new-chat').onclick = action(newChat); q('#settings-button').onclick = () => settings(); q('#missed-button').onclick = showMissed;
   pwa.mount(q<HTMLButtonElement>('#install-echo'));
@@ -83,6 +83,26 @@ function shell() {
   composer.onclick = e => { const chip = (e.target as HTMLElement).closest<HTMLElement>('[data-reference]'); if (chip) { closePicker(); void activateReference(chip); } else showPicker(); };
   q('.chat-log').addEventListener('click', e => { const chip = (e.target as HTMLElement).closest<HTMLElement>('[data-reference]'); if (chip) void activateReference(chip); });
   q('.chat-log').addEventListener('keydown', e => { const chip = (e.target as HTMLElement).closest<HTMLElement>('[data-reference]'); if (chip && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); void activateReference(chip); } });
+  q('.bot-tabs').onclick = e => { const tab = (e.target as HTMLElement).closest<HTMLElement>('[data-bot-thread]'); if (tab) selectBotThread(tab.dataset.botThread!); };
+  q('.bot-tabs').onkeydown = e => {
+    const tabs = [...q('.bot-tabs').querySelectorAll<HTMLElement>('[role="tab"]')], index = tabs.indexOf(document.activeElement as HTMLElement);
+    if (index < 0 || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : (index + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    selectBotThread(tabs[next].dataset.botThread!);
+  };
+  q('.bot-tabs').addEventListener('wheel', e => {
+    if (!q('.bot-tabs-shell').classList.contains('has-overflow')) return;
+    const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (!delta) return;
+    q('.bot-tabs').scrollLeft += delta; e.preventDefault(); updateBotTabOverflow();
+  }, { passive: false });
+  q('.bot-tabs').onscroll = updateBotTabOverflow;
+  for (const direction of ['previous', 'next']) q('.bot-tabs-scroll.' + direction).onclick = () => {
+    const tabs = q('.bot-tabs');
+    tabs.scrollBy({ left: (direction === 'previous' ? -1 : 1) * Math.max(140, Math.floor(tabs.clientWidth * .7)), behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+  };
+  new ResizeObserver(updateBotTabOverflow).observe(q('.bot-tabs'));
   composer.onkeyup = e => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) showPicker(); };
   q<HTMLInputElement>('#model').oninput = () => { generation.model = q<HTMLInputElement>('#model').value; q('#model-name').textContent = generation.model; rememberDraft(); };
   q<HTMLInputElement>('#thinking').oninput = () => { generation.thinking = thinking[Number(q<HTMLInputElement>('#thinking').value)]; q('#thinking-label').textContent = thinkingLabel(); rememberDraft(); };
@@ -173,7 +193,7 @@ async function refresh() {
       references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references });
       renderRefs(); renderAttachments(); autosizeComposer(); messages = chatId ? await api(`/chats/${chatId}/messages`) : []; renderMessages();
     }
-    renderSidebar(); renderModels(); renderRunErrors(); if (rendering() !== beforeRendering) { renderers.sync(state.plugins); renderMessages(false, true); } updateSendButton();
+    renderSidebar(); renderModels(); if (rendering() !== beforeRendering) { renderers.sync(state.plugins); renderMessages(false, true); } else renderMessages(); updateSendButton();
     for (const win of document.querySelectorAll<HTMLElement>('.floating-plugin')) { const p = state.plugins.find(p => p.id === win.dataset.pluginId); if (!p?.enabled || p.pending || !pluginEnabled(p.id, win.dataset.botId)) closeWindows.get(win)?.(); }
   })().finally(() => { refreshing = null; }); return refreshing;
 }
@@ -204,7 +224,48 @@ const messageMarkup = new Map<string, { message: Message; element: HTMLElement; 
 const renderers = new Renderers(pluginEnabled, () => renderMessages(false, true));
 const disclosureState = new Map<string, boolean>();
 let renderedChatId = '';
-function statusBadge(status?: string) { return status && status !== 'completed' ? `<span class="badge status-${esc(status)}">${esc(({ running: 'Working', waiting: 'Waiting', queued: 'Queued', failed: 'Failed', cancelled: 'Stopped', interrupted: 'Interrupted' } as Record<string, string>)[status] || status)}</span>` : ''; }
+const selectedBotThreads = new Map<string, string>();
+const threadScroll = new Map<string, number>();
+let renderedThreadKey = '', visibleBotId: string | undefined;
+function selectBotThread(id: string) {
+  selectedBotThreads.set(chatId, id);
+  try { sessionStorage.setItem('echo:bot-thread:' + chatId, id); } catch { /* Storage may be unavailable. */ }
+  renderMessages();
+  const tab = [...q('.bot-tabs').querySelectorAll<HTMLElement>('[role="tab"]')].find(tab => tab.dataset.botThread === id);
+  tab?.focus({ preventScroll: true }); tab?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+function renderBotTabs() {
+  const threads = conversationThreads(state.chats.find(chat => chat.id === chatId), messages, state.runs.filter(run => run.chatId === chatId), state.bots);
+  let selected = selectedBotThreads.get(chatId);
+  if (!selected) { try { selected = sessionStorage.getItem('echo:bot-thread:' + chatId) || undefined; } catch { /* Use the first thread. */ } }
+  visibleBotId = threads.length > 1 ? threads.find(thread => thread.id === selected)?.id || threads[0].id : undefined;
+  if (visibleBotId) selectedBotThreads.set(chatId, visibleBotId);
+  const tabs = q('.bot-tabs'), panel = q('#bot-thread-panel');
+  q('.bot-tabs-shell').hidden = !visibleBotId;
+  const markup = visibleBotId ? threads.map(thread => {
+    const status = statusLabel(thread.status), label = thread.name + (status ? ' ' + status : '');
+    const working = ['running', 'waiting', 'queued'].includes(thread.status || '');
+    return `<button type="button" role="tab" id="bot-tab-${esc(thread.id)}" data-bot-thread="${esc(thread.id)}" aria-controls="bot-thread-panel" aria-label="${esc(label)}" title="${esc(label)}" aria-selected="${thread.id === visibleBotId}" tabindex="${thread.id === visibleBotId ? 0 : -1}">${working ? '<span class="bot-tab-busy-dot" aria-hidden="true"></span>' : ''}<span class="bot-tab-label">${esc(thread.name)}</span></button>`;
+  }).join('') : '';
+  if (tabs.innerHTML !== markup) {
+    const focused = tabs.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.botThread : undefined;
+    tabs.innerHTML = markup;
+    if (focused) [...tabs.querySelectorAll<HTMLElement>('[role="tab"]')].find(tab => tab.dataset.botThread === focused)?.focus({ preventScroll: true });
+  }
+  if (visibleBotId) { panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', 'bot-tab-' + visibleBotId); panel.tabIndex = 0; }
+  else { panel.removeAttribute('role'); panel.removeAttribute('aria-labelledby'); panel.removeAttribute('tabindex'); }
+  requestAnimationFrame(updateBotTabOverflow);
+}
+function updateBotTabOverflow() {
+  const shell = q('.bot-tabs-shell'), tabs = q('.bot-tabs');
+  if (shell.hidden) return;
+  const overflow = tabs.scrollWidth > tabs.clientWidth + 1;
+  shell.classList.toggle('has-overflow', overflow);
+  q<HTMLButtonElement>('.bot-tabs-scroll.previous').disabled = !overflow || tabs.scrollLeft <= 1;
+  q<HTMLButtonElement>('.bot-tabs-scroll.next').disabled = !overflow || tabs.scrollLeft + tabs.clientWidth >= tabs.scrollWidth - 1;
+}
+function statusLabel(status?: string) { return status && status !== 'completed' ? ({ running: 'Working', waiting: 'Waiting', queued: 'Queued', failed: 'Failed', cancelled: 'Stopped', interrupted: 'Interrupted' } as Record<string, string>)[status] || status : ''; }
+function statusBadge(status?: string) { const label = statusLabel(status); return label ? `<span class="badge status-${esc(status)}">${esc(label)}</span>` : ''; }
 function reasoningMarkup(m: Message) { return `<details class="reasoning" data-disclosure="${esc(m.id)}:reasoning"><summary>Thinking</summary><pre>${esc(m.reasoning)}</pre></details>`; }
 function restoreDisclosures(root: HTMLElement) { for (const details of root.querySelectorAll<HTMLDetailsElement>('details[data-disclosure]')) { const open = disclosureState.get(details.dataset.disclosure!); if (open !== undefined) details.open = open; } }
 function rememberDisclosures(root: HTMLElement) { for (const details of root.querySelectorAll<HTMLDetailsElement>('details[data-disclosure]')) disclosureState.set(details.dataset.disclosure!, details.open); }
@@ -268,27 +329,36 @@ function paintResponse(group: ResponseGroup) {
 }
 function renderMessages(tail = false, force = false) {
   const log = document.querySelector<HTMLElement>('.chat-log'); if (!log) return;
+  if (renderedThreadKey) threadScroll.set(renderedThreadKey, log.scrollTop);
+  renderBotTabs();
+  const threadKey = JSON.stringify([chatId, visibleBotId]), switchedThread = threadKey !== renderedThreadKey;
+  renderedThreadKey = threadKey;
   const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 100, previousTop = log.scrollTop;
   const focused = log.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLDetailsElement>('details[data-disclosure]')?.dataset.disclosure : undefined;
   const focusedFile = log.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.fileChange : undefined;
   const anchor = [...log.children].find(child => child.getBoundingClientRect().bottom > log.getBoundingClientRect().top) as HTMLElement | undefined;
   const anchorKey = anchor?.dataset.timelineKey || anchor?.id, anchorOffset = anchor?.offsetTop;
   if (renderedChatId !== chatId) { disclosureState.clear(); messageMarkup.clear(); renderers.clearPending(); renderedChatId = chatId; } else rememberDisclosures(log);
-  if (force) { messageMarkup.clear(); renderers.clearPending(); }
+  // Repaint on tab changes: renderer replies for an offscreen thread may have been discarded.
+  if (force || switchedThread) { messageMarkup.clear(); renderers.clearPending(); }
   log.replaceChildren();
   if (!messages.length) log.innerHTML = `<div class="welcome"><p>Ask Echo to inspect, plan, or build.</p>${!state.endpoints.length ? '<button id="setup-model">Connect a local model</button>' : ''}</div>`;
-  for (const item of conversationItems(messages, state.runs)) log.append(item.kind === 'response' ? paintResponse(item.group) : paintMessage(item.message));
+  const visibleMessages = threadMessages(messages, visibleBotId, state.runs);
+  for (const item of conversationItems(visibleMessages, state.runs)) log.append(item.kind === 'response' ? paintResponse(item.group) : paintMessage(item.message));
+  if (messages.length && !visibleMessages.length) log.innerHTML = '<p class="empty-list">No messages in this bot’s thread yet.</p>';
   renderRunErrors(); document.querySelector<HTMLButtonElement>('#setup-model')?.addEventListener('click', () => settings('models'));
   if (focused) [...log.querySelectorAll<HTMLDetailsElement>('details[data-disclosure]')].find(d => d.dataset.disclosure === focused)?.querySelector('summary')?.focus({ preventScroll: true });
   if (focusedFile) [...log.querySelectorAll<HTMLButtonElement>('.file-change')].find(button => button.dataset.fileChange === focusedFile)?.focus({ preventScroll: true });
-  if (tail || nearBottom) log.scrollTop = log.scrollHeight;
+  if (switchedThread) log.scrollTop = threadScroll.get(threadKey) ?? log.scrollHeight;
+  else if (tail || nearBottom) log.scrollTop = log.scrollHeight;
   else { const replacement = [...log.children].find(child => (child as HTMLElement).dataset.timelineKey === anchorKey || child.id === anchorKey) as HTMLElement | undefined; log.scrollTop = previousTop + (replacement && anchorOffset !== undefined ? replacement.offsetTop - anchorOffset : 0); }
 }
 function renderRunErrors() {
   for (const old of document.querySelectorAll('.run-error, .run-queued')) old.remove();
   const log = document.querySelector('.chat-log'); if (!log) return;
-  for (const run of state.runs.filter(r => r.chatId === chatId && r.status === 'queued')) { const div = document.createElement('div'); div.className = 'run-queued subtle'; div.setAttribute('role', 'status'); div.innerHTML = `${esc(currentBot(run.botId)?.name || 'Bot')} ${statusBadge('queued')}`; log.append(div); }
-  for (const run of state.runs.filter(r => r.chatId === chatId && r.error)) { const div = document.createElement('div'); div.className = 'run-error'; div.textContent = `${currentBot(run.botId)?.name || 'Bot'}: ${run.error}`; log.append(div); }
+  const runs = state.runs.filter(r => r.chatId === chatId && (!visibleBotId || r.botId === visibleBotId));
+  for (const run of runs.filter(r => r.status === 'queued')) { const div = document.createElement('div'); div.className = 'run-queued subtle'; div.setAttribute('role', 'status'); div.innerHTML = `${esc(currentBot(run.botId)?.name || 'Bot')} ${statusBadge('queued')}`; log.append(div); }
+  for (const run of runs.filter(r => r.error)) { const div = document.createElement('div'); div.className = 'run-error'; div.textContent = `${currentBot(run.botId)?.name || 'Bot'}: ${run.error}`; log.append(div); }
 }
 function connect() {
   const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/v1/events`);
@@ -323,7 +393,7 @@ function connect() {
       let m = messages.find(m => m.id === e.payload.id);
       if (e.type === 'message') { liveToolOutput.delete(e.payload.id); if (m) Object.assign(m, e.payload); else { m = e.payload; messages.push(m!); } }
       else if (m) { m.content += e.payload.content || ''; m.reasoning = (m.reasoning || '') + (e.payload.reasoning || ''); }
-      if (m) { const log = q('.chat-log'); const tail = log.scrollHeight - log.scrollTop - log.clientHeight < 120; const old = document.getElementById('message-' + m.id); if (old && e.type === 'delta') paintMessage(m, old); else renderMessages(); if (tail) log.scrollTop = log.scrollHeight; }
+      if (m) { const log = q('.chat-log'); const tail = log.scrollHeight - log.scrollTop - log.clientHeight < 120; const old = document.getElementById('message-' + m.id); if (old && e.type === 'delta') paintMessage(m, old); else if (e.type !== 'delta') renderMessages(); if (tail) log.scrollTop = log.scrollHeight; }
     }
     if (e.type === 'changed') queueRefresh();
   }
