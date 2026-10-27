@@ -2,6 +2,7 @@ import { Renderers } from './renderers';
 import { conversationItems, type ResponseGroup } from './conversation';
 import { fileChangesFooter } from './fileChanges';
 import { endpointForm, endpointValues } from './modelSettings';
+import { mountDevelopment } from './development';
 import { composerMarkup, icons, autosizeComposer, wireComposerMenus, attachmentCard, previewAttachment, releaseAttachments, type DraftAttachment } from './composer';
 import { activeMention, escapeHTML as esc, groupChats } from './helpers';
 import type { Attachment, Bot, Chat, Endpoint, FileEntry, Generation, Message, Plugin, Schedule, Segment, State } from './types';
@@ -312,11 +313,12 @@ function settings(section = 'bots') {
   const previous = document.querySelector<HTMLDialogElement>('#settings'); if (previous) { previous.close(); previous.remove(); }
   const el = dialog('Settings', '<div class="settings-layout"><nav class="settings-nav" aria-label="Settings sections"></nav><div class="settings-content"></div></div>'); el.id = 'settings';
   const nav = q('.settings-nav', el), content = q('.settings-content', el);
-  const entries = [{ id: 'bots', name: 'Bots' }, { id: 'models', name: 'Local Models' }, { id: 'cloud-models', name: 'Cloud Models' }, ...state.plugins.map(p => ({ id: p.id, name: p.name }))];
+  const entries = [{ id: 'bots', name: 'Bots' }, { id: 'models', name: 'Local Models' }, { id: 'cloud-models', name: 'Cloud Models' }, { id: 'development', name: 'Development' }, ...state.plugins.map(p => ({ id: p.id, name: p.name }))];
   nav.innerHTML = entries.map(e => `<button data-section="${esc(e.id)}" class="${section === e.id ? 'active' : ''}">${esc(e.name)}</button>`).join('');
   for (const button of nav.querySelectorAll<HTMLButtonElement>('button')) button.onclick = () => settings(button.dataset.section);
   if (section === 'bots') botSettings(content);
   else if (section === 'models' || section === 'cloud-models') modelSettings(content, section === 'cloud-models');
+  else if (section === 'development') void mountDevelopment(content, api);
   else pluginSettings(content, state.plugins.find(p => p.id === section)!);
 }
 function botSettings(root: HTMLElement) {

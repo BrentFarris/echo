@@ -39,6 +39,13 @@ All paths below are under `/api/v1`. Local bootstrap requires a loopback connect
 | `POST /hosting/password` | Replace password and invalidate previous sessions |
 | `POST /schedules`, `DELETE /schedules/{id}`, `POST /missed/review` | Calendar management and explicit catch-up selection |
 | `GET /events` | Authenticated WebSocket; reset/snapshot recovery, message/delta/run/handoff/plugin-open/changed events |
+| `GET /health` | Authenticated health response with a unique `instanceId` per server process |
+| `GET /development`, `PUT /development` | Inspect development settings/status or save `{repositoryPath}` in the existing settings records |
+| `POST /development/check-updates`, `POST /development/update-relaunch`, `POST /development/build-relaunch` | Start an asynchronous upstream check, fast-forward update/build, or local build; return 202 with `{operation, instanceId}` |
+| `POST /development/relaunch`, `POST /development/terminate` | Prepare a restart of the current executable or request graceful termination; return the same acceptance shape |
+| `GET /development/operations/{id}` | Latest operation status, stage, error, `checkoutUpdated`, full log path and bounded `logTail`; unknown or replaced IDs return 404 |
+
+Development operations use the same owner sessions and Origin checks for local and remote users, and are not exposed through bot tools or plugin bridges. `internal/development` serializes operations and settings changes, runs builds independently of request lifetimes, and retains logs beneath the profile. Operation states are `running`, `succeeded`, `failed`, `restarting`, and `stopping`; concurrent actions return 409. Operation status is process-local; settings persist without a database schema migration. Update checks fetch only the configured upstream and compare immutable commits; applying an update revalidates the branch/upstream/HEAD and merges fast-forward-only with autostash disabled. The Windows launcher reports readiness before the host shuts down, waits for that process handle to exit, and replaces the staged executable. Restart polling uses process identity rather than requiring an observed outage.
 
 Clients buffer incoming events during recovery, apply a snapshot, then replay events newer than its watermark. Slow subscribers disconnect and recover from persisted state and active buffers. The event log itself is not written per token.
 

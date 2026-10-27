@@ -19,6 +19,7 @@ import (
 )
 
 func (s *Server) routes(mux *http.ServeMux) {
+	s.developmentRoutes(mux)
 	s.sourceControlRoutes(mux)
 	s.attachmentRoutes(mux)
 	mux.HandleFunc("GET /api/v1/state", func(w http.ResponseWriter, r *http.Request) {

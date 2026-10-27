@@ -73,6 +73,7 @@ func main() {
 	signal.Notify(stop, os.Interrupt)
 	select {
 	case <-stop:
+	case <-app.ShutdownRequested():
 	case e := <-done:
 		if e != http.ErrServerClosed {
 			log.Print(e)

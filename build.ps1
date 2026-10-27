@@ -1,5 +1,6 @@
-param([switch]$Test, [switch]$NativeTests, [switch]$BrowserTests, [switch]$Release)
+param([switch]$Test, [switch]$NativeTests, [switch]$BrowserTests, [switch]$Release, [string]$OutputPath = 'echo.exe')
 $ErrorActionPreference = 'Stop'
+if ($Release -and $OutputPath -ne 'echo.exe') { throw '-OutputPath cannot be combined with -Release' }
 if ($Release) { $Test = $true; $NativeTests = $true; $BrowserTests = $true }
 $previousNative = $env:ECHO2_NATIVE_TESTS
 $previousRequired = $env:ECHO2_REQUIRE_TOOLCHAINS
@@ -32,7 +33,7 @@ try {
         go vet ./...
         if ($LASTEXITCODE) { throw 'Go vet failed' }
     }
-    go build -trimpath -o echo.exe .
+    go build -trimpath -o $OutputPath .
     if ($LASTEXITCODE) { throw 'Echo build failed' }
     if ($BrowserTests) {
         go build -o mock-model.exe ./cmd/mock-model

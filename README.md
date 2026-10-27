@@ -74,14 +74,26 @@ Supported recurrences are `daily HH:MM`, `weekly MON HH:MM`, `every N minutes/ho
 
 After downtime, every missed occurrence awaits review. Select jobs, set concurrency (default `1`; `0` means unlimited), then choose **Run selected**. Unselected jobs are skipped. **Skip all** dismisses the entire pending batch. Equivalent chat commands are `/missed run <concurrency> <occurrence IDs>` and `/missed skip-all`. Reviews survive restart; intentionally paused/disabled schedules do not accumulate missed work. Interrupted work is identified and never automatically replays uncertain tools.
 
+## Development settings
+
+**Settings → Development** lets you develop Echo using Echo. Save the absolute path to the new Echo Git checkout on the server computer; a valid checkout beside the executable or at its working directory is suggested automatically. Git worktrees are supported. These controls are available to local owners and authenticated Hosted Server users.
+
+**Check for Updates** fetches the checked-out branch’s configured upstream and reports whether it is up to date, ahead, behind, or diverged. A tracking branch is required: Echo does not choose a remote or switch branches. When behind, **Update & Relaunch** fast-forwards the upstream and builds. Conflicting edits and diverged histories stop the update; Echo never resets, stashes, or discards your edits.
+
+**Build & Relaunch** builds the current checkout (including local edits), its plugin runtime, and frontend, then launches the repository’s `echo.exe`. It requires Git, PowerShell, Go, Node.js, and npm on the server. **Relaunch** restarts the current executable without building; **Terminate Echo** stops it without restarting. Neither requires a source checkout. Restarting and stopping interrupt active work. Echo remains available during builds and closes gracefully only after a successful build and launcher preparation. The requesting browser waits for a replacement process and reloads the same tab.
+
+The panel shows progress and the latest 16 KiB of operation output. Full logs live under the existing data directory’s `development/<operation-id>/` folder, alongside launcher diagnostics and replacement-process stdout/stderr. If a build fails after an update, the checkout stays updated and the previous Echo process stays running. If a restart fails, inspect those logs and start Echo manually. Operations are serialized across browsers; checks run only when requested.
+
 ## Build and validate
 
 Requires Go 1.26+, Node.js compatible with Vite 8, and npm. Windows release acceptance additionally requires Git with reftable support, Fossil, Node and a .NET SDK on PATH, plus Perforce client/server binaries. Put `p4.exe` and `p4d.exe` on PATH or set `ECHO2_TEST_P4` and `ECHO2_TEST_P4D` to portable copies. Perforce tests start a temporary loopback-only depot and remove it afterward; no real depot is modified. These external CLIs are not bundled into the Echo ZIP.
 
 ```powershell
 .\build.ps1                         # Build echo.exe from the repository root
+.\build.ps1 -OutputPath .\staged.exe # Build to an alternate path
 .\build.ps1 -Test -BrowserTests     # Go, type checking, unit tests, Playwright
 .\build.ps1 -Release                # All checks, required native tests, release ZIP
+.\scripts\test-development.ps1      # Isolated real build/relaunch/terminate acceptance
 ```
 
 The browser tests use deterministic providers and isolated test data on ports 3742/3743. They do not contact a cloud model or use your application data. For frontend iteration, run the backend on 3740 and `npm run dev` from `web` (Vite proxies `/api`). Run build and test commands from this repository root; the release ZIP is `echo-windows-amd64.zip` on Windows AMD64. `OLD/` is a local reference archive and is not included in builds, tests or release packages. See [architecture](ARCHITECTURE.md) and [acceptance](ACCEPTANCE.md).

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,7 @@ import (
 	"github.com/brent/echo/internal/calendar"
 	"github.com/brent/echo/internal/coordinator"
 	"github.com/brent/echo/internal/credentials"
+	"github.com/brent/echo/internal/development"
 	"github.com/brent/echo/internal/domain"
 	"github.com/brent/echo/internal/model"
 	"github.com/brent/echo/internal/plugins"
@@ -32,27 +34,29 @@ import (
 )
 
 type Server struct {
-	Store         *store.Store
-	Plugins       *plugins.Host
-	Calendar      *calendar.Calendar
-	Files         *broker.Files
-	Process       *broker.ProcessBroker
-	Model         *model.Client
-	Secrets       credentials.SecretStore
-	Dir           string
-	Assets        fs.FS
-	ctx           context.Context
-	cancel        context.CancelFunc
-	mu            sync.Mutex
-	dispatches    map[string]*dispatch
-	streams       map[string]domain.Message
-	subscribers   map[chan domain.Event]bool
-	seq           atomic.Int64
-	authMu        sync.Mutex
-	loginAttempts map[string][]time.Time
-	revoking      map[string]int
-	closingChats  map[string]int
-	revealFile    func(broker.RevealTarget) error
+	Store             *store.Store
+	Plugins           *plugins.Host
+	Calendar          *calendar.Calendar
+	Files             *broker.Files
+	Process           *broker.ProcessBroker
+	Model             *model.Client
+	Secrets           credentials.SecretStore
+	Dir               string
+	Assets            fs.FS
+	ctx               context.Context
+	cancel            context.CancelFunc
+	mu                sync.Mutex
+	dispatches        map[string]*dispatch
+	streams           map[string]domain.Message
+	subscribers       map[chan domain.Event]bool
+	seq               atomic.Int64
+	authMu            sync.Mutex
+	loginAttempts     map[string][]time.Time
+	revoking          map[string]int
+	closingChats      map[string]int
+	revealFile        func(broker.RevealTarget) error
+	Development       *development.Manager
+	shutdownRequested chan struct{}
 }
 type dispatch struct {
 	id, chatID string
@@ -87,6 +91,19 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 	s := &Server{Store: db, Dir: dir, Assets: assets, ctx: ctx, cancel: cancel, Files: &broker.Files{Private: dir}, Process: &broker.ProcessBroker{Dir: filepath.Join(dir, "runtime")}, Model: model.New(), Secrets: credentials.New(), dispatches: map[string]*dispatch{}, streams: map[string]domain.Message{}, subscribers: map[chan domain.Event]bool{}, loginAttempts: map[string][]time.Time{}}
 	s.revoking = map[string]int{}
 	s.closingChats = map[string]int{}
+	s.shutdownRequested = make(chan struct{}, 1)
+	var developmentConfig development.Config
+	if err := db.Get("settings", "development", &developmentConfig); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		db.Close()
+		cancel()
+		return nil, err
+	}
+	s.Development = development.New(ctx, dir, developmentConfig, func() {
+		select {
+		case s.shutdownRequested <- struct{}{}:
+		default:
+		}
+	})
 	s.Plugins, e = plugins.New(ctx, db, filepath.Join(dir, "plugins"), guest, s.pluginCall)
 	if e != nil {
 		db.Close()
@@ -136,6 +153,9 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 }
 func (s *Server) Close() {
 	s.cancel()
+	if s.Development != nil {
+		s.Development.Close()
+	}
 	s.mu.Lock()
 	ds := []*dispatch{}
 	for _, d := range s.dispatches {

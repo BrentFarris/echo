@@ -1,0 +1,7 @@
+.development-settings h3{margin-top:0}
+.development-settings .subtle{font-size:12px;line-height:1.6}
+.development-settings [data-tracking],.development-settings [data-log-path]{overflow-wrap:anywhere}
+.development-settings [data-development-status]{line-height:1.6;overflow-wrap:anywhere}
+.development-settings pre{max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:11px}
+.development-settings details{margin-top:16px}
+.development-settings summary{cursor:pointer}
