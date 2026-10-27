@@ -41,6 +41,7 @@ let suggestions: { label: string; hint: string; insert: string; ref?: Segment }[
 let referenceTimer = 0, referenceVersion = 0;
 let sidebarMarkup = '';
 let attachments: DraftAttachment[] = [], submitting = false;
+const stoppingChats = new Set<string>();
 const drafts = new Map<string, { text: string; references: Segment[]; generation: Generation; generationByNode: Record<string, Generation>; modelNode: string; attachments: DraftAttachment[] }>();
 let pluginWindows: PluginWindows;
 let apps: Apps;
@@ -82,7 +83,7 @@ function shell() {
   q('.mobile-menu').onclick = () => setSidebarOpen(!q('.sidebar').classList.contains('open'));
   q('.sidebar-close').onclick = q('.sidebar-backdrop').onclick = () => setSidebarOpen(false);
   app.onkeydown = e => { if (e.key === 'Escape' && q('.sidebar').classList.contains('open')) { e.preventDefault(); setSidebarOpen(false); } };
-  q<HTMLFormElement>('.composer').onsubmit = e => { e.preventDefault(); action(async () => { if (busy()) { await api(`/chats/${chatId}/stop`, 'POST', {}); await refresh(); } else await send(); })(); };
+  q<HTMLFormElement>('.composer').onsubmit = e => { e.preventDefault(); action(async () => { if (busy()) await stop(); else await send(); })(); };
   wireComposerMenus(addFiles);
   q('#manage-models').onclick = () => { q<HTMLDetailsElement>('.model-settings').open = false; settings('models'); };
   const composer = q<ReferenceInput>('#composer'); composer.bots = () => state.bots; composer.oninput = e => {
@@ -203,11 +204,20 @@ async function send() {
     renderMessages(true);
   } finally { submitting = false; q<ReferenceInput>('#composer').disabled = false; updateSendButton(); q<ReferenceInput>('#composer').focus(); }
 }
+async function stop() {
+  const id = chatId;
+  if (stoppingChats.has(id)) return;
+  stoppingChats.add(id); updateSendButton(); notice('Stopping response…');
+  try { await api(`/chats/${id}/stop`, 'POST', {}); await refresh(); }
+  catch (error) { stoppingChats.delete(id); updateSendButton(); throw error; }
+}
 function updateSendButton() {
   const button = q<HTMLButtonElement>('#send'), active = busy();
-  const label = active ? 'Stop response' : submitting ? 'Sending message' : 'Send message';
+  if (!active) stoppingChats.delete(chatId);
+  const stopping = stoppingChats.has(chatId);
+  const label = stopping ? 'Stopping response' : active ? 'Stop response' : submitting ? 'Sending message' : 'Send message';
   button.innerHTML = active ? icons.stop : icons.send; button.setAttribute('aria-label', label); button.title = label;
-  button.disabled = !instanceOnline(splitID(chatId)[0]) || submitting || (!active && !q<ReferenceInput>('#composer').value.trim() && !attachments.length);
+  button.disabled = stopping || !instanceOnline(splitID(chatId)[0]) || submitting || (!active && !q<ReferenceInput>('#composer').value.trim() && !attachments.length);
 }
 function addFiles(files: File[]) {
   if (submitting) return;

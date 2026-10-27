@@ -548,6 +548,9 @@ func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run do
 			if toolErr != nil {
 				tm.Status = "failed"
 			}
+			if ctx.Err() != nil {
+				tm.Status = "cancelled"
+			}
 			if e = s.Store.FinishMessage(tm); e != nil {
 				return e
 			}

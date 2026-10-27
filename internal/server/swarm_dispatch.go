@@ -66,6 +66,25 @@ type workerSnapshot struct {
 	Epoch    string           `json:"epoch"`
 }
 
+func (snapshot workerSnapshot) finished() bool {
+	if !slices.Contains([]string{"completed", "interrupted", "cancelled", "deleted"}, snapshot.Status) {
+		return false
+	}
+	// Cancellation is acknowledged before tools finish unwinding. Keep fetching
+	// snapshots until their final messages and run statuses have been persisted.
+	for _, run := range snapshot.Runs {
+		if run.Status == "running" || run.Status == "waiting" || run.Status == "queued" {
+			return false
+		}
+	}
+	for _, message := range snapshot.Messages {
+		if message.Status == "running" || message.Status == "waiting" || message.Status == "queued" {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) displayBot(node, id string) string {
 	if node == s.Swarm.Node().ID {
 		return id
@@ -762,7 +781,7 @@ func (s *Server) mergeWorker(f *swarmDispatch, node string, snapshot workerSnaps
 	if err := s.Store.MergeReplica(f.ChatID, swarm.Key(node, f.ID), snapshot.Epoch, snapshot.Sequence, messages, runs); err != nil {
 		return
 	}
-	if f.d != nil && snapshot.Status != "running" && snapshot.Status != "prepared" {
+	if f.d != nil && snapshot.finished() {
 		for _, p := range f.Participants {
 			if p.Ref.NodeID == node {
 				f.d.active[p.key()] = false

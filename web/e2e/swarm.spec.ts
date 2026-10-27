@@ -74,6 +74,30 @@ test('remote plugin bridge, schedules and development stay bound to the selected
   expect(actions).toEqual(['/development/relaunch']); expect(health).toBeGreaterThan(0); expect(reloads).toBe(0);
 });
 
+test('stop cancels held responses on every chat home and across swarm workers', async ({ page }) => {
+  const nodes = await connect(page);
+  await json(page, `/api/v1/swarm/instances/${nodes[0]}/swarm/peers`, 'POST', { url: 'http://127.0.0.1:3745', password });
+  for (const node of ['', ...nodes]) {
+    const api = node ? `/api/v1/swarm/instances/${node}` : '/api/v1';
+    const chat = await json(page, `${api}/chats`, 'POST', {});
+    await page.goto('/#' + (node ? `${node}:` : '') + chat.id);
+    await page.getByRole('textbox', { name: 'Message', exact: true }).fill('@kaiju @linux.kaiju @mac.kaiju multitasking hold');
+    await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    await expect.poll(async () => (await json(page, `${api}/state`)).runs.filter((r: any) => r.chatId === chat.id && r.status === 'running').length).toBe(3);
+    let releaseStop!: () => void;
+    const stopGate = new Promise<void>(resolve => { releaseStop = resolve; });
+    await page.route(`**${api}/chats/${chat.id}/stop`, async route => { await stopGate; await route.continue(); });
+    const stopped = page.waitForResponse(response => response.url().endsWith(`${api}/chats/${chat.id}/stop`));
+    await page.getByRole('button', { name: 'Stop response', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Stopping response', exact: true })).toBeDisabled();
+    await expect(page.locator('.notice[role="status"]')).toHaveText('Stopping response…');
+    releaseStop();
+    expect((await stopped).ok()).toBe(true);
+    await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeVisible();
+    await expect.poll(async () => (await json(page, `${api}/state`)).runs.filter((r: any) => r.chatId === chat.id).map((r: any) => r.status)).toEqual(['cancelled', 'cancelled', 'cancelled']);
+  }
+});
+
 test('three machines, existing remote chats, namespace chips and remote-only dispatch', async ({ page }) => {
   const [linux] = await connect(page), remote = `/api/v1/swarm/instances/${linux}`;
   const old = await json(page, `${remote}/chats`, 'POST', {});

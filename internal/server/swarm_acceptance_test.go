@@ -16,6 +16,7 @@ import (
 
 	"github.com/brent/echo/internal/coordinator"
 	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/plugins"
 	"github.com/brent/echo/internal/swarm"
 )
 
@@ -386,6 +387,85 @@ func TestSwarmCancelDuringOutageIsDurable(t *testing.T) {
 	})
 	if _, err = a.Store.Chat(c.ID); err == nil {
 		t.Fatal("deleted home chat resurrected")
+	}
+}
+
+func TestSwarmStopReconcilesToolAfterCancellationCleanup(t *testing.T) {
+	a, _ := swarmFixture(t, "desktop", remotePassword)
+	b, bh := swarmFixture(t, "linux", remotePassword)
+	connectSwarm(t, a, bh, remotePassword)
+	entered, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	defer once.Do(func() { close(release) })
+	guest, err := os.ReadFile("../plugins/guest/builtin.wasm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Plugins.Close(context.Background())
+	b.Plugins, err = plugins.New(b.ctx, b.Store, filepath.Join(b.Dir, "plugins"), guest, func(ctx context.Context, _ domain.ExecutionScope, _ string, _ json.RawMessage) (any, error) {
+		close(entered)
+		<-ctx.Done()
+		close(cancelled)
+		// Native tools may need time to reap descendants and collect file changes.
+		<-release
+		return nil, ctx.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachModel(t, b, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		stream(w, "", []domain.ToolCall{{ID: "held-tool", Type: "function", Function: domain.FunctionCall{Name: "web_get", Arguments: `{"url":"https://example.com"}`}}})
+	})
+	c := chatForSwarm(t, a)
+	d, err := a.send(c.ID, SendRequest{Content: "@linux.echo use the tool"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(8 * time.Second):
+		t.Fatal("tool did not start")
+	}
+	a.stopChat(c.ID)()
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not cancel the worker tool")
+	}
+	a.reconcileSwarm()
+	var saved swarmDispatch
+	if err = a.Store.Get("swarm-dispatches", d.id, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Reconciled[b.Swarm.Node().ID] {
+		t.Fatal("marked worker reconciled while its tool was still cleaning up")
+	}
+	// Existing chats may already contain the premature checkpoint from an older build.
+	saved.Reconciled = map[string]bool{b.Swarm.Node().ID: true}
+	if err = a.Store.Put("swarm-dispatches", d.id, &saved); err != nil {
+		t.Fatal(err)
+	}
+	once.Do(func() { close(release) })
+	eventuallySwarm(t, func() bool {
+		a.reconcileSwarm()
+		messages, _ := a.messages(c.ID)
+		if !slices.ContainsFunc(messages, func(m domain.Message) bool { return m.Role == "tool" && m.Status == "cancelled" }) {
+			return false
+		}
+		for _, original := range d.federation.Hosts[b.Swarm.Node().ID].Runs {
+			var run domain.Run
+			if a.Store.Get("runs", original.ID, &run) != nil || run.Status != "cancelled" {
+				return false
+			}
+		}
+		return true
+	})
+	for _, original := range d.federation.Hosts[b.Swarm.Node().ID].Runs {
+		var run domain.Run
+		if err = a.Store.Get("runs", original.ID, &run); err != nil || run.Status != "cancelled" {
+			t.Fatalf("run remained active after Stop: %+v, %v", run, err)
+		}
 	}
 }
 

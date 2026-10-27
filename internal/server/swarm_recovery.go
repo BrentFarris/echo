@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/brent/echo/internal/domain"
 	"github.com/brent/echo/internal/swarm"
 )
 
@@ -110,8 +111,26 @@ func (s *Server) reconcileSwarm() {
 		}
 		changed := false
 		for node, req := range f.Hosts {
-			if f.Reconciled[node] || node == s.Swarm.Node().ID || !s.Swarm.Authorized(node) {
+			if node == s.Swarm.Node().ID || !s.Swarm.Authorized(node) {
 				continue
+			}
+			if f.Reconciled[node] {
+				// Repair cancellation checkpoints written before tool cleanup
+				// finished by older versions, which otherwise remain stuck forever.
+				pending := false
+				if f.Status == "cancelled" {
+					for _, original := range req.Runs {
+						var run domain.Run
+						if s.Store.Get("runs", original.ID, &run) == nil && (run.Status == "running" || run.Status == "waiting" || run.Status == "queued") {
+							pending = true
+						}
+					}
+				}
+				if !pending {
+					continue
+				}
+				f.Reconciled[node] = false
+				changed = true
 			}
 			input := workerControl{Home: req.Home, ID: req.ID, Token: req.Token}
 			ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
@@ -131,7 +150,7 @@ func (s *Server) reconcileSwarm() {
 				continue
 			}
 			s.mergeWorker(&f, node, snapshot)
-			if snapshot.Status == "completed" || snapshot.Status == "interrupted" || snapshot.Status == "cancelled" || snapshot.Status == "deleted" {
+			if snapshot.finished() {
 				f.Reconciled[node] = true
 				changed = true
 			}
