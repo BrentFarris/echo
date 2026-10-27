@@ -51,6 +51,7 @@ func Builtins() []domain.PluginManifest {
 		}},
 	}
 	ms = append(ms, sourceControlPlugins()...)
+	ms = append(ms, comfyUIPlugin())
 	for i := range ms {
 		m := &ms[i]
 		m.API = 1

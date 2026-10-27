@@ -403,6 +403,12 @@ func (s *Store) Messages(chat string) ([]domain.Message, error) {
 		return nil, e
 	}
 	for i := range out {
+		if out[i].Role == "tool" {
+			out[i].Attachments, e = s.MessageAttachments(out[i].ID)
+			if e != nil {
+				return nil, e
+			}
+		}
 		rs, e := s.db.Query("SELECT content,reasoning FROM chunks WHERE message_id=? ORDER BY id", out[i].ID)
 		if e != nil {
 			return nil, e

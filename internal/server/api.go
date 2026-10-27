@@ -294,7 +294,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 			return
 		}
 		oldCredential := text(m.Config, "credential")
-		if sourceControl(m.ID) {
+		if m.ID == "comfyui" {
+			a.Config, e = comfyUIConfig(m, a.Config, true)
+		} else if sourceControl(m.ID) {
 			a.Config, e = s.sourceControlConfig(m, a.Config, true)
 		} else {
 			b, _ := json.Marshal(a.Config)

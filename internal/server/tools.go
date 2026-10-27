@@ -270,6 +270,8 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		return nil, errors.New("plugin management belongs to Echo's Plugin Authoring plugin")
 	}
 	switch method {
+	case "comfyui.generate", "comfyui.generate_video", "comfyui.save_image", "comfyui.save_video":
+		return s.comfyUI(ctx, scope, manifest, method, raw)
 	case "git.run", "fossil.run", "p4.run":
 		return s.runSourceControl(ctx, scope, manifest, method, a)
 	case "model.complete", "model.request", "model.emit":
@@ -455,7 +457,12 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 			if m.ID == "hosted-server" {
 				return nil, errors.New("configure remote hosting in its owner settings")
 			}
-			if sourceControl(m.ID) {
+			if m.ID == "comfyui" {
+				cfg, e = comfyUIConfig(m, cfg, false)
+				if e != nil {
+					return nil, e
+				}
+			} else if sourceControl(m.ID) {
 				cfg, e = s.sourceControlConfig(m, cfg, false)
 				if e != nil {
 					return nil, e

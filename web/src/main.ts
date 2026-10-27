@@ -9,6 +9,7 @@ import { mountDevelopment } from './development';
 import { mountHosting } from './hosting';
 import { setupPWA } from './pwa';
 import { composerMarkup, icons, autosizeComposer, wireComposerMenus, attachmentCard, previewAttachment, releaseAttachments, type DraftAttachment } from './composer';
+import { generatedMedia } from './generatedMedia';
 import { activeMention, escapeHTML as esc, groupChats } from './helpers';
 import type { Attachment, Bot, Chat, Endpoint, Generation, Message, Plugin, Schedule, Segment, State } from './types';
 import './style.css';
@@ -281,6 +282,7 @@ function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.da
   if (m.role === 'tool') {
     const name = grouped ? m.author.split(' · ').slice(1).join(' · ') || m.author : m.author;
     el.innerHTML += `<details data-disclosure="${esc(m.id)}:output"><summary><span>${esc(name)}</span>${statusBadge(m.status)}</summary><pre>${esc(liveToolOutput.get(m.id) || m.content)}</pre></details>`;
+    if (!grouped) { const media = generatedMedia([m]); if (media) el.append(media); }
     restoreDisclosures(el); return el;
   }
   if (m.role === 'user' && grouped) el.innerHTML += `<div class="handoff-label">${esc(m.author)}</div>`;
@@ -318,6 +320,7 @@ function paintResponse(group: ResponseGroup) {
   } else {
     for (const m of group.messages) el.append(paintMessage(m, undefined, true));
   }
+  const media = generatedMedia(group.messages); if (media) el.append(media);
   const files = fileChangesFooter(group, async file => {
     try {
       const result = await api<{ select: boolean }>(`/chats/${encodeURIComponent(group.messages[0].chatId)}/files/reveal`, 'POST', { messageId: file.messageId, path: file.path });
@@ -510,6 +513,7 @@ function pluginSettings(root: HTMLElement, plugin: Plugin) {
   }
   if (plugin.id === 'calendar') calendarSettings(q('#plugin-extra', root));
   if (plugin.id === 'workspaces') q('#plugin-extra', root).innerHTML = '<p class="subtle">Assign folders in Bots → Edit, or ask Echo to bind a bot. Existing folder restrictions stay enforced when this plugin is disabled.</p>';
+  if (plugin.id === 'comfyui') q('#plugin-extra', root).innerHTML = '<p class="subtle">Connect an existing ComfyUI server and choose a checkpoint. Export custom workflows in ComfyUI API format. Image generation has a built-in fallback; video generation needs a workflow. Ask a bot to generate an image or video, or attach an image and ask it to edit or animate it.</p><p class="subtle">Templates support {{PROMPT}}, {{NEGATIVE_PROMPT}}, {{MODEL}}, {{IMAGE}}, {{WIDTH}}, {{HEIGHT}}, {{STEPS}}, {{CFG_SCALE}}, {{SEED}}, {{FRAMES}}, {{FPS}}, {{FORMAT}}, {{DURATION}}, {{ASPECT_RATIO}} and {{MEGAPIXELS}}. Workflow and input-image paths must be accessible to the bot. Results remain in the chat; ask to save them when you want a workspace file.</p>';
   if (plugin.id === 'plugin-authoring') q('#plugin-extra', root).innerHTML = '<p class="subtle">Ask Echo to create a plugin—for example, “Create a GUI calculator I can drag around.” UI plugins need no compiler. Go backend plugins require an installed Go toolchain.</p>';
   if (['git', 'fossil', 'p4'].includes(plugin.id)) q('#plugin-extra', root).innerHTML = `<p class="subtle">Uses the installed CLI, independently of Shell. Ask a bot to inspect changes, create commits or manage its repository. Commands stream into chat and stop with the run. Bound bots retain their folder restrictions, including when network access is granted; these network grants also apply to native child processes. Unbound bots retain unrestricted host access.</p>${plugin.id === 'git' ? '<p class="subtle">Set the author name/email for commits. Scoped Git uses reftable for new repositories; some older loose-ref repositories are unsupported.</p>' : ''}${plugin.id === 'fossil' ? '<p class="subtle">Grant access to both the checkout and its Fossil repository database. Interactive editors are unavailable; provide commit messages in chat.</p>' : ''}`;
   if (plugin.id === 'p4') {

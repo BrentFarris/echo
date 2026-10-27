@@ -14,6 +14,56 @@ import (
 const MaxAttachmentBytes = 32 << 20
 const MaxAttachmentBatchBytes = 64 << 20
 const MaxAttachments = 8
+const MaxGeneratedAttachmentBytes = 256 << 20
+
+// Generated media is linked immediately to its tool message, so it survives
+// restart and never consumes the user's pending-upload quota.
+func (s *Store) AddGeneratedAttachment(a domain.Attachment, messageID string, data []byte) error {
+	if a.Size <= 0 || a.Size > MaxGeneratedAttachmentBytes || a.Size != int64(len(data)) {
+		return errors.New("generated media must be between 1 byte and 256 MiB")
+	}
+	metadata, err := json.Marshal(a)
+	if err != nil {
+		return err
+	}
+	var compressed bytes.Buffer
+	w, _ := gzip.NewWriterLevel(&compressed, gzip.BestSpeed)
+	if _, err = w.Write(data); err != nil {
+		return err
+	}
+	if err = w.Close(); err != nil {
+		return err
+	}
+	result, err := s.db.Exec("INSERT INTO attachments SELECT ?,chat_id,id,?,?,? FROM messages WHERE id=? AND chat_id=?", a.ID, metadata, compressed.Bytes(), time.Now().Unix(), messageID, a.ChatID)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		return errors.New("generated media requires an existing chat message")
+	}
+	return nil
+}
+
+func (s *Store) MessageAttachments(messageID string) ([]domain.Attachment, error) {
+	rows, err := s.db.Query("SELECT metadata FROM attachments WHERE message_id=? ORDER BY rowid", messageID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []domain.Attachment
+	for rows.Next() {
+		var data []byte
+		var a domain.Attachment
+		if err = rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal(data, &a); err != nil {
+			return nil, err
+		}
+		result = append(result, a)
+	}
+	return result, rows.Err()
+}
 
 func (s *Store) AddAttachment(a domain.Attachment, data []byte) error {
 	if int64(len(data)) != a.Size || a.Size > MaxAttachmentBytes {
@@ -71,7 +121,7 @@ func (s *Store) Attachment(chatID, id string, pendingOnly bool) (domain.Attachme
 		return a, nil, err
 	}
 	defer r.Close()
-	data, err := io.ReadAll(io.LimitReader(r, MaxAttachmentBytes+1))
+	data, err := io.ReadAll(io.LimitReader(r, MaxGeneratedAttachmentBytes+1))
 	if err == nil && int64(len(data)) != a.Size {
 		err = errors.New("invalid attachment size")
 	}

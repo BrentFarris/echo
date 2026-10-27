@@ -372,7 +372,7 @@ func (s *Server) history(bot domain.Bot, chat string) ([]model.Message, error) {
 			out = append(out[:j], append(insert, out[j:]...)...)
 		}
 	}
-	return out, nil
+	return s.withGeneratedImages(chat, bot.ID, ms, out)
 }
 func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run domain.Run, endpoint domain.Endpoint) error {
 	ctx = context.WithValue(ctx, providerKey{}, &providerInvocation{Scope: domain.ExecutionScope{Bot: bot, ChatID: run.ChatID, RunID: run.ID, DispatchID: d.id}})
@@ -484,6 +484,7 @@ func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run do
 			}
 			return nil
 		}
+		var generated []domain.Message
 		for _, call := range result.Calls {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -526,6 +527,10 @@ func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run do
 			}
 			b, _ := json.Marshal(value)
 			tm.Content = string(b)
+			tm.Attachments, e = s.Store.MessageAttachments(tm.ID)
+			if e != nil {
+				return e
+			}
 			changes.mu.Lock()
 			tm.FileChanges = append([]domain.FileChange(nil), changes.changes...)
 			if changes.incomplete {
@@ -541,6 +546,11 @@ func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run do
 			}
 			s.emit("message", tm.ChatID, tm.RunID, tm.BotID, tm)
 			history = append(history, model.Message{Role: "tool", Content: string(b), CallID: call.ID})
+			generated = append(generated, tm)
+		}
+		history, e = s.withGeneratedImages(run.ChatID, bot.ID, generated, history)
+		if e != nil {
+			return e
 		}
 	}
 }

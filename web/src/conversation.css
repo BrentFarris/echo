@@ -52,3 +52,8 @@
 @media(prefers-color-scheme:dark){.file-operation.created{color:#65d58a}}
 @media(max-width:760px){.file-change{min-height:36px}.changed-file-list{max-height:185px}.files-changed{margin-top:8px}}
 @media(max-width:760px){.chat-header{height:38px;padding:0 8px}.chat-log{padding:8px}.message,.response-group{padding:7px 9px;margin-bottom:6px}.message-meta{margin-bottom:3px}.message summary,.work-disclosure>summary{min-height:28px;padding:5px 2px}.work-content{padding-left:8px}.message-content th,.message-content td{padding:4px 6px}}
+.generated-media { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+.generated-media figure { margin: 0; max-width: min(100%, 640px); }
+.generated-media img, .generated-media video { display: block; max-width: 100%; max-height: 520px; border-radius: 8px; }
+.generated-media button { display: block; padding: 0; border: 0; background: none; }
+.generated-media figcaption { margin-top: 6px; font-size: 12px; overflow-wrap: anywhere; }

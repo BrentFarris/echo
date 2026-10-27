@@ -14,8 +14,10 @@ import (
 //go:wasmimport echo call
 func hostCall(ptr, size, out, capacity uint32) uint32
 func main() {
-	input, e := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
-	if e != nil || !json.Valid(input) {
+	// Inline workflows are JSON strings nested inside the invocation JSON;
+	// escaping can expand a 500 KiB workflow beyond the former 1 MiB limit.
+	input, e := io.ReadAll(io.LimitReader(os.Stdin, (4<<20)+1))
+	if e != nil || len(input) > 4<<20 || !json.Valid(input) {
 		fmt.Print(`{"error":"invalid invocation"}`)
 		return
 	}
