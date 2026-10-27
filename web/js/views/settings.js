@@ -14,7 +14,7 @@ import { indentationDefaults } from "../../src/code/indentation.ts";
 import { lineEndingsOnSave } from "../../src/code/lineEndings.ts";
 import { columnGuideSettings, guideColumnsError, parseGuideColumns } from "../../src/code/columnGuides.ts";
 import { getEchoUpdateSnapshot, refreshEchoUpdateStatus, syncEchoUpdateBadges } from "../../src/echoUpdate.ts";
-import { codeRouteHash, echoMapRouteHash, navigateBackFromSettings } from "../../src/navigation.ts";
+import { codeRouteHash, echoMapRouteHash, navigateBackFromSettings, orchestrationRouteHash } from "../../src/navigation.ts";
 import { renderMobilePrimaryNav } from "../../src/primaryNav.ts";
 import { reloadForReplacementServer, waitForReplacementServer } from "../../src/rebuildRelaunch.ts";
 import {
@@ -1285,6 +1285,10 @@ function bindEvents(root) {
   const onMapClick = () => { void leaveSettings(echoMapRouteHash()); };
   mapButtons.forEach((button) => button.addEventListener("click", onMapClick));
   disposeSettingsChatMap = () => mapButtons.forEach((button) => button.removeEventListener("click", onMapClick));
+
+  root.querySelectorAll("[data-nav=orchestration]").forEach((button) => {
+    button.addEventListener("click", () => { void leaveSettings(orchestrationRouteHash()); });
+  });
 
   root.querySelectorAll("[data-nav='chat']").forEach((button) => {
     button.addEventListener("click", () => { void leaveSettings("#/home"); });

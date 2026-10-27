@@ -26,7 +26,7 @@ import { isMarkdownPath, MarkdownPreview, restoreMarkdownViewState } from "./mar
 import "./markdownPreview.css";
 import {
   CODE_ROUTE, chatCompletionTargetFromHash, chatTargetRouteHash, codeOpenTargetFromHash, codeRouteHash,
-  codeSidebarFromHash, echoMapRouteHash, routePathFromHash, type ChatCompletionTarget, type ChatTarget, type CodeSidebar,
+  codeSidebarFromHash, echoMapRouteHash, orchestrationRouteHash, routePathFromHash, type ChatCompletionTarget, type ChatTarget, type CodeSidebar,
 } from "../navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 import { setSourceControlBadgeCount } from "../gitBadge";
@@ -481,6 +481,9 @@ class CodeView {
     const signal = this.abort.signal;
     this.root.querySelectorAll("[data-nav=map]").forEach((button) => {
       button.addEventListener("click", () => { location.hash = echoMapRouteHash(); }, { signal });
+    });
+    this.root.querySelectorAll("[data-nav=orchestration]").forEach((button) => {
+      button.addEventListener("click", () => { location.hash = orchestrationRouteHash(); }, { signal });
     });
     this.root.querySelectorAll("[data-nav=chat]").forEach((button) => {
       button.addEventListener("click", () => { location.hash = "#/home"; }, { signal });

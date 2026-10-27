@@ -239,6 +239,7 @@ type inboundMessage struct {
 	Message         string                `json:"message,omitempty"`
 	Model           string                `json:"model,omitempty"`
 	AgentModeID     string                `json:"agentModeId,omitempty"`
+	LockAgentMode   bool                  `json:"lockAgentMode,omitempty"`
 	ReasoningEffort string                `json:"reasoningEffort,omitempty"`
 	Temperature     *float64              `json:"temperature,omitempty"`
 	StopIfBusy      bool                  `json:"stopIfBusy,omitempty"`

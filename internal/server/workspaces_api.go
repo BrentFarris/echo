@@ -128,6 +128,14 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.removeWorkspaceCaches(id)
+	if s.workspaceGroups != nil {
+		if removed, err := s.workspaceGroups.RemoveWorkspace(id); err != nil {
+			logf("prune workspace groups after deleting workspace %s: %v", id, err)
+		} else if len(removed) > 0 {
+			logf("removed %d empty workspace group(s) after deleting workspace %s", len(removed), id)
+			s.broadcastWorkspaceGroupsChanged()
+		}
+	}
 	if err := s.debugState.Delete(id); err != nil {
 		logf("delete debug state for workspace %s: %v", id, err)
 	}

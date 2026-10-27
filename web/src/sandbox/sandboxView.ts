@@ -5,7 +5,7 @@ import {
   renderWorkspaceIcon, setActiveWorkspace,
 } from "../../js/workspaces.js";
 import * as ws from "../../js/ws.js";
-import { codeRouteHash, echoMapRouteHash } from "../navigation";
+import { codeRouteHash, echoMapRouteHash, orchestrationRouteHash } from "../navigation";
 import { escapeHTML } from "../code/ui";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 
@@ -131,6 +131,7 @@ class SandboxView {
   private bindNavigation(): void {
     const signal = this.abort.signal;
     this.root.querySelectorAll("[data-nav=map]").forEach((item) => item.addEventListener("click", () => { location.hash = echoMapRouteHash(); }, { signal }));
+    this.root.querySelectorAll("[data-nav=orchestration]").forEach((item) => item.addEventListener("click", () => { location.hash = orchestrationRouteHash(); }, { signal }));
     this.root.querySelectorAll("[data-nav=chat]").forEach((item) => item.addEventListener("click", () => { location.hash = "#/home"; }, { signal }));
     this.root.querySelectorAll("[data-nav=code]").forEach((item) => item.addEventListener("click", () => { location.hash = "#/code"; }, { signal }));
     this.root.querySelectorAll("[data-nav=search]").forEach((item) => item.addEventListener("click", () => { location.hash = codeRouteHash("search"); }, { signal }));

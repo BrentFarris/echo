@@ -1,6 +1,6 @@
 import { renderDesktopPluginButtons, renderMobilePluginOverflowButton } from "./plugins/catalog";
 
-export type PrimaryNavView = "chat" | "explorer" | "search" | "git" | "debug" | "bookmarks" | "sandbox" | "settings" | "map" | "plugin";
+export type PrimaryNavView = "chat" | "explorer" | "search" | "git" | "debug" | "bookmarks" | "sandbox" | "settings" | "map" | "orchestration" | "plugin";
 
 export type PrimaryNavOptions = {
   active: PrimaryNavView;
@@ -61,6 +61,7 @@ export function renderPrimaryNav(options: PrimaryNavOptions): string {
       <nav class="left-nav-plugins" aria-label="Plugin views" data-plugin-nav-section>${renderDesktopPluginButtons()}</nav>
       <div class="left-nav-actions">
         <button class="nav-icon-button${activeClass(options.active === "map")}" type="button" title="Echo Map (Ctrl+M)" aria-label="Echo Map" aria-keyshortcuts="Control+m" data-nav="map"${currentPage(options.active === "map")}><span class="codicon codicon-map"></span></button>
+        <button class="nav-icon-button${activeClass(options.active === "orchestration")}" type="button" title="Orchestration (Ctrl+Shift+O)" aria-label="Orchestration" aria-keyshortcuts="Control+Shift+o" data-nav="orchestration"${currentPage(options.active === "orchestration")}><span class="codicon codicon-organization"></span></button>
         <button class="nav-icon-button echo-update-target${activeClass(options.active === "settings")}" type="button" title="Settings (Ctrl+0)" aria-label="Settings" aria-keyshortcuts="Control+0" data-echo-update-target data-echo-update-label="Settings" data-nav="settings"><span class="codicon codicon-settings-gear"></span><b class="echo-update-badge" data-echo-update-badge hidden aria-hidden="true"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></b></button>
       </div>
     </aside>
@@ -96,6 +97,7 @@ export function renderMobilePrimaryNav(options: PrimaryNavOptions): string {
         <span class="mobile-plugin-slot" data-plugin-mobile-slot>${renderMobilePluginOverflowButton()}</span>
         <span class="mobile-nav-global-actions">
           <button class="mobile-nav-tab${activeClass(options.active === "map")}" type="button" title="Echo Map (Ctrl+M)" aria-label="Echo Map" aria-keyshortcuts="Control+m" data-nav="map"${currentPage(options.active === "map")}><span class="codicon codicon-map" aria-hidden="true"></span></button>
+          <button class="mobile-nav-tab${activeClass(options.active === "orchestration")}" type="button" title="Orchestration (Ctrl+Shift+O)" aria-label="Orchestration" aria-keyshortcuts="Control+Shift+o" data-nav="orchestration"${currentPage(options.active === "orchestration")}><span class="codicon codicon-organization" aria-hidden="true"></span></button>
           <button class="mobile-nav-tab echo-update-target${activeClass(options.active === "settings")}" type="button" title="Settings (Ctrl+0)" aria-label="Settings" aria-keyshortcuts="Control+0" data-echo-update-target data-echo-update-label="Settings" data-nav="settings"${currentPage(options.active === "settings")}><span class="codicon codicon-settings-gear" aria-hidden="true"></span><b class="echo-update-badge" data-echo-update-badge hidden aria-hidden="true"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></b></button>
         </span>
       </div>

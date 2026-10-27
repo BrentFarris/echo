@@ -1,6 +1,6 @@
 import { post } from "../../js/api.js";
 import * as socket from "../../js/ws.js";
-import { codeRouteHash, echoMapRouteHash } from "../navigation";
+import { codeRouteHash, echoMapRouteHash, orchestrationRouteHash } from "../navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "../primaryNav";
 import {
   clearPluginCatalog,
@@ -348,6 +348,7 @@ function bindPageCoreNavigation(root: HTMLElement): void {
     else if (nav === "debug") location.hash = codeRouteHash("debug");
     else if (nav === "sandbox") location.hash = "#/sandbox";
     else if (nav === "map") location.hash = echoMapRouteHash();
+    else if (nav === "orchestration") location.hash = orchestrationRouteHash();
   }));
 }
 

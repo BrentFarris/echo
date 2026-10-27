@@ -2,6 +2,7 @@ export const CHAT_ROUTE = "/home";
 export const SETTINGS_ROUTE = "/settings";
 export const CODE_ROUTE = "/code";
 export const MAP_ROUTE = "/map";
+export const ORCHESTRATION_ROUTE = "/orchestration";
 export const CODE_NAVIGATION_HISTORY_STATE_KEY = "echoCodeNavigation";
 
 export type CodeSidebar = "explorer" | "search" | "git" | "debug" | "bookmarks";
@@ -62,6 +63,11 @@ export function codeOpenTargetFromHash(hash: string): CodeOpenTarget | null {
 /** Builds the canonical hash for the Echo Map dashboard. */
 export function echoMapRouteHash(): string {
   return `#${MAP_ROUTE}`;
+}
+
+/** Builds the canonical hash for the Orchestration page. */
+export function orchestrationRouteHash(): string {
+  return `#${ORCHESTRATION_ROUTE}`;
 }
 
 /** Builds a transient route that focuses one exact Main or Code chat. */

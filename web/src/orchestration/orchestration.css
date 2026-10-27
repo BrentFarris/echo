@@ -1,0 +1,367 @@
+/* orchestration.css — Orchestration page: workspace groups, pending-task
+   queue, and the embedded group activity cards. Mirrors echoMap.css tokens. */
+
+.orchestration-shell {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  min-height: 100vh;
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.orchestration-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 100vh;
+}
+
+.orchestration-header {
+  padding: 20px 24px 0;
+}
+
+.orchestration-header-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.orchestration-add-button,
+.orchestration-delete-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.orchestration-add-button:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.orchestration-delete-button:hover {
+  border-color: var(--color-danger, #d13438);
+  color: var(--color-danger, #d13438);
+}
+
+.orchestration-group-select {
+  flex: 0 1 340px;
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.orchestration-subtitle {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+
+/* Horizontal separator under the [+] button and group select. */
+.orchestration-details {
+  margin-top: 14px;
+  padding: 16px 24px 0;
+  border-top: 1px solid var(--color-border);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.orchestration-loading,
+.orchestration-empty {
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.orchestration-section-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.orchestration-section-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.orchestration-section-count {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.orchestration-section-empty {
+  margin: 0 0 18px;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+
+/* Pending tasks queue. */
+.orchestration-pending {
+  margin-bottom: 22px;
+}
+
+.orchestration-task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.orchestration-task {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface);
+}
+
+.orchestration-task.is-editing {
+  display: block;
+}
+
+.orchestration-task-ready {
+  margin-top: 3px;
+  accent-color: var(--color-accent);
+}
+
+.orchestration-task-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.orchestration-task-prompt {
+  margin: 0 0 6px;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.orchestration-task-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.orchestration-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  color: var(--color-accent);
+}
+
+.orchestration-chip-dispatched {
+  background: color-mix(in srgb, #2e9e5b 14%, transparent);
+  color: #2e9e5b;
+}
+
+.orchestration-chip-held {
+  background: color-mix(in srgb, var(--color-text-muted) 14%, transparent);
+  color: var(--color-text-muted);
+}
+
+.orchestration-task-actions {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.orchestration-task-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.orchestration-task-action:hover {
+  background: color-mix(in srgb, var(--color-text-muted) 12%, transparent);
+  color: var(--color-text);
+}
+
+.orchestration-task-delete:hover {
+  color: var(--color-danger, #d13438);
+}
+
+.orchestration-task-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.orchestration-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.orchestration-field input,
+.orchestration-field select,
+.orchestration-field textarea {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.orchestration-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Embedded group activity cards reuse the Echo Map grid. */
+.orchestration-cards .echo-map-grid {
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+
+.orchestration-cards-host:empty::after {
+  content: "No group activity yet.";
+  display: block;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+
+/* Composer pinned to the bottom of the page, mirroring the chat composer. */
+.orchestration-composer {
+  border-top: 1px solid var(--color-border);
+  padding: 0 24px 16px;
+  background: var(--color-bg);
+}
+
+.orchestration-composer[hidden] {
+  display: none;
+}
+
+.orchestration-composer .chat-composer {
+  border-top: none;
+  background: transparent;
+  padding: var(--space-md) 0 0;
+}
+
+/* Locked agent-mode rows in the mode dropdown. */
+.model-dropdown-item.is-locked {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.model-dropdown-item.is-locked:hover {
+  background: transparent;
+}
+
+/* Create-group modal. */
+.orchestration-modal {
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: 20px;
+  width: min(460px, calc(100vw - 32px));
+}
+
+.orchestration-modal::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.orchestration-modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.orchestration-modal-form h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.orchestration-workspace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--color-bg);
+}
+
+.orchestration-workspace-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.orchestration-workspace-option input {
+  accent-color: var(--color-accent);
+}
+
+.orchestration-modal-error {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--color-danger, #d13438);
+}
+
+.orchestration-confirm-dialog {
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: 20px;
+  width: min(420px, calc(100vw - 32px));
+}
+
+@media (max-width: 720px) {
+  .orchestration-shell {
+    display: block;
+  }
+
+  .orchestration-header,
+  .orchestration-details,
+  .orchestration-composer {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .orchestration-group-select {
+    flex: 1 1 auto;
+  }
+
+  .orchestration-cards .echo-map-grid {
+    grid-template-columns: 1fr;
+  }
+}

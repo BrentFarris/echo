@@ -22,16 +22,16 @@ func TestManagerCRUDPersistsWorkspaceModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if len(modes) != 5 || modes[4].ID == "" {
+	if len(modes) != 6 || modes[5].ID == "" {
 		t.Fatalf("unexpected modes after create: %+v", modes)
 	}
-	createdID := modes[4].ID
+	createdID := modes[5].ID
 
 	reloaded, err := NewManager().List(workspace)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	permission := reloaded[4].Permissions["filesystem_read_text"]
+	permission := reloaded[5].Permissions["filesystem_read_text"]
 	if permission.Name != "filesystem_read_text" || len(permission.Paths) != 1 || permission.Paths[0] != "src/**" {
 		t.Fatalf("permission did not persist: %+v", permission)
 	}
@@ -40,8 +40,8 @@ func TestManagerCRUDPersistsWorkspaceModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if modes[4].Name != "QA Reviewer" {
-		t.Fatalf("unexpected updated mode: %+v", modes[3])
+	if modes[5].Name != "QA Reviewer" {
+		t.Fatalf("unexpected updated mode: %+v", modes[5])
 	}
 	if _, err := os.Stat(filepath.Join(workspace, ".echo", fileName)); err != nil {
 		t.Fatalf("expected persisted mode file: %v", err)
@@ -51,7 +51,7 @@ func TestManagerCRUDPersistsWorkspaceModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if len(modes) != 4 {
+	if len(modes) != 5 {
 		t.Fatalf("expected only built-ins after delete, got %+v", modes)
 	}
 }
@@ -67,7 +67,7 @@ func TestManagerModesAreWorkspaceScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(modes) != 4 {
+	if len(modes) != 5 {
 		t.Fatalf("mode leaked to another workspace: %+v", modes)
 	}
 }
@@ -92,14 +92,14 @@ func TestManagerAllowsPermissionsOnlyMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(modes) != 5 || modes[4].Prompt != "" {
+	if len(modes) != 6 || modes[5].Prompt != "" {
 		t.Fatalf("unexpected mode: %+v", modes)
 	}
 }
 
 func TestGoalModeIsThirdImmutableBuiltIn(t *testing.T) {
 	defaults := Defaults()
-	if len(defaults) != 4 || defaults[2].ID != GoalID || defaults[2].Name != "Goal" || !defaults[2].BuiltIn {
+	if len(defaults) != 5 || defaults[2].ID != GoalID || defaults[2].Name != "Goal" || !defaults[2].BuiltIn {
 		t.Fatalf("unexpected built-in modes: %+v", defaults)
 	}
 	manager := NewManager()
@@ -113,7 +113,7 @@ func TestGoalModeIsThirdImmutableBuiltIn(t *testing.T) {
 
 func TestPairProgrammingIsFourthImmutableBuiltIn(t *testing.T) {
 	defaults := Defaults()
-	if len(defaults) != 4 || defaults[3].ID != PairProgrammingID || defaults[3].Name != "Pair Programming" || !defaults[3].BuiltIn {
+	if len(defaults) != 5 || defaults[3].ID != PairProgrammingID || defaults[3].Name != "Pair Programming" || !defaults[3].BuiltIn {
 		t.Fatalf("unexpected built-in modes: %+v", defaults)
 	}
 	if defaults[3].Prompt == "" || !strings.Contains(defaults[3].Prompt, "ask_user_questions") {
@@ -128,6 +128,29 @@ func TestPairProgrammingIsFourthImmutableBuiltIn(t *testing.T) {
 	}
 	if _, err := manager.Delete(t.TempDir(), PairProgrammingID); err == nil {
 		t.Fatal("expected Pair Programming mode deletion to be rejected")
+	}
+}
+
+func TestGroupWorkerIsFifthImmutableBuiltIn(t *testing.T) {
+	defaults := Defaults()
+	if len(defaults) != 5 || defaults[4].ID != GroupWorkerID || defaults[4].Name != "Group Worker" || !defaults[4].BuiltIn {
+		t.Fatalf("unexpected built-in modes: %+v", defaults)
+	}
+	if !strings.Contains(defaults[4].Prompt, "ask_user_questions") {
+		t.Fatalf("Group Worker prompt must keep the question system: %q", defaults[4].Prompt)
+	}
+	if !strings.Contains(defaults[4].Prompt, "squash") || !strings.Contains(defaults[4].Prompt, "branch") {
+		t.Fatalf("Group Worker prompt must describe the branch/squash workflow: %q", defaults[4].Prompt)
+	}
+	if len(defaults[4].Permissions) != 0 {
+		t.Fatalf("Group Worker must be an allow-all mode like Pair Programming: %+v", defaults[4].Permissions)
+	}
+	manager := NewManager()
+	if _, err := manager.Update(t.TempDir(), GroupWorkerID, Mode{Name: "Changed"}); err == nil {
+		t.Fatal("expected Group Worker mode update to be rejected")
+	}
+	if _, err := manager.Delete(t.TempDir(), GroupWorkerID); err == nil {
+		t.Fatal("expected Group Worker mode deletion to be rejected")
 	}
 }
 
@@ -148,7 +171,7 @@ func TestDefaultModePersistsAndResets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := modes[4].ID
+	id := modes[5].ID
 
 	// Setting the default persists it.
 	defaultID, err = manager.SetDefault(workspace, id)
@@ -206,7 +229,7 @@ func TestLoadMigratesLegacyBareArrayFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(modes) != 5 || modes[4].ID != "mode-legacy" || modes[4].BuiltIn {
+	if len(modes) != 6 || modes[5].ID != "mode-legacy" || modes[5].BuiltIn {
 		t.Fatalf("legacy modes not loaded: %+v", modes)
 	}
 	if defaultID, err := manager.Default(workspace); err != nil || defaultID != GeneralID {

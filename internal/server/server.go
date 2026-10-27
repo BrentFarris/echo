@@ -38,6 +38,7 @@ import (
 	p4provider "github.com/brent/echo/internal/sourcecontrol/p4"
 	terminalruntime "github.com/brent/echo/internal/terminal"
 	"github.com/brent/echo/internal/tools"
+	"github.com/brent/echo/internal/workspacegroups"
 	"github.com/brent/echo/internal/workspacefs"
 	"github.com/brent/echo/internal/workspaces"
 	"github.com/brent/echo/internal/workspaceskills"
@@ -77,6 +78,8 @@ type Server struct {
 	loginLimiter     *loginRateLimiter
 	modes            *agentmodes.Manager
 	sessions         *chatSessionManager
+	workspaceGroups  *workspacegroups.Store
+	orchestrator     *groupOrchestrator
 	decisionModel    *decision.Client
 	llm              chatStreamer
 	llmCompleter     chatCompleter
@@ -303,6 +306,9 @@ func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options
 	s.loginLimiter = newLoginRateLimiter()
 	s.modes = agentmodes.NewManager()
 	s.sessions = newChatSessionManager(s)
+	s.workspaceGroups = workspacegroups.NewStore(s.data)
+	s.orchestrator = newGroupOrchestrator(s)
+	s.orchestrator.start()
 	s.initLLM()
 	// Enabled sandbox starts wait on Manager's reconciliation barrier. Running
 	// this in the background keeps Docker-free, non-sandbox workspaces on the
@@ -520,6 +526,13 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/workspaces", s.handleGetWorkspaces)
 	mux.HandleFunc("GET /api/chats", s.handleGetChats)
 	mux.HandleFunc("GET /api/echo-map", s.handleGetEchoMap)
+	mux.HandleFunc("GET /api/workspace-groups", s.handleGetWorkspaceGroups)
+	mux.HandleFunc("POST /api/workspace-groups", s.handleCreateWorkspaceGroup)
+	mux.HandleFunc("PUT /api/workspace-groups/{id}", s.handleUpdateWorkspaceGroup)
+	mux.HandleFunc("DELETE /api/workspace-groups/{id}", s.handleDeleteWorkspaceGroup)
+	mux.HandleFunc("POST /api/workspace-groups/{id}/tasks", s.handleCreateGroupTask)
+	mux.HandleFunc("PUT /api/workspace-groups/{id}/tasks/{taskId}", s.handleUpdateGroupTask)
+	mux.HandleFunc("DELETE /api/workspace-groups/{id}/tasks/{taskId}", s.handleDeleteGroupTask)
 	mux.HandleFunc("POST /api/workspaces", s.handleCreateWorkspace)
 	mux.HandleFunc("PUT /api/workspaces/active", s.handleSetActiveWorkspace)
 	mux.HandleFunc("PUT /api/workspaces/{id}", s.handleUpdateWorkspace)
@@ -732,6 +745,9 @@ func (s *Server) requestTermination() {
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.watcher.Close()
 	s.sourceControl.Close()
+	if s.orchestrator != nil {
+		s.orchestrator.stop()
+	}
 	s.sessions.shutdown(ctx)
 	if err := s.debugger.Shutdown(ctx); err != nil && ctx.Err() == nil {
 		logf("debugger shutdown: %v", err)

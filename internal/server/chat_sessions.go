@@ -454,14 +454,28 @@ func (m *chatSessionManager) send(c *client, msg inboundMessage) {
 	// overridden, and the decision model can never select Goal mode (see
 	// decisionModelAgentMode), so goalMode above remains authoritative. The
 	// call fails open to the resolved mode on any error or timeout.
+	// Orchestrated sends (LockAgentMode) pin the mode instead: a dispatched
+	// Group Worker task must always run as Group Worker.
 	decisionAgentModeConfidence := 0.0
 	decisionAgentModeSelected := false
-	if msg.AgentModeID != agentmodes.GoalID && mode.ID != agentmodes.GoalID {
+	if !msg.LockAgentMode && msg.AgentModeID != agentmodes.GoalID && mode.ID != agentmodes.GoalID {
 		if chosen, confidence, ok := m.server.decisionModelAgentMode(settings, session.workspace.MainPath, visibleText); ok {
 			mode = chosen
 			decisionAgentModeConfidence = confidence
 			decisionAgentModeSelected = true
 		}
+	}
+	// Only one Group Worker chat may run at a time in a workspace: its
+	// branch/squash-merge workflow is not safe to run concurrently.
+	if mode.ID == agentmodes.GroupWorkerID && m.groupWorkerBusy(session.workspace.ID, chatID) {
+		if msg.LockAgentMode {
+			// Orchestrated dispatch raced with another pickup; the
+			// orchestrator will retry on the next pass.
+			logf("orchestrated group worker skipped: workspace %s already has an active group worker", session.workspace.ID)
+			return
+		}
+		m.commandErrorForTabSurface(c, msg.WorkspaceID, chatID, surface, "group_worker_busy", "only one Group Worker chat can run at a time in a workspace", requestID)
+		return
 	}
 	_, researchStreamer := m.server.researchChat()
 	researchEnabled := m.server.settings.ResearchAgentConcurrency > 0 && researchStreamer != nil && modeAllowsResearch(mode)
@@ -2059,6 +2073,116 @@ func (m *chatSessionManager) createTab(c *client, workspaceID string) {
 	parent.broadcastSnapshot(chatSurfaceMain)
 }
 
+// createBackgroundTab appends a new chat tab without changing the workspace's
+// active tab. It is used by the orchestrator so dispatched tasks get their own
+// tab (like a user opening a new chat) without hijacking the user's view.
+func (m *chatSessionManager) createBackgroundTab(parent *chatWorkspaceSession, workspaceID string) (string, error) {
+	parent.mu.Lock()
+	if parent.loadErr != nil {
+		parent.mu.Unlock()
+		return "", parent.loadErr
+	}
+	transcript := blankTabTranscript()
+	sequence := parent.chatSequence.Add(1)
+	_, err := parent.store.Update(workspaceID, func(stored *sessions.ChatWorkspace) error {
+		stored.Tabs = append(stored.Tabs, transcript)
+		advanceStoredRevision(stored, sequence)
+		return nil
+	})
+	if err != nil {
+		parent.mu.Unlock()
+		return "", err
+	}
+	tab := m.newSession(parent, chatSurfaceMain, transcript)
+	parent.tabs[transcript.ChatID] = tab
+	parent.tabOrder = append(parent.tabOrder, transcript.ChatID)
+	parent.mu.Unlock()
+	parent.broadcastSnapshot(chatSurfaceMain)
+	return transcript.ChatID, nil
+}
+
+// sendOrchestrated starts a chat in a fresh background tab without a WebSocket
+// client. It is the server-side equivalent of the user opening a new chat tab
+// and sending the first message. Errors are returned instead of being reported
+// over a client connection.
+func (m *chatSessionManager) sendOrchestrated(workspaceID string, msg inboundMessage) (string, error) {
+	if m.server.llm == nil {
+		return "", fmt.Errorf("LLM client is not configured")
+	}
+	parent, err := m.get(workspaceID)
+	if err != nil {
+		return "", err
+	}
+	chatID, err := m.createBackgroundTab(parent, workspaceID)
+	if err != nil {
+		return "", err
+	}
+	msg.ChatID = chatID
+	msg.Surface = string(chatSurfaceMain)
+	msg.LockAgentMode = true
+	if strings.TrimSpace(msg.RequestID) == "" {
+		msg.RequestID = newSessionID("orchestrated")
+	}
+	m.send(nil, msg)
+	return chatID, nil
+}
+
+// workspaceBusy reports whether any chat tab in the workspace has an in-flight
+// turn (or idle compression) running. The orchestrator treats such a workspace
+// as not ready to pick up queued work.
+func (m *chatSessionManager) workspaceBusy(workspaceID string) bool {
+	parent, err := m.get(workspaceID)
+	if err != nil {
+		return true
+	}
+	parent.mu.Lock()
+	tabs := make([]*chatSession, 0, len(parent.tabs)+1)
+	for _, tab := range parent.tabs {
+		tabs = append(tabs, tab)
+	}
+	if parent.codeChat != nil {
+		tabs = append(tabs, parent.codeChat)
+	}
+	parent.mu.Unlock()
+	for _, tab := range tabs {
+		tab.mu.Lock()
+		busy := tab.isBusyLocked()
+		tab.mu.Unlock()
+		if busy {
+			return true
+		}
+	}
+	return false
+}
+
+// groupWorkerBusy reports whether any chat tab in the workspace other than
+// excludeChatID currently has an active Group Worker turn.
+func (m *chatSessionManager) groupWorkerBusy(workspaceID, excludeChatID string) bool {
+	parent, err := m.get(workspaceID)
+	if err != nil {
+		return false
+	}
+	parent.mu.Lock()
+	tabs := make([]*chatSession, 0, len(parent.tabs)+1)
+	for _, tab := range parent.tabs {
+		tabs = append(tabs, tab)
+	}
+	if parent.codeChat != nil {
+		tabs = append(tabs, parent.codeChat)
+	}
+	parent.mu.Unlock()
+	for _, tab := range tabs {
+		tab.mu.Lock()
+		busy := tab.active != nil && tab.active.AgentModeID == agentmodes.GroupWorkerID &&
+			tab.transcript.ChatID != excludeChatID
+		tab.mu.Unlock()
+		if busy {
+			return true
+		}
+	}
+	return false
+}
+
 // forkTab copies an existing chat tab's history up to and including the given
 // message into a brand-new tab and activates it. The source tab is untouched.
 func (m *chatSessionManager) forkTab(c *client, workspaceID, chatID, turnID, role, surfaceValue string) {
@@ -2689,6 +2813,9 @@ func (w *chatWorkspaceSession) subscriberList(surface chatSurface) []*client {
 }
 
 func (w *chatWorkspaceSession) sendSnapshot(c *client, surface chatSurface) {
+	if c == nil {
+		return
+	}
 	w.mu.Lock()
 	if surface == chatSurfaceCode {
 		codeChat := w.codeChat
@@ -4190,6 +4317,9 @@ func (s *chatSession) finish(turnID, status, message string, canonical []llm.Mes
 		logf("persist chat session %s: %v", s.workspace.ID, persistErr)
 	}
 	s.emitLocked(event)
+	if s.manager.server.orchestrator != nil {
+		s.manager.server.orchestrator.kick()
+	}
 	if goal != nil && goalStateChanged {
 		s.emitLocked(map[string]any{"type": "goal_updated", "goal": s.goalSnapshotLocked()})
 	}

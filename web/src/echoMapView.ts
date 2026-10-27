@@ -10,7 +10,7 @@ import { get } from "../js/api.js";
 import * as ws from "../js/ws.js";
 import { toast } from "./code/ui";
 import { patchMarkdownElement } from "./markdown";
-import { chatTargetRouteHash, codeRouteHash, type ChatTarget } from "./navigation";
+import { chatTargetRouteHash, codeRouteHash, orchestrationRouteHash, type ChatTarget } from "./navigation";
 import { renderMobilePrimaryNav, renderPrimaryNav } from "./primaryNav";
 
 // Refresh cadence: global broadcasts (chat_completed, plan_questions_awaiting)
@@ -22,7 +22,7 @@ const POLL_INTERVAL_MS = 3000;
 const ASK_USER_QUESTIONS_TOOL = "ask_user_questions";
 
 type EchoMapSurface = "chat" | "code";
-type EchoMapState = "pending_questions" | "in_progress" | "completed";
+export type EchoMapState = "pending_questions" | "in_progress" | "completed";
 
 type EchoMapPlanQuestion = { id?: string; question?: string; options?: string[] };
 
@@ -67,7 +67,7 @@ type EchoMapTurn = {
   researchTools?: EchoMapToolActivity[];
 };
 
-type EchoMapChat = {
+export type EchoMapChat = {
   workspaceId: string;
   workspaceName: string;
   chatId: string;
@@ -88,6 +88,14 @@ const SECTIONS: Array<{ state: EchoMapState; label: string; empty: string }> = [
   { state: "in_progress", label: "In Progress", empty: "No chats are currently running." },
   { state: "completed", label: "Completed", empty: "No completed chats yet." },
 ];
+
+export type EchoMapViewOptions = {
+  // When set, only chats passing the predicate are rendered.
+  workspaceFilter?: (chat: EchoMapChat) => boolean;
+  // Embed mode renders only the card sections into the root element, without
+  // the primary nav shell — used by the Orchestration page.
+  embed?: boolean;
+};
 
 function normalizedResponse(value: unknown): EchoMapResponse {
   const response = value && typeof value === "object" ? value as Record<string, unknown> : {};
@@ -144,8 +152,9 @@ function toolStatusLabel(tool: EchoMapToolActivity): string {
   return "Completed";
 }
 
-class EchoMapView {
+export class EchoMapView {
   private root: HTMLElement;
+  private options: EchoMapViewOptions;
   private data: EchoMapResponse = { chats: [], warnings: [] };
   private abort = new AbortController();
   private pollTimer = 0;
@@ -154,13 +163,16 @@ class EchoMapView {
   private disposed = false;
   private wsUnsubscribers: Array<() => void> = [];
 
-  constructor(root: HTMLElement) {
+  constructor(root: HTMLElement, options: EchoMapViewOptions = {}) {
     this.root = root;
+    this.options = options;
   }
 
   async start(): Promise<void> {
-    this.renderShell();
-    this.bindNavigation();
+    if (!this.options.embed) {
+      this.renderShell();
+      this.bindNavigation();
+    }
     this.wsUnsubscribers.push(
       ws.on("chat_completed", () => this.scheduleRefresh()),
       ws.on("plan_questions_awaiting", () => this.scheduleRefresh()),
@@ -211,6 +223,7 @@ class EchoMapView {
     this.root.querySelectorAll("[data-nav=debug]").forEach((item) => item.addEventListener("click", () => { location.hash = codeRouteHash("debug"); }, { signal }));
     this.root.querySelectorAll("[data-nav=settings]").forEach((item) => item.addEventListener("click", () => { location.hash = "#/settings"; }, { signal }));
     this.root.querySelectorAll("[data-nav=sandbox]").forEach((item) => item.addEventListener("click", () => { location.hash = "#/sandbox"; }, { signal }));
+    this.root.querySelectorAll("[data-nav=orchestration]").forEach((item) => item.addEventListener("click", () => { location.hash = orchestrationRouteHash(); }, { signal }));
   }
 
   private scheduleRefresh(): void {
@@ -237,8 +250,15 @@ class EchoMapView {
     }
   }
 
+  // contentContainer resolves where the card sections render: the dedicated
+  // content element in shell mode, or the root itself in embed mode.
+  private contentContainer(): HTMLElement | null {
+    if (this.options.embed) return this.root;
+    return this.root.querySelector<HTMLElement>("[data-echo-map-content]");
+  }
+
   private renderError(message: string): void {
-    const container = this.root.querySelector<HTMLElement>("[data-echo-map-content]");
+    const container = this.contentContainer();
     if (!container) return;
     container.replaceChildren();
     const error = document.createElement("div");
@@ -256,7 +276,7 @@ class EchoMapView {
   }
 
   private render(): void {
-    const container = this.root.querySelector<HTMLElement>("[data-echo-map-content]");
+    const container = this.contentContainer();
     if (!container) return;
     const scrollTops = this.captureTurnScrollPositions();
     container.replaceChildren();
@@ -274,6 +294,7 @@ class EchoMapView {
 
     const groups = new Map<EchoMapState, EchoMapChat[]>(SECTIONS.map((section) => [section.state, []]));
     for (const chat of this.data.chats) {
+      if (this.options.workspaceFilter && !this.options.workspaceFilter(chat)) continue;
       groups.get(chat.state)?.push(chat);
     }
 

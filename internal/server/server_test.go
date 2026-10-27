@@ -30,6 +30,7 @@ func newTestServer(t *testing.T) (*Server, string) {
 	settingsPath := filepath.Join(dir, "echo.json")
 	s := NewWithSettingsPath("127.0.0.1:0", dir, settingsPath)
 	s.authDisabled = true
+	t.Cleanup(s.orchestrator.stop)
 	return s, dir
 }
 

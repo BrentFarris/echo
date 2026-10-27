@@ -14,7 +14,7 @@ import {
 } from "../chat.js";
 import { loadWorkspaces, openWorkspaceDropdown, openAddWorkspaceModal, setActiveWorkspace, getActive, renderWorkspaceIcon } from "../workspaces.js";
 import {
-  chatCompletionTargetFromHash, codeFileRouteHash, codeRouteHash, echoMapRouteHash,
+  chatCompletionTargetFromHash, codeFileRouteHash, codeRouteHash, echoMapRouteHash, orchestrationRouteHash,
 } from "../../src/navigation.ts";
 import { prepareCompletionNotificationPermission } from "../../src/completionNotifications.ts";
 import { preparePlanQuestionNotificationPermission } from "../../src/planQuestionNotifications.ts";
@@ -813,6 +813,9 @@ export function mount(root) {
   const mapButtons = [...root.querySelectorAll("[data-nav=map]")];
   const onMapClick = () => { location.hash = echoMapRouteHash(); };
   mapButtons.forEach((button) => button.addEventListener("click", onMapClick));
+  const orchestrationButtons = [...root.querySelectorAll("[data-nav=orchestration]")];
+  const onOrchestrationClick = () => { location.hash = orchestrationRouteHash(); };
+  orchestrationButtons.forEach((button) => button.addEventListener("click", onOrchestrationClick));
 
   // Workspace selector: open the dropdown, and the "+ Add a workspace" modal.
   const workspaceTriggers = [...root.querySelectorAll(".workspace-dropdown-trigger")];

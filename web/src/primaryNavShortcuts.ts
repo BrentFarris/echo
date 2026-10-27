@@ -1,4 +1,4 @@
-export type PrimaryNavShortcut = "chat" | "code" | "search" | "git" | "debug" | "sandbox" | "settings" | "map";
+export type PrimaryNavShortcut = "chat" | "code" | "search" | "git" | "debug" | "sandbox" | "settings" | "map" | "orchestration";
 
 const shortcutByKey: Record<string, PrimaryNavShortcut> = {
   Digit0: "settings",
@@ -21,7 +21,11 @@ const shortcutByKey: Record<string, PrimaryNavShortcut> = {
 
 /** Resolves Echo's global primary-navigation shortcut, if any. */
 export function primaryNavShortcut(event: KeyboardEvent): PrimaryNavShortcut | null {
-  if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.repeat || event.isComposing) return null;
+  if (!event.ctrlKey || event.metaKey || event.altKey || event.repeat || event.isComposing) return null;
+  // Ctrl+Shift+O opens Orchestration; plain Ctrl shortcuts reject Shift.
+  if (event.shiftKey) {
+    return event.code === "KeyO" || event.key === "O" || event.key === "o" ? "orchestration" : null;
+  }
   return shortcutByKey[event.code] || shortcutByKey[event.key] || null;
 }
 

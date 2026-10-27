@@ -77,6 +77,7 @@ type File struct {
 	Workspaces        []Workspace                `json:"workspaces"`
 	ActiveWorkspaceID string                     `json:"activeWorkspaceId,omitempty"`
 	SavedCommands     map[string][]SavedCommand  `json:"savedCommands,omitempty"`
+	WorkspaceGroups   json.RawMessage            `json:"workspaceGroups,omitempty"`
 }
 
 // DefaultStorePath returns the platform-appropriate path to the Echo app data

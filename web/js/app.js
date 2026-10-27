@@ -24,6 +24,7 @@ const routes = {
   "/code": () => import("../src/code/codeView.ts"),
   "/sandbox": () => import("../src/sandbox/sandboxView.ts"),
   "/map": () => import("../src/echoMapView.ts"),
+  "/orchestration": () => import("../src/orchestration/orchestrationView.ts"),
 };
 
 const app = document.getElementById("app");

@@ -9,5 +9,14 @@
       "gopls"
     ],
     "formatOnSaveTimeoutMs": 3000
+  },
+  "debug": {
+    "version": 1
+  },
+  "sandbox": {
+    "enabled": false,
+    "cpuLimit": 4,
+    "memoryMiB": 6144,
+    "idleTimeoutMinutes": 30
   }
 }

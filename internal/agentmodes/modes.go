@@ -20,8 +20,23 @@ const (
 	PlanID            = "plan"
 	GoalID            = "goal"
 	PairProgrammingID = "pair-programming"
+	GroupWorkerID     = "group-worker"
 	fileName          = "agent-modes.json"
 )
+
+// groupWorkerWorkflow is appended to the Pair Programming prompt for the
+// Group Worker built-in. It describes the branch/squash-merge contract that
+// orchestrator-dispatched tasks follow so their work is easy to revert.
+const groupWorkerWorkflow = `
+
+In addition, this task runs through the orchestration queue, so follow this exact git workflow:
+1. Before making any changes, create a new branch for this task off of the trunk branch (use "trunk" if it exists, otherwise "main", otherwise "master"). Pick a short, descriptive branch name.
+2. Do all of your work on that branch.
+3. When your work is complete, merge the trunk branch into your task branch and resolve any conflicts.
+4. Then merge your task branch back into the trunk branch as a single squashed commit (git merge --squash, or an equivalent single-commit squash) so the whole task is one revertible commit on trunk. Write a clear commit message summarizing the task.
+5. Finally, delete the task branch so the branch list stays clean.
+
+Only one Group Worker chat may run at a time in a workspace because of this branching behavior.`
 
 // Mode defines a named system prompt and its tool/path boundaries. An empty
 // Permissions map means every registered tool is available without a path
@@ -90,12 +105,18 @@ func Defaults() []Mode {
 			BuiltIn: true,
 			Prompt:  "Pair with the user on implementation work: carry out edits and run tools directly, but keep the user in the loop. You can ask the user questions at any time with ask_user_questions — both to resolve ambiguity and to request that the user perform an action you cannot do yourself (for example: question \"Can you close the editor?\" with options \"I have closed the editor\" and \"Try another method\"). Options are suggested answers only; the user can always reply with free text. After asking, wait for the answers, incorporate them, and continue working. You may ask as many rounds of questions per turn as you need, but do not ask things you can resolve yourself from the workspace, and if the user skips, proceed with your best judgment.",
 		},
+		{
+			ID:      GroupWorkerID,
+			Name:    "Group Worker",
+			BuiltIn: true,
+			Prompt:  strings.TrimSpace("Pair with the user on implementation work: carry out edits and run tools directly, but keep the user in the loop. You can ask the user questions at any time with ask_user_questions — both to resolve ambiguity and to request that the user perform an action you cannot do yourself (for example: question \"Can you close the editor?\" with options \"I have closed the editor\" and \"Try another method\"). Options are suggested answers only; the user can always reply with free text. After asking, wait for the answers, incorporate them, and continue working. You may ask as many rounds of questions per turn as you need, but do not ask things you can resolve yourself from the workspace, and if the user skips, proceed with your best judgment.") + groupWorkerWorkflow,
+		},
 	}
 }
 
 func IsBuiltIn(id string) bool {
 	switch strings.TrimSpace(id) {
-	case GeneralID, PlanID, GoalID, PairProgrammingID:
+	case GeneralID, PlanID, GoalID, PairProgrammingID, GroupWorkerID:
 		return true
 	default:
 		return false
