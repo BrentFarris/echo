@@ -2,9 +2,36 @@ package coordinator
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
+
+func TestQuestionsWithoutCountLimit(t *testing.T) {
+	g := New([]string{"a", "b"})
+	defer g.Close()
+	for i := 0; i < 65; i++ {
+		id := fmt.Sprintf("question-%d", i)
+		r, err := g.Send("a", "b", "Please clarify", id)
+		if err != nil {
+			t.Fatalf("question %d: %v", i, err)
+		}
+		duplicate, err := g.Send("a", "b", "Please clarify", id)
+		if err != nil || duplicate != r {
+			t.Fatalf("duplicate question: %+v, %v", duplicate, err)
+		}
+		if inbox := g.Drain("b"); len(inbox) != 1 || inbox[0] != r {
+			t.Fatalf("unexpected inbox: %+v", inbox)
+		}
+		if err := g.Reply("b", r.ID, "Clarified"); err != nil {
+			t.Fatal(err)
+		}
+		answer, err := g.Wait(context.Background(), "a", r.ID)
+		if err != nil || !answer.Done || answer.Reply != "Clarified" {
+			t.Fatalf("answer: %+v, %v", answer, err)
+		}
+	}
+}
 
 func TestHandoffs(t *testing.T) {
 	g := New([]string{"a", "b"})

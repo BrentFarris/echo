@@ -386,7 +386,7 @@ func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run do
 	}
 	tools := append(s.coreTools(bot), s.Plugins.Tools(bot)...)
 	pending := []string{}
-	for round := 0; round < 128; round++ {
+	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -543,7 +543,6 @@ func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run do
 			history = append(history, model.Message{Role: "tool", Content: string(b), CallID: call.ID})
 		}
 	}
-	return errors.New("128 model rounds reached; send another message to continue")
 }
 
 type streamBuffer struct {

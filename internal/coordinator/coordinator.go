@@ -1,4 +1,4 @@
-// Package coordinator implements explicit, bounded handoffs without a second LLM.
+// Package coordinator implements explicit handoffs without a second LLM.
 package coordinator
 
 import (
@@ -23,7 +23,6 @@ type Group struct {
 	inbox    map[string][]string
 	waiting  map[string]string
 	notify   chan struct{}
-	count    int
 	closed   bool
 	OnSend   func(Request)
 }
@@ -57,17 +56,12 @@ func (g *Group) Send(from, to, content, id string) (Request, error) {
 			return v, nil
 		}
 	}
-	if g.count >= 32 {
-		g.mu.Unlock()
-		return Request{}, errors.New("32 handoff requests reached; ask the user to continue")
-	}
 	if id == "" {
 		id = domain.ID()
 	}
 	r := Request{ID: id, From: from, To: to, Content: content}
 	g.requests[id] = &r
 	g.inbox[to] = append(g.inbox[to], id)
-	g.count++
 	g.signal()
 	callback := g.OnSend
 	g.mu.Unlock()
