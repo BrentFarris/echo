@@ -280,7 +280,7 @@ function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.da
   el.innerHTML = !grouped && m.role !== 'user' && m.role !== 'tool' ? `<div class="message-meta"><strong>${esc(m.author)}</strong>${statusBadge(m.status)}</div>` : '';
   if (m.role === 'tool') {
     const name = grouped ? m.author.split(' · ').slice(1).join(' · ') || m.author : m.author;
-    el.innerHTML += `<details data-disclosure="${esc(m.id)}:output" ${m.status === 'running' ? 'open' : ''}><summary><span>${esc(name)}</span>${statusBadge(m.status)}</summary><pre>${esc(liveToolOutput.get(m.id) || m.content)}</pre></details>`;
+    el.innerHTML += `<details data-disclosure="${esc(m.id)}:output"><summary><span>${esc(name)}</span>${statusBadge(m.status)}</summary><pre>${esc(liveToolOutput.get(m.id) || m.content)}</pre></details>`;
     restoreDisclosures(el); return el;
   }
   if (m.role === 'user' && grouped) el.innerHTML += `<div class="handoff-label">${esc(m.author)}</div>`;
