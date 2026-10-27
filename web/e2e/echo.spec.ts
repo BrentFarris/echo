@@ -16,6 +16,39 @@ async function setup(page: Page) {
 }
 async function send(page: Page, value: string) { await page.getByRole('textbox', { name: 'Message', exact: true }).fill(value); await page.getByRole('button', { name: 'Send message', exact: true }).click(); }
 
+test('cloud models are selected for the chat without a per-bot switch', async ({ page }) => {
+  await setup(page);
+  try {
+    for (const enabled of [false, true]) {
+      expect((await page.request.patch('/api/v1/plugins/cloud-models', { data: { enabled, config: {} } })).ok()).toBe(true);
+      await page.reload();
+      await page.getByRole('button', { name: '⚙ Settings', exact: true }).click();
+      for (const button of ['Edit', '＋ Add bot']) {
+        await page.getByRole('button', { name: button, exact: true }).click();
+        const editor = page.getByRole('dialog').last();
+        await expect(editor.getByLabel('Handle', { exact: true })).toBeVisible();
+        await expect(editor).not.toContainText('Cloud Models');
+        await expect(editor.getByLabel('Git', { exact: true })).toBeVisible();
+        await editor.getByRole('button', { name: 'Close', exact: true }).click();
+      }
+    }
+    expect((await page.request.post('/api/v1/endpoints', { data: { endpoint: { id: 'test-cloud', name: 'Test cloud model', url: 'http://127.0.0.1:3743/v1', model: 'echo-test', cloud: true } } })).ok()).toBe(true);
+    await page.reload();
+    await page.locator('.model-settings summary').click();
+    await expect(page.getByRole('option', { name: 'Test local model — echo-test', exact: true })).toBeVisible();
+    await page.getByRole('option', { name: 'Test cloud model — echo-test', exact: true }).click();
+    await expect(page.locator('#model-name')).toHaveText('Test cloud model');
+    await page.locator('.model-settings summary').press('Escape');
+    await send(page, 'Hello from the cloud model');
+    await expect(page.locator('.message.assistant')).toContainText('Completed the requested work.');
+    await page.reload();
+    await expect(page.locator('#model-name')).toHaveText('Test cloud model');
+  } finally {
+    await page.request.delete('/api/v1/endpoints/test-cloud');
+    await page.request.patch('/api/v1/plugins/cloud-models', { data: { enabled: false, config: {} } });
+  }
+});
+
 test('finished work folds behind the final reply and stays compact on mobile', async ({ page }) => {
   await setup(page); await page.emulateMedia({ colorScheme: 'dark' });
   await send(page, 'Prepare the work disclosure report');

@@ -20,7 +20,7 @@ Uploads support PNG, JPEG, GIF, WebP, MP4, WebM, MOV, PDF, and UTF-8 text/code f
 
 The endpoint editor includes temperature defaults, Top K/P, Min P, context length, compression threshold, max output tokens, frequency/presence/repetition penalties, reasoning effort, thinking-token budget, and request/stream idle timeouts. Blank optional sampling fields are omitted from requests. Named reasoning effort overrides the local `thinking_token_budget`; unsupported settings are never silently downgraded. A stream idle timeout of `-1` disables the inactivity limit; arriving data and SSE heartbeats reset it. The request timeout remains an overall limit.
 
-Cloud Models starts disabled. Enable it before adding a compatible cloud endpoint. Enter API keys in its password field; keys are stored in Windows Credential Manager. Changing the destination clears the existing credential binding unless a replacement key is supplied.
+Cloud Models is an app-level setting and starts disabled. Enable it before adding a compatible cloud endpoint, then select the connection and model in the chat just like a local model. The chat's selection applies to every recipient; there is no per-bot Cloud Models switch. Enter API keys in its password field; keys are stored in Windows Credential Manager. Changing the destination clears the existing credential binding unless a replacement key is supplied.
 
 Installed model providers appear in the connection editor's Provider field. The `provider` authoring template delegates to the streaming client; other protocols can use bounded, endpoint-confined host requests without receiving credentials. The `renderer` template formats assistant replies inside an isolated frame. Both extension points support per-bot toggles.
 

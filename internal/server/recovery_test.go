@@ -68,7 +68,7 @@ func TestDispatchRetryAndScopeRevocation(t *testing.T) {
 	}
 }
 
-func TestInterruptedToolHistoryAndPerRecipientModelAvailability(t *testing.T) {
+func TestInterruptedToolHistoryAndChatModelAvailability(t *testing.T) {
 	s := testServer(t)
 	g := attachModel(t, s, func(w http.ResponseWriter, r *http.Request) { stream(w, "done", nil) })
 	c := chat(t, s, g)
@@ -83,19 +83,42 @@ func TestInterruptedToolHistoryAndPerRecipientModelAvailability(t *testing.T) {
 	a, _ := s.saveBot(domain.Bot{Handle: "a"})
 	b, _ := s.saveBot(domain.Bot{Handle: "b", Plugins: map[string]bool{"cloud-models": false}})
 	cloud, _ := s.Plugins.Get("cloud-models")
-	cloud.Enabled = true
-	s.Plugins.Save(cloud)
 	var ep domain.Endpoint
 	s.Store.Get("endpoints", g.EndpointID, &ep)
 	ep.Cloud = true
 	s.Store.Put("endpoints", ep.ID, ep)
 	before, _ := s.messages(c.ID)
 	if _, e = s.send(c.ID, SendRequest{Content: "@a and @b work", Generation: g}); e == nil {
-		t.Fatal("cloud provider unavailable to one recipient was dispatched")
+		t.Fatal("globally disabled cloud provider was dispatched")
 	}
 	after, _ := s.messages(c.ID)
 	if len(before) != len(after) {
 		t.Fatal("invalid dispatch was persisted")
+	}
+	cloud.Enabled = true
+	if e = s.Plugins.Save(cloud); e != nil {
+		t.Fatal(e)
+	}
+	d, e := s.send(c.ID, SendRequest{Content: "@a and @b work", Generation: g})
+	if e != nil {
+		t.Fatal("legacy per-bot cloud override blocked the chat's selected model", e)
+	}
+	waitDispatch(t, d)
+	after, e = s.messages(c.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, bot := range []domain.Bot{a, b} {
+		completed := false
+		for _, message := range after {
+			if message.BotID == bot.ID && message.Role == "assistant" && message.Status == "completed" && message.Content == "done" {
+				completed = true
+			}
+		}
+		if !completed {
+			runs, _ := s.Store.List("runs")
+			t.Fatalf("@%s did not complete with the chat's cloud model: %s", bot.Handle, runs)
+		}
 	}
 	recipients, e := s.recipients(SendRequest{Content: "@a @a @b @A", Generation: g})
 	if e != nil || len(recipients) != 2 || recipients[0].ID != a.ID || recipients[1].ID != b.ID {
