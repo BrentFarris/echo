@@ -6,6 +6,7 @@ import { referenceIcons, referenceFromElement, renderMessageReferences, showBotD
 import { Renderers } from './renderers';
 import { conversationItems, conversationThreads, threadMessages, type ResponseGroup } from './conversation';
 import { fileChangesFooter } from './fileChanges';
+import { createChatScrollFollower, type ChatScrollFollower } from './chatScroll';
 import { ReferenceSearch, validateInstanceReferences } from './referenceSearch';
 import { endpointForm, endpointValues } from './modelSettings';
 import { mountDevelopment } from './development';
@@ -43,6 +44,7 @@ let attachments: DraftAttachment[] = [], submitting = false;
 const drafts = new Map<string, { text: string; references: Segment[]; generation: Generation; generationByNode: Record<string, Generation>; modelNode: string; attachments: DraftAttachment[] }>();
 let pluginWindows: PluginWindows;
 let apps: Apps;
+let chatScroll: ChatScrollFollower;
 const liveToolOutput = new Map<string, string>();
 const discoveredModels = new Map<string, string[]>();
 const generationSaves = new Map<string, Promise<unknown>>();
@@ -64,6 +66,8 @@ function shell() {
   app.innerHTML = `<aside id="sidebar" class="sidebar"><div class="brand"><span class="brand-mark" aria-hidden="true">E</span>Echo<button class="icon sidebar-close" aria-label="Close sidebar">×</button></div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button></div><label class="machine-filter" hidden>Machine<select aria-label="Filter machines"></select></label><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="install-echo" hidden>Install Echo</button><button id="missed-button" hidden>Missed jobs</button><nav class="app-dock" aria-label="Docked apps" hidden></nav><div class="sidebar-footer-actions"><button id="apps-button">▦ Apps</button><button id="settings-button">⚙ Settings</button></div></div></aside><div class="sidebar-backdrop" aria-hidden="true"></div>
   <main class="main"><header class="chat-header"><button class="icon mobile-menu" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">☰</button><strong id="chat-title">Echo</strong><span id="connection" class="subtle">Connecting…</span></header><div class="chat-view"><div class="bot-tabs-shell" hidden><button type="button" class="bot-tabs-scroll previous" aria-label="Scroll tabs left" title="Scroll tabs left">${icons.chevron}</button><div class="bot-tabs" role="tablist" aria-label="Bot threads"></div><button type="button" class="bot-tabs-scroll next" aria-label="Scroll tabs right" title="Scroll tabs right">${icons.chevron}</button></div><div id="bot-thread-panel" class="conversation-panel"><div class="chat-log" role="log" aria-label="Conversation"></div></div>
   ${composerMarkup}</div><section class="apps-view" aria-labelledby="apps-heading" hidden><h1 id="apps-heading" tabindex="-1">Apps</h1><p class="subtle">Open your plugin apps or dock them for quick access.</p><div id="apps-catalog"></div></section><section class="embedded-app-view" hidden aria-label="App"></section></main>`;
+  q('.chat-log').tabIndex = 0;
+  chatScroll = createChatScrollFollower(q('.chat-log'));
   pluginWindows = new PluginWindows(api, { embeddedHost: q('.embedded-app-view'), navigate: route => { if (route) { rememberDraft(); showingApp = true; showingApps = false; history.replaceState(null, '', route); renderMainView(); renderSidebar(); } else { void selectChat(chatId); } }, configureBot: id => editBot(currentBot(id)) });
   apps = new Apps(q('#apps-catalog'), q('.app-dock'), {
     open: async plugin => { setSidebarOpen(false, false); await openPlugin(plugin.id, plugin.app!.viewId); },
@@ -279,7 +283,7 @@ const renderers = new Renderers(pluginEnabled, () => renderMessages(false, true)
 const disclosureState = new Map<string, boolean>();
 let renderedChatId = '';
 const selectedBotThreads = new Map<string, string>();
-const threadScroll = new Map<string, number>();
+const threadScroll = new Map<string, { top: number; following: boolean }>();
 let renderedThreadKey = '', visibleBotId: string | undefined;
 function selectBotThread(id: string) {
   selectedBotThreads.set(chatId, id);
@@ -385,11 +389,12 @@ function paintResponse(group: ResponseGroup) {
 }
 function renderMessages(tail = false, force = false) {
   const log = document.querySelector<HTMLElement>('.chat-log'); if (!log) return;
-  if (renderedThreadKey) threadScroll.set(renderedThreadKey, log.scrollTop);
+  if (renderedThreadKey) threadScroll.set(renderedThreadKey, { top: log.scrollTop, following: chatScroll.isFollowing() });
   renderBotTabs();
   const threadKey = JSON.stringify([chatId, visibleBotId]), switchedThread = threadKey !== renderedThreadKey;
   renderedThreadKey = threadKey;
-  const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 100, previousTop = log.scrollTop;
+  const previousTop = log.scrollTop;
+  chatScroll.contentChanged();
   const focused = log.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLDetailsElement>('details[data-disclosure]')?.dataset.disclosure : undefined;
   const focusedFile = log.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.fileChange : undefined;
   const anchor = [...log.children].find(child => child.getBoundingClientRect().bottom > log.getBoundingClientRect().top) as HTMLElement | undefined;
@@ -405,9 +410,19 @@ function renderMessages(tail = false, force = false) {
   renderRunErrors(); document.querySelector<HTMLButtonElement>('#setup-model')?.addEventListener('click', () => settings('models'));
   if (focused) [...log.querySelectorAll<HTMLDetailsElement>('details[data-disclosure]')].find(d => d.dataset.disclosure === focused)?.querySelector('summary')?.focus({ preventScroll: true });
   if (focusedFile) [...log.querySelectorAll<HTMLButtonElement>('.file-change')].find(button => button.dataset.fileChange === focusedFile)?.focus({ preventScroll: true });
-  if (switchedThread) log.scrollTop = threadScroll.get(threadKey) ?? log.scrollHeight;
-  else if (tail || nearBottom) log.scrollTop = log.scrollHeight;
-  else { const replacement = [...log.children].find(child => (child as HTMLElement).dataset.timelineKey === anchorKey || child.id === anchorKey) as HTMLElement | undefined; log.scrollTop = previousTop + (replacement && anchorOffset !== undefined ? replacement.offsetTop - anchorOffset : 0); }
+  if (switchedThread) {
+    const saved = threadScroll.get(threadKey);
+    log.scrollTop = saved?.top ?? log.scrollHeight;
+    chatScroll.reset(saved?.following ?? true);
+    if (chatScroll.isFollowing()) chatScroll.forceFollow();
+  } else if (tail) chatScroll.forceFollow();
+  else if (!chatScroll.isFollowing()) {
+    const replacement = [...log.children].find(child => (child as HTMLElement).dataset.timelineKey === anchorKey || child.id === anchorKey) as HTMLElement | undefined;
+    log.scrollTop = previousTop + (replacement && anchorOffset !== undefined ? replacement.offsetTop - anchorOffset : 0);
+    // Restoring the reading anchor is not a request to resume following.
+    chatScroll.reset(false);
+  }
+  chatScroll.contentChanged();
 }
 function renderRunErrors() {
   for (const old of document.querySelectorAll('.run-error, .run-queued')) old.remove();
@@ -452,7 +467,7 @@ function receive(e: any) {
       let m = messages.find(m => m.id === e.payload.id);
       if (e.type === 'message') { liveToolOutput.delete(e.payload.id); if (m) Object.assign(m, e.payload); else { m = e.payload; messages.push(m!); } }
       else if (m) { m.content += e.payload.content || ''; m.reasoning = (m.reasoning || '') + (e.payload.reasoning || ''); }
-      if (m) { const log = q('.chat-log'); const tail = log.scrollHeight - log.scrollTop - log.clientHeight < 120; const old = document.getElementById('message-' + m.id); if (old && e.type === 'delta') paintMessage(m, old); else if (e.type !== 'delta') renderMessages(); if (tail) log.scrollTop = log.scrollHeight; }
+      if (m) { const old = document.getElementById('message-' + m.id); if (old && e.type === 'delta') { chatScroll.contentChanged(); paintMessage(m, old); } else if (e.type !== 'delta') renderMessages(); }
     }
     if (e.type === 'changed') queueRefresh();
 }

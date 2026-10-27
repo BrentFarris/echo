@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page, type WebSocketRoute } from '@playwright/test';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +15,71 @@ async function setup(page: Page) {
   await page.reload(); await page.getByRole('button', { name: '＋ New chat', exact: true }).click();
 }
 async function send(page: Page, value: string) { await page.getByRole('textbox', { name: 'Message', exact: true }).fill(value); await page.getByRole('button', { name: 'Send message', exact: true }).click(); }
+
+test('chat releases sticky scrolling immediately and resumes only at the tail', async ({ page }) => {
+  let socket: WebSocketRoute | undefined;
+  await page.routeWebSocket('**/api/v1/events', ws => { socket = ws; ws.connectToServer(); });
+  await setup(page);
+  await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeEnabled();
+  await page.reload();
+  await expect(page.locator('#connection')).toHaveText('');
+  await expect.poll(() => !!socket).toBe(true);
+  const chatId = new URL(page.url()).hash.slice(1);
+  const log = page.locator('.chat-log');
+  const bottomGap = () => log.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop);
+  const position = () => log.evaluate(el => el.scrollTop);
+  let counter = 0;
+  const message = (id: string, content: string) => socket!.send(JSON.stringify({ type: 'message', chatId, payload: {
+    id, chatId, role: 'assistant', author: 'Echo', content, status: 'streaming', createdAt: new Date().toISOString(),
+  } }));
+  const grow = async (repaint = false) => {
+    const marker = `Streaming paragraph ${++counter}`;
+    if (repaint) message(`scroll-${counter}`, marker);
+    else socket!.send(JSON.stringify({ type: 'delta', chatId, payload: { id: 'scroll-stream', content: `\n\n${marker}` } }));
+    await expect(log).toContainText(marker);
+    // Allow mutation/resize observers and the scheduled follow to run.
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  };
+  message('scroll-stream', Array.from({ length: 80 }, (_, i) => `History paragraph ${i}`).join('\n\n'));
+  await expect(log).toContainText('History paragraph 79');
+  await expect.poll(bottomGap).toBeLessThanOrEqual(2);
+  await grow();
+  await expect.poll(bottomGap).toBeLessThanOrEqual(2);
+
+  // A tiny wheel movement inside the former 120px snap zone must release it.
+  await log.hover();
+  const tail = await position();
+  await page.mouse.wheel(0, -40);
+  await expect.poll(position).toBeLessThan(tail);
+  const reading = await position();
+  await grow(); await grow(true);
+  expect(Math.abs(await position() - reading)).toBeLessThanOrEqual(2);
+  await page.mouse.wheel(0, 10000);
+  await expect.poll(bottomGap).toBeLessThanOrEqual(2);
+  await grow();
+  await expect.poll(bottomGap).toBeLessThanOrEqual(2);
+
+  for (const up of ['ArrowUp', 'PageUp', 'Home']) {
+    await log.focus();
+    const before = await position();
+    await page.keyboard.press(up);
+    // Deliver a delta immediately, while native key scrolling may still animate.
+    await grow();
+    await expect.poll(position).toBeLessThan(before);
+    await expect.poll(async () => {
+      const first = await position();
+      await page.waitForTimeout(100);
+      return Math.abs(await position() - first);
+    }).toBeLessThanOrEqual(1);
+    const stopped = await position();
+    await grow(true);
+    expect(Math.abs(await position() - stopped)).toBeLessThanOrEqual(2);
+    await page.keyboard.press('End');
+    await expect.poll(bottomGap).toBeLessThanOrEqual(2);
+    await grow();
+    await expect.poll(bottomGap).toBeLessThanOrEqual(2);
+  }
+});
 
 test('cloud connections can be added and selected without enable switches', async ({ page }) => {
   await setup(page);
