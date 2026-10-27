@@ -38,7 +38,7 @@ type windowsSecretStore struct {
 	free   *windows.LazyProc
 }
 
-func New() SecretStore {
+func New(_ ...string) SecretStore {
 	dll := windows.NewLazySystemDLL("advapi32.dll")
 	return &windowsSecretStore{
 		write: dll.NewProc("CredWriteW"), read: dll.NewProc("CredReadW"),

@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !linux && !darwin
 
 package broker
 
@@ -8,6 +8,6 @@ import (
 )
 
 func (b *ProcessBroker) run(context.Context, ProcessRequest, func(string)) (ProcessResult, error) {
-	return ProcessResult{}, errors.New("native shell isolation currently requires Windows")
+	return ProcessResult{}, errors.New("native process containment is unavailable on this platform")
 }
 func (b *ProcessBroker) Recover() error { return nil }

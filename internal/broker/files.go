@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -48,7 +49,7 @@ func CanonicalRoots(roots []string) ([]string, error) {
 		}
 		duplicate := false
 		for _, v := range out {
-			if strings.EqualFold(v, a) {
+			if v == a || runtime.GOOS == "windows" && strings.EqualFold(v, a) {
 				duplicate = true
 			}
 		}

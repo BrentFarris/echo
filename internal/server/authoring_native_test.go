@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows || linux || darwin
 
 package server
 
@@ -34,9 +34,9 @@ func TestNativeBackendAuthoringTemplate(t *testing.T) {
 		t.Fatal("pure backend failed to activate", e)
 	}
 	echo, _ := s.Bot("echo")
-	result, e := s.Plugins.Invoke(context.Background(), domain.ExecutionScope{Bot: echo}, "my_plugin_echo", json.RawMessage(`{"text":"compiled within AppContainer"}`))
+	result, e := s.Plugins.Invoke(context.Background(), domain.ExecutionScope{Bot: echo}, "my_plugin_echo", json.RawMessage(`{"text":"compiled within native containment"}`))
 	data, _ := json.Marshal(result)
-	if e != nil || !strings.Contains(string(data), "compiled within AppContainer") {
+	if e != nil || !strings.Contains(string(data), "compiled within native containment") {
 		t.Fatal(string(data), e)
 	}
 }

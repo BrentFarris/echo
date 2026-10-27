@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 type ProcessRequest struct {
@@ -73,8 +75,8 @@ func (b *ProcessBroker) Run(ctx context.Context, r ProcessRequest, emit func(str
 	if len(r.Input) > 1<<20 {
 		return ProcessResult{}, errors.New("standard input exceeds 1 MiB")
 	}
-	if r.Executable != "" && (!filepath.IsAbs(r.Executable) || !strings.EqualFold(filepath.Ext(r.Executable), ".exe")) {
-		return ProcessResult{}, errors.New("native executable must be an absolute .exe path")
+	if r.Executable != "" && (!filepath.IsAbs(r.Executable) || runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(r.Executable), ".exe")) {
+		return ProcessResult{}, errors.New("native executable must be an absolute executable path")
 	}
 	for _, value := range append([]string{r.Command, r.Executable, r.Directory}, r.Args...) {
 		if strings.ContainsRune(value, 0) {
@@ -115,7 +117,7 @@ func (b *ProcessBroker) Run(ctx context.Context, r ProcessRequest, emit func(str
 func DefaultToolchains() []string {
 	roots := []string{}
 	for _, name := range []string{"go", "git", "node", "dotnet"} {
-		if binary, e := exec.LookPath(name); e == nil {
+		if binary, e := NativeExecutable(name); e == nil {
 			root := filepath.Dir(binary)
 			if name == "go" || name == "git" {
 				root = filepath.Dir(root)
@@ -126,4 +128,27 @@ func DefaultToolchains() []string {
 		}
 	}
 	return roots
+}
+
+// Resolve Go wrappers (including Snap) to the actual installed toolchain. A
+// release cross-compiled on another OS cannot use its compiled-in GOROOT.
+func NativeExecutable(name string) (string, error) {
+	binary, err := exec.LookPath(name)
+	if err != nil {
+		return "", err
+	}
+	if name == "go" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		root, queryErr := exec.CommandContext(ctx, binary, "env", "GOROOT").Output()
+		if queryErr != nil {
+			return "", queryErr
+		}
+		suffix := ""
+		if runtime.GOOS == "windows" {
+			suffix = ".exe"
+		}
+		binary = filepath.Join(strings.TrimSpace(string(root)), "bin", "go"+suffix)
+	}
+	return filepath.EvalSymlinks(binary)
 }

@@ -3,6 +3,7 @@ import type { Bot } from "../types";
 import type { CodeSidebar } from "./navigation";
 import { Virtualizer, elementScroll, observeElementOffset, observeElementRect } from "@tanstack/virtual-core";
 import type { editor as MonacoEditor, IPosition as MonacoPosition, IRange as MonacoRange, languages as MonacoLanguages, Uri as MonacoUri } from "monaco-editor";
+import { splitID } from '../instances';
 import { api } from "./api";
 import * as editorAPI from "./editorApi";
 import type { APIError } from "./editorApi";
@@ -138,8 +139,8 @@ export class CodeView {
   private editorLineEndingsOnSave: LineEndingsOnSave = "unchanged";
   private closeIndentationPopover: (() => void) | null = null;
   private saveEditorSettings = editorSettingsWriter(
-    async () => (await api("/api/settings", { method: "GET" })).settings,
-    async (settings) => { await api("/api/settings", { method: "PUT", body: { settings } }); },
+    async () => (await api("/api/settings", { nodeId: splitID(this.bot.id)[0], method: "GET" })).settings,
+    async (settings) => { await api("/api/settings", { nodeId: splitID(this.bot.id)[0], method: "PUT", body: { settings } }); },
   );
   private editorFontSizeSaveTimer = 0;
   private modelReferences = new Map<MonacoEditor.ITextModel, number>();
@@ -219,7 +220,7 @@ export class CodeView {
     try {
       this.renderShell(); this.installNavigation(); installMenuDismissal(this.abort.signal);
       this.roots = await editorAPI.getRoots(this.bot.id);
-      const {settings} = await api("/api/settings");
+      const {settings} = await api("/api/settings", { nodeId: splitID(this.bot.id)[0] });
       if (this.abort.signal.aborted) return;
       this.leadingWhitespaceIndicators = settings.hideLeadingWhitespaceIndicators !== true;
       this.indentation = indentationDefaults(settings); this.editorLineEndingsOnSave = lineEndingsOnSave(settings);
@@ -897,7 +898,7 @@ export class CodeView {
   }
 
   async showSettings(): Promise<void> {
-    const {settings} = await api('/api/settings');
+    const {settings} = await api('/api/settings', { nodeId: splitID(this.bot.id)[0] });
     const dialog = document.createElement('dialog'); dialog.className = 'editor-settings';
     dialog.innerHTML = `<form class="form"><h2>Editor Settings</h2>
       <label>Font size<input name="font" type="number" min="8" max="30" step="0.5" value="${this.editorFontSize}"></label>

@@ -28,10 +28,16 @@ import (
 	"github.com/brent/echo/internal/model"
 	"github.com/brent/echo/internal/plugins"
 	"github.com/brent/echo/internal/store"
+	"github.com/brent/echo/internal/swarm"
 	"github.com/gorilla/websocket"
 )
 
 type Server struct {
+	Swarm             *swarm.Manager
+	closeOnce         sync.Once
+	swarmMu           sync.Mutex
+	swarmWG           sync.WaitGroup
+	swarmWorkers      map[string]*swarmWorker
 	EditorFS          *editorfs.Service
 	EditorWatch       *editorfs.WatchManager
 	editorMu          sync.Mutex
@@ -68,7 +74,9 @@ type Server struct {
 }
 type dispatch struct {
 	id, chatID string
-	group      *coordinator.Group
+	group      coordination
+	federation *swarmDispatch
+	worker     *swarmWorker
 	cancel     context.CancelFunc
 	done       chan struct{}
 	wake       map[string]chan struct{}
@@ -81,12 +89,26 @@ type dispatch struct {
 	timer      *time.Timer // Protected by Server.mu; starts at first admission.
 }
 type SendRequest struct {
-	Content      string            `json:"content"`
-	Segments     []domain.Segment  `json:"segments"`
-	Generation   domain.Generation `json:"generation"`
-	RequestID    string            `json:"requestId"`
-	Attachments  []string          `json:"attachments"`
-	scheduledBot string
+	GenerationByNode map[string]domain.Generation `json:"generationByNode,omitempty"`
+	OriginNodeID     string                       `json:"originNodeId,omitempty"`
+	Permits          map[string]string            `json:"permits,omitempty"`
+	Content          string                       `json:"content"`
+	Segments         []domain.Segment             `json:"segments"`
+	Generation       domain.Generation            `json:"generation"`
+	RequestID        string                       `json:"requestId"`
+	Attachments      []string                     `json:"attachments"`
+	scheduledBot     string
+}
+
+type coordination interface {
+	Send(string, string, string, string) (coordinator.Request, error)
+	Drain(string) []coordinator.Request
+	Pending(string) bool
+	Reply(string, string, string) error
+	Wait(context.Context, string, string) (coordinator.Request, error)
+	WaitTarget(string, string) (string, error)
+	Close()
+	Fail(string, error)
 }
 
 func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
@@ -99,7 +121,7 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 		return nil, e
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Server{Store: db, Dir: dir, Assets: assets, ctx: ctx, cancel: cancel, Files: &broker.Files{Private: dir}, Process: &broker.ProcessBroker{Dir: filepath.Join(dir, "runtime")}, Model: model.New(), Secrets: credentials.New(), dispatches: map[string]*dispatch{}, streams: map[string]domain.Message{}, subscribers: map[chan domain.Event]bool{}, loginAttempts: map[string][]time.Time{}}
+	s := &Server{Store: db, Dir: dir, Assets: assets, ctx: ctx, cancel: cancel, Files: &broker.Files{Private: dir}, Process: &broker.ProcessBroker{Dir: filepath.Join(dir, "runtime")}, Model: model.New(), Secrets: credentials.New(dir), dispatches: map[string]*dispatch{}, streams: map[string]domain.Message{}, subscribers: map[chan domain.Event]bool{}, loginAttempts: map[string][]time.Time{}}
 	s.revoking = map[string]int{}
 	s.closingChats = map[string]int{}
 	s.References = broker.NewReferenceIndex(ctx, s.Files)
@@ -122,6 +144,10 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 		cancel()
 		return nil, e
 	}
+	if e = s.initSwarm(); e != nil {
+		s.Close()
+		return nil, e
+	}
 	if shell, e := s.Plugins.Get("shell"); e == nil {
 		if _, configured := shell.Config["toolchains"]; !configured {
 			shell.Config["toolchains"] = broker.DefaultToolchains()
@@ -137,6 +163,10 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 		}
 	}
 	if e = db.Recover(); e != nil {
+		s.Close()
+		return nil, e
+	}
+	if e = s.recoverSwarm(); e != nil {
 		s.Close()
 		return nil, e
 	}
@@ -165,13 +195,34 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 	return s, nil
 }
 func (s *Server) Close() {
+	s.closeOnce.Do(s.close)
+}
+
+func (s *Server) close() {
+	s.cancel()
+	s.swarmMu.Lock()
+	prepared := []*swarmWorker{}
+	for _, worker := range s.swarmWorkers {
+		prepared = append(prepared, worker)
+	}
+	s.swarmMu.Unlock()
+	for _, worker := range prepared {
+		worker.mu.Lock()
+		if worker.lease != nil {
+			worker.lease.Stop()
+		}
+		worker.d.cancel()
+		worker.mu.Unlock()
+	}
+	if s.Swarm != nil {
+		s.Swarm.Close()
+	}
 	if s.EditorWatch != nil {
 		s.EditorWatch.Close()
 	}
 	if s.EditorFS != nil {
 		s.EditorFS.Close()
 	}
-	s.cancel()
 	s.References.Close()
 	if s.Development != nil {
 		s.Development.Close()
@@ -193,6 +244,7 @@ func (s *Server) Close() {
 	if s.Plugins != nil {
 		s.Plugins.Close(context.Background())
 	}
+	s.swarmWG.Wait()
 	s.Store.Close()
 }
 func (s *Server) Bot(id string) (domain.Bot, error) {
@@ -231,11 +283,16 @@ func (s *Server) stopChat(id string) func() {
 	for _, d := range s.dispatches {
 		if d.chatID == id {
 			ds = append(ds, d)
-			d.cancel()
-			d.group.Close()
 		}
 	}
 	s.mu.Unlock()
+	for _, d := range ds {
+		if d.federation != nil {
+			_ = s.persistSwarmStop(d.federation)
+		}
+		d.cancel()
+		d.group.Close()
+	}
 	for _, d := range ds {
 		<-d.done
 	}
@@ -337,7 +394,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Cache-Control", "no-store")
-			if r.URL.Path != "/api/v1/session" && !s.authenticated(r) {
+			if r.URL.Path != "/api/v1/session" && r.URL.Path != "/api/v1/swarm/pair" && r.URL.Path != "/api/v1/swarm/link" && !s.authenticated(r) {
 				http.Error(w, "Sign in required", 401)
 				return
 			}
@@ -347,6 +404,9 @@ func (s *Server) Handler() http.Handler {
 }
 func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	up := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool {
+		if swarm.Owner(r.Context()) {
+			return true
+		}
 		u, e := url.Parse(r.Header.Get("Origin"))
 		return e == nil && u.Host == r.Host
 	}}
@@ -356,11 +416,14 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	s.authMu.Lock()
-	if _, ok := s.savedSessionLocked(r); !ok {
+	if _, ok := s.savedSessionLocked(r); !ok && !swarm.Owner(r.Context()) {
 		s.authMu.Unlock()
 		return
 	}
 	id := sessionKey(r)
+	if caller, ok := swarm.Caller(r.Context()); ok {
+		id = "swarm:" + caller.NodeID
+	}
 	if s.sessionSockets == nil {
 		s.sessionSockets = map[string]map[*websocket.Conn]bool{}
 	}

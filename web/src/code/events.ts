@@ -1,3 +1,4 @@
+import { route, localID } from '../instances';
 import type { FileRef } from './types';
 const listeners = new Map<string, Set<(value: any) => void>>();
 export function on(type: string, listener: (value: any) => void): () => void {
@@ -11,11 +12,11 @@ export function watchFiles(botId: string, refresh: () => void, refs: () => FileR
   let socket: WebSocket | undefined, stopped = false, retry = 0, sequence = 0, previousRefs = '';
   const connect = () => {
     if (stopped) return;
-    socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/v1/plugins/monaco-editor/bots/${encodeURIComponent(botId)}/events`);
+    const target = route(`/plugins/monaco-editor/bots/${encodeURIComponent(botId)}/events`); socket = target.client.events(target.path);
     socket.onopen = () => { sequence = 0; previousRefs = ''; emit('connection', 'open'); refresh(); sendRefs(); };
     socket.onmessage = event => {
       const data = JSON.parse(event.data);
-      if (data.botId !== botId) return;
+      if (data.botId !== localID(botId)) return;
       emit(data.type, { ...data, workspaceId: botId });
       if (data.type === 'bookmarks_changed') return;
       if (data.sequence) { if (sequence && data.sequence !== sequence + 1) refresh(); sequence = data.sequence; }

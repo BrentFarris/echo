@@ -30,7 +30,7 @@ export function typedBotSegments(text: string, bots: Bot[], completedOnly = fals
   // Preserve UTF-16 positions while masking the same code forms as the server.
   const masked = text.replace(/```[\s\S]*?```|`[^`]*`/g, s => ' '.repeat(s.length));
   const refs: Segment[] = [];
-  for (const match of masked.matchAll(/(?:^|[^A-Za-z0-9_@])@([A-Za-z][A-Za-z0-9_-]*)/g)) {
+  for (const match of masked.matchAll(/(?:^|[^A-Za-z0-9_@])@([A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)*)/g)) {
     const end = match.index! + match[0].length, start = end - match[1].length - 1;
     if (completedOnly && end === text.length) continue;
     const bot = bots.find(b => b.handle.toLowerCase() === match[1].toLowerCase());

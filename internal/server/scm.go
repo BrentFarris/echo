@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -58,8 +59,8 @@ func (s *Server) sourceControlConfig(m domain.PluginManifest, updates map[string
 		return nil, e
 	}
 	if path := text(config, "executable"); path != "" {
-		if !filepath.IsAbs(path) || !strings.EqualFold(filepath.Ext(path), ".exe") {
-			return nil, errors.New("executable must be an absolute .exe path")
+		if !filepath.IsAbs(path) || runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(path), ".exe") {
+			return nil, errors.New("executable must be an absolute executable path")
 		}
 		if !s.Files.Allowed(domain.Bot{ID: "echo"}, path) {
 			return nil, errors.New("executable cannot be inside Echo private data")
@@ -179,7 +180,11 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 	}
 	binary := text(m.Config, "executable")
 	if binary == "" {
-		binary, e = exec.LookPath(id + ".exe")
+		name := id
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		binary, e = exec.LookPath(name)
 		if e != nil {
 			return nil, fmt.Errorf("%s CLI is not installed or on PATH; install it or set its executable in %s settings", id, m.Name)
 		}

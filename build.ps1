@@ -51,7 +51,11 @@ try {
     if ($Release) {
         & (Join-Path $PSScriptRoot 'scripts\notices.ps1')
         $architecture = go env GOARCH
-        Compress-Archive -Path echo.exe, README.md, ARCHITECTURE.md, ACCEPTANCE.md, LICENSE, THIRD-PARTY-NOTICES.txt -DestinationPath "echo-windows-$architecture.zip" -Force
+        $releaseStage = Join-Path $PSScriptRoot '.cache\release-windows'
+        $null = New-Item -ItemType Directory -Path (Join-Path $releaseStage 'scripts') -Force
+        Copy-Item -LiteralPath echo.exe, README.md, ARCHITECTURE.md, ACCEPTANCE.md, LICENSE, THIRD-PARTY-NOTICES.txt -Destination $releaseStage -Force
+        Copy-Item -LiteralPath scripts/startup.ps1 -Destination (Join-Path $releaseStage 'scripts') -Force
+        Compress-Archive -Path (Join-Path $releaseStage '*') -DestinationPath "echo-windows-$architecture.zip" -Force
         Get-FileHash -Algorithm SHA256 "echo-windows-$architecture.zip"
     }
 } finally {

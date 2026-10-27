@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -151,6 +149,13 @@ func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionSc
 		}
 		return out, nil
 	case "bot_send":
+		if d.worker != nil {
+			target, err := d.worker.recipient(text(a, "to"))
+			if err != nil {
+				return nil, err
+			}
+			return d.group.Send(scope.Bot.ID, target, text(a, "content"), text(a, "requestId"))
+		}
 		b, e := s.findBot(text(a, "to"))
 		if e != nil {
 			return nil, e
@@ -163,8 +168,10 @@ func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionSc
 		if err != nil {
 			return nil, err
 		}
-		if err = d.awaitAdmission(ctx, target); err != nil {
-			return nil, err
+		if d.worker == nil {
+			if err = d.awaitAdmission(ctx, target); err != nil {
+				return nil, err
+			}
 		}
 		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
@@ -443,6 +450,9 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 	case "plugin.list":
 		return s.Plugins.List()
 	case "plugin.configure":
+		if text(a, "id") == "swarm" {
+			return nil, errors.New("Swarm connections and permissions are configured by the owner in Settings")
+		}
 		m, e := s.Plugins.Get(text(a, "id"))
 		if e != nil {
 			return nil, e
@@ -533,10 +543,11 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 	return nil, fmt.Errorf("unsupported host capability: %s", method)
 }
 func (s *Server) compilePlugin(ctx context.Context, source string) ([]byte, error) {
-	if _, e := exec.LookPath("go"); e != nil {
+	compiler, e := broker.NativeExecutable("go")
+	if e != nil {
 		return nil, errors.New("install Go 1.26 or newer to compile backend plugins")
 	}
-	dir, e := os.MkdirTemp(filepath.Join(s.Dir), "plugin-build-")
+	dir, e := os.MkdirTemp("", "echo-plugin-build-")
 	if e != nil {
 		return nil, e
 	}
@@ -549,7 +560,7 @@ func (s *Server) compilePlugin(ctx context.Context, source string) ([]byte, erro
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	r, e := s.Process.Run(ctx, broker.ProcessRequest{BotID: "plugin-builder", Roots: []string{dir}, Directory: dir, Toolchains: []string{runtime.GOROOT()}, Command: "$env:GOOS='wasip1'; $env:GOARCH='wasm'; $env:CGO_ENABLED='0'; go build -trimpath -o backend.wasm ."}, nil)
+	r, e := s.Process.Run(ctx, broker.ProcessRequest{BotID: "plugin-builder", Roots: []string{dir}, Directory: dir, Toolchains: []string{filepath.Dir(filepath.Dir(compiler))}, Executable: compiler, Args: []string{"build", "-trimpath", "-o", "backend.wasm", "."}, Environment: map[string]string{"GOOS": "wasip1", "GOARCH": "wasm", "CGO_ENABLED": "0"}}, nil)
 	if e != nil {
 		return nil, e
 	}

@@ -1,9 +1,12 @@
+import { InstanceClient, resourceAPI, resourceURL, resourceID, localID, splitID, entryNode, instances, machineName, sameMachine, combineState, ownedEvent, ownedGeneration, instanceOnline, attachmentURL, type SwarmState } from './instances';
+import { mountSwarm } from './swarmSettings';
+import { InstanceEvents } from './instanceEvents';
 import { ReferenceInput, trimmedDraft } from './referenceEditor';
 import { referenceIcons, referenceFromElement, renderMessageReferences, showBotDetails } from './references';
 import { Renderers } from './renderers';
 import { conversationItems, conversationThreads, threadMessages, type ResponseGroup } from './conversation';
 import { fileChangesFooter } from './fileChanges';
-import { ReferenceSearch } from './referenceSearch';
+import { ReferenceSearch, validateInstanceReferences } from './referenceSearch';
 import { endpointForm, endpointValues } from './modelSettings';
 import { mountDevelopment } from './development';
 import { mountHosting } from './hosting';
@@ -26,6 +29,9 @@ let state: State = { bots: [], chats: [], endpoints: [], plugins: [], appDock: [
 let showingApps = location.hash === '#apps';
 let showingApp = !!parseAppRoute(location.hash);
 let chatId = (showingApps || showingApp) ? '' : location.hash.slice(1), messages: Message[] = [], references: Segment[] = [];
+let settingsNode = '', machineFilter = '', modelNode = '';
+let chatNavigation = 0;
+let generationByNode: Record<string, Generation> = {};
 let generation: Generation = { endpointId: '', model: '', thinking: '', temperature: .6 };
 let refreshing: Promise<void> | null = null, refreshTimer = 0, selectedSuggestion = 0;
 const referenceSearch = new ReferenceSearch();
@@ -34,7 +40,7 @@ let suggestions: { label: string; hint: string; insert: string; ref?: Segment }[
 let referenceTimer = 0, referenceVersion = 0;
 let sidebarMarkup = '';
 let attachments: DraftAttachment[] = [], submitting = false;
-const drafts = new Map<string, { text: string; references: Segment[]; generation: Generation; attachments: DraftAttachment[] }>();
+const drafts = new Map<string, { text: string; references: Segment[]; generation: Generation; generationByNode: Record<string, Generation>; modelNode: string; attachments: DraftAttachment[] }>();
 let pluginWindows: PluginWindows;
 let apps: Apps;
 const liveToolOutput = new Map<string, string>();
@@ -44,11 +50,7 @@ const q = <T extends HTMLElement = HTMLElement>(selector: string, root: ParentNo
 const thinking = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 async function api<T = any>(path: string, method = 'GET', body?: unknown): Promise<T> {
-  const response = await fetch('/api/v1' + path, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
-  const text = await response.text(); let data: any;
-  try { data = JSON.parse(text); } catch { throw new Error(text || `HTTP ${response.status}`); }
-  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-  return data as T;
+  return resourceAPI<T>(path, method, body);
 }
 function notice(value: unknown, error = false) {
   document.querySelector('.notice')?.remove(); const el = document.createElement('div'); el.className = 'notice' + (error ? ' error' : ''); el.setAttribute('role', error ? 'alert' : 'status'); el.textContent = value instanceof Error ? value.message : String(value); document.body.append(el); setTimeout(() => el.remove(), error ? 12000 : 5000);
@@ -59,14 +61,14 @@ function currentBot(id?: string) { return state.bots.find(b => b.id === id); }
 function pluginEnabled(id: string, botId?: string) { return pluginAvailable(state.plugins.find(p => p.id === id), currentBot(botId)); }
 
 function shell() {
-  app.innerHTML = `<aside id="sidebar" class="sidebar"><div class="brand"><span class="brand-mark" aria-hidden="true">E</span>Echo<button class="icon sidebar-close" aria-label="Close sidebar">×</button></div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button></div><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="install-echo" hidden>Install Echo</button><button id="missed-button" hidden>Missed jobs</button><nav class="app-dock" aria-label="Docked apps" hidden></nav><div class="sidebar-footer-actions"><button id="apps-button">▦ Apps</button><button id="settings-button">⚙ Settings</button></div></div></aside><div class="sidebar-backdrop" aria-hidden="true"></div>
+  app.innerHTML = `<aside id="sidebar" class="sidebar"><div class="brand"><span class="brand-mark" aria-hidden="true">E</span>Echo<button class="icon sidebar-close" aria-label="Close sidebar">×</button></div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button></div><label class="machine-filter" hidden>Machine<select aria-label="Filter machines"></select></label><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="install-echo" hidden>Install Echo</button><button id="missed-button" hidden>Missed jobs</button><nav class="app-dock" aria-label="Docked apps" hidden></nav><div class="sidebar-footer-actions"><button id="apps-button">▦ Apps</button><button id="settings-button">⚙ Settings</button></div></div></aside><div class="sidebar-backdrop" aria-hidden="true"></div>
   <main class="main"><header class="chat-header"><button class="icon mobile-menu" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">☰</button><strong id="chat-title">Echo</strong><span id="connection" class="subtle">Connecting…</span></header><div class="chat-view"><div class="bot-tabs-shell" hidden><button type="button" class="bot-tabs-scroll previous" aria-label="Scroll tabs left" title="Scroll tabs left">${icons.chevron}</button><div class="bot-tabs" role="tablist" aria-label="Bot threads"></div><button type="button" class="bot-tabs-scroll next" aria-label="Scroll tabs right" title="Scroll tabs right">${icons.chevron}</button></div><div id="bot-thread-panel" class="conversation-panel"><div class="chat-log" role="log" aria-label="Conversation"></div></div>
   ${composerMarkup}</div><section class="apps-view" aria-labelledby="apps-heading" hidden><h1 id="apps-heading" tabindex="-1">Apps</h1><p class="subtle">Open your plugin apps or dock them for quick access.</p><div id="apps-catalog"></div></section><section class="embedded-app-view" hidden aria-label="App"></section></main>`;
   pluginWindows = new PluginWindows(api, { embeddedHost: q('.embedded-app-view'), navigate: route => { if (route) { rememberDraft(); showingApp = true; showingApps = false; history.replaceState(null, '', route); renderMainView(); renderSidebar(); } else { void selectChat(chatId); } }, configureBot: id => editBot(currentBot(id)) });
   apps = new Apps(q('#apps-catalog'), q('.app-dock'), {
     open: async plugin => { setSidebarOpen(false, false); await openPlugin(plugin.id, plugin.app!.viewId); },
-    dock: async (id, docked) => { state.appDock = await api<string[]>(`/plugins/${encodeURIComponent(id)}/app/dock`, 'PUT', { docked }); renderApps(); },
-    settings: (plugin, botDisabled) => { if (botDisabled) editBot(currentBot('echo')); else settings(plugin.id); },
+    dock: async (id, docked) => { await api<string[]>(`/plugins/${encodeURIComponent(id)}/app/dock`, 'PUT', { docked }); await refresh(); },
+    settings: (plugin, botDisabled) => { if (botDisabled) editBot(currentBot(resourceID(plugin.nodeId || entryNode, 'echo'))); else settings(localID(plugin.id), plugin.nodeId); },
     error: error => notice(error, true),
   });
   q('#new-chat').onclick = action(newChat); q('#apps-button').onclick = showApps; q('#settings-button').onclick = () => settings(); q('#missed-button').onclick = showMissed;
@@ -133,8 +135,8 @@ function setSidebarOpen(open: boolean, restoreFocus = true) {
   if (open) q('.sidebar-close').focus();
   else if (wasOpen && restoreFocus) q('.mobile-menu').focus();
 }
-function rememberDraft() { const draft = q<ReferenceInput>('#composer').snapshot(); references = draft.references; drafts.set(chatId, { ...draft, generation: { ...generation }, attachments: [...attachments] }); }
-function renderApps() { apps.render(state.plugins, state.appDock || [], currentBot('echo')); }
+function rememberDraft() { if (modelNode) generationByNode[modelNode] = { ...generation }; const draft = q<ReferenceInput>('#composer').snapshot(); references = draft.references; drafts.set(chatId, { ...draft, generation: { ...generation }, generationByNode: { ...generationByNode }, modelNode, attachments: [...attachments] }); }
+function renderApps() { apps.render(state.plugins, state.appDock || [], currentBot('echo'), state.bots); }
 function renderMainView() {
   q('.chat-view').hidden = showingApps || showingApp; q('.embedded-app-view').hidden = !showingApp; if (!showingApp) pluginWindows.hideEmbedded(); q('.apps-view').hidden = !showingApps;
   if (showingApps) q('#apps-button').setAttribute('aria-current', 'page'); else q('#apps-button').removeAttribute('aria-current');
@@ -146,7 +148,8 @@ function showApps() {
   setSidebarOpen(false, false); q('#apps-heading').focus();
 }
 function saveGeneration() {
-  if (!chatId || !generation.endpointId) return;
+  generationByNode[modelNode || entryNode] = { ...generation };
+  if (!chatId || !generation.endpointId || (modelNode || entryNode) !== splitID(chatId)[0]) return;
   const id = chatId, value = { ...generation };
   const pending = (generationSaves.get(id) || Promise.resolve()).then(() => api(`/chats/${id}/generation`, 'PUT', value)).catch(e => notice(e, true));
   generationSaves.set(id, pending); void pending.finally(() => { if (generationSaves.get(id) === pending) generationSaves.delete(id); });
@@ -159,11 +162,18 @@ async function newChat() {
 }
 async function selectChat(id: string) {
   if (submitting) return;
+  const navigation = ++chatNavigation;
   showingApp = false; showingApps = false; renderMainView();
   closePicker(); ++referenceVersion; clearTimeout(referenceTimer); document.querySelector('.bot-details')?.dispatchEvent(new Event('dismiss'));
   if (id !== chatId) rememberDraft(); chatId = id; history.replaceState(null, '', '#' + id); const c = state.chats.find(c => c.id === id), draft = drafts.get(id);
+  generationByNode = { ...(c?.generationByNode || {}), ...(draft?.generationByNode || {}) }; modelNode = draft?.modelNode || c?.nodeId || entryNode;
   generation = { ...(draft?.generation || c?.generation || generation) }; references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references }); renderModels(); renderRefs(); renderAttachments(); renderSidebar(); updateSendButton(); autosizeComposer(); setSidebarOpen(false, false);
-  messages = id ? await api<Message[]>(`/chats/${id}/messages`) : []; renderMessages(true); q<ReferenceInput>('#composer').focus();
+  // Focus before the network request so a slow remote transcript cannot steal
+  // focus or replace the selection after the user has started editing.
+  q<ReferenceInput>('#composer').focus();
+  const loaded = id ? await api<Message[]>(`/chats/${id}/messages`) : [];
+  if (navigation !== chatNavigation || chatId !== id) return;
+  messages = loaded; renderMessages(true);
 }
 async function send() {
   if (busy() || submitting) return; const draft = trimmedDraft(q<ReferenceInput>('#composer').snapshot()), content = draft.text; if (!content && !attachments.length) return;
@@ -173,21 +183,27 @@ async function send() {
     for (const draft of attachments) {
       if (draft.uploaded?.chatId === chatId) continue;
       const data = new FormData(); data.append('file', draft.file);
-      const response = await fetch(`/api/v1/chats/${chatId}/attachments`, { method: 'POST', body: data });
+      const response = await fetch(resourceURL(`/chats/${chatId}/attachments`), { method: 'POST', body: data });
       const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Unable to upload attachment');
-      draft.uploaded = result as Attachment; rememberDraft();
+      draft.uploaded = { ...result, chatId } as Attachment; rememberDraft();
     }
     const segments = draft.references;
     await generationSaves.get(chatId);
-    await api(`/chats/${chatId}/messages`, 'POST', { content, segments, attachments: attachments.map(a => a.uploaded!.id), generation, requestId: crypto.randomUUID() });
-    q<ReferenceInput>('#composer').value = ''; references = []; releaseAttachments(attachments); attachments = []; drafts.delete(chatId); renderRefs(); renderAttachments(); autosizeComposer(); closePicker(); await refresh(); messages = await api(`/chats/${chatId}/messages`); renderMessages(true);
+    await api(`/chats/${chatId}/messages`, 'POST', { content, segments, attachments: attachments.map(a => a.uploaded!.id), generation: generationByNode[splitID(chatId)[0]] || state.chats.find(c => c.id === chatId)?.generation || generation, generationByNode: { ...generationByNode, [modelNode || entryNode]: generation }, requestId: crypto.randomUUID() });
+    q<ReferenceInput>('#composer').value = ''; references = []; releaseAttachments(attachments); attachments = []; drafts.delete(chatId); renderRefs(); renderAttachments(); autosizeComposer(); closePicker(); await refresh(); messages = await api(`/chats/${chatId}/messages`);
+    const recipients = [...messages].reverse().find(m => m.role === 'user' && !m.runId)?.recipients;
+    if (recipients?.length && !recipients.includes(selectedBotThreads.get(chatId) || '')) {
+      selectedBotThreads.set(chatId, recipients[0]);
+      try { sessionStorage.setItem('echo:bot-thread:' + chatId, recipients[0]); } catch { /* In-memory selection remains available. */ }
+    }
+    renderMessages(true);
   } finally { submitting = false; q<ReferenceInput>('#composer').disabled = false; updateSendButton(); q<ReferenceInput>('#composer').focus(); }
 }
 function updateSendButton() {
   const button = q<HTMLButtonElement>('#send'), active = busy();
   const label = active ? 'Stop response' : submitting ? 'Sending message' : 'Send message';
   button.innerHTML = active ? icons.stop : icons.send; button.setAttribute('aria-label', label); button.title = label;
-  button.disabled = submitting || (!active && !q<ReferenceInput>('#composer').value.trim() && !attachments.length);
+  button.disabled = !instanceOnline(splitID(chatId)[0]) || submitting || (!active && !q<ReferenceInput>('#composer').value.trim() && !attachments.length);
 }
 function addFiles(files: File[]) {
   if (submitting) return;
@@ -213,7 +229,7 @@ function renderAttachments() {
 async function refresh() {
   if (refreshing) return refreshing;
   const rendering = () => JSON.stringify([state.plugins.filter(p => p.renderers?.length).map(p => [p.id, p.enabled, p.pending, p.digest]), state.bots.map(b => b.plugins)]), beforeRendering = rendering();
-  refreshing = (async () => { state = await api<State>('/state'); if (!state.chats.some(c => c.id === chatId)) {
+  refreshing = (async () => { const [local, swarm] = await Promise.all([api<State>('/state'), api<SwarmState>('/swarm/state')]); state = combineState(local, swarm); settingsNode ||= entryNode; modelNode ||= entryNode; if (!state.chats.some(c => c.id === chatId)) {
       if (chatId) { releaseAttachments(drafts.get(chatId)?.attachments || attachments); drafts.delete(chatId); }
       chatId = state.chats[0]?.id || ''; if (!showingApps && !showingApp) history.replaceState(null, '', chatId ? '#' + chatId : location.pathname);
       const draft = drafts.get(chatId);
@@ -228,17 +244,27 @@ async function refresh() {
 function queueRefresh() { clearTimeout(refreshTimer); refreshTimer = window.setTimeout(() => action(refresh)(), 150); }
 function renderSidebar() {
   q('#chat-title').textContent = showingApp ? 'App' : showingApps ? 'Apps' : state.chats.find(c => c.id === chatId)?.title || 'Echo';
-  const markup = groupChats(state.chats).map(group => `<section><div class="group-label">${esc(group.label)}</div>${group.chats.map(c => `<div class="chat-row ${!showingApps && !showingApp && c.id === chatId ? 'active' : ''}"><button class="chat-link" data-chat="${esc(c.id)}" title="${esc(c.title)}">${esc(c.title)}</button><button class="icon chat-remove" data-delete="${esc(c.id)}" aria-label="Delete ${esc(c.title)}">×</button></div>`).join('')}</section>`).join('') || '<p class="empty-list">Your chats will appear here.</p>';
+  const filter = q<HTMLSelectElement>('.machine-filter select'); q('.machine-filter').hidden = instances.size < 2;
+  const options = '<option value="">All machines</option>' + [...instances.keys()].map(id => `<option value="${id}">${esc(machineName(id))}${instanceOnline(id) ? '' : ' · Offline'}</option>`).join('');
+  if (filter.innerHTML !== options) { filter.innerHTML = options; filter.value = machineFilter; } filter.onchange = () => { machineFilter = filter.value; renderSidebar(); };
+  const machines = (c: Chat) => [c.nodeId || entryNode, ...Object.keys(c.bots || {}).map(id => splitID(id)[0])];
+  const chips = (nodes: string[]) => [...new Set(nodes)].filter(n => n !== entryNode).map(n => `<small class="machine-chip" title="${esc(n)}">${esc(machineName(n))}${instanceOnline(n) ? '' : ' · Offline'}</small>`).join('');
+  const markup = groupChats(state.chats.filter(c => !machineFilter || machines(c).includes(machineFilter))).map(group => `<section><div class="group-label">${esc(group.label)}<span class="chat-machines">${chips(group.chats.flatMap(machines))}</span></div>${group.chats.map(c => `<div class="chat-row ${!showingApps && !showingApp && c.id === chatId ? 'active' : ''}"><button class="chat-link" data-chat="${esc(c.id)}" title="${esc(c.title)}"><span class="chat-link-title">${esc(c.title)}</span><span class="chat-machines">${chips(machines(c))}</span></button><button class="icon chat-remove" data-delete="${esc(c.id)}" aria-label="Delete ${esc(c.title)}">×</button></div>`).join('')}</section>`).join('') || '<p class="empty-list">Your chats will appear here.</p>';
   if (markup !== sidebarMarkup) { q('.chat-groups').innerHTML = markup; sidebarMarkup = markup; }
   for (const el of document.querySelectorAll<HTMLButtonElement>('[data-chat]')) el.onclick = action(() => selectChat(el.dataset.chat!));
   for (const el of document.querySelectorAll<HTMLButtonElement>('[data-delete]')) el.onclick = action(async () => { if (submitting) return; await api(`/chats/${el.dataset.delete}`, 'DELETE'); releaseAttachments(drafts.get(el.dataset.delete!)?.attachments || []); drafts.delete(el.dataset.delete!); if (chatId === el.dataset.delete) { attachments = []; references = []; q<ReferenceInput>('#composer').value = ''; renderAttachments(); renderRefs(); autosizeComposer(); } await refresh(); });
   const count = state.occurrences.filter(j => j.status === 'missed').length; q('#missed-button').hidden = !count; q('#missed-button').textContent = `Missed jobs (${count})`;
 }
-function chooseEndpoint(endpoint: Endpoint) { generation = { endpointId: endpoint.id, model: endpoint.model, temperature: endpoint.temperature ?? .6, thinking: '' }; renderModels(); rememberDraft(); saveGeneration(); }
+function chooseEndpoint(endpoint: Endpoint) { if (modelNode) generationByNode[modelNode] = { ...generation }; modelNode = endpoint.nodeId || splitID(endpoint.id)[0]; generation = { endpointId: endpoint.id, model: endpoint.model, temperature: endpoint.temperature ?? .6, thinking: '' }; renderModels(); rememberDraft(); saveGeneration(); }
 function thinkingLabel() { const value = generation.thinking || state.endpoints.find(e => e.id === generation.endpointId)?.reasoningEffort; return value ? (generation.thinking ? '' : 'Default · ') + value[0].toUpperCase() + value.slice(1) : 'Default'; }
 function renderModels() {
-  if (!generation.endpointId && state.endpoints[0]) { generation.endpointId = state.endpoints[0].id; generation.model = state.endpoints[0].model; generation.temperature = state.endpoints[0].temperature ?? .6; }
-  const list = q('#endpoint-options'), markup = state.endpoints.map(e => `<button type="button" role="option" aria-selected="${e.id === generation.endpointId}" data-endpoint="${esc(e.id)}" title="${esc(e.name)} — ${esc(e.model)}">${esc(e.name)} <span>— ${esc(e.model)}</span></button>`).join('') || '<p class="subtle">Add a model connection in Settings.</p>';
+  const endpoints = state.endpoints.filter(e => sameMachine(e, modelNode || entryNode));
+  let selector = document.querySelector<HTMLSelectElement>('#model-machine');
+  if (!selector) { const label = document.createElement('label'); label.textContent = 'Machine '; selector = document.createElement('select'); selector.id = 'model-machine'; selector.setAttribute('aria-label', 'Model machine'); label.append(selector); q('#endpoint-options').before(label); }
+  const nodeOptions = [...instances.keys()].map(id => `<option value="${id}">${esc(machineName(id))}</option>`).join(''); if (selector.innerHTML !== nodeOptions) selector.innerHTML = nodeOptions; selector.value = modelNode;
+  selector.onchange = () => { generationByNode[modelNode] = { ...generation }; modelNode = selector!.value; const endpoint = state.endpoints.find(e => sameMachine(e, modelNode)); generation = ownedGeneration(modelNode, generationByNode[modelNode] || { endpointId: endpoint?.id || '', model: endpoint?.model || '', thinking: '', temperature: endpoint?.temperature ?? .6 }); renderModels(); rememberDraft(); };
+  if (!generation.endpointId && endpoints[0]) { generation.endpointId = endpoints[0].id; generation.model = endpoints[0].model; generation.temperature = endpoints[0].temperature ?? .6; }
+  const list = q('#endpoint-options'), markup = endpoints.map(e => `<button type="button" role="option" aria-selected="${e.id === generation.endpointId}" data-endpoint="${esc(e.id)}" title="${esc(e.name)} — ${esc(e.model)}">${esc(e.name)} <span>— ${esc(e.model)}</span></button>`).join('') || '<p class="subtle">Add a model connection in Settings.</p>';
   if (list.innerHTML !== markup) { list.innerHTML = markup; for (const button of list.querySelectorAll<HTMLButtonElement>('[data-endpoint]')) button.onclick = () => { chooseEndpoint(state.endpoints.find(e => e.id === button.dataset.endpoint)!); q<HTMLButtonElement>(`[data-endpoint="${CSS.escape(button.dataset.endpoint!)}"]`).focus(); }; }
   if (document.activeElement !== q('#model')) q<HTMLInputElement>('#model').value = generation.model;
   q<HTMLInputElement>('#thinking').value = String(Math.max(0, thinking.indexOf(generation.thinking))); q('#thinking-label').textContent = thinkingLabel(); q<HTMLInputElement>('#temperature').value = String(generation.temperature); q('#temperature-label').textContent = generation.temperature.toFixed(2); q('#model-name').textContent = state.endpoints.find(e => e.id === generation.endpointId)?.name || generation.model || 'Choose a model';
@@ -273,7 +299,7 @@ function renderBotTabs() {
   const markup = visibleBotId ? threads.map(thread => {
     const status = statusLabel(thread.status), label = thread.name + (status ? ' ' + status : '');
     const working = ['running', 'waiting', 'queued'].includes(thread.status || '');
-    return `<button type="button" role="tab" id="bot-tab-${esc(thread.id)}" data-bot-thread="${esc(thread.id)}" aria-controls="bot-thread-panel" aria-label="${esc(label)}" title="${esc(label)}" aria-selected="${thread.id === visibleBotId}" tabindex="${thread.id === visibleBotId ? 0 : -1}">${working ? '<span class="bot-tab-busy-dot" aria-hidden="true"></span>' : ''}<span class="bot-tab-label">${esc(thread.name)}</span></button>`;
+    return `<button type="button" role="tab" id="bot-tab-${esc(thread.id)}" data-bot-thread="${esc(thread.id)}" aria-controls="bot-thread-panel" aria-label="${esc(label)}" title="${esc(label)}" aria-selected="${thread.id === visibleBotId}" tabindex="${thread.id === visibleBotId ? 0 : -1}">${working ? '<span class="bot-tab-busy-dot" aria-hidden="true"></span>' : ''}<span class="bot-tab-label">${esc(thread.name)}</span>${splitID(thread.id)[0] !== entryNode ? `<small class="machine-chip">${esc(machineName(splitID(thread.id)[0]))}</small>` : ''}</button>`;
   }).join('') : '';
   if (tabs.innerHTML !== markup) {
     const focused = tabs.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.botThread : undefined;
@@ -319,7 +345,7 @@ function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.da
   if (m.attachments?.length) {
     const root = document.createElement('div'); root.className = 'message-attachments';
     for (const attachment of m.attachments) {
-      const url = `/api/v1/chats/${encodeURIComponent(m.chatId)}/attachments/${encodeURIComponent(attachment.id)}`;
+      const url = attachmentURL(m, attachment);
       const card = document.createElement('div'); card.className = 'attachment-card'; card.innerHTML = attachmentCard(attachment.name, attachment.size, attachment.mediaType, url);
       q('.attachment-preview', card).onclick = () => previewAttachment(attachment.name, attachment.mediaType, url); root.append(card);
     }
@@ -390,11 +416,23 @@ function renderRunErrors() {
   for (const run of runs.filter(r => r.status === 'queued')) { const div = document.createElement('div'); div.className = 'run-queued subtle'; div.setAttribute('role', 'status'); div.innerHTML = `${esc(currentBot(run.botId)?.name || 'Bot')} ${statusBadge('queued')}`; log.append(div); }
   for (const run of runs.filter(r => r.error)) { const div = document.createElement('div'); div.className = 'run-error'; div.textContent = `${currentBot(run.botId)?.name || 'Bot'}: ${run.error}`; log.append(div); }
 }
+async function recoverInstance(node: string, current: () => boolean) {
+  await refresh();
+  const selected = chatId;
+  let sequence = 0;
+  if (selected && splitID(selected)[0] === node) {
+    const snapshot = await api<{ messages: Message[]; sequence: number }>(`/chats/${selected}/snapshot`);
+    sequence = snapshot.sequence;
+    if (current() && chatId === selected) { messages = snapshot.messages; renderMessages(); }
+  }
+  queueRefresh(); return sequence;
+}
 function connect() {
   const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/v1/events`);
-  let recovering = false, backlog: any[] = [];
+  const events = new InstanceEvents(recoverInstance, (_, event) => receive(event), () => ws.close());
   ws.onopen = () => { q('#connection').textContent = ''; };
   ws.onclose = async () => {
+    events.close();
     q('#connection').textContent = 'Reconnecting…';
     try {
       const response = await fetch('/api/v1/session');
@@ -402,18 +440,9 @@ function connect() {
     } catch { /* Retry when the server or network returns. */ }
     setTimeout(connect, 1500);
   };
-  ws.onmessage = event => {
-    const e = JSON.parse(event.data);
-    if (e.type === 'reset') {
-      recovering = true; backlog = [];
-      action(async () => { try { await refresh(); let sequence = 0; const selected = chatId;
-        if (selected) { const snapshot = await api<{ messages: Message[]; sequence: number }>(`/chats/${selected}/snapshot`); if (chatId === selected) { messages = snapshot.messages; sequence = snapshot.sequence; renderMessages(); } }
-        recovering = false; for (const event of backlog) if (event.sequence > sequence) receive(event); backlog = []; queueRefresh();
-      } finally { recovering = false; } })(); return;
-    }
-    if (recovering) { backlog.push(e); return; } receive(e);
-  };
-  function receive(e: any) {
+  ws.onmessage = event => events.push(entryNode, ownedEvent(entryNode, JSON.parse(event.data)));
+}
+function receive(e: any) {
     if (e.type === 'plugin-open') { action(() => openPlugin(e.payload.id, e.payload.viewId, e.botId))(); return; }
     if (e.type === 'run') { state.runs = [...state.runs.filter(r => r.id !== e.payload.id), e.payload]; updateSendButton(); if (e.chatId === chatId) renderMessages(); queueRefresh(); }
     if (e.chatId === chatId && e.type === 'tool-output') {
@@ -426,7 +455,16 @@ function connect() {
       if (m) { const log = q('.chat-log'); const tail = log.scrollHeight - log.scrollTop - log.clientHeight < 120; const old = document.getElementById('message-' + m.id); if (old && e.type === 'delta') paintMessage(m, old); else if (e.type !== 'delta') renderMessages(); if (tail) log.scrollTop = log.scrollHeight; }
     }
     if (e.type === 'changed') queueRefresh();
-  }
+}
+function connectSwarm() {
+  const ws = new InstanceClient().events('/swarm/events');
+  let directory = '';
+  const events = new InstanceEvents(recoverInstance, (_, event) => receive(event), () => ws.close());
+  ws.onmessage = event => { const envelope = JSON.parse(event.data);
+    if (envelope.type === 'directory') { const next = JSON.stringify([envelope.node, envelope.peers?.map((p: any) => [p.node, p.authorized, p.blocked, p.connected, p.error])]); if (directory !== next) { directory = next; queueRefresh(); } return; }
+    if (envelope.event) events.push(envelope.nodeId, ownedEvent(envelope.nodeId, envelope.event));
+  };
+  ws.onclose = () => { events.close(); setTimeout(connectSwarm, 2000); };
 }
 
 async function validateReferences() {
@@ -434,7 +472,7 @@ async function validateReferences() {
   if (!draft.references.some(ref => ref.type === 'file')) return;
   const version = ++referenceVersion, selectedChat = chatId;
   try {
-    const updated = await api<Segment[]>('/references/validate', 'POST', { content: draft.text, segments: draft.references });
+    const updated = await validateInstanceReferences(draft.text, draft.references);
     if (version !== referenceVersion || selectedChat !== chatId || composer.value !== draft.text) return;
     composer.updateReferences(updated.map(ref => ({ ...ref, allowedBots: ref.allowedBots || [] }))); rememberDraft();
   } catch (error) { if (version === referenceVersion && selectedChat === chatId) notice(error, true); }
@@ -468,7 +506,7 @@ function showPicker() {
     pickerStatus = suggestions.length ? '' : 'No matching bots.'; renderPicker();
   } else referenceSearch.search(composer.value, match.query, result => {
     const selected = suggestions[selectedSuggestion]?.ref?.path;
-    suggestions = result.entries.map(e => ({ label: e.name, hint: e.allowedBots.map(id => currentBot(id)?.handle || id).join(', ') + ' · ' + e.path, insert: '#' + e.name, ref: { type: 'file', kind: e.directory ? 'directory' : 'file', path: e.path, text: e.name, allowedBots: e.allowedBots } }));
+    suggestions = result.entries.map(e => ({ label: e.name, hint: machineName(e.nodeId) + ' · ' + e.allowedBots.map(id => currentBot(id)?.handle || id).join(', ') + ' · ' + e.path, insert: '#' + e.name, ref: { nodeId: e.nodeId, type: 'file', kind: e.directory ? 'directory' : 'file', path: e.path, text: e.name, allowedBots: e.allowedBots } }));
     selectedSuggestion = Math.max(0, suggestions.findIndex(s => s.ref?.path === selected));
     pickerLoading = !!result.loading || result.indexing;
     pickerStatus = result.error || (result.loading ? 'Searching files and folders…' : result.indexing ? 'Searching workspace… more matches may appear.' : result.incomplete ? 'Some folders could not be searched. Try a full path.' : suggestions.length ? '' : 'No matching files or folders. Try a name or full path.');
@@ -490,79 +528,85 @@ function chooseSuggestion(index: number) {
 function renderRefs() { q<ReferenceInput>('#composer').updateReferences(references); }
 
 function dialog(title: string, body: string) { const el = document.createElement('dialog'); el.innerHTML = `<div class="dialog-heading"><h2>${esc(title)}</h2><button class="icon" aria-label="Close">×</button></div>${body}`; document.body.append(el); q('.dialog-heading button', el).onclick = () => el.close(); el.addEventListener('close', () => el.remove()); el.showModal(); return el; }
-function settings(section = 'bots') {
+function settings(section = 'bots', node = settingsNode || entryNode) {
+  settingsNode = node; section = localID(section); const ownerPlugins = state.plugins.filter(p => sameMachine(p, node)); const boundAPI = <T = any>(path: string, method = 'GET', body?: unknown) => resourceAPI<T>(path, method, body, node);
   const previous = document.querySelector<HTMLDialogElement>('#settings'); if (previous) { previous.close(); previous.remove(); }
-  const el = dialog('Settings', '<div class="settings-layout"><nav class="settings-nav" aria-label="Settings sections"></nav><div class="settings-content"></div></div>'); el.id = 'settings';
+  const el = dialog(`Settings · ${machineName(node)}`, '<div class="settings-layout"><nav class="settings-nav" aria-label="Settings sections"></nav><div class="settings-content"></div></div>'); el.id = 'settings';
   const nav = q('.settings-nav', el), content = q('.settings-content', el);
-  const entries = [{ id: 'bots', name: 'Bots' }, { id: 'models', name: 'Local Models' }, { id: 'cloud-models', name: 'Cloud Models' }, ...state.plugins.map(p => ({ id: p.id, name: p.name }))];
+  const entries = [{ id: 'bots', name: 'Bots' }, { id: 'models', name: 'Local Models' }, { id: 'cloud-models', name: 'Cloud Models' }, ...ownerPlugins.map(p => ({ id: localID(p.id), name: p.name }))];
+  const picker = document.createElement('select'); picker.setAttribute('aria-label', 'Settings machine'); picker.innerHTML = [...instances.keys()].map(id => `<option value="${id}">${esc(machineName(id))}</option>`).join(''); picker.value = node; picker.onchange = () => settings(section, picker.value); q('.dialog-heading', el).append(picker);
   nav.innerHTML = `<div class="settings-nav-main">${entries.map(e => `<button data-section="${esc(e.id)}" class="${section === e.id ? 'active' : ''}">${esc(e.name)}</button>`).join('')}</div><hr><button data-section="development" class="${section === 'development' ? 'active' : ''}">Development</button>`;
   for (const button of nav.querySelectorAll<HTMLButtonElement>('button')) button.onclick = () => settings(button.dataset.section);
   if (section === 'bots') botSettings(content);
   else if (section === 'models' || section === 'cloud-models') modelSettings(content, section === 'cloud-models');
-  else if (section === 'development') void mountDevelopment(content, api);
-  else pluginSettings(content, state.plugins.find(p => p.id === section)!);
+  else if (section === 'development') void mountDevelopment(content, boundAPI, new InstanceClient(node), refresh);
+  else pluginSettings(content, ownerPlugins.find(p => localID(p.id) === section)!);
 }
-function botSettings(root: HTMLElement) {
-  root.innerHTML = `<button class="primary" id="add-bot">＋ Add bot</button>${state.bots.map(b => `<div class="list-card"><div class="grow"><strong>${esc(b.name)}</strong><p class="subtle">@${esc(b.handle)} · ${esc(b.roots?.length ? b.roots.join(', ') : 'Unbound')}</p></div><button data-edit="${esc(b.id)}">Edit</button>${b.id !== 'echo' ? `<button class="danger" data-remove="${esc(b.id)}">Delete</button>` : ''}</div>`).join('')}`;
+function botSettings(root: HTMLElement) { const bots = state.bots.filter(b => sameMachine(b, settingsNode));
+  root.innerHTML = `<button class="primary" id="add-bot">＋ Add bot</button>${bots.map(b => `<div class="list-card"><div class="grow"><strong>${esc(b.name)}</strong><p class="subtle">@${esc(b.handle)} · ${esc(b.roots?.length ? b.roots.join(', ') : 'Unbound')}</p></div><button data-edit="${esc(b.id)}">Edit</button>${localID(b.id) !== 'echo' ? `<button class="danger" data-remove="${esc(b.id)}">Delete</button>` : ''}</div>`).join('')}`;
   q('#add-bot', root).onclick = () => editBot();
   for (const button of root.querySelectorAll<HTMLButtonElement>('[data-edit]')) button.onclick = () => editBot(currentBot(button.dataset.edit));
   for (const button of root.querySelectorAll<HTMLButtonElement>('[data-remove]')) button.onclick = action(async () => { await api(`/bots/${button.dataset.remove}`, 'DELETE'); await refresh(); botSettings(root); });
 }
 function editBot(bot?: Bot) {
-  const el = dialog(bot ? 'Edit bot' : 'Create a bot', `<form class="form"><label>Handle<input name="handle" required pattern="[A-Za-z][A-Za-z0-9_-]*" value="${esc(bot?.handle)}" ${bot?.id === 'echo' ? 'readonly' : ''}></label><label>Name<input name="name" value="${esc(bot?.name)}"></label><label>System prompt<textarea name="prompt">${esc(bot?.prompt)}</textarea></label><label>Folders, one absolute path per line<textarea name="roots" placeholder="C:\\Users\\you\\project">${esc(bot?.roots?.join('\n'))}</textarea><small>Leave empty for unrestricted host access. Assigned folders apply to file tools and shell commands.</small></label><label class="check"><input name="enableMultitasking" type="checkbox" ${bot?.enableMultitasking ? 'checked' : ''}>Enable Multitasking</label><small>Allow this bot to work in multiple chats simultaneously. When disabled, requests wait their turn.</small><h3>Plugins</h3>${state.plugins.filter(p => p.scope === 'bot' || p.id === 'workspaces' || bot?.id === 'echo' && p.scope === 'echo').map(p => `<label class="check"><input name="plugin:${esc(p.id)}" type="checkbox" ${bot?.plugins[p.id] !== false ? 'checked' : ''}>${esc(p.name)}${!p.enabled ? ' (disabled globally)' : ''}</label>`).join('')}<button class="primary">Save bot</button></form>`);
-  q<HTMLFormElement>('form', el).onsubmit = e => { e.preventDefault(); action(async () => { const f = new FormData(q('form', el) as HTMLFormElement), overrides: Record<string, boolean> = {}; for (const input of el.querySelectorAll<HTMLInputElement>('[name^="plugin:"]')) overrides[input.name.slice(7)] = input.checked; await api('/bots', 'POST', { id: bot?.id || '', handle: f.get('handle'), name: f.get('name'), prompt: f.get('prompt'), roots: String(f.get('roots')).split('\n').map(v => v.trim()).filter(Boolean), plugins: overrides, enableMultitasking: f.has('enableMultitasking'), revision: bot?.revision || 0 }); el.close(); await refresh(); settings('bots'); })(); };
+  const node = bot?.nodeId || settingsNode || entryNode; const api = <T = any>(path: string, method = 'GET', body?: unknown) => resourceAPI<T>(path, method, body, node); const plugins = state.plugins.filter(p => sameMachine(p, node));
+  const el = dialog(bot ? 'Edit bot' : 'Create a bot', `<form class="form"><label>Handle<input name="handle" required pattern="[A-Za-z][A-Za-z0-9_-]*" value="${esc(bot?.handle.split('.').pop())}" ${localID(bot?.id) === 'echo' ? 'readonly' : ''}></label><label>Name<input name="name" value="${esc(bot?.name)}"></label><label>System prompt<textarea name="prompt">${esc(bot?.prompt)}</textarea></label><label>Folders, one absolute path per line<textarea name="roots" placeholder="C:\\Users\\you\\project">${esc(bot?.roots?.join('\n'))}</textarea><small>Leave empty for unrestricted host access. Assigned folders apply to file tools and shell commands.</small></label><label class="check"><input name="enableMultitasking" type="checkbox" ${bot?.enableMultitasking ? 'checked' : ''}>Enable Multitasking</label><small>Allow this bot to work in multiple chats simultaneously. When disabled, requests wait their turn.</small><h3>Plugins</h3>${plugins.filter(p => p.scope === 'bot' || localID(p.id) === 'workspaces' || localID(bot?.id) === 'echo' && p.scope === 'echo').map(p => `<label class="check"><input name="plugin:${esc(p.id)}" type="checkbox" ${bot?.plugins[p.id] !== false ? 'checked' : ''}>${esc(p.name)}${!p.enabled ? ' (disabled globally)' : ''}</label>`).join('')}<button class="primary">Save bot</button></form>`);
+  q<HTMLFormElement>('form', el).onsubmit = e => { e.preventDefault(); action(async () => { const f = new FormData(q('form', el) as HTMLFormElement), overrides: Record<string, boolean> = {}; for (const input of el.querySelectorAll<HTMLInputElement>('[name^="plugin:"]')) overrides[input.name.slice(7)] = input.checked; await api('/bots', 'POST', { id: bot?.id || '', handle: f.get('handle'), name: f.get('name'), prompt: f.get('prompt'), roots: String(f.get('roots')).split('\n').map(v => v.trim()).filter(Boolean), plugins: overrides, enableMultitasking: f.has('enableMultitasking'), revision: bot?.revision || 0 }); el.close(); await refresh(); settings('bots', node); })(); };
 }
 function modelSettings(root: HTMLElement, cloud: boolean) {
-  root.innerHTML = `${cloud ? `<p class="subtle">Connect a compatible cloud model service, then select it for the chat.</p>` : '<p class="subtle">Connect an existing Ollama, LM Studio, llama.cpp, or compatible server.</p>'}<button class="primary" id="add-model">＋ Add connection</button>${state.endpoints.filter(e => e.cloud === cloud).map(e => `<div class="list-card"><div class="grow"><strong>${esc(e.name)}</strong><p class="subtle">${esc(e.model)}<br>${esc(e.url)}</p></div><button data-model="${esc(e.id)}">Edit</button><button data-discover="${esc(e.id)}">Models</button><button class="danger" data-remove="${esc(e.id)}">×</button></div>`).join('')}`;
+  root.innerHTML = `${cloud ? `<p class="subtle">Connect a compatible cloud model service, then select it for the chat.</p>` : '<p class="subtle">Connect an existing Ollama, LM Studio, llama.cpp, or compatible server.</p>'}<button class="primary" id="add-model">＋ Add connection</button>${state.endpoints.filter(e => sameMachine(e, settingsNode) && e.cloud === cloud).map(e => `<div class="list-card"><div class="grow"><strong>${esc(e.name)}</strong><p class="subtle">${esc(e.model)}<br>${esc(e.url)}</p></div><button data-model="${esc(e.id)}">Edit</button><button data-discover="${esc(e.id)}">Models</button><button class="danger" data-remove="${esc(e.id)}">×</button></div>`).join('')}`;
   q('#add-model', root).onclick = () => editModel(undefined, cloud);
   for (const button of root.querySelectorAll<HTMLButtonElement>('[data-model]')) button.onclick = () => editModel(state.endpoints.find(e => e.id === button.dataset.model), cloud);
   for (const button of root.querySelectorAll<HTMLButtonElement>('[data-discover]')) button.onclick = action(async () => { const models = await api(`/endpoints/${button.dataset.discover}/models`); dialog('Available models', `<pre>${esc(JSON.stringify(models, null, 2))}</pre>`); });
   for (const button of root.querySelectorAll<HTMLButtonElement>('[data-remove]')) button.onclick = action(async () => { await api(`/endpoints/${button.dataset.remove}`, 'DELETE'); await refresh(); modelSettings(root, cloud); });
 }
 function editModel(endpoint?: Endpoint, cloud = false) {
+  const node = endpoint?.nodeId || settingsNode; const api = <T = any>(path: string, method = 'GET', body?: unknown) => resourceAPI<T>(path, method, body, node);
   const el = dialog(endpoint ? 'Edit Endpoint' : 'Add Endpoint', endpointForm(endpoint, cloud)); el.classList.add('endpoint-editor');
   const effort = q<HTMLSelectElement>('[name=reasoningEffort]', el), budget = q<HTMLInputElement>('[name=thinkingTokenBudget]', el);
   effort.onchange = () => { budget.disabled = !!effort.value; }; effort.onchange(new Event('change'));
   q<HTMLInputElement>('[name=compressionThreshold]', el).oninput = event => { q('.compression-setting output', el).textContent = (event.target as HTMLInputElement).value + '%'; };
-  const provider = document.createElement('label'); provider.innerHTML = `Provider<select name="provider"><option value="">Compatible HTTP</option>${state.plugins.filter(p => !p.builtin && p.enabled && !p.pending).flatMap(p => (p.providers || []).map(name => `<option value="${esc(name)}">${esc(p.name)} · ${esc(name)}</option>`)).join('')}</select>`;
+  const provider = document.createElement('label'); provider.innerHTML = `Provider<select name="provider"><option value="">Compatible HTTP</option>${state.plugins.filter(p => sameMachine(p, node) && !p.builtin && p.enabled && !p.pending).flatMap(p => (p.providers || []).map(name => `<option value="${esc(name)}">${esc(p.name)} · ${esc(name)}</option>`)).join('')}</select>`;
   q('form', el).prepend(provider); q<HTMLSelectElement>('select', provider).value = endpoint?.provider || '';
-  q<HTMLFormElement>('form', el).onsubmit = e => { e.preventDefault(); action(async () => { const form = q<HTMLFormElement>('form', el), key = q<HTMLInputElement>('[name=key]', el).value; const value = await api<Endpoint>('/endpoints', 'POST', { endpoint: { id: endpoint?.id || '', cloud, ...endpointValues(form) }, ...(key ? { apiKey: key } : {}) }); el.close(); await refresh(); chooseEndpoint(value); settings(cloud ? 'cloud-models' : 'models'); })(); };
+  q<HTMLFormElement>('form', el).onsubmit = e => { e.preventDefault(); action(async () => { const form = q<HTMLFormElement>('form', el), key = q<HTMLInputElement>('[name=key]', el).value; const value = await api<Endpoint>('/endpoints', 'POST', { endpoint: { id: endpoint?.id || '', cloud, ...endpointValues(form) }, ...(key ? { apiKey: key } : {}) }); el.close(); await refresh(); chooseEndpoint({ ...value, id: resourceID(node, value.id), nodeId: node }); settings(cloud ? 'cloud-models' : 'models'); })(); };
 }
 function pluginSettings(root: HTMLElement, plugin: Plugin) {
   if (!plugin) return;
+  const node = plugin.nodeId || entryNode; const api = <T = any>(path: string, method = 'GET', body?: unknown) => resourceAPI<T>(path, method, body, node); const id = localID(plugin.id);
   root.innerHTML = `<form class="form"><label class="check"><input name="enabled" type="checkbox" ${plugin.enabled ? 'checked' : ''}> Enable ${esc(plugin.name)}</label>${plugin.pending ? `<p>Additional permissions requested: ${esc(plugin.capabilities.join(', '))}</p><button type="button" id="approve-plugin">Approve permissions</button>` : ''}${Object.entries(plugin.settings?.properties || {}).map(([key, schema]) => { const value = plugin.config[key]; if (schema.type === 'boolean') return `<label class="check"><input name="${esc(key)}" type="checkbox" ${value ? 'checked' : ''}>${esc(schema.description || key)}</label>`; if (schema.type === 'array') return `<label>${esc(schema.description || key)}<textarea name="${esc(key)}">${esc(Array.isArray(value) ? value.join('\n') : '')}</textarea></label>`; return `<label>${esc(schema.description || key)}<input name="${esc(key)}" type="${schema.type === 'integer' ? 'number' : 'text'}" value="${esc(value)}"></label>`; }).join('')}<button class="primary">Save settings</button></form>${!plugin.builtin ? '<div class="button-row"><button id="rollback-plugin">Restore previous version</button></div>' : ''}${(plugin.views || []).filter(v => v.kind !== 'renderer').map(v => `<button class="open-view" data-view="${esc(v.id)}">Open ${esc(v.title)}</button>`).join('')}<div id="plugin-extra"></div>`;
-  q<HTMLFormElement>('form', root).onsubmit = e => { e.preventDefault(); action(async () => { const f = new FormData(q('form', root) as HTMLFormElement), config: Record<string, unknown> = {}; for (const [key, schema] of Object.entries(plugin.settings?.properties || {})) { if (schema.type === 'boolean') config[key] = f.has(key); else if (schema.type === 'integer' || schema.type === 'number') config[key] = Number(f.get(key)); else if (schema.type === 'array') config[key] = String(f.get(key)).split('\n').map(v => v.trim()).filter(Boolean); else config[key] = String(f.get(key)); } await api(`/plugins/${plugin.id}`, 'PATCH', { enabled: f.has('enabled'), config }); await refresh(); notice(plugin.id === 'hosted-server' ? 'Saved. Restart Echo to change its listening address.' : 'Settings saved'); })(); };
+  q<HTMLFormElement>('form', root).onsubmit = e => { e.preventDefault(); action(async () => { const f = new FormData(q('form', root) as HTMLFormElement), config: Record<string, unknown> = {}; for (const [key, schema] of Object.entries(plugin.settings?.properties || {})) { if (schema.type === 'boolean') config[key] = f.has(key); else if (schema.type === 'integer' || schema.type === 'number') config[key] = Number(f.get(key)); else if (schema.type === 'array') config[key] = String(f.get(key)).split('\n').map(v => v.trim()).filter(Boolean); else config[key] = String(f.get(key)); } await api(`/plugins/${plugin.id}`, 'PATCH', { enabled: f.has('enabled'), config }); await refresh(); notice(id === 'hosted-server' ? 'Saved. Restart Echo to change its listening address.' : 'Settings saved'); })(); };
   root.querySelector<HTMLButtonElement>('#approve-plugin')?.addEventListener('click', action(async () => { await api(`/plugins/${plugin.id}/approve`, 'POST', { digest: plugin.digest }); await refresh(); settings(plugin.id); }));
   root.querySelector<HTMLButtonElement>('#rollback-plugin')?.addEventListener('click', action(async () => { await api(`/plugins/${plugin.id}/rollback`, 'POST', {}); await refresh(); settings(plugin.id); }));
   for (const button of root.querySelectorAll<HTMLButtonElement>('.open-view')) button.onclick = action(() => openPlugin(plugin.id, button.dataset.view!, 'echo'));
-  if (plugin.id === 'hosted-server') {
+  if (id === 'hosted-server') {
     mountHosting(q('#plugin-extra', root), api, notice);
   }
-  if (plugin.id === 'calendar') calendarSettings(q('#plugin-extra', root));
-  if (plugin.id === 'workspaces') q('#plugin-extra', root).innerHTML = '<p class="subtle">Assign folders in Bots → Edit, or ask Echo to bind a bot. Existing folder restrictions stay enforced when this plugin is disabled.</p>';
-  if (plugin.id === 'comfyui') q('#plugin-extra', root).innerHTML = '<p class="subtle">Connect an existing ComfyUI server and choose a checkpoint. Export custom workflows in ComfyUI API format. Image generation has a built-in fallback; video generation needs a workflow. Ask a bot to generate an image or video, or attach an image and ask it to edit or animate it.</p><p class="subtle">Templates support {{PROMPT}}, {{NEGATIVE_PROMPT}}, {{MODEL}}, {{IMAGE}}, {{WIDTH}}, {{HEIGHT}}, {{STEPS}}, {{CFG_SCALE}}, {{SEED}}, {{FRAMES}}, {{FPS}}, {{FORMAT}}, {{DURATION}}, {{ASPECT_RATIO}} and {{MEGAPIXELS}}. Workflow and input-image paths must be accessible to the bot. Results remain in the chat; ask to save them when you want a workspace file.</p>';
-  if (plugin.id === 'plugin-authoring') q('#plugin-extra', root).innerHTML = '<p class="subtle">Ask Echo to create a plugin—for example, “Create a GUI calculator I can drag around.” UI plugins need no compiler. Go backend plugins require an installed Go toolchain.</p>';
-  if (['git', 'fossil', 'p4'].includes(plugin.id)) q('#plugin-extra', root).innerHTML = `<p class="subtle">Uses the installed CLI, independently of Shell. Ask a bot to inspect changes, create commits or manage its repository. Commands stream into chat and stop with the run. Bound bots retain their folder restrictions, including when network access is granted; these network grants also apply to native child processes. Unbound bots retain unrestricted host access.</p>${plugin.id === 'git' ? '<p class="subtle">Set the author name/email for commits. Scoped Git uses reftable for new repositories; some older loose-ref repositories are unsupported.</p>' : ''}${plugin.id === 'fossil' ? '<p class="subtle">Grant access to both the checkout and its Fossil repository database. Interactive editors are unavailable; provide commit messages in chat.</p>' : ''}`;
-  if (plugin.id === 'p4') {
-    q('#plugin-extra', root).insertAdjacentHTML('beforeend', `<hr><p class="subtle">Install p4.exe and save the server, user and client above. Save a ticket for that server/user below; it is kept in Windows Credential Manager and redacted from command output. A bound bot needs the appropriate network grant to reach Perforce. SSL servers need a trusted fingerprint file within the bot's folders.</p><form class="form" id="p4-secret-form"><label>P4 ticket or password<input name="secret" type="password" autocomplete="new-password" required placeholder="${plugin.config.credential ? 'Credential is saved' : 'No credential saved'}"></label><div class="button-row"><button class="primary">Save P4 credential</button><button type="button" id="clear-p4-secret">Clear credential</button></div></form>`);
+  if (id === 'swarm') void mountSwarm(q('#plugin-extra', root), new InstanceClient(node), refresh, notice);
+  if (id === 'calendar') calendarSettings(q('#plugin-extra', root));
+  if (id === 'workspaces') q('#plugin-extra', root).innerHTML = '<p class="subtle">Assign folders in Bots → Edit, or ask Echo to bind a bot. Existing folder restrictions stay enforced when this plugin is disabled.</p>';
+  if (id === 'comfyui') q('#plugin-extra', root).innerHTML = '<p class="subtle">Connect an existing ComfyUI server and choose a checkpoint. Export custom workflows in ComfyUI API format. Image generation has a built-in fallback; video generation needs a workflow. Ask a bot to generate an image or video, or attach an image and ask it to edit or animate it.</p><p class="subtle">Templates support {{PROMPT}}, {{NEGATIVE_PROMPT}}, {{MODEL}}, {{IMAGE}}, {{WIDTH}}, {{HEIGHT}}, {{STEPS}}, {{CFG_SCALE}}, {{SEED}}, {{FRAMES}}, {{FPS}}, {{FORMAT}}, {{DURATION}}, {{ASPECT_RATIO}} and {{MEGAPIXELS}}. Workflow and input-image paths must be accessible to the bot. Results remain in the chat; ask to save them when you want a workspace file.</p>';
+  if (id === 'plugin-authoring') q('#plugin-extra', root).innerHTML = '<p class="subtle">Ask Echo to create a plugin—for example, “Create a GUI calculator I can drag around.” UI plugins need no compiler. Go backend plugins require an installed Go toolchain.</p>';
+  if (['git', 'fossil', 'p4'].includes(id)) q('#plugin-extra', root).innerHTML = `<p class="subtle">Uses the installed CLI, independently of Shell. Ask a bot to inspect changes, create commits or manage its repository. Commands stream into chat and stop with the run. Bound bots retain their folder restrictions, including when network access is granted; these network grants also apply to native child processes. Unbound bots retain unrestricted host access.</p>${id === 'git' ? '<p class="subtle">Set the author name/email for commits. Scoped Git uses reftable for new repositories; some older loose-ref repositories are unsupported.</p>' : ''}${id === 'fossil' ? '<p class="subtle">Grant access to both the checkout and its Fossil repository database. Interactive editors are unavailable; provide commit messages in chat.</p>' : ''}`;
+  if (id === 'p4') {
+    q('#plugin-extra', root).insertAdjacentHTML('beforeend', `<hr><p class="subtle">Install the native p4 CLI and save the server, user and client above. Save a ticket for that server/user below; it is kept in the host credential vault and redacted from command output. A bound bot needs the appropriate network grant to reach Perforce. SSL servers need a trusted fingerprint file within the bot's folders.</p><form class="form" id="p4-secret-form"><label>P4 ticket or password<input name="secret" type="password" autocomplete="new-password" required placeholder="${plugin.config.credential ? 'Credential is saved' : 'No credential saved'}"></label><div class="button-row"><button class="primary">Save P4 credential</button><button type="button" id="clear-p4-secret">Clear credential</button></div></form>`);
     q<HTMLFormElement>('#p4-secret-form', root).onsubmit = event => { event.preventDefault(); action(async () => { const form = q<HTMLFormElement>('#p4-secret-form', root); await api('/plugins/p4/credential', 'POST', { secret: new FormData(form).get('secret') }); form.reset(); await refresh(); settings('p4'); notice('P4 credential saved'); })(); };
     q('#clear-p4-secret', root).onclick = action(async () => { await api('/plugins/p4/credential', 'POST', { secret: '' }); await refresh(); settings('p4'); });
   }
 }
-function calendarSettings(root: HTMLElement) {
-  root.innerHTML = `<hr><h3>Schedules</h3><button id="new-schedule">＋ Add schedule</button>${state.schedules.map(s => `<div class="list-card"><div class="grow"><strong>${esc(currentBot(s.botId)?.name || s.botId)}</strong><p>${esc(s.prompt)}</p><small>${esc(s.recurrence)} · ${esc(s.timezone)} ${s.paused ? '· Paused' : ''}</small></div><button data-schedule="${esc(s.id)}">Edit</button><button class="danger" data-delete-schedule="${esc(s.id)}">×</button></div>`).join('')}`;
+function calendarSettings(root: HTMLElement) { const schedules = state.schedules.filter(s => sameMachine(s, settingsNode));
+  root.innerHTML = `<hr><h3>Schedules</h3><button id="new-schedule">＋ Add schedule</button>${schedules.map(s => `<div class="list-card"><div class="grow"><strong>${esc(currentBot(s.botId)?.name || s.botId)}</strong><p>${esc(s.prompt)}</p><small>${esc(s.recurrence)} · ${esc(s.timezone)} ${s.paused ? '· Paused' : ''}</small></div><button data-schedule="${esc(s.id)}">Edit</button><button class="danger" data-delete-schedule="${esc(s.id)}">×</button></div>`).join('')}`;
   q('#new-schedule', root).onclick = () => editSchedule();
   for (const b of root.querySelectorAll<HTMLButtonElement>('[data-schedule]')) b.onclick = () => editSchedule(state.schedules.find(s => s.id === b.dataset.schedule));
   for (const b of root.querySelectorAll<HTMLButtonElement>('[data-delete-schedule]')) b.onclick = action(async () => { await api(`/schedules/${b.dataset.deleteSchedule}`, 'DELETE'); await refresh(); calendarSettings(root); });
 }
-function editSchedule(schedule?: Schedule) {
-  const el = dialog('Scheduled work', `<form class="form"><label>Bot<select name="botId">${state.bots.map(b => `<option value="${esc(b.id)}" ${b.id === schedule?.botId ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></label><label>Prompt<textarea name="prompt" required>${esc(schedule?.prompt)}</textarea></label><label>Recurrence<input name="recurrence" value="${esc(schedule?.recurrence || 'daily 15:00')}"><small>daily 15:00 · weekly MON 09:00 · every 2 hours · ISO date/time</small></label><label>Timezone<input name="timezone" value="${esc(schedule?.timezone || 'Local')}"><small>Local uses the Echo server's timezone; an IANA name such as America/Chicago is also accepted.</small></label><label class="check"><input name="paused" type="checkbox" ${schedule?.paused ? 'checked' : ''}>Paused</label><p class="subtle">Model: ${esc((schedule?.generation || generation).model || 'Select a model in the chat first')}</p><button class="primary">Save schedule</button></form>`);
-  q<HTMLFormElement>('form', el).onsubmit = e => { e.preventDefault(); action(async () => { const f = new FormData(q('form', el) as HTMLFormElement); await api('/schedules', 'POST', { id: schedule?.id || '', botId: f.get('botId'), prompt: f.get('prompt'), recurrence: f.get('recurrence'), timezone: f.get('timezone'), paused: f.has('paused'), generation: schedule?.generation || generation }); el.close(); await refresh(); settings('calendar'); })(); };
+function editSchedule(schedule?: Schedule) { const node = schedule?.nodeId || settingsNode; const api = <T = any>(path: string, method = 'GET', body?: unknown) => resourceAPI<T>(path, method, body, node); const bots = state.bots.filter(b => sameMachine(b, node)); const endpoint = state.endpoints.find(e => sameMachine(e, node)); const selectedGeneration = generationByNode[node] || (node === modelNode && generation.endpointId ? generation : { endpointId: endpoint?.id || '', model: endpoint?.model || '', thinking: '', temperature: endpoint?.temperature ?? .6 });
+  const el = dialog('Scheduled work', `<form class="form"><label>Bot<select name="botId">${bots.map(b => `<option value="${esc(b.id)}" ${b.id === schedule?.botId ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></label><label>Prompt<textarea name="prompt" required>${esc(schedule?.prompt)}</textarea></label><label>Recurrence<input name="recurrence" value="${esc(schedule?.recurrence || 'daily 15:00')}"><small>daily 15:00 · weekly MON 09:00 · every 2 hours · ISO date/time</small></label><label>Timezone<input name="timezone" value="${esc(schedule?.timezone || 'Local')}"><small>Local uses the Echo server's timezone; an IANA name such as America/Chicago is also accepted.</small></label><label class="check"><input name="paused" type="checkbox" ${schedule?.paused ? 'checked' : ''}>Paused</label><p class="subtle">Model: ${esc((schedule?.generation || selectedGeneration).model || 'Select a model in the chat first')}</p><button class="primary">Save schedule</button></form>`);
+  q<HTMLFormElement>('form', el).onsubmit = e => { e.preventDefault(); action(async () => { const f = new FormData(q('form', el) as HTMLFormElement); await api('/schedules', 'POST', { id: schedule?.id || '', botId: f.get('botId'), prompt: f.get('prompt'), recurrence: f.get('recurrence'), timezone: f.get('timezone'), paused: f.has('paused'), generation: schedule?.generation || selectedGeneration }); el.close(); await refresh(); settings('calendar'); })(); };
 }
 function showMissed() {
   const jobs = state.occurrences.filter(o => o.status === 'missed').sort((a, b) => a.intendedAt.localeCompare(b.intendedAt));
   const el = dialog('Missed scheduled work', `<p class="subtle">Choose which missed jobs to run. Unselected jobs will be skipped.</p><form class="form"><div class="missed-jobs">${jobs.map(o => `<label class="missed-job"><input type="checkbox" name="job" value="${esc(o.id)}"><div><strong>${esc(currentBot(o.botId)?.name || o.botId)}</strong> · ${esc(new Date(o.intendedAt).toLocaleString(undefined, { timeZone: o.timezone || 'UTC' }))}<p>${esc(o.prompt)}</p><small>${esc(o.recurrence || 'Scheduled work')} · ${esc(o.timezone || 'UTC')} · ${esc(o.id)}</small></div></label>`).join('')}</div><label>Concurrent jobs<input name="concurrency" type="number" min="0" step="1" value="1" required><small>0 means unlimited.</small></label><div class="button-row"><button class="primary">Run selected</button><button id="skip-all" type="button">Skip all</button></div></form>`);
-  const submit = async (skip: boolean) => { const f = new FormData(q('form', el) as HTMLFormElement); await api('/missed/review', 'POST', { ids: skip ? [] : f.getAll('job'), concurrency: Number(f.get('concurrency')) }); el.close(); await refresh(); };
+  const submit = async (skip: boolean) => { const f = new FormData(q('form', el) as HTMLFormElement); await Promise.all([...instances.keys()].map(node => resourceAPI('/missed/review', 'POST', { ids: skip ? [] : f.getAll('job').map(String).filter(id => splitID(id)[0] === node).map(localID), concurrency: Number(f.get('concurrency')) }, node))); el.close(); await refresh(); };
   q<HTMLFormElement>('form', el).onsubmit = e => { e.preventDefault(); action(() => submit(false))(); }; q('#skip-all', el).onclick = action(() => submit(true));
 }
 
@@ -576,7 +620,7 @@ async function start() {
   catch { app.innerHTML = '<form class="login form"><div class="brand">Echo</div><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="primary">Sign in</button></form>'; q<HTMLFormElement>('form').onsubmit = e => { e.preventDefault(); action(async () => { const f = new FormData(q('form') as HTMLFormElement); await api('/session', 'POST', { password: f.get('password') }); await ready(); })(); }; return; }
   await ready();
 }
-async function ready() { const route = parseAppRoute(location.hash); shell(); await refresh(); if (route) await pluginWindows.open(route.pluginId, route.viewId, route.botId, 'embedded'); else if (chatId && !showingApps) await selectChat(chatId); else renderMessages(); connect(); }
+async function ready() { const route = parseAppRoute(location.hash); shell(); await refresh(); if (route) await pluginWindows.open(route.pluginId, route.viewId, route.botId, 'embedded'); else if (chatId && !showingApps) await selectChat(chatId); else renderMessages(); connect(); connectSwarm(); }
 void start().catch(e => notice(e, true));
 
 

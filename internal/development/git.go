@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -52,7 +53,8 @@ func (m *Manager) validate(ctx context.Context, path string) error {
 	if !matched {
 		return errors.New("repository does not declare the Echo module")
 	}
-	for _, file := range []string{"main.go", "build.ps1", "web/package.json", "web/package-lock.json", "internal/plugins/guest/main.go", "internal/store/store.go"} {
+	buildScript:="build.sh";if runtime.GOOS=="windows"{buildScript="build.ps1"}
+	for _, file := range []string{"main.go", buildScript, "web/package.json", "web/package-lock.json", "internal/plugins/guest/main.go", "internal/store/store.go"} {
 		info, err := os.Stat(filepath.Join(path, filepath.FromSlash(file)))
 		if err != nil || info.IsDir() {
 			return fmt.Errorf("not a new Echo checkout: missing %s", file)

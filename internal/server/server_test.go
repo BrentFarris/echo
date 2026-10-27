@@ -92,7 +92,7 @@ func TestBotCreationThroughToolLoop(t *testing.T) {
 	bots, _ := s.Bots()
 	if len(bots) != 2 {
 		ms, _ := s.messages(c.ID)
-		t.Fatal("bot was not created", ms)
+		t.Fatal("bot was not created", ms, d.err)
 	}
 	ms, e := s.messages(c.ID)
 	if e != nil || len(ms) != 4 || ms[3].Content != "Created kaiju." {

@@ -1,3 +1,4 @@
+import { InstanceClient, entryNode } from './instances';
 import { escapeHTML as esc } from './helpers';
 import './development.css';
 
@@ -33,7 +34,13 @@ export async function waitForReplacementServer(previous: string, options: {
   throw new Error('Echo did not return within two minutes. Check the operation and launcher logs in the server’s data directory, then start Echo manually if needed.');
 }
 
-// Keep monitoring across settings navigation, so a requested restart reloads this tab.
+const controllers = new Map<string, ReturnType<typeof createDevelopment>>();
+export async function mountDevelopment(target: HTMLElement, api: API, client = new InstanceClient(), changed: () => Promise<void> = async () => {}) {
+  let controller = controllers.get(client.nodeId); if (!controller) { controller = createDevelopment(client, changed); controllers.set(client.nodeId, controller); }
+  await controller.mount(target, api);
+}
+function createDevelopment(client: InstanceClient, changed: () => Promise<void>) {
+const replaced = async () => { if (!client.nodeId || client.nodeId === entryNode) window.location.reload(); else { stopped = false; current = await client.json('/development'); showMessage('Remote Echo reconnected.'); await changed(); } };
 let current: DevelopmentState | undefined;
 let root: HTMLElement | undefined;
 let monitoring: string | undefined;
@@ -99,9 +106,9 @@ async function monitor(api: API, operation: DevelopmentOperation, instance: stri
         // Recover a transient outage while building, and detect a replacement
         // even if the old process exited before we saw its restarting status.
         try {
-          const response = await fetch('/api/v1/health', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+          const response = await client.fetch('/health', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
           const health = response.ok ? await response.json() : null;
-          if (health?.instanceId && health.instanceId !== instance) { window.location.reload(); return; }
+          if (health?.instanceId && health.instanceId !== instance) { await replaced(); return; }
         } catch { /* Keep retrying the operation while disconnected. */ }
         disconnectedAt ||= Date.now();
         if (Date.now() - disconnectedAt >= 120_000) throw new Error('Cannot reconnect to Echo. Check the operation and launcher logs on the server, then reopen Development settings to recover its status.');
@@ -109,15 +116,15 @@ async function monitor(api: API, operation: DevelopmentOperation, instance: stri
       }
     }
     showMessage('Waiting for Echo to restart…');
-    await waitForReplacementServer(instance);
-    window.location.reload();
+    await waitForReplacementServer(instance, { fetcher: ((path, options) => client.fetch(String(path), options)) as typeof fetch });
+    await replaced();
   } catch (error) {
     showMessage(error instanceof Error ? error.message : String(error), true);
     if (current?.operation) current.operation = { ...current.operation, status: 'failed', error: message };
   } finally { monitoring = undefined; update(); }
 }
 
-export async function mountDevelopment(target: HTMLElement, api: API) {
+async function mount(target: HTMLElement, api: API) {
   root = target;
   target.innerHTML = '<p role="status">Loading Development settings…</p>';
   try {
@@ -161,4 +168,7 @@ export async function mountDevelopment(target: HTMLElement, api: API) {
     update();
     if (state.operation && ['running', 'restarting', 'stopping'].includes(state.operation.status)) void monitor(api, state.operation, state.instanceId);
   } catch (error) { target.innerHTML = `<p role="alert" class="error">${esc(error instanceof Error ? error.message : String(error))}</p>`; }
+}
+
+return { mount };
 }

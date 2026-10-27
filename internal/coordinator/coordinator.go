@@ -36,6 +36,11 @@ func New(ids []string) *Group {
 }
 func (g *Group) signal() { close(g.notify); g.notify = make(chan struct{}) }
 func (g *Group) Send(from, to, content, id string) (Request, error) {
+	return g.SendWithCommit(from, to, content, id, nil)
+}
+
+// SendWithCommit records a handoff before making it visible or waking a worker.
+func (g *Group) SendWithCommit(from, to, content, id string, commit func(Request) error) (Request, error) {
 	g.mu.Lock()
 	if g.closed {
 		g.mu.Unlock()
@@ -60,6 +65,12 @@ func (g *Group) Send(from, to, content, id string) (Request, error) {
 		id = domain.ID()
 	}
 	r := Request{ID: id, From: from, To: to, Content: content}
+	if commit != nil {
+		if err := commit(r); err != nil {
+			g.mu.Unlock()
+			return Request{}, err
+		}
+	}
 	g.requests[id] = &r
 	g.inbox[to] = append(g.inbox[to], id)
 	g.signal()
@@ -71,14 +82,24 @@ func (g *Group) Send(from, to, content, id string) (Request, error) {
 	return r, nil
 }
 func (g *Group) Drain(bot string) []Request {
+	requests, _ := g.DrainWithCommit(bot, nil)
+	return requests
+}
+
+func (g *Group) DrainWithCommit(bot string, commit func([]Request) error) ([]Request, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	out := []Request{}
 	for _, id := range g.inbox[bot] {
 		out = append(out, *g.requests[id])
 	}
+	if commit != nil {
+		if err := commit(out); err != nil {
+			return nil, err
+		}
+	}
 	delete(g.inbox, bot)
-	return out
+	return out, nil
 }
 func (g *Group) Pending(bot string) bool {
 	g.mu.Lock()
@@ -86,6 +107,10 @@ func (g *Group) Pending(bot string) bool {
 	return len(g.inbox[bot]) > 0
 }
 func (g *Group) Reply(bot, id, text string) error {
+	return g.ReplyWithCommit(bot, id, text, nil)
+}
+
+func (g *Group) ReplyWithCommit(bot, id, text string, commit func(Request) error) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	r := g.requests[id]
@@ -98,8 +123,15 @@ func (g *Group) Reply(bot, id, text string) error {
 		}
 		return errors.New("request already answered")
 	}
-	r.Reply = text
-	r.Done = true
+	next := *r
+	next.Reply = text
+	next.Done = true
+	if commit != nil {
+		if err := commit(next); err != nil {
+			return err
+		}
+	}
+	*r = next
 	g.signal()
 	return nil
 }

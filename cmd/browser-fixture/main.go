@@ -2,21 +2,57 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/brent/echo/internal/calendar"
+	"github.com/brent/echo/internal/credentials"
 	"github.com/brent/echo/internal/domain"
 	"github.com/brent/echo/internal/plugins"
 	"github.com/brent/echo/internal/server"
+	"golang.org/x/crypto/bcrypt"
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 )
 
+// Acceptance profiles never write test credentials to the user's host vault.
+type fixtureSecrets struct {
+	sync.Mutex
+	values map[string]string
+}
+
+func (s *fixtureSecrets) Available(context.Context) bool { return true }
+func (s *fixtureSecrets) Get(_ context.Context, key string) (string, error) {
+	s.Lock()
+	defer s.Unlock()
+	v, ok := s.values[key]
+	if !ok {
+		return "", credentials.ErrSecretNotFound
+	}
+	return v, nil
+}
+func (s *fixtureSecrets) Set(_ context.Context, key, value string) error {
+	s.Lock()
+	defer s.Unlock()
+	s.values[key] = value
+	return nil
+}
+func (s *fixtureSecrets) Delete(_ context.Context, key string) error {
+	s.Lock()
+	defer s.Unlock()
+	delete(s.values, key)
+	return nil
+}
+
 func main() {
 	data := flag.String("data", "../.test-data/browser", "test data")
+	port := flag.Int("port", 3742, "test HTTP port")
+	name := flag.String("name", "desktop", "test Swarm name")
+	password := flag.String("password", "", "test owner password")
 	flag.Parse()
 	guest, e := os.ReadFile("../internal/plugins/guest/builtin.wasm")
 	if e != nil {
@@ -27,6 +63,19 @@ func main() {
 		log.Fatal(e)
 	}
 	defer app.Close()
+	app.Secrets = &fixtureSecrets{values: map[string]string{}}
+	if *password != "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(*password), bcrypt.MinCost)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err = app.Store.Put("auth", "password", string(hash)); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if err := app.Swarm.Configure(*name, ""); err != nil {
+		log.Fatal(err)
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/", app.Handler())
 	mux.HandleFunc("POST /__fixtures/app", func(w http.ResponseWriter, r *http.Request) {
@@ -68,5 +117,5 @@ func main() {
 		}
 		fmt.Fprint(w, `{"ok":true}`)
 	})
-	log.Fatal(http.ListenAndServe("127.0.0.1:3742", mux))
+	log.Fatal(http.ListenAndServe(fmt.Sprintf("127.0.0.1:%d", *port), mux))
 }

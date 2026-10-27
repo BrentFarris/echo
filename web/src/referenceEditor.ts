@@ -63,6 +63,7 @@ export class ReferenceInput extends HTMLElement {
       }
     });
     this.addEventListener('input', () => {
+      if (!this.composing && !this.value) { this.replaceChildren(); this.setSelectionRange(0); }
       if (!this.composing) this.decorateBots();
       if (!this.replaying && !this.composing) this.record();
       this.toggleAttribute('data-empty', !this.value);

@@ -1,3 +1,4 @@
+import { resourceURL } from '../instances';
 import { api } from "./api";
 import type {
   FileRef, FileSnapshot, FsEntry, SearchResult, TextReplaceResponse, TextReplaceTarget, TextReplaceUpdate,
@@ -33,7 +34,7 @@ export async function readFile(workspaceId: string, ref: FileRef, signal?: Abort
 // It is fetched by <img>/<video>/<audio> elements, not the JSON envelope helpers.
 export function mediaURL(workspaceId: string, ref: FileRef): string {
   const query = new URLSearchParams({ rootId: ref.rootId, path: ref.path });
-  return `${base(workspaceId)}/media?${query}`;
+  return resourceURL(`${base(workspaceId)}/media?${query}`);
 }
 
 export async function saveFile(workspaceId: string, request: {

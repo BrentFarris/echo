@@ -2,10 +2,11 @@ import { pluginAvailable } from './apps';
 import { builtinApp } from './builtinApps';
 import { escapeHTML as esc } from './helpers';
 import type { Bot, Plugin } from './types';
+import { InstanceClient, entryNode, resourceID, resourceAPI, sameMachine, localID, splitID, machineName } from './instances';
 
 export type AppAPI = <T = unknown>(path: string, method?: string, body?: unknown) => Promise<T>;
 export type NativeApp = { update(bots: Bot[], plugin: Plugin): void; visible(value: boolean): void; beforeClose(): Promise<boolean>; dispose(): void };
-export type NativeAppContext = { api: AppAPI; bots: Bot[]; plugin: Plugin; botId: string; configureBot(id: string): void };
+export type NativeAppContext = { api: AppAPI; client?: InstanceClient; bots: Bot[]; plugin: Plugin; botId: string; configureBot(id: string): void };
 type View = { id: string; title: string; html: string; kind: string; digest: string };
 type Mode = 'floating' | 'embedded';
 type Options = { embeddedHost?: HTMLElement; navigate?(route: string | null): void; configureBot?(id: string): void };
@@ -45,7 +46,7 @@ export class PluginWindows {
     for (const win of this.windows.values()) {
       const plugin = plugins.find(p => p.id === win.pluginId), bot = bots.find(b => b.id === win.botId);
       if (!pluginAvailable(plugin, bot) || (plugin?.digest || '') !== win.digest || !plugin?.views?.some(v => v.id === win.viewId && v.kind !== 'renderer')) void win.close(true);
-      else win.native?.update(bots, plugin!);
+      else win.native?.update(bots.filter(b => sameMachine(b, plugin!.nodeId || entryNode)), plugin!);
     }
   }
 
@@ -55,8 +56,9 @@ export class PluginWindows {
   }
 
   open(pluginId: string, viewId: string, botId = 'echo', presentation?: Mode): Promise<void> {
-    const plugin = this.plugins.find(p => p.id === pluginId), contextBot = botId;
-    if (plugin?.scope === 'app') botId = 'echo';
+    const plugin = this.plugins.find(p => p.id === pluginId);
+    botId = resourceID(plugin?.nodeId || entryNode, botId); const contextBot = botId;
+    if (plugin?.scope === 'app') botId = resourceID(plugin.nodeId || entryNode, 'echo');
     const key = JSON.stringify([pluginId, viewId, botId]);
     const pending = this.pending.get(key); if (pending) return pending;
     const revision = this.revision;
@@ -104,10 +106,10 @@ export class PluginWindows {
     const element = document.createElement('section'); element.className = 'floating-plugin';
     element.dataset.pluginId = pluginId; element.dataset.viewId = viewId; element.dataset.botId = botId;
     element.setAttribute('role', 'region'); element.setAttribute('aria-label', view.title);
-    element.innerHTML = `<header tabindex="0" aria-label="Move ${esc(view.title)} with arrow keys"><strong>${esc(view.title)}</strong><button type="button" data-presentation>Open Embedded</button><button type="button" class="icon" data-close aria-label="Close plugin" title="Close">×</button></header><div class="plugin-content"></div>`;
+    element.innerHTML = `<header tabindex="0" aria-label="Move ${esc(view.title)} with arrow keys"><strong>${esc(view.title)}${splitID(pluginId)[0] !== entryNode ? `<small class="machine-chip">${esc(machineName(splitID(pluginId)[0]))}</small>` : ''}</strong><button type="button" data-presentation>Open Embedded</button><button type="button" class="icon" data-close aria-label="Close plugin" title="Close">×</button></header><div class="plugin-content"></div>`;
     const header = element.querySelector<HTMLElement>('header')!, content = element.querySelector<HTMLElement>('.plugin-content')!;
     const nonce = crypto.randomUUID(), layoutKey = `echo2:window:${pluginId}:${viewId}`;
-    let geometry = { x: 300, y: 100, w: pluginId === 'monaco-editor' ? 1000 : 400, h: pluginId === 'monaco-editor' ? 700 : 400 };
+    let geometry = { x: 300, y: 100, w: localID(pluginId) === 'monaco-editor' ? 1000 : 400, h: localID(pluginId) === 'monaco-editor' ? 700 : 400 };
     let mode: Mode = view.kind === 'embedded' ? 'embedded' : 'floating';
     try {
       const saved = JSON.parse(localStorage.getItem(layoutKey) || 'null');
@@ -179,7 +181,8 @@ export class PluginWindows {
       const load = builtinApp(plugin, viewId);
       if (load) {
         const module = await load();
-        if (!closed) win.native = await module.mount(content, { api: this.api, bots: this.bots, plugin: plugin!, botId: contextBot, configureBot: id => this.options.configureBot?.(id) });
+        const node = plugin?.nodeId || entryNode;
+        if (!closed) win.native = await module.mount(content, { api: (path, method, body) => resourceAPI(path, method, body, node), client: new InstanceClient(node), bots: this.bots.filter(b => sameMachine(b, node)), plugin: plugin!, botId: contextBot, configureBot: id => this.options.configureBot?.(id) });
         if (closed) win.native?.dispose();
       } else {
         const frame = document.createElement('iframe'); frame.title = view.title; frame.sandbox.add('allow-scripts'); win.frame = frame;

@@ -48,8 +48,10 @@ CREATE INDEX IF NOT EXISTS message_chat ON messages(chat_id,seq);
 CREATE TABLE IF NOT EXISTS attachments(id TEXT PRIMARY KEY,chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,message_id TEXT REFERENCES messages(id) ON DELETE CASCADE,metadata BLOB NOT NULL,data BLOB NOT NULL,created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS attachment_chat ON attachments(chat_id);
 CREATE TABLE IF NOT EXISTS chunks(id INTEGER PRIMARY KEY AUTOINCREMENT,message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,content BLOB NOT NULL,reasoning BLOB NOT NULL);
-CREATE TABLE IF NOT EXISTS dispatch_requests(chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,request_id TEXT NOT NULL,dispatch_id TEXT NOT NULL,PRIMARY KEY(chat_id,request_id));
-PRAGMA user_version=1;`)
+CREATE TABLE IF NOT EXISTS dispatch_requests(chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,request_id TEXT NOT NULL,dispatch_id TEXT NOT NULL,PRIMARY KEY(chat_id,request_id));`)
+	if err == nil {
+		err = s.migrate()
+	}
 	if err != nil {
 		db.Close()
 		lock.Close()
@@ -75,6 +77,11 @@ func (s *Store) Accepted(chatID, requestID string) string {
 // Accept commits the user message, chat metadata, run boundaries and retry key
 // together. A caller never observes an accepted message with no durable run.
 func (s *Store) Accept(c domain.Chat, m domain.Message, runs []domain.Run, requestID, dispatchID string) error {
+	return s.AcceptWithRecord(c, m, runs, requestID, dispatchID, "", "", nil)
+}
+
+// AcceptWithRecord journals federation state in the same acceptance transaction.
+func (s *Store) AcceptWithRecord(c domain.Chat, m domain.Message, runs []domain.Run, requestID, dispatchID, namespace, recordID string, record any) error {
 	tx, e := s.db.Begin()
 	if e != nil {
 		return e
@@ -123,7 +130,35 @@ func (s *Store) Accept(c domain.Chat, m domain.Message, runs []domain.Run, reque
 			return e
 		}
 	}
+	if namespace != "" {
+		data, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.Exec("INSERT INTO records VALUES(?,?,?) ON CONFLICT(namespace,id) DO UPDATE SET data=excluded.data", namespace, recordID, data); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
+}
+
+// ReplicaMessage cannot create a chat or overwrite an ID belonging to another
+// chat. Deleting a home chat therefore wins over delayed worker deliveries.
+func (s *Store) ReplicaMessage(m domain.Message) error {
+	data, err := pack(m)
+	if err != nil {
+		return err
+	}
+	var owner string
+	err = s.db.QueryRow("SELECT chat_id FROM messages WHERE id=?", m.ID).Scan(&owner)
+	if err == nil && owner != m.ChatID {
+		return errors.New("message identity belongs to another chat")
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	_, err = s.db.Exec("INSERT INTO messages(id,chat_id,data) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE messages.chat_id=excluded.chat_id", m.ID, m.ChatID, data)
+	return err
 }
 
 func (s *Store) ClearNamespace(ns string) error {
@@ -132,18 +167,26 @@ func (s *Store) ClearNamespace(ns string) error {
 }
 
 func (s *Store) PutBatch(ns string, values map[string]any) error {
+	return s.PutRecords(map[string]map[string]any{ns: values})
+}
+
+// PutRecords makes related journals durable as one transaction, even when
+// their records belong to different namespaces.
+func (s *Store) PutRecords(namespaces map[string]map[string]any) error {
 	tx, e := s.db.Begin()
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback()
-	for id, v := range values {
-		b, e := json.Marshal(v)
-		if e != nil {
-			return e
-		}
-		if _, e = tx.Exec("INSERT INTO records VALUES(?,?,?) ON CONFLICT(namespace,id) DO UPDATE SET data=excluded.data", ns, id, b); e != nil {
-			return e
+	for ns, values := range namespaces {
+		for id, v := range values {
+			b, e := json.Marshal(v)
+			if e != nil {
+				return e
+			}
+			if _, e = tx.Exec("INSERT INTO records VALUES(?,?,?) ON CONFLICT(namespace,id) DO UPDATE SET data=excluded.data", ns, id, b); e != nil {
+				return e
+			}
 		}
 	}
 	return tx.Commit()
@@ -256,6 +299,9 @@ func (s *Store) Update(ns, id string, fn func(json.RawMessage) (any, error)) err
 	return tx.Commit()
 }
 func (s *Store) CreateChat(c domain.Chat) error {
+	if s.ChatDeleted(c.ID) {
+		return errors.New("chat was deleted")
+	}
 	b, e := json.Marshal(c)
 	if e != nil {
 		return e
@@ -328,6 +374,12 @@ func (s *Store) DeleteChat(id string) error {
 		return e
 	}
 	defer tx.Rollback()
+	if _, e = tx.Exec("INSERT OR IGNORE INTO chat_tombstones VALUES(?,?)", id, domain.Now()); e != nil {
+		return e
+	}
+	if _, e = tx.Exec("UPDATE records SET data=json_set(data,'$.status','deleted','$.reconciled',json('{}')) WHERE namespace='swarm-dispatches' AND json_extract(data,'$.chatId')=?", id); e != nil {
+		return e
+	}
 	if _, e = tx.Exec("DELETE FROM records WHERE namespace='runs' AND json_extract(data,'$.chatId')=?", id); e != nil {
 		return e
 	}

@@ -59,6 +59,12 @@ func (s *Server) validateFileSegments(req *SendRequest, bots []domain.Bot, stric
 		}
 		ref.AllowedBots = []string{}
 		ref.Kind = ""
+		if ref.NodeID != "" && ref.NodeID != s.Swarm.Node().ID {
+			if strict {
+				return errors.New("file reference belongs to another machine")
+			}
+			continue
+		}
 		for _, bot := range bots {
 			kind, err := s.Files.ReferenceKind(bot, ref.Path)
 			if err == nil {

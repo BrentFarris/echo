@@ -289,18 +289,25 @@ func (m *Manager) execute(ctx context.Context, config Config, action string, out
 		}
 	}()
 	if action == "build-relaunch" || action == "update-relaunch" {
-		if runtime.GOOS != "windows" {
-			return errors.New("building Echo from Development settings currently requires Windows")
+		suffix := ""
+		if runtime.GOOS == "windows" {
+			suffix = ".exe"
 		}
-		binary = filepath.Join(config.RepositoryPath, "echo.exe")
-		staged = filepath.Join(config.RepositoryPath, "echo.rebuild-"+domain.ID()+".exe")
-		powerShell, err := findPowerShell()
-		if err != nil {
-			return err
-		}
+		binary = filepath.Join(config.RepositoryPath, "echo"+suffix)
+		staged = filepath.Join(config.RepositoryPath, "echo.rebuild-"+domain.ID()+suffix)
 		m.stage(output, "Building plugin runtime, frontend, and Echo")
-		if err := m.run(ctx, config.RepositoryPath, output, powerShell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", filepath.Join(config.RepositoryPath, "build.ps1"), "-OutputPath", staged); err != nil {
-			return fmt.Errorf("build failed: %w", err)
+		var buildErr error
+		if runtime.GOOS == "windows" {
+			powerShell, err := findPowerShell()
+			if err != nil {
+				return err
+			}
+			buildErr = m.run(ctx, config.RepositoryPath, output, powerShell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", filepath.Join(config.RepositoryPath, "build.ps1"), "-OutputPath", staged)
+		} else {
+			buildErr = m.run(ctx, config.RepositoryPath, output, "/bin/sh", filepath.Join(config.RepositoryPath, "build.sh"), "--output", staged)
+		}
+		if buildErr != nil {
+			return fmt.Errorf("build failed: %w", buildErr)
 		}
 		if info, err := os.Stat(staged); err != nil || !info.Mode().IsRegular() {
 			return errors.New("build did not produce the staged Echo executable")

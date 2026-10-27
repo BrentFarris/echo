@@ -3,16 +3,19 @@
 package credentials
 
 import (
-	"context"
-	"errors"
+	"os"
+	"path/filepath"
 )
 
-type unavailable struct{}
-
-func New() SecretStore                                          { return unavailable{} }
-func (unavailable) Available(context.Context) bool              { return false }
-func (unavailable) Get(context.Context, string) (string, error) { return "", ErrSecretNotFound }
-func (unavailable) Set(context.Context, string, string) error {
-	return errors.New("credential storage currently requires Windows")
+// Servers need not have a logged-in desktop or an unlocked session keychain.
+func New(profile ...string) SecretStore {
+	dir := ""
+	if len(profile) > 0 {
+		dir = profile[0]
+	}
+	if dir == "" {
+		base, _ := os.UserConfigDir()
+		dir = filepath.Join(base, "Echo2")
+	}
+	return NewFileStore(filepath.Join(dir, "secrets"))
 }
-func (unavailable) Delete(context.Context, string) error { return ErrSecretNotFound }

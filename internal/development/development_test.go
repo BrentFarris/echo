@@ -48,7 +48,7 @@ func repositoryTest(t *testing.T) (string, string) {
 		t.Fatal(err)
 	}
 	gitTest(t, remote, "init", "-b", "echo2")
-	for _, f := range []string{"main.go", "build.ps1", "web/package.json", "web/package-lock.json", "internal/plugins/guest/main.go", "internal/store/store.go"} {
+	for _, f := range []string{"main.go", "build.ps1", "build.sh", "web/package.json", "web/package-lock.json", "internal/plugins/guest/main.go", "internal/store/store.go"} {
 		writeTest(t, filepath.Join(remote, f), "fixture\n")
 	}
 	writeTest(t, filepath.Join(remote, "go.mod"), "module github.com/brent/echo\n")
@@ -194,9 +194,6 @@ func waitOperation(t *testing.T, m *Manager, id string) Operation {
 }
 
 func TestBuildFailureAndSerialization(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows builds")
-	}
 	_, repo := repositoryTest(t)
 	m := managerTest(t, repo)
 	started, release := make(chan struct{}), make(chan struct{})
@@ -236,9 +233,6 @@ func TestBuildFailureAndSerialization(t *testing.T) {
 }
 
 func TestUpdatedCheckoutSurvivesBuildFailure(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows builds")
-	}
 	remote, repo := repositoryTest(t)
 	m := managerTest(t, repo)
 	writeTest(t, filepath.Join(remote, "main.go"), "updated\n")
@@ -300,14 +294,15 @@ func TestTerminationRequestsHostShutdown(t *testing.T) {
 }
 
 func TestBuildStagesBeforeLaunchAndCleansFailedPreparation(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows builds")
-	}
 	for _, failLaunch := range []bool{false, true} {
 		t.Run(map[bool]string{false: "ready", true: "launcher-failure"}[failLaunch], func(t *testing.T) {
 			_, repo := repositoryTest(t)
 			m := managerTest(t, repo)
-			binary := filepath.Join(repo, "echo.exe")
+			binaryName, outputFlag := "echo", "--output"
+			if runtime.GOOS == "windows" {
+				binaryName, outputFlag = "echo.exe", "-OutputPath"
+			}
+			binary := filepath.Join(repo, binaryName)
 			writeTest(t, binary, "previous executable")
 			staged := ""
 			m.run = func(ctx context.Context, dir string, output io.Writer, name string, args ...string) error {
@@ -315,7 +310,7 @@ func TestBuildStagesBeforeLaunchAndCleansFailedPreparation(t *testing.T) {
 					return runCommand(ctx, dir, output, name, args...)
 				}
 				staged = args[len(args)-1]
-				if dir != repo || args[len(args)-2] != "-OutputPath" || staged == binary {
+				if dir != repo || args[len(args)-2] != outputFlag || staged == binary {
 					t.Error("build did not stage separately", args)
 				}
 				return os.WriteFile(staged, []byte("replacement"), 0600)

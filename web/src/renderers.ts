@@ -1,5 +1,6 @@
 import DOMPurify from 'dompurify';
 import type { Message, Plugin } from './types';
+import { localID } from './instances';
 
 type Renderer = { key: string; pluginId: string; nonce: string; frame: HTMLIFrameElement; ready: boolean };
 export class Renderers {
@@ -35,7 +36,7 @@ export class Renderers {
         const key = `${plugin.id}:${plugin.digest || plugin.id}:${id}`; wanted.add(key);
         if (this.frames.has(key)) continue;
         const frame = document.createElement('iframe'); frame.hidden = true; frame.sandbox.add('allow-scripts'); frame.title = plugin.name + ' renderer';
-        if (plugin.id === 'markdown' && plugin.builtin) frame.src = '/renderer.html';
+        if (localID(plugin.id) === 'markdown' && plugin.builtin) frame.src = '/renderer.html';
         else {
           const view = plugin.views?.find(v => v.id === id && v.kind === 'renderer'); if (!view) continue;
           frame.srcdoc = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'">${view.html}`;
@@ -50,7 +51,7 @@ export class Renderers {
   paint(message: Message) {
     const previous = this.latest.get(message.id); if (previous) this.pending.delete(previous); this.latest.delete(message.id);
     if (message.role !== 'assistant') return;
-    const eligible = [...this.frames.values()].filter(r => this.enabled(r.pluginId, message.botId)).sort((a, b) => Number(a.pluginId === 'markdown') - Number(b.pluginId === 'markdown') || a.key.localeCompare(b.key));
+    const eligible = [...this.frames.values()].filter(r => this.enabled(r.pluginId, message.botId)).sort((a, b) => Number(localID(a.pluginId) === 'markdown') - Number(localID(b.pluginId) === 'markdown') || a.key.localeCompare(b.key));
     const renderer = eligible[0]; if (!renderer?.ready) return;
     const id = crypto.randomUUID(); this.latest.set(message.id, id); this.pending.set(id, { messageId: message.id, renderer });
     renderer.frame.contentWindow!.postMessage({ type: 'render', nonce: renderer.nonce, id, text: message.content }, '*');

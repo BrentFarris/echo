@@ -1,5 +1,6 @@
 import { previewAttachment, formatBytes } from './composer';
 import type { Message } from './types';
+import { attachmentURL } from './instances';
 
 // Generated results stay visible when the tool transcript folds into Show work.
 export function generatedMedia(messages: Message[]): HTMLElement | undefined {
@@ -10,7 +11,7 @@ export function generatedMedia(messages: Message[]): HTMLElement | undefined {
     for (const a of message.attachments || []) {
       if (seen.has(a.id)) continue;
       seen.add(a.id);
-      const url = `/api/v1/chats/${encodeURIComponent(message.chatId)}/attachments/${encodeURIComponent(a.id)}`;
+      const url = attachmentURL(message, a);
       const card = document.createElement('figure');
       if (a.mediaType.startsWith('video/')) {
         const video = document.createElement('video'); video.src = url; video.controls = true; video.preload = 'metadata'; video.setAttribute('aria-label', a.name); card.append(video);

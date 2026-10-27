@@ -228,6 +228,11 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	if err = os.MkdirAll(scratch, 0700); err != nil {
 		return result, err
 	}
+	// Direct executables can ask Windows for the AppContainer known temp folder
+	// before creating any files. PowerShell normally creates this implicitly.
+	if err = os.MkdirAll(filepath.Join(scratch, "Packages", name, "AC", "Temp"), 0700); err != nil {
+		return result, err
+	}
 	var caps securityCapabilities
 	var networkCaps []windows.SIDAndAttributes
 	var sid *windows.SID
@@ -380,6 +385,7 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 		}
 	}
 	env = append(env, "ECHO_WORKSPACE="+r.Directory)
+	env = append(env, "GOTMPDIR="+scratch)
 	// Native clients must not fall back to virtualized known-folder paths or
 	// machine-wide credential/configuration files.
 	if r.Executable != "" {

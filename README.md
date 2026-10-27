@@ -6,7 +6,7 @@ Open **Apps → Monaco Editor** for the built-in code editor. Choose a bot above
 
 ## Run on Windows
 
-Run `echo.exe`, then open **http://localhost:3740**. The app is named Echo; data continues to use `%LOCALAPPDATA%\Echo2` and its existing database and credential identifiers, preserving your bots, chats, model settings and protected credentials without a migration. Stop the console with Ctrl+C to flush active streams and terminate child processes. Only one server may open a data directory.
+Run `echo.exe`, then open **http://localhost:3740**. The app is named Echo; data continues to use `%LOCALAPPDATA%\Echo2` and its existing database and credential identifiers. Additive, versioned storage migrations preserve existing bots, chats, model settings and credentials. Stop the console with Ctrl+C to flush active streams and terminate child processes. Only one server may open a data directory.
 
 ```powershell
 .\echo.exe
@@ -14,7 +14,54 @@ Run `echo.exe`, then open **http://localhost:3740**. The app is named Echo; data
 .\echo.exe -port 3740 -data C:\path\to\echo-data
 ```
 
-Connect an existing compatible model server in **Settings → Local Models**, using its API base URL, for example `http://127.0.0.1:1234/v1`. Echo does not download or launch models. Model Settings contains connection/model selection, thinking and temperature; each send snapshots the selection for all recipients. Automatic context compaction can be enabled per connection and never deletes stored history.
+## Connect machines with Swarm
+
+Swarm is a built-in, app-scoped plugin and starts inactive. On each remote machine, run Echo and configure **Settings → Hosted Server** with a reachable listening address and owner password. Use HTTPS when the connection crosses an untrusted network: the initial URL/password pairing uses the chosen HTTP or HTTPS origin.
+
+Open **Settings → Swarm** on the machine serving your browser. Enter the remote Echo origin, its owner password, and an optional shared machine name such as `linux`. Explicit connection enables the installed Swarm plugin on both ends, creates reciprocal access, and remembers it across restarts. The password is required even for a loopback URL. Edit the advertised name in that machine's Swarm settings. Names use lowercase letters, digits, underscores and hyphens; duplicate names gain a stable node-ID suffix. Saved references survive renaming.
+
+Use one composer to address bots on any authorized machine:
+
+```text
+@kaiju @linux.kaiju @mac.kaiju pull the latest and ensure the engine is still building
+@linux.echo Create a kaiju bot that works in the workspace /path/to/workspace
+```
+
+Bare handles always refer to the machine serving your browser, including when you open a remote chat. A remote Echo manages only its own bots and folders. Every worker uses its own model connection, credentials, plugins, tools and filesystem permissions. Use the machine selector in Model Settings to override each machine's model for a shared chat. A remote-only request does not require a model connection on the entry machine. Bot handoffs can address only participants selected in the current user message.
+
+The combined sidebar includes existing remote chats and machine chips, with an optional machine filter. Each chat retains one home machine; new chats belong to the entry machine. Settings has an explicit machine selector. Apps, dock entries and Monaco windows stay bound to their owning machine, including their editor buffers, recovery drafts, bookmarks and file subscriptions. Remote Development controls restart and reconnect their selected machine without reloading the entire interface. File references retain their owning machine; attach a file explicitly when it needs to be transferred. Native file reveal remains restricted to a local connection on the file's host.
+
+Swarm discovers topology through connected peers, with direct links preferred and encrypted relay transport when necessary. Peers with matching passwords can authenticate automatically. A different-password destination requires its own password from each entry point: access through an intermediate machine does not grant access to that destination. No network scan is performed. **Disconnect** retains credentials but prevents automatic reconnection; **Reconnect** reverses it. **Revoke access**, a password change, or disabling Swarm invalidates or suspends access. Automatic discovery cannot reactivate disabled or revoked connections; explicit pairing can.
+
+Reachable workers continue when another worker disconnects. Running workers can finish if their chat home disappears; results reconcile when it returns. Opened transcripts remain readable from the entry machine's cache, while new messages require the home to be reachable. There is no ownership failover. Accepted execution is durable and retries do not rerun tools; a worker crash leaves interrupted work. Stop and deletion persist pending cancellation during outages, and deletion tombstones prevent late results from recreating history. Mixed-machine work reserves its bots across hosts before starting; busy reservations are released and retried without holding a partial set indefinitely.
+
+## Run on Linux or macOS
+
+Build with `sh build.sh` or use the native `echo` executable, then run `./echo -port 3740`. The default profile is `$XDG_CONFIG_HOME/Echo2` (normally `~/.config/Echo2`) on Linux and `~/Library/Application Support/Echo2` on macOS. Override it with `-data /absolute/profile/path`. SIGTERM and Ctrl+C shut down gracefully.
+
+Linux native tools require [bubblewrap](https://github.com/containers/bubblewrap) and working user namespaces. On Debian/Ubuntu, install the `bubblewrap` package. Distribution policies may restrict unprivileged user namespaces; Echo reports containment failures instead of running unconfined. macOS uses the system Seatbelt launcher, `/usr/bin/sandbox-exec`; absence or policy failure is explicit. Native macOS acceptance must be run on an actual Mac before distributing a macOS release; cross-compilation alone is insufficient.
+
+Windows uses Credential Manager. Unix stores credentials in an unattended per-profile AES-GCM vault: owner-only directories/files, atomic writes, and a protected encryption key in the profile. Ordinary restarts need no interactive unlock or repeated peer passwords. Keep the complete profile protected and backed up together; copying only its encrypted credential files cannot recover them.
+
+Background startup is optional and never installed by building or pairing:
+
+```powershell
+# Windows: explicitly opt into startup at your login.
+.\scripts\startup.ps1 -Install -Executable C:\path\to\echo.exe
+# Remove that login task:
+.\scripts\startup.ps1 -Uninstall
+```
+
+```sh
+# Linux user systemd service / macOS user LaunchAgent:
+sh scripts/startup.sh --install /absolute/path/to/echo /absolute/profile/path 3740
+```
+
+The service definitions contain no owner password. Linux startup before login additionally requires user lingering configured by the system administrator. Manage the installed service with `systemctl --user`, or the macOS LaunchAgent with `launchctl`.
+
+## Model connections
+
+Connect an existing compatible model server in **Settings → Local Models**, using its API base URL, for example `http://127.0.0.1:1234/v1`. Echo does not download or launch models. Model Settings contains connection/model selection, thinking and temperature; each send snapshots the selection for recipients on that machine. Automatic context compaction can be enabled per connection and never deletes stored history.
 
 ### Install Echo on your desktop
 
@@ -30,7 +77,7 @@ Uploads support PNG, JPEG, GIF, WebP, MP4, WebM, MOV, PDF, and UTF-8 text/code f
 
 The endpoint editor includes temperature defaults, Top K/P, Min P, context length, compression threshold, max output tokens, frequency/presence/repetition penalties, reasoning effort, thinking-token budget, and request/stream idle timeouts. Blank optional sampling fields are omitted from requests. Named reasoning effort overrides the local `thinking_token_budget`; unsupported settings are never silently downgraded. A stream idle timeout of `-1` disables the inactivity limit; arriving data and SSE heartbeats reset it. The request timeout remains an overall limit.
 
-Add a compatible cloud endpoint in **Settings → Cloud Models**, then select the connection and model in the chat just like a local model. No global or per-bot enable switch is required; the chat's selection applies to every recipient. Enter API keys in its password field; keys are stored in Windows Credential Manager. Changing the destination clears the existing credential binding unless a replacement key is supplied.
+Add a compatible cloud endpoint in **Settings → Cloud Models**, then select the connection and model in the chat just like a local model. No global or per-bot enable switch is required; the chat's selection applies to recipients on that machine. Enter API keys in its password field; keys use Windows Credential Manager or the Unix profile vault. Changing the destination clears the existing credential binding unless a replacement key is supplied.
 
 Installed model providers appear in the connection editor's Provider field. The `provider` authoring template delegates to the streaming client; other protocols can use bounded, endpoint-confined host requests without receiving credentials. The `renderer` template formats assistant replies inside an isolated frame. Both extension points support per-bot toggles.
 
@@ -49,7 +96,7 @@ The sidebar shows every chat once under its accumulated named-bot combination. E
 
 When a bot finishes its final reply, its progress messages, reasoning, handoffs and tool activity fold into **Show work** above that reply. Each bot has its own group in a shared chat. Expand it to inspect the complete activity; the stored transcript is unchanged. Running, failed and interrupted work stays visible. Chat cards use compact spacing, omit routine completion badges, and show tool names once.
 
-**Files changed** appears below each finished response, outside Show work. It lists Created, Edited and Deleted files, combines repeated edits and omits changes that were fully reverted. Click a row (or focus it and press Enter) to reveal the file in Windows File Explorer. Removed files open their nearest existing containing folder within the bot's current workspace. The action requires a local connection to Echo on that Windows computer; remote browsers receive an explanation. Existing file permissions are checked again when clicking, including after workspace changes.
+**Files changed** appears below each finished response, outside Show work. It lists Created, Edited and Deleted files, combines repeated edits and omits changes that were fully reverted. Click a row (or focus it and press Enter) to reveal the file in the host native file manager. Removed files open their nearest existing containing folder within the bot's current workspace. The action requires a local connection to Echo on that computer; remote browsers receive an explanation. Existing file permissions are checked again when clicking, including after workspace changes.
 
 File tools and plugin file capabilities record changes directly. Shell and Git/Fossil/P4 commands compare the bot's workspace folders before and after execution; unbound bots compare the command's working directory. Scans skip source-control metadata, dependency/cache folders, links and Echo's private state, and are limited to 20,000 entries and two seconds per snapshot. Small files use content fingerprints; files over 1 MiB use size, modification time and permissions. An incomplete scan is labeled. Failed or stopped work still lists observed changes. The compact metadata persists with the transcript and is removed with its chat; pre-existing transcripts are not retrospectively scanned.
 
@@ -85,15 +132,17 @@ Only the owner settings can change the server URL, and HTTP redirects are reject
 
 These built-ins run the installed native CLIs through the same process broker as Shell, with independent per-bot switches. Each exposes `*_command`, `*_status`, and `*_diff`. Command tools take a subcommand, an array of literal arguments, a working directory, optional standard input, and a timeout of up to 300 seconds. They stream output and cancel with the chat; Shell need not be enabled. For example, ask “@kaiju show the Git diff,” “@kaiju commit the Fossil changes with message …,” or “@backend open shield.cpp for edit in Perforce.”
 
-Install `git.exe`, `fossil.exe`, or `p4.exe` on PATH, or choose its absolute executable in that plugin's settings. Use a dedicated CLI folder; its runtime folder receives read/execute access. Additional runtime folders can be granted in settings. Set Git author name/email or Fossil user there. Fossil's repository database and checkout must both be within the bot's folders. Editors and interactive prompts are unavailable; supply commit messages and Perforce `-i` forms explicitly. Read [Git's command reference](https://git-scm.com/docs/git) and [Fossil's environment documentation](https://fossil-scm.org/home/doc/004c5507/www/env-opts.md) for native behavior.
+Install `git`, `fossil`, or `p4` on PATH (`.exe` on Windows), or choose its absolute executable in that plugin's settings. Use a dedicated CLI folder; its runtime folder receives read/execute access. Additional runtime folders can be granted in settings. Set Git author name/email or Fossil user there. Fossil's repository database and checkout must both be within the bot's folders. Editors and interactive prompts are unavailable; supply commit messages and Perforce `-i` forms explicitly. Read [Git's command reference](https://git-scm.com/docs/git) and [Fossil's environment documentation](https://fossil-scm.org/home/doc/004c5507/www/env-opts.md) for native behavior.
 
-P4 settings include server, user, client and optional charset/trust file. Save a ticket or password through the separate protected field after saving the server/user. Echo stores it in Windows Credential Manager, injects it only into P4's process environment, and redacts it from streaming/final output. Changing the server/user clears the saved credential. P4's `login`, `tickets`, `passwd`, and `set` commands are excluded to keep authentication out of chat; obtain a ticket outside Echo, then save it in settings. The plugin supports workspace operations against the configured server; DVCS/bootstrap commands and shell transports are excluded so they cannot redirect the saved credential. SSL trust files must be within the bot's folders. See [P4 global options](https://help.perforce.com/helix-core/server-apps/cmdref/current/Content/CmdRef/global.options.html) and [ticket authentication](https://help.perforce.com/helix-core/server-apps/cmdref/current/Content/CmdRef/P4PASSWD.html).
+P4 settings include server, user, client and optional charset/trust file. Save a ticket or password through the separate protected field after saving the server/user. Echo stores it in the host credential vault, injects it only into P4's process environment, and redacts it from streaming/final output. Changing the server/user clears the saved credential. P4's `login`, `tickets`, `passwd`, and `set` commands are excluded to keep authentication out of chat; obtain a ticket outside Echo, then save it in settings. The plugin supports workspace operations against the configured server; DVCS/bootstrap commands and shell transports are excluded so they cannot redirect the saved credential. SSL trust files must be within the bot's folders. See [P4 global options](https://help.perforce.com/helix-core/server-apps/cmdref/current/Content/CmdRef/global.options.html) and [ticket authentication](https://help.perforce.com/helix-core/server-apps/cmdref/current/Content/CmdRef/P4PASSWD.html).
 
 Workspace-bound source-control commands start without network access. Grant Internet and/or private-network access directly in the relevant plugin's settings for remote operations. These grants include native descendants; the private-network Windows capability permits both connections and listeners. Filesystem restrictions remain enforced. Chat tools cannot enlarge these grants. Windows loopback isolation can still prevent bound bots from reaching a server on the same machine; Echo does not add machine-wide exemptions or fall back to an unconfined process. Unbound bots retain their unrestricted host scope. [Microsoft's AppContainer isolation reference](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) describes these OS boundaries.
 
 ## Native workspace restrictions
 
-Unbound bots have the requested unrestricted host scope. Binding folders confines filesystem tools through `os.Root` and native commands through a separate Windows AppContainer identity. Workspaces being disabled never removes those restrictions. Shell commands and descendants belong to a cancellable Job Object. Echo journals its own ACL entries and cleans them after execution or at startup after a crash.
+Unbound bots have the requested host filesystem scope, except Echo's protected private profile. Binding folders confines filesystem tools through `os.Root` and native commands through the platform sandbox. Windows uses a separate AppContainer identity and cancellable Job Object; Echo journals its own ACL entries and cleans them after execution or at startup after a crash. Linux uses bubblewrap namespaces, and macOS uses Seatbelt. Workspaces being disabled never removes these restrictions.
+
+Linux/macOS network access uses a filtered HTTP(S)/SOCKS proxy and checks the destination against the bot's Internet/private-network grants. Direct network connections remain denied. HTTP-based Git operations can use these proxy settings; tools and protocols that ignore them, including direct SSH or Perforce transports, cannot connect through this sandbox. Native tool compatibility must be checked on the destination OS.
 
 Installed Go, Git, Node and .NET toolchain directories are detected once and displayed in Shell settings as read/execute grants. Toolchains that cannot admit an AppContainer may use a read-only private copy, limited to 512 MiB. Build dependencies must already be present: scoped Shell processes have no network capability. Source-control plugins can receive the explicit network grants described above. Unsupported configurations return errors and never fall back to unrestricted execution.
 
@@ -111,7 +160,7 @@ After downtime, every missed occurrence awaits review. Select jobs, set concurre
 
 **Check for Updates** fetches the checked-out branch’s configured upstream and reports whether it is up to date, ahead, behind, or diverged. A tracking branch is required: Echo does not choose a remote or switch branches. When behind, **Update & Relaunch** fast-forwards the upstream and builds. Conflicting edits and diverged histories stop the update; Echo never resets, stashes, or discards your edits.
 
-**Build & Relaunch** builds the current checkout (including local edits), its plugin runtime, and frontend, then launches the repository’s `echo.exe`. It requires Git, PowerShell, Go, Node.js, and npm on the server. **Relaunch** restarts the current executable without building; **Terminate Echo** stops it without restarting. Neither requires a source checkout. Restarting and stopping interrupt active work. Echo remains available during builds and closes gracefully only after a successful build and launcher preparation. The requesting browser waits for a replacement process and reloads the same tab.
+**Build & Relaunch** builds the current checkout (including local edits), its plugin runtime, and frontend, then launches the repository's `echo.exe` on Windows or `echo` on Unix. It requires Git, Go, Node.js, npm, and PowerShell on Windows or `/bin/sh` on Unix. **Relaunch** restarts the current executable without building; **Terminate Echo** stops it without restarting. Neither requires a source checkout. Restarting and stopping interrupt active work. Echo remains available during builds and closes gracefully only after a successful build and launcher preparation. The browser waits for a replacement process; an entry-host restart reloads the tab, while a remote restart refreshes that instance's resources.
 
 The panel shows progress and the latest 16 KiB of operation output. Full logs live under the existing data directory’s `development/<operation-id>/` folder, alongside launcher diagnostics and replacement-process stdout/stderr. If a build fails after an update, the checkout stays updated and the previous Echo process stays running. If a restart fails, inspect those logs and start Echo manually. Operations are serialized across browsers; checks run only when requested.
 
@@ -127,4 +176,11 @@ Requires Go 1.26+, Node.js compatible with Vite 8, and npm. Windows release acce
 .\scripts\test-development.ps1      # Isolated real build/relaunch/terminate acceptance
 ```
 
-The browser tests use deterministic providers and isolated test data on ports 3742/3743. They do not contact a cloud model or use your application data. For frontend iteration, run the backend on 3740 and `npm run dev` from `web` (Vite proxies `/api`). Run build and test commands from this repository root; the release ZIP is `echo-windows-amd64.zip` on Windows AMD64. `OLD/` is a local reference archive and is not included in builds, tests or release packages. See [architecture](ARCHITECTURE.md) and [acceptance](ACCEPTANCE.md).
+```sh
+sh build.sh                           # Native Linux/macOS executable
+sh build.sh --output /tmp/staged-echo  # Alternate output
+sh build.sh --test --native-tests --browser-tests
+sh build.sh --release                 # Full native gates and .tar.gz archive
+```
+
+The browser tests use three isolated Echo fixtures on ports 3742, 3744 and 3745 and a deterministic model on 3743. They do not contact a cloud model or use your application data. Fixture names `linux` and `mac` identify simulated peers; the browser fixture does not prove native execution on those operating systems. For frontend iteration, run the backend on 3740 and `npm run dev` from `web` (Vite proxies `/api`). Run commands from the repository root. Releases are `echo-windows-amd64.zip` or `echo-<os>-<architecture>.tar.gz`; external CLIs are not bundled. `OLD/` is excluded. See [architecture](ARCHITECTURE.md) and [acceptance](ACCEPTANCE.md).

@@ -16,7 +16,7 @@ import (
 	"github.com/brent/echo/internal/model"
 )
 
-var mentions = regexp.MustCompile(`(?:^|[^A-Za-z0-9_@])@([A-Za-z][A-Za-z0-9_-]*)`)
+var mentions = regexp.MustCompile(`(?:^|[^A-Za-z0-9_@])@([A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)*)`)
 var codeBlocks = regexp.MustCompile("(?s)```.*?```|`[^`]*`")
 
 func structuredSegments(req SendRequest, bots []domain.Bot) []domain.Segment {
@@ -100,6 +100,9 @@ func (s *Server) recipients(req SendRequest) ([]domain.Bot, error) {
 	return result, nil
 }
 func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
+	if req.scheduledBot == "" && s.needsSwarm(req) {
+		return s.sendSwarm(chatID, req)
+	}
 	if e := s.ctx.Err(); e != nil {
 		return nil, e
 	}
@@ -179,7 +182,8 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 		}
 	}
 	ctx, cancel := context.WithCancel(s.ctx)
-	d := &dispatch{id: domain.ID(), chatID: chatID, group: coordinator.New(ids), ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: map[string]chan struct{}{}, active: map[string]bool{}, admitted: map[string]chan struct{}{}}
+	localGroup := coordinator.New(ids)
+	d := &dispatch{id: domain.ID(), chatID: chatID, group: localGroup, ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: map[string]chan struct{}{}, active: map[string]bool{}, admitted: map[string]chan struct{}{}}
 	for _, b := range bots {
 		d.wake[b.ID] = make(chan struct{}, 1)
 		d.active[b.ID] = true
@@ -224,7 +228,7 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 	}
 	s.enqueueLocked(d)
 	s.mu.Unlock()
-	d.group.OnSend = func(r coordinator.Request) {
+	localGroup.OnSend = func(r coordinator.Request) {
 		s.emit("handoff", chatID, "", r.From, r)
 		d.mu.Lock()
 		d.active[r.To] = true
@@ -379,6 +383,9 @@ func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run do
 	history, e := s.history(bot, run.ChatID)
 	if e != nil {
 		return e
+	}
+	if d.worker != nil {
+		history[0].Content += "\n" + d.worker.rosterPrompt(bot.ID)
 	}
 	key, e := s.key(ctx, endpoint)
 	if e != nil {

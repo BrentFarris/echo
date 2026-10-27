@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/brent/echo/internal/server"
@@ -70,7 +71,7 @@ func main() {
 	_, actualPort, _ := net.SplitHostPort(addr)
 	log.Printf("Echo: %s://localhost:%s (data: %s)", scheme, actualPort, *data)
 	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	select {
 	case <-stop:
 	case <-app.ShutdownRequested():

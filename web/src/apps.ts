@@ -1,8 +1,9 @@
 import type { Bot, Plugin } from './types';
+import { entryNode, localID, machineName, ownerEcho, sameMachine } from './instances';
 
 export function pluginAvailable(plugin: Plugin | undefined, bot: Bot | undefined): boolean {
-  return !!plugin && !!bot && plugin.enabled && !plugin.pending &&
-    (plugin.scope !== 'echo' || bot.id === 'echo') && (plugin.scope === 'app' || bot.plugins[plugin.id] !== false);
+  return !!plugin && !!bot && sameMachine(bot, plugin.nodeId || entryNode) && plugin.enabled && !plugin.pending &&
+    (plugin.scope !== 'echo' || localID(bot.id) === 'echo') && (plugin.scope === 'app' || bot.plugins[plugin.id] !== false);
 }
 
 export function appStatus(plugin: Plugin, echo: Bot | undefined): string {
@@ -16,9 +17,9 @@ export function registeredApps(plugins: Plugin[]): Plugin[] {
   return plugins.filter(p => !!p.app).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
 }
 
-export function dockedApps(plugins: Plugin[], dock: string[], echo: Bot | undefined): Plugin[] {
+export function dockedApps(plugins: Plugin[], dock: string[], echo: Bot | undefined, bots: Bot[] = echo ? [echo] : []): Plugin[] {
   const apps = new Map(registeredApps(plugins).map(p => [p.id, p]));
-  return [...new Set(dock)].map(id => apps.get(id)).filter((p): p is Plugin => !!p && pluginAvailable(p, echo));
+  return [...new Set(dock)].map(id => apps.get(id)).filter((p): p is Plugin => !!p && pluginAvailable(p, ownerEcho(p, bots)));
 }
 
 export function appIcon(plugin: Plugin): HTMLElement {
@@ -45,7 +46,7 @@ type Actions = {
 export class Apps {
   private signature = '';
   private pending = new Set<string>();
-  private data?: { plugins: Plugin[]; ids: string[]; echo: Bot | undefined };
+  private data?: { plugins: Plugin[]; ids: string[]; echo: Bot | undefined; bots: Bot[] };
   constructor(private catalog: HTMLElement, private dock: HTMLElement, private actions: Actions) {
     dock.addEventListener('wheel', event => {
       if (dock.scrollWidth <= dock.clientWidth || event.ctrlKey || event.shiftKey) return;
@@ -63,8 +64,8 @@ export class Apps {
     });
   }
 
-  render(plugins: Plugin[], ids: string[], echo: Bot | undefined) {
-    this.data = { plugins, ids, echo };
+  render(plugins: Plugin[], ids: string[], echo: Bot | undefined, bots: Bot[] = echo ? [echo] : []) {
+    this.data = { plugins, ids, echo, bots };
     const apps = registeredApps(plugins);
     const signature = JSON.stringify([apps.map(p => [p.id, p.name, p.app, p.enabled, p.pending, p.scope]), ids, echo?.plugins, !!echo, [...this.pending]]);
     if (signature === this.signature) return;
@@ -75,11 +76,12 @@ export class Apps {
     const scroll = this.dock.scrollLeft;
     const grid = document.createElement('div'); grid.className = 'apps-grid';
     for (const plugin of apps) {
-      const status = appStatus(plugin, echo), pinned = ids.includes(plugin.id);
+      const status = appStatus(plugin, ownerEcho(plugin, bots)), pinned = ids.includes(plugin.id);
       const card = document.createElement('article'); card.className = 'app-card'; card.dataset.appId = plugin.id;
       const heading = document.createElement('div'); heading.className = 'app-card-heading';
       const name = document.createElement('h2'); name.textContent = plugin.name;
       heading.append(appIcon(plugin), name); card.append(heading);
+      if (plugin.nodeId && plugin.nodeId !== entryNode) { const chip = document.createElement('small'); chip.className = 'machine-chip'; chip.textContent = machineName(plugin.nodeId); heading.append(chip); }
       if (status) { const label = document.createElement('p'); label.className = 'app-status subtle'; label.textContent = status; card.append(label); }
       const buttons = document.createElement('div'); buttons.className = 'app-card-actions';
       const open = this.button('Open', `open:${plugin.id}`, () => this.actions.open(plugin)); open.disabled = !!status;
@@ -88,7 +90,7 @@ export class Apps {
         if (this.pending.has(plugin.id)) return;
         this.pending.add(plugin.id); pin.disabled = true;
         try { await this.actions.dock(plugin.id, !pinned); }
-        finally { this.pending.delete(plugin.id); this.signature = ''; if (this.data) this.render(this.data.plugins, this.data.ids, this.data.echo); }
+        finally { this.pending.delete(plugin.id); this.signature = ''; if (this.data) this.render(this.data.plugins, this.data.ids, this.data.echo, this.data.bots); }
       });
       pin.setAttribute('aria-label', `${pinned ? 'Undock' : 'Dock'} ${plugin.name}`);
       pin.disabled = this.pending.has(plugin.id) || (!pinned && !!status);
@@ -100,7 +102,7 @@ export class Apps {
     if (apps.length) this.catalog.append(grid);
     else { const empty = document.createElement('p'); empty.className = 'apps-empty subtle'; empty.textContent = 'No apps yet. Ask Echo to create an app, such as a calculator.'; this.catalog.append(empty); }
     this.dock.replaceChildren();
-    for (const plugin of dockedApps(plugins, ids, echo)) {
+    for (const plugin of dockedApps(plugins, ids, echo, bots)) {
       const button = this.button('', `open:${plugin.id}`, () => this.actions.open(plugin));
       button.className = 'app-dock-button'; button.title = plugin.name; button.setAttribute('aria-label', `Open ${plugin.name}`);
       button.append(appIcon(plugin)); this.dock.append(button);

@@ -1,4 +1,7 @@
 /echo
+/browser-fixture
+/mock-model
+/*.tar.gz
 /OLD/
 /*.exe
 /*.zip

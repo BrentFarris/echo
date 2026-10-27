@@ -2,6 +2,35 @@
 
 Run `build.ps1 -Release` from the repository root on Windows. It must succeed before distributing a release. The script requires the native toolchains instead of silently skipping missing installations. It builds `echo.exe` and `echo-windows-amd64.zip` on Windows AMD64. The previous application stays in the ignored `OLD/` reference folder and is excluded from release packaging.
 
+For Linux/macOS, run `sh build.sh --release` on the destination OS. Linux requires bubblewrap and usable user namespaces; macOS requires Seatbelt. `.github/workflows/native.yml` defines native Windows/Linux/macOS regression jobs. Cross-compilation is a build check, not runtime acceptance. Do not mark a native platform accepted because its named browser fixture passed on another OS.
+
+## Swarm acceptance
+
+The Go integration fixtures use separate profiles, secret stores and HTTP servers; transport unit tests exercise actual duplex links. Browser acceptance runs three Echo instances and one deterministic model, with independent remote resources.
+
+| Area | Automated evidence |
+|---|---|
+| Routing/execution | Three identically named Kaiju bots; remote-only dispatch without an entry model; per-machine overrides; remote Echo creates a workspace-bound bot only on its own host |
+| Coordination | Bidirectional handoffs; fixed participant rosters and authority checks; competing homes release partial reservations and finish without overlap/deadlock; transactional send/reply/drain delivery hooks |
+| Identity/topology | Persistent node identity; shared name collisions and rename-safe saved references; A–B–C relay discovery; password boundaries; routing cycles; duplicate and simultaneous reciprocal connections |
+| Authentication | Pairing requires a password on loopback; explicit activation; discovery cannot enable a disabled/disconnected peer; incompatible versions fail; revocation removes all grants; directory redaction; receiver challenge rejects captured request frames |
+| Recovery | Lost/repeated acceptance; home restart with independent worker completion; worker restart interrupted without rerunning tools; durable stop/delete during outage; no late history resurrection; source checkpoint rollback/stale rejection |
+| Owner isolation | Entry identity survives remote-home dispatch; a relay's credentials cannot substitute for origin authorization; worker tokens cannot call owner state; cross-host file references do not grant local filesystem access |
+| Browser | Existing remote chats and machine chips; simultaneous local/remote Monaco; dirty buffers through disconnection and owner-specific saves; remote iframe storage bridge; selected-host schedules/models; remote Development reconnect without page reload |
+
+Useful focused commands:
+
+```sh
+go test ./internal/swarm ./internal/coordinator ./internal/store -count=1
+go test ./internal/server -run TestSwarm -count=1 -timeout=5m
+# Race instrumentation makes WASI fixture construction substantially slower.
+go test -race ./internal/swarm ./internal/coordinator ./internal/store -count=1
+go test -race ./internal/server -run TestSwarm -count=1 -timeout=15m
+cd web && npm run test:e2e -- e2e/swarm.spec.ts
+```
+
+Native Linux testing was performed in Ubuntu under WSL: the clean build, Go tests/vet, 223 frontend tests, 54 browser tests, bubblewrap containment, private-profile denial, filtered egress/direct bypass rejection, descendant cancellation, scoped Go builds/Git operations, WASI authoring, Unix vault persistence and build/relaunch behavior. Linux race checks cover transport, durable coordination/storage and representative multi-host dispatch/recovery. Windows native acceptance covers the existing toolchain/SCM/credential suites plus the Swarm suites. macOS native runtime acceptance remains required on an actual Mac; no Mac runtime was available during this implementation. The Darwin ARM64 cross-build must not be presented as a Seatbelt/runtime test.
+
 ## Automated coverage
 
 - Apps: explicit registration and icon validation; UI template and HTML-only authoring; registration digests and rollback; bot-scoped launch checks; authenticated, serialized dock mutations and restart persistence; cross-browser dock synchronization; singleton embedded/floating views without iframe state resets; inactive/pending status and retained pins; registration removal and restoration; draft/attachment/thread preservation during streaming; square icons, keyboard/wheel scrolling and mobile layout.
@@ -24,8 +53,8 @@ Changed-file summaries cover direct and plugin file operations and bounded nativ
 
 Native scoped Shell commands have no network capability and require dependencies/toolchains already available within their grants. Git/Fossil/P4 can receive owner-granted Internet/private-network capabilities without removing filesystem isolation. Native tests verify the actual capability SIDs and denied sibling reads, literal argument preservation and standard input, real scoped Git/Fossil init/add/commit/diff workflows, and a temporary Perforce depot with client forms, add, submit, edit and diff. Perforce networking is tested using the unbound actor because Windows blocks AppContainer loopback by default; its client also runs inside AppContainer for version checks. Settings tests cover permission expansion denial, per-bot toggles, protected ticket storage, output redaction and credential invalidation on destination changes.
 
-Existing Git loose-ref repositories and tools requiring denied ancestor metadata can fail explicitly; new scoped Git repositories use reftable. No automatic repository conversion, loopback exemption or unrestricted fallback is performed. Portable toolchain copies are bounded to 512 MiB and reject links. Non-Windows native execution is unsupported.
+On Windows, existing Git loose-ref repositories and tools requiring denied ancestor metadata can fail explicitly; new scoped Git repositories use reftable. No automatic repository conversion, loopback exemption or unrestricted fallback is performed. Portable toolchain copies are bounded to 512 MiB and reject links. Linux/macOS native tools use their platform sandbox and filtered HTTP(S)/SOCKS egress; tools that ignore proxy settings cannot make direct network connections. Unix SSH/Perforce network compatibility is not covered by the Windows depot acceptance test.
 
 Custom WASI providers and iframe renderers use the documented host contracts. Acceptance includes native compilation and streaming through a provider, endpoint and credential confinement, rejection before dispatch when a recipient disables the provider, hostile custom-renderer output, and per-bot plain-text fallback. Other provider protocols use bounded HTTP responses; compatible endpoints use native SSE streaming.
 
-The new Echo is the primary application at the repository root, listening on port 3740 by default. It retains the `%LOCALAPPDATA%\Echo2` profile. Exercise the actual configured models and intended Windows projects and check their toolchain compatibility. Legacy source and local files remain available in `OLD/` for reference.
+Echo listens on port 3740 by default and retains the `%LOCALAPPDATA%\Echo2` Windows profile. Unix uses the platform's user configuration directory with the same `Echo2` basename. Exercise the actual configured models and intended projects on each target OS and check their toolchain compatibility. Startup services are opt-in and must be tested separately under the intended user account. Legacy source and local files remain available in `OLD/` for reference.

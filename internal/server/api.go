@@ -12,9 +12,11 @@ import (
 	"github.com/brent/echo/internal/model"
 	"github.com/brent/echo/internal/plugins"
 	"github.com/brent/echo/internal/store"
+	"github.com/brent/echo/internal/swarm"
 )
 
 func (s *Server) routes(mux *http.ServeMux) {
+	s.swarmRoutes(mux)
 	s.appRoutes(mux)
 	s.editorRoutes(mux)
 	s.developmentRoutes(mux)
@@ -31,6 +33,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
+		visible := chats[:0]
+		for _, chat := range chats {
+			if !chat.Projection {
+				visible = append(visible, chat)
+			}
+		}
+		chats = visible
 		endpoints, e := s.Store.List("endpoints")
 		if e != nil {
 			respond(w, nil, e)
@@ -57,6 +66,14 @@ func (s *Server) routes(mux *http.ServeMux) {
 			return
 		}
 		runs, e := s.Store.List("runs")
+		visibleRuns := runs[:0]
+		for _, raw := range runs {
+			var run domain.Run
+			if json.Unmarshal(raw, &run) == nil && !strings.HasPrefix(run.ChatID, "swarm:") {
+				visibleRuns = append(visibleRuns, raw)
+			}
+		}
+		runs = visibleRuns
 		respond(w, map[string]any{"bots": bots, "chats": chats, "endpoints": endpoints, "plugins": ps, "schedules": schedules, "occurrences": jobs, "runs": runs, "appDock": dock}, e)
 	})
 	mux.HandleFunc("POST /api/v1/bots", func(w http.ResponseWriter, r *http.Request) {
@@ -224,6 +241,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 			return
 		}
 		fields := strings.Fields(a.Content)
+		if caller, ok := swarm.Caller(r.Context()); ok {
+			a.OriginNodeID = caller.NodeID
+		} else {
+			a.OriginNodeID = s.Swarm.Node().ID
+		}
 		if len(fields) > 0 && (fields[0] == "/approve" || fields[0] == "/missed") {
 			value, e := s.managementMessage(r.PathValue("id"), a)
 			respond(w, value, e)
@@ -315,7 +337,20 @@ func (s *Server) routes(mux *http.ServeMux) {
 		}
 		m.Enabled = a.Enabled
 		m.Config = a.Config
+		if m.ID == "swarm" {
+			name := text(a.Config, "name")
+			if name == "" {
+				name = s.Swarm.Node().Name
+			}
+			if e = s.Swarm.Configure(name, text(a.Config, "advertiseUrl")); e != nil {
+				respond(w, nil, e)
+				return
+			}
+		}
 		e = s.Plugins.Save(m)
+		if e == nil && m.ID == "swarm" {
+			s.Swarm.Refresh()
+		}
 		if e == nil && m.ID == "p4" && oldCredential != "" && oldCredential != text(m.Config, "credential") {
 			s.Secrets.Delete(r.Context(), oldCredential)
 		}

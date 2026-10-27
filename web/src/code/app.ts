@@ -1,3 +1,4 @@
+import { entryNode, resourceID, localID } from '../instances';
 import type { NativeApp, NativeAppContext } from '../pluginViews';
 import type { Bot, Plugin } from '../types';
 import { CodeView } from './codeView';
@@ -16,12 +17,13 @@ export async function mount(root: HTMLElement, context: NativeAppContext): Promi
   const settings = document.createElement('button'); settings.textContent = 'Editor Settings';
   toolbar.append(label, configure, settings); root.append(toolbar);
   const sessions = new Map<string, { view: CodeView; element: HTMLElement; bot: Bot; ready: Promise<void> }>();
+  const node = context.plugin.nodeId || entryNode, echoID = resourceID(node, 'echo'), preferenceKey = node && node !== entryNode ? `echo2:editor:${node}:bot` : 'echo2:editor:bot';
   let bots = context.bots, selected = context.botId, visible = true, disposed = false, generation = 0;
   let preferences = JSON.stringify(context.plugin.config);
-  try { selected = localStorage.getItem('echo2:editor:bot') || selected; } catch { /* Optional preference. */ }
-  if (!bots.some(b => b.id === selected)) selected = bots.some(b => b.id === context.botId) ? context.botId : 'echo';
+  try { selected = localStorage.getItem(preferenceKey) || selected; } catch { /* Optional preference. */ }
+  if (!bots.some(b => b.id === selected)) selected = bots.some(b => b.id === context.botId) ? context.botId : echoID;
   const renderBots = () => {
-    select.replaceChildren(...[...bots].sort((a,b) => Number(b.id === 'echo') - Number(a.id === 'echo') || a.name.localeCompare(b.name)).map(bot => {
+    select.replaceChildren(...[...bots].sort((a,b) => Number(localID(b.id) === 'echo') - Number(localID(a.id) === 'echo') || a.name.localeCompare(b.name)).map(bot => {
       const option = document.createElement('option'); option.value = bot.id; option.textContent = `${bot.name} (@${bot.handle})`; return option;
     })); select.value = selected;
   };
@@ -29,7 +31,7 @@ export async function mount(root: HTMLElement, context: NativeAppContext): Promi
     const current = ++generation;
     const bot = bots.find(b => b.id === id); if (!bot || disposed) return;
     selected = id; select.value = id;
-    try { localStorage.setItem('echo2:editor:bot', id); } catch { /* Optional preference. */ }
+    try { localStorage.setItem(preferenceKey, id); } catch { /* Optional preference. */ }
     for (const session of sessions.values()) { session.element.hidden = true; session.view.setVisible(false); }
     let session = sessions.get(id);
     if (!session) {
@@ -57,7 +59,7 @@ export async function mount(root: HTMLElement, context: NativeAppContext): Promi
         if (changed) void session.ready.then(() => { if (!disposed) session.view.applyPreferences(plugin.config); });
         if (JSON.stringify(bot.roots) !== JSON.stringify(session.bot.roots)) { session.bot = bot; void session.ready.then(() => session.view.updateBot(bot)).catch(error => toast(String(error))); }
       }
-      if (!bots.some(b => b.id === selected)) void choose('echo');
+      if (!bots.some(b => b.id === selected)) void choose(echoID);
       root.classList.toggle('editor-no-folders', !bots.find(b => b.id === selected)?.roots.length);
     },
     visible(value) { visible = value; for (const [id,s] of sessions) { s.element.hidden = !visible || id !== selected; void s.ready.then(() => { if (!disposed) s.view.setVisible(visible && id === selected); }); } },

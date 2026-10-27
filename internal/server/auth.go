@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/swarm"
 	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -70,6 +71,9 @@ func (s *Server) savedSessionLocked(r *http.Request) (deviceSession, bool) {
 }
 
 func (s *Server) authenticated(r *http.Request) bool {
+	if caller, ok := swarm.Caller(r.Context()); ok {
+		return !caller.Pairing && s.Swarm != nil && s.Swarm.Enabled() && s.Swarm.Authorized(caller.NodeID)
+	}
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
 	session, ok := s.savedSessionLocked(r)
@@ -226,7 +230,7 @@ func (s *Server) authRoutes(mux *http.ServeMux) {
 		s.authMu.Lock()
 		defer s.authMu.Unlock()
 		// Recheck after hashing: a different request may have revoked us.
-		if _, ok := s.savedSessionLocked(r); !ok {
+		if _, ok := s.savedSessionLocked(r); !ok && !swarm.Owner(r.Context()) {
 			http.Error(w, "Sign in required", http.StatusUnauthorized)
 			return
 		}
@@ -238,7 +242,17 @@ func (s *Server) authRoutes(mux *http.ServeMux) {
 			respond(w, nil, err)
 			return
 		}
-		s.newSessionLocked(w, r)
+		if s.Swarm != nil {
+			if err := s.Swarm.RevokeAll(); err != nil {
+				respond(w, nil, err)
+				return
+			}
+		}
+		if swarm.Owner(r.Context()) {
+			respond(w, map[string]bool{"changed": true}, nil)
+		} else {
+			s.newSessionLocked(w, r)
+		}
 		for id := range s.sessionSockets {
 			s.closeSessionSocketsLocked(id)
 		}

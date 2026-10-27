@@ -59,13 +59,16 @@ type Endpoint struct {
 
 // Attachment metadata travels with the transcript; bytes are stored once in SQLite.
 type Attachment struct {
-	ID        string `json:"id"`
-	ChatID    string `json:"chatId"`
-	Name      string `json:"name"`
-	MediaType string `json:"mediaType"`
-	Size      int64  `json:"size"`
+	NodeID       string `json:"nodeId,omitempty"`
+	OriginChatID string `json:"originChatId,omitempty"`
+	ID           string `json:"id"`
+	ChatID       string `json:"chatId"`
+	Name         string `json:"name"`
+	MediaType    string `json:"mediaType"`
+	Size         int64  `json:"size"`
 }
 type Segment struct {
+	NodeID      string        `json:"nodeId,omitempty"`
 	Type        string        `json:"type"`
 	Text        string        `json:"text,omitempty"`
 	BotID       string        `json:"botId,omitempty"`
@@ -81,14 +84,18 @@ type SegmentRange struct {
 	End   int `json:"end"`
 }
 type Chat struct {
-	ID         string            `json:"id"`
-	Title      string            `json:"title"`
-	Bots       map[string]string `json:"bots"`
-	Generation Generation        `json:"generation"`
-	CreatedAt  time.Time         `json:"createdAt"`
-	UpdatedAt  time.Time         `json:"updatedAt"`
+	OwnerNodeID      string                `json:"ownerNodeId,omitempty"`
+	Projection       bool                  `json:"projection,omitempty"`
+	GenerationByNode map[string]Generation `json:"generationByNode,omitempty"`
+	ID               string                `json:"id"`
+	Title            string                `json:"title"`
+	Bots             map[string]string     `json:"bots"`
+	Generation       Generation            `json:"generation"`
+	CreatedAt        time.Time             `json:"createdAt"`
+	UpdatedAt        time.Time             `json:"updatedAt"`
 }
 type Message struct {
+	NodeID            string       `json:"nodeId,omitempty"`
 	ID                string       `json:"id"`
 	ChatID            string       `json:"chatId"`
 	RunID             string       `json:"runId,omitempty"`

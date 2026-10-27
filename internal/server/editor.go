@@ -4,6 +4,7 @@ import (
 	"errors"
 	"github.com/brent/echo/internal/domain"
 	"github.com/brent/echo/internal/editorfs"
+	"github.com/brent/echo/internal/swarm"
 	"github.com/gorilla/websocket"
 	"net/http"
 	"net/url"
@@ -87,6 +88,9 @@ func (s *Server) editorEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	up := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool {
+		if swarm.Owner(r.Context()) {
+			return true
+		}
 		u, e := url.Parse(r.Header.Get("Origin"))
 		return e == nil && u.Host == r.Host
 	}}
@@ -96,6 +100,9 @@ func (s *Server) editorEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	sessionID := sessionKey(r)
+	if caller, ok := swarm.Caller(r.Context()); ok {
+		sessionID = "swarm:" + caller.NodeID
+	}
 	s.authMu.Lock()
 	if s.sessionSockets == nil {
 		s.sessionSockets = map[string]map[*websocket.Conn]bool{}
