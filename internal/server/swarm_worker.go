@@ -128,6 +128,11 @@ func (s *Server) prepareWorker(req workerRequest) error {
 	d.worker = w
 	d.group = &workerGroup{worker: w, drains: map[string]int{}}
 	s.mu.Lock()
+	if s.maintenance && !(local && s.dispatches[req.ID] != nil) {
+		s.mu.Unlock()
+		cancel()
+		return errMaintenance
+	}
 	if s.botReservations == nil {
 		s.botReservations = map[string]map[string]bool{}
 		s.botQueues = map[string][]*dispatch{}

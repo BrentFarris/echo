@@ -45,7 +45,7 @@ type Node struct {
 }
 
 func capabilities() []string {
-	return []string{"owner-api/1", "dispatch/1", "stream/1", "native-monaco/1"}
+	return []string{"owner-api/1", "dispatch/1", "stream/1", "native-monaco/1", "development-update/1"}
 }
 func compatible(n Node) bool {
 	return n.Version == Version && slices.Contains(n.Capabilities, "owner-api/1") && slices.Contains(n.Capabilities, "dispatch/1") && slices.Contains(n.Capabilities, "stream/1")

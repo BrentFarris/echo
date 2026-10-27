@@ -13,8 +13,9 @@ import (
 func (s *Server) ShutdownRequested() <-chan struct{} { return s.shutdownRequested }
 
 func (s *Server) developmentRoutes(mux *http.ServeMux) {
+	s.developmentUpdateRoutes(mux)
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
-		respond(w, map[string]string{"instanceId": s.Development.InstanceID()}, nil)
+		respond(w, map[string]string{"instanceId": s.Development.InstanceID(), "revision": s.Development.Revision()}, nil)
 	})
 	mux.HandleFunc("GET /api/v1/development", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)

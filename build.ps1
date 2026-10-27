@@ -33,7 +33,12 @@ try {
         go vet ./...
         if ($LASTEXITCODE) { throw 'Go vet failed' }
     }
-    go build -trimpath -o $OutputPath .
+    $revision = git rev-parse --verify --quiet HEAD
+    if ($LASTEXITCODE) { $revision = 'unknown' }
+    $sourceChanges = git status --porcelain --untracked-files=normal
+    if ($LASTEXITCODE) { $sourceChanges = 'unknown' }
+    if ($sourceChanges) { $revision = "$revision-modified" }
+    go build -trimpath -ldflags "-X github.com/brent/echo/internal/buildinfo.Revision=$revision" -o $OutputPath .
     if ($LASTEXITCODE) { throw 'Echo build failed' }
     if ($BrowserTests) {
         go build -o mock-model.exe ./cmd/mock-model

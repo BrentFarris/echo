@@ -19,7 +19,10 @@ GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build -trimpath -o internal/plugins/gue
 (cd web; npm ci --ignore-scripts --prefer-offline; npm run build; if [ "$test_suite" = 1 ]; then npm test; fi)
 if [ "$native" = 1 ]; then export ECHO2_NATIVE_TESTS=1 ECHO2_REQUIRE_TOOLCHAINS=1; fi
 if [ "$test_suite" = 1 ] || [ "$native" = 1 ]; then go test ./... -count=1 -timeout=5m; go vet ./...; fi
-go build -trimpath -o "$output" .
+revision=$(git rev-parse --verify HEAD 2>/dev/null || printf unknown)
+source_changes=$(git status --porcelain --untracked-files=normal 2>/dev/null) || source_changes=unknown
+if [ -n "$source_changes" ]; then revision="$revision-modified"; fi
+go build -trimpath -ldflags "-X github.com/brent/echo/internal/buildinfo.Revision=$revision" -o "$output" .
 if [ "$browser" = 1 ]; then
   go build -o mock-model ./cmd/mock-model
   go build -o browser-fixture ./cmd/browser-fixture

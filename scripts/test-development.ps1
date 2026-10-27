@@ -1,4 +1,4 @@
-param([string]$Binary = (Join-Path $PSScriptRoot '..\echo.exe'))
+param([string]$Binary = (Join-Path $PSScriptRoot '..\echo.exe'), [switch]$Coordinated)
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $testRoot = Join-Path $repoRoot '.test-data'
@@ -39,6 +39,20 @@ try {
     }
     git -C $source init -b development-test
     if ($LASTEXITCODE) { throw 'Could not initialize isolated source checkout' }
+    if ($Coordinated) {
+        Copy-Item -LiteralPath (Join-Path $repoRoot '.gitignore') -Destination $source
+        git -c core.safecrlf=false -C $source add .
+        if ($LASTEXITCODE) { throw 'Could not stage isolated source' }
+        git -C $source -c user.name=Echo-Test -c user.email=test@example.invalid -c commit.gpgsign=false commit -m 'Initial updater fixture'
+        if ($LASTEXITCODE) { throw 'Could not commit isolated source' }
+        $remote = Join-Path $sandboxRoot 'upstream.git'
+        git clone --bare $source $remote
+        if ($LASTEXITCODE) { throw 'Could not create isolated upstream' }
+        git -C $source remote add origin $remote
+        git -C $source fetch origin
+        git -C $source branch --set-upstream-to=origin/development-test
+        if ($LASTEXITCODE) { throw 'Could not configure fixture upstream' }
+    }
     $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
     $listener.Start()
     $port = $listener.LocalEndpoint.Port
@@ -73,6 +87,37 @@ try {
     $replacement = @(Get-Process -Name echo -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq (Join-Path $source 'echo.exe') })
     if ($replacement.Count -ne 1) { throw 'Replacement is not running from the selected repository' }
     Write-Output 'Build & Relaunch rebuilt all assets and launched the selected checkout.'
+
+    if ($Coordinated) {
+        $publisher = Join-Path $sandboxRoot 'publisher'
+        git clone $remote $publisher
+        if ($LASTEXITCODE) { throw 'Could not create fixture publisher' }
+        Set-Content -LiteralPath (Join-Path $publisher 'update-test.txt') -Value 'Pinned update acceptance'
+        git -C $publisher add update-test.txt
+        git -C $publisher -c user.name=Echo-Test -c user.email=test@example.invalid -c commit.gpgsign=false commit -m 'Pinned updater target'
+        if ($LASTEXITCODE) { throw 'Could not commit updater target' }
+        git -C $publisher push origin development-test
+        if ($LASTEXITCODE) { throw 'Could not publish fixture target' }
+        $targetRevision = git -C $publisher rev-parse HEAD
+        $node = (Invoke-RestMethod "$base/api/v1/swarm/peers" -WebSession $session).node.nodeId
+        $preview = Invoke-RestMethod "$base/api/v1/development/rollouts/check" -Method Post -Body (@{ sourceNodeId=$node; scope='machine' } | ConvertTo-Json) -ContentType 'application/json' -WebSession $session
+        if ($preview.target -ne $targetRevision -or $preview.members[0].status -ne 'queued') { throw "Unexpected update preview: $($preview | ConvertTo-Json -Depth 8)" }
+        $rollout = Invoke-RestMethod "$base/api/v1/development/rollouts" -Method Post -Body (@{ checkId=$preview.id } | ConvertTo-Json) -ContentType 'application/json' -WebSession $session
+        $deadline = (Get-Date).AddMinutes(5)
+        do {
+            $result = $null
+            try { $result = Invoke-RestMethod "$base/api/v1/development/rollouts/$($rollout.id)" -WebSession $session -TimeoutSec 3 } catch { }
+            if ($result -and $result.state -eq 'succeeded') { break }
+            if ($result -and $result.state -in @('partial', 'cancelled')) { throw ($result | ConvertTo-Json -Depth 8) }
+            Start-Sleep -Milliseconds 300
+        } while ((Get-Date) -lt $deadline)
+        if (-not $result -or $result.state -ne 'succeeded') { throw 'Coordinated update did not complete' }
+        $health = Invoke-RestMethod "$base/api/v1/health" -WebSession $session
+        if ($health.revision -ne $targetRevision -or $health.instanceId -eq $built) { throw 'Replacement revision or process identity did not match' }
+        $replacement = @(Get-Process -Name echo -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq (Join-Path $source 'echo.exe') })
+        if ($replacement.Count -ne 1) { throw 'Expected exactly one updated process' }
+        Write-Output 'Coordinated update rebuilt the pinned commit, replaced the process, verified its compiled revision, and recovered the completed rollout.'
+    }
 
     $null = Invoke-RestMethod "$base/api/v1/development/terminate" -Method Post -Body '{}' -ContentType 'application/json' -WebSession $session
     if (-not $replacement[0].WaitForExit(15000)) { throw 'Termination did not stop the replacement' }

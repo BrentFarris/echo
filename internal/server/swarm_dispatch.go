@@ -432,6 +432,11 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 		cancel()
 		return nil, errors.New("chat is stopping")
 	}
+	if s.maintenance {
+		s.mu.Unlock()
+		cancel()
+		return nil, errMaintenance
+	}
 	for _, active := range s.dispatches {
 		if active.chatID == chatID {
 			s.mu.Unlock()
@@ -574,6 +579,7 @@ func (s *Server) runSwarm(f *swarmDispatch) {
 		close(d.done)
 		s.emit("changed", d.chatID, "", "", nil)
 	}()
+	maintenanceHosts := map[string]bool{}
 	for d.ctx.Err() == nil {
 		prepared := []string{}
 		ready := true
@@ -582,13 +588,18 @@ func (s *Server) runSwarm(f *swarmDispatch) {
 			err := s.prepareWorkerRemote(ctx, node, f.Hosts[node])
 			cancel()
 			if err != nil {
-				if !strings.Contains(err.Error(), "worker bots are busy") {
+				if strings.Contains(err.Error(), errMaintenance.Error()) {
+					maintenanceHosts[node] = true
+				}
+				waiting := maintenanceHosts[node] && s.Swarm.Authorized(node) && (strings.Contains(err.Error(), errMaintenance.Error()) || strings.Contains(err.Error(), "unavailable") || strings.Contains(err.Error(), "closed") || strings.Contains(err.Error(), "deadline") || strings.Contains(err.Error(), "EOF"))
+				if !waiting && !strings.Contains(err.Error(), "worker bots are busy") {
 					s.failSwarmHost(f, node, err)
 					nodes = slices.DeleteFunc(nodes, func(id string) bool { return id == node })
 				}
 				ready = false
 				break
 			}
+			delete(maintenanceHosts, node)
 			prepared = append(prepared, node)
 		}
 		if ready {

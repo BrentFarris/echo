@@ -44,8 +44,16 @@ async function mockDevelopment(page: Page, transientOutage = false) {
   const state: any = { repositoryPath: 'C:\\Echo', suggestedPath: '', repositoryValid: true, branch: 'echo2', upstream: 'origin/echo2', instanceId: 'old' };
   const calls: string[] = [];
   let polls = 0;
+  let rollout: any;
   await page.route('**/api/v1/development**', async route => {
     const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/rollouts/check')) {
+      calls.push('rollouts/check');
+      await new Promise(resolve => setTimeout(resolve, 500));
+      rollout = { id: 'check', sourceNodeId: route.request().postDataJSON().sourceNodeId, scope: 'swarm', target: 'a'.repeat(40), state: 'checked', members: [{ nodeId: 'local', name: 'desktop', status: 'queued', check: { current: false, revision: 'old' } }] };
+      await route.fulfill({ json: rollout }); return;
+    }
+    if (path.endsWith('/rollouts')) { await route.fulfill({ json: rollout ? [rollout] : [] }); return; }
     if (route.request().method() === 'POST') {
       const action = path.split('/').pop()!; calls.push(action); polls = 0;
       state.operation = { id: 'operation', action, status: 'running', stage: 'Preparing', logPath: 'C:\\profile\\development\\operation.log', logTail: '', checkoutUpdated: false };
@@ -76,10 +84,10 @@ test('updates, confirmations, busy controls, and failure logs', async ({ page })
   await expect(page.getByLabel('Echo Git repository path', { exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Relaunch', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Update & Relaunch', exact: true })).toBeVisible();
-  await expect(page.locator('[data-comparison]')).toContainText('2 behind');
+  await expect(page.locator('[data-rollout-status]')).toContainText('Update available');
   page.once('dialog', dialog => dialog.dismiss());
   await page.getByRole('button', { name: 'Build & Relaunch', exact: true }).click();
-  expect(calls).toEqual(['check-updates']);
+  expect(calls).toEqual(['rollouts/check']);
   page.once('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: 'Build & Relaunch', exact: true }).click();
   await expect(page.locator('[data-development-status]')).toHaveText('Frontend build failed');

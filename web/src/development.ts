@@ -1,6 +1,7 @@
 import { InstanceClient, entryNode } from './instances';
 import { escapeHTML as esc } from './helpers';
 import './development.css';
+import { mountRollouts } from './developmentRollouts';
 
 type API = <T = any>(path: string, method?: string, body?: unknown) => Promise<T>;
 export interface DevelopmentOperation {
@@ -48,9 +49,11 @@ let localBusy = false;
 let message = '';
 let messageError = false;
 let stopped = false;
+let rolloutBusy = false;
+let rolloutControls: Awaited<ReturnType<typeof mountRollouts>> | undefined;
 
 function showMessage(text: string, error = false) { message = text; messageError = error; update(); }
-function isBusy() { return localBusy || stopped || !!current?.operation && ['running', 'restarting', 'stopping'].includes(current.operation.status); }
+function isBusy() { return rolloutBusy || localBusy || stopped || !!current?.operation && ['running', 'restarting', 'stopping'].includes(current.operation.status); }
 
 function update() {
   if (!root?.isConnected || !current) return;
@@ -66,7 +69,7 @@ function update() {
     button.disabled = busy || needsSource && (!current.repositoryValid || dirty) || ['check-updates', 'update-relaunch'].includes(action) && !!current.updateError;
     button.setAttribute('aria-busy', String(busy));
   }
-  root.querySelector<HTMLButtonElement>('[data-development-action=update-relaunch]')!.hidden = current.comparison?.state !== 'behind';
+  rolloutControls?.setUnavailable(localBusy || stopped || current.operation && ['running', 'restarting', 'stopping'].includes(current.operation.status) ? 'Wait for the current development operation to finish.' : !current.repositoryValid || dirty ? 'Save a valid Echo repository path on the selected machine first.' : current.updateError || '');
   root.querySelector('[data-repository-status]')!.textContent = current.repositoryError || (dirty ? 'Save this path before building or checking for updates.' : !current.repositoryPath ? 'Save an Echo checkout to enable builds and updates.' : 'Repository saved.');
   root.querySelector('[data-tracking]')!.textContent = [current.branch && `Branch: ${current.branch}`, current.upstream && `Upstream: ${current.upstream}`, current.updateError].filter(Boolean).join(' · ');
   const comparison = current.comparison;
@@ -136,9 +139,9 @@ async function mount(target: HTMLElement, api: API) {
       <form class="form"><label>Echo Git repository path<input name="repositoryPath" type="text" spellcheck="false" value="${esc(state.repositoryPath || state.suggestedPath)}" placeholder="C:\\path\\to\\echo"></label>
       <p class="subtle">Enter a path on the computer running Echo, including when using a remote browser.</p><button data-save class="primary">Save repository path</button></form>
       <p class="subtle" data-repository-status></p><p class="subtle" data-tracking></p>
-      <div class="button-row"><button data-development-action="check-updates">Check for Updates</button><button data-development-action="update-relaunch" hidden>Update &amp; Relaunch</button></div><p data-comparison></p>
+      <div data-rollout-controls></div><p data-comparison></p>
       <div class="button-row"><button data-development-action="build-relaunch">Build &amp; Relaunch</button><button data-development-action="relaunch">Relaunch</button><button class="danger" data-development-action="terminate">Terminate Echo</button></div>
-      <p class="subtle">Build the current checkout, restart the existing executable, or stop Echo. Restarting and stopping interrupt active work.</p>
+      <p class="subtle">These three controls affect only the selected machine. Restarting and stopping with these controls interrupt active work.</p>
       <p role="status" aria-live="polite" data-development-status></p><details data-development-logs hidden><summary>Operation log</summary><p data-log-path></p><pre data-log-tail></pre></details></section>`;
     target.querySelector<HTMLInputElement>('[name=repositoryPath]')!.oninput = update;
     target.querySelector('form')!.onsubmit = event => {
@@ -165,6 +168,8 @@ async function mount(target: HTMLElement, api: API) {
         void monitor(api, result.operation, result.instanceId);
       }).catch(error => showMessage(error.message, true)).finally(() => { localBusy = false; update(); });
     };
+    update();
+    rolloutControls = await mountRollouts(target.querySelector<HTMLElement>('[data-rollout-controls]')!, client, busy => { rolloutBusy = busy; update(); }, async () => { current = await api<DevelopmentState>('/development'); await changed(); update(); });
     update();
     if (state.operation && ['running', 'restarting', 'stopping'].includes(state.operation.status)) void monitor(api, state.operation, state.instanceId);
   } catch (error) { target.innerHTML = `<p role="alert" class="error">${esc(error instanceof Error ? error.message : String(error))}</p>`; }

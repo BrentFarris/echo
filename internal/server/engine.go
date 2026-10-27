@@ -168,6 +168,10 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 		s.mu.Unlock()
 		return nil, errors.New("chat is stopping or being deleted")
 	}
+	if s.maintenance {
+		s.mu.Unlock()
+		return nil, errMaintenance
+	}
 	for _, bot := range bots {
 		current, e := s.Bot(bot.ID)
 		if e != nil || s.revoking[bot.ID] > 0 || current.Revision != bot.Revision {

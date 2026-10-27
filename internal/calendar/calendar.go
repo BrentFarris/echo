@@ -46,10 +46,13 @@ type Calendar struct {
 	mu       sync.Mutex
 	Dispatch func(context.Context, Occurrence) error
 	Enabled  func(string) bool
+	Deferred func() bool
 	Changed  func()
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 }
+
+var ErrDeferred = errors.New("scheduled start deferred during Echo update")
 
 func Next(rule, timezone string, after time.Time) (time.Time, error) {
 	loc, e := time.LoadLocation(timezone)
@@ -331,6 +334,17 @@ func (c *Calendar) Start(parent context.Context) error {
 				if e != nil {
 					continue
 				}
+				if c.Deferred == nil || !c.Deferred() {
+					pending, _ := c.Occurrences()
+					for _, o := range pending {
+						if o.Status == "deferred" {
+							o.Status = "queued"
+							if c.Store.Put("calendar:occurrences", o.ID, o) == nil {
+								due = append(due, o)
+							}
+						}
+					}
+				}
 				for _, o := range due {
 					c.wg.Add(1)
 					go func(o Occurrence) { defer c.wg.Done(); c.run(ctx, o) }(o)
@@ -341,6 +355,19 @@ func (c *Calendar) Start(parent context.Context) error {
 	return nil
 }
 func (c *Calendar) run(ctx context.Context, o Occurrence) {
+	if c.Deferred != nil && c.Deferred() {
+		_ = c.Store.Update("calendar:occurrences", o.ID, func(raw json.RawMessage) (any, error) {
+			var current Occurrence
+			if err := json.Unmarshal(raw, &current); err != nil {
+				return nil, err
+			}
+			if current.Status == "queued" {
+				current.Status = "deferred"
+			}
+			return current, nil
+		})
+		return
+	}
 	claimed := false
 	e := c.Store.Update("calendar:occurrences", o.ID, func(raw json.RawMessage) (any, error) {
 		var current Occurrence
@@ -365,6 +392,9 @@ func (c *Calendar) run(ctx context.Context, o Occurrence) {
 		o.Error = "dispatcher unavailable"
 	} else if e = c.Dispatch(ctx, o); e != nil {
 		o.Status = "failed"
+		if errors.Is(e, ErrDeferred) {
+			o.Status = "deferred"
+		}
 		o.Error = e.Error()
 	} else {
 		o.Status = "completed"

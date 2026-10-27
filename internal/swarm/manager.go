@@ -207,6 +207,13 @@ func (m *Manager) Directory() []Peer {
 	return out
 }
 
+// RouteDepth is used to replace relay destinations before their intermediaries.
+func (m *Manager) RouteDepth(id string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.routesLocked()[id].Path)
+}
+
 func (m *Manager) Namespace(id string) string {
 	nodes := []Node{m.Node()}
 	for _, p := range m.Directory() {

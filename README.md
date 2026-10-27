@@ -158,11 +158,15 @@ After downtime, every missed occurrence awaits review. Select jobs, set concurre
 
 **Settings → Development** lets you develop Echo using Echo. Save the absolute path to the new Echo Git checkout on the server computer; a valid checkout beside the executable or at its working directory is suggested automatically. Git worktrees are supported. These controls are available to local owners and authenticated Hosted Server users.
 
-**Check for Updates** fetches the checked-out branch’s configured upstream and reports whether it is up to date, ahead, behind, or diverged. A tracking branch is required: Echo does not choose a remote or switch branches. When behind, **Update & Relaunch** fast-forwards the upstream and builds. Conflicting edits and diverged histories stop the update; Echo never resets, stashes, or discards your edits.
+**Check for Updates** pins the selected machine’s configured upstream commit and checks each participating machine. **Update scope** defaults to **Connected swarm** when Swarm is enabled; choose **This machine only** for an individual update. Updating is offered when any eligible machine needs that revision, even if the selected machine is already current. The confirmation lists the commit, machines and exclusions. Each machine fetches its own upstream and must be able to fast-forward to the same commit with a clean checkout, including no untracked files outside ignored build directories. Echo never resets, stashes, switches branches, changes remotes, or discards edits.
+
+The browser’s entry machine coordinates using its own owner grants. Updates include authorized connected peers, including relayed peers; offline machines are reported, and disconnected/revoked connections are excluded. Machines build independently, then restart one at a time, with relay destinations first and the entry machine last. Before restarting, a machine temporarily refuses new chat work and defers schedules while accepted work and handoffs finish. It never force-stops bots for a coordinated update. Progress, logs and verified running revisions survive browser closure and process replacement.
+
+Failures do not stop other eligible machines. **Retry unsuccessful machines** retries the same pinned commit; **Cancel pending updates** releases drains and cancels unlaunched builds. A completed checkout fast-forward remains in place, and an already-launched replacement finishes. Offline machines are not silently updated when they reconnect. Older peers without `development-update/1` require a one-time local update using their existing updater before joining coordinated rollouts.
 
 **Build & Relaunch** builds the current checkout (including local edits), its plugin runtime, and frontend, then launches the repository's `echo.exe` on Windows or `echo` on Unix. It requires Git, Go, Node.js, npm, and PowerShell on Windows or `/bin/sh` on Unix. **Relaunch** restarts the current executable without building; **Terminate Echo** stops it without restarting. Neither requires a source checkout. Restarting and stopping interrupt active work. Echo remains available during builds and closes gracefully only after a successful build and launcher preparation. The browser waits for a replacement process; an entry-host restart reloads the tab, while a remote restart refreshes that instance's resources.
 
-The panel shows progress and the latest 16 KiB of operation output. Full logs live under the existing data directory’s `development/<operation-id>/` folder, alongside launcher diagnostics and replacement-process stdout/stderr. If a build fails after an update, the checkout stays updated and the previous Echo process stays running. If a restart fails, inspect those logs and start Echo manually. Operations are serialized across browsers; checks run only when requested.
+Build, relaunch and terminate remain selected-machine actions; their interruption behavior does not apply to the coordinated updater’s wait-until-idle flow. The panel shows progress and the latest 16 KiB of operation output. Full logs live under the existing data directory’s `development/<operation-id>/` folder, alongside launcher diagnostics and replacement-process stdout/stderr. If a build fails after an update, the checkout stays updated and the previous Echo process stays running. If a restart fails, inspect those logs and start Echo manually. Operations are serialized across browsers; checks run only when requested.
 
 ## Build and validate
 
@@ -174,6 +178,7 @@ Requires Go 1.26+, Node.js compatible with Vite 8, and npm. Windows release acce
 .\build.ps1 -Test -BrowserTests     # Go, type checking, unit tests, Playwright
 .\build.ps1 -Release                # All checks, required native tests, release ZIP
 .\scripts\test-development.ps1      # Isolated real build/relaunch/terminate acceptance
+.\scripts\test-development.ps1 -Coordinated # Also verify a real pinned update and recovery
 ```
 
 ```sh

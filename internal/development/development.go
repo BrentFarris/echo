@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/brent/echo/internal/buildinfo"
 	"github.com/brent/echo/internal/domain"
 )
 
@@ -48,6 +49,7 @@ type Snapshot struct {
 	Comparison      *Comparison `json:"comparison,omitempty"`
 	Operation       *Operation  `json:"operation,omitempty"`
 	InstanceID      string      `json:"instanceId"`
+	Revision        string      `json:"revision"`
 }
 
 type runner func(context.Context, string, io.Writer, string, ...string) error
@@ -68,6 +70,12 @@ type Manager struct {
 	arguments       []string
 	workingDir      string
 	closed          bool
+	updates         updateStore
+	update          *Update
+	updateCancel    context.CancelFunc
+	setDrain        func(bool)
+	idle            func() bool
+	revision        string
 }
 
 func New(parent context.Context, dir string, config Config, stop func()) *Manager {
@@ -75,7 +83,7 @@ func New(parent context.Context, dir string, config Config, stop func()) *Manage
 	executable, _ := os.Executable()
 	workingDir, _ := os.Getwd()
 	return &Manager{ctx: ctx, cancel: cancel, dir: dir, config: config, stop: stop,
-		instanceID: domain.ID(), run: runCommand, launch: prepareAndLaunch,
+		instanceID: domain.ID(), revision: buildinfo.Current(), run: runCommand, launch: prepareAndLaunch,
 		executable: executable, workingDir: workingDir, arguments: append([]string(nil), os.Args[1:]...)}
 }
 
@@ -90,7 +98,7 @@ func (m *Manager) Close() {
 }
 
 func (m *Manager) busy() bool {
-	return m.op != nil && (m.op.Status == "running" || m.op.Status == "restarting" || m.op.Status == "stopping")
+	return m.update != nil && !UpdateTerminal(m.update.Status) || m.op != nil && (m.op.Status == "running" || m.op.Status == "restarting" || m.op.Status == "stopping")
 }
 
 // Save serializes repository changes with operations, including their validation.
@@ -120,7 +128,7 @@ func (m *Manager) Save(ctx context.Context, config Config, persist func(Config) 
 
 func (m *Manager) Snapshot(ctx context.Context) Snapshot {
 	m.mu.Lock()
-	s := Snapshot{Config: m.config, InstanceID: m.instanceID}
+	s := Snapshot{Config: m.config, InstanceID: m.instanceID, Revision: m.revision}
 	if m.op != nil {
 		op := *m.op
 		s.Operation = &op

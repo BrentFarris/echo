@@ -70,6 +70,8 @@ type Server struct {
 	closingChats      map[string]int
 	revealFile        func(broker.RevealTarget) error
 	Development       *development.Manager
+	rollouts          *rolloutManager
+	maintenance       bool // Protected by mu; gates admission, not accepted work.
 	shutdownRequested chan struct{}
 }
 type dispatch struct {
@@ -174,7 +176,11 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 		s.Close()
 		return nil, e
 	}
-	s.Calendar = &calendar.Calendar{Store: db, Dispatch: s.scheduled, Enabled: func(id string) bool { b, e := s.Bot(id); return e == nil && s.Plugins.Enabled(b, "calendar") }, Changed: func() { s.emit("changed", "", "", "", nil) }}
+	if e = s.initRollouts(); e != nil {
+		s.Close()
+		return nil, e
+	}
+	s.Calendar = &calendar.Calendar{Store: db, Dispatch: s.scheduled, Deferred: s.maintenanceActive, Enabled: func(id string) bool { b, e := s.Bot(id); return e == nil && s.Plugins.Enabled(b, "calendar") }, Changed: func() { s.emit("changed", "", "", "", nil) }}
 	if e = s.Calendar.Start(ctx); e != nil {
 		s.Close()
 		return nil, e
@@ -200,6 +206,9 @@ func (s *Server) Close() {
 
 func (s *Server) close() {
 	s.cancel()
+	if s.rollouts != nil {
+		s.rollouts.wg.Wait()
+	}
 	s.swarmMu.Lock()
 	prepared := []*swarmWorker{}
 	for _, worker := range s.swarmWorkers {
@@ -336,7 +345,12 @@ func (s *Server) snapshot(id string) ([]domain.Message, int64, error) {
 func respond(w http.ResponseWriter, v any, e error) {
 	w.Header().Set("Content-Type", "application/json")
 	if e != nil {
-		w.WriteHeader(http.StatusBadRequest)
+		if errors.Is(e, errMaintenance) {
+			w.Header().Set("Retry-After", "2")
+			w.WriteHeader(http.StatusServiceUnavailable)
+		} else {
+			w.WriteHeader(http.StatusBadRequest)
+		}
 		json.NewEncoder(w).Encode(map[string]any{"error": e.Error()})
 		return
 	}
@@ -542,6 +556,9 @@ func (s *Server) key(ctx context.Context, e domain.Endpoint) (string, error) {
 	return s.Secrets.Get(ctx, e.Credential)
 }
 func (s *Server) scheduled(ctx context.Context, o calendar.Occurrence) error {
+	if s.maintenanceActive() {
+		return calendar.ErrDeferred
+	}
 	b, e := s.Bot(o.BotID)
 	if e != nil {
 		return e
@@ -553,6 +570,9 @@ func (s *Server) scheduled(ctx context.Context, o calendar.Occurrence) error {
 	request := SendRequest{Content: o.Prompt, Segments: []domain.Segment{{Type: "bot", BotID: b.ID}, {Type: "text", Text: o.Prompt}}, Generation: o.Generation, scheduledBot: b.ID}
 	d, e := s.send(c.ID, request)
 	if e != nil {
+		if errors.Is(e, errMaintenance) {
+			return calendar.ErrDeferred
+		}
 		return e
 	}
 	select {

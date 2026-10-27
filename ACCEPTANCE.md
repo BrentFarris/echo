@@ -6,6 +6,10 @@ For Linux/macOS, run `sh build.sh --release` on the destination OS. Linux requir
 
 ## Swarm acceptance
 
+Coordinated update acceptance uses isolated Git repositories and deterministic participant operations to cover pinned commits despite moving upstreams, three-host ordering, lost acceptance responses, partial retries, ownership boundaries, frozen membership, dirty/diverged checkouts, drain cancellation/expiry, replacement revision verification, and reservation retry during maintenance. Deferred schedules retain their identity across restart and execute once. Browser coverage includes peer-only version lag, confirmation, machine-only scope, escaped logs, outage/reload recovery, cancellation and retry. Run `go test ./internal/development ./internal/calendar ./internal/server -run 'TestUpdate|TestRollout|TestDeferred|TestNative|TestLaunch' -count=1` and, from `web`, `npm run test:e2e -- e2e/development.spec.ts e2e/development-rollouts.spec.ts`. Native launcher tests run on Windows and Linux; native macOS replacement acceptance still requires a Mac. Coordinated updater tests do not contact real upstream repositories or restart the user's running Echo.
+
+Windows real-process acceptance is `scripts/test-development.ps1 -Coordinated -Binary <built-echo.exe>`. It creates a private source checkout and local Git upstream, performs a native build/relaunch, publishes a fixture commit, then runs a coordinated machine-only update. It verifies the replacement process's compiled revision, persisted rollout success and final graceful termination. This acceptance passed alongside the full Go tests/vet, 243 frontend tests, 58 browser tests, and Linux updater/calendar/rollout race tests. Windows, Linux AMD64 and Darwin ARM64 builds passed; the Darwin build is not native macOS acceptance.
+
 The Go integration fixtures use separate profiles, secret stores and HTTP servers; transport unit tests exercise actual duplex links. Browser acceptance runs three Echo instances and one deterministic model, with independent remote resources.
 
 | Area | Automated evidence |
