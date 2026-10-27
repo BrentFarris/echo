@@ -12,7 +12,6 @@ import (
 	"github.com/brent/echo/internal/model"
 	"github.com/brent/echo/internal/plugins"
 	"github.com/brent/echo/internal/store"
-	"golang.org/x/crypto/bcrypt"
 )
 
 func (s *Server) routes(mux *http.ServeMux) {
@@ -380,31 +379,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 		}
 		v, e := s.pluginCall(r.Context(), domain.ExecutionScope{Bot: b, PluginID: r.PathValue("id")}, a.Method, a.Params)
 		respond(w, v, e)
-	})
-	mux.HandleFunc("POST /api/v1/hosting/password", func(w http.ResponseWriter, r *http.Request) {
-		var a struct {
-			Password string `json:"password"`
-		}
-		if e := decode(w, r, &a); e != nil {
-			respond(w, nil, e)
-			return
-		}
-		if len(a.Password) < 12 || len(a.Password) > 72 {
-			respond(w, nil, errors.New("use a password of 12-72 bytes"))
-			return
-		}
-		hash, e := bcrypt.GenerateFromPassword([]byte(a.Password), bcrypt.DefaultCost)
-		if e == nil {
-			e = s.Store.Put("auth", "password", string(hash))
-		}
-		if e == nil {
-			e = s.Store.ClearNamespace("sessions")
-		}
-		if e != nil {
-			respond(w, nil, e)
-			return
-		}
-		s.session(w, r)
 	})
 	mux.HandleFunc("POST /api/v1/schedules", func(w http.ResponseWriter, r *http.Request) {
 		var a calendar.Schedule

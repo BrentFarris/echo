@@ -48,7 +48,7 @@ Backend plugins run in WASI with no ambient filesystem, environment, network or 
 
 Floating views have opaque iframe origins and cannot read Echo's DOM or cookies. Echo owns window dragging, resizing, placement and theme delivery. All renderer output is sanitized before display. Disabling Markdown View restores plain text unless another renderer is enabled for that bot.
 
-Hosted Server is installed but remote listening is inactive. Set a password of at least 12 bytes, explicitly enable remote access, and restart. Optional certificate/key paths enable HTTPS. Remote APIs and WebSockets require an authenticated session. Password changes revoke existing sessions.
+Hosted Server is installed but remote listening is inactive. Set a password of at least 12 bytes, explicitly enable remote access, and restart. Optional certificate/key paths enable HTTPS. Remote APIs and WebSockets require an authenticated session. Successful sign-in is remembered with a protected browser cookie for 30 days, renewed each time you launch Echo in that browser; the password itself is not saved in browser storage. **Settings → Hosted Server → Connected devices** lists saved browser sessions, addresses, sign-in/last-active times, and live connection status. Use **Close session** to sign out a browser and disconnect its live connections. Password changes revoke all other sessions. Local access on the server can still sign in automatically.
 
 ## Git, Fossil and Perforce
 

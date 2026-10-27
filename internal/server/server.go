@@ -2,9 +2,7 @@ package server
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,7 +28,6 @@ import (
 	"github.com/brent/echo/internal/plugins"
 	"github.com/brent/echo/internal/store"
 	"github.com/gorilla/websocket"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type Server struct {
@@ -53,6 +50,7 @@ type Server struct {
 	seq               atomic.Int64
 	authMu            sync.Mutex
 	loginAttempts     map[string][]time.Time
+	sessionSockets    map[string]map[*websocket.Conn]bool
 	revoking          map[string]int
 	closingChats      map[string]int
 	revealFile        func(broker.RevealTarget) error
@@ -280,64 +278,10 @@ func localHost(host string) bool {
 	}
 	return strings.EqualFold(host, "localhost") || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback())
 }
-func (s *Server) authenticated(r *http.Request) bool {
-	c, e := r.Cookie("echo2-session")
-	if e != nil {
-		return false
-	}
-	h := sha256.Sum256([]byte(c.Value))
-	var expires time.Time
-	return s.Store.Get("sessions", hex.EncodeToString(h[:]), &expires) == nil && expires.After(time.Now())
-}
-func (s *Server) session(w http.ResponseWriter, r *http.Request) {
-	token := domain.ID() + domain.ID()
-	h := sha256.Sum256([]byte(token))
-	if e := s.Store.Put("sessions", hex.EncodeToString(h[:]), time.Now().Add(30*24*time.Hour)); e != nil {
-		respond(w, nil, e)
-		return
-	}
-	http.SetCookie(w, &http.Cookie{Name: "echo2-session", Value: token, Path: "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode, MaxAge: 30 * 24 * 3600})
-	respond(w, map[string]any{"authenticated": true}, nil)
-}
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.routes(mux)
-	mux.HandleFunc("POST /api/v1/session", func(w http.ResponseWriter, r *http.Request) {
-		host, _, _ := net.SplitHostPort(r.RemoteAddr)
-		if net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback() && localHost(r.Host) {
-			s.session(w, r)
-			return
-		}
-		var a struct {
-			Password string `json:"password"`
-		}
-		if e := decode(w, r, &a); e != nil {
-			respond(w, nil, e)
-			return
-		}
-		s.authMu.Lock()
-		now := time.Now()
-		attempts := s.loginAttempts[host]
-		recent := []time.Time{}
-		for _, t := range attempts {
-			if now.Sub(t) < time.Minute {
-				recent = append(recent, t)
-			}
-		}
-		blocked := len(recent) >= 5
-		s.loginAttempts[host] = append(recent, now)
-		s.authMu.Unlock()
-		if blocked {
-			http.Error(w, "Too many login attempts", 429)
-			return
-		}
-		var hash string
-		if s.Store.Get("auth", "password", &hash) != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(a.Password)) != nil {
-			http.Error(w, "Invalid password", 401)
-			return
-		}
-		s.session(w, r)
-	})
+	s.authRoutes(mux)
 	mux.HandleFunc("GET /api/v1/events", s.websocket)
 	if s.Assets != nil {
 		static := http.FileServerFS(s.Assets)
@@ -381,6 +325,28 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	s.authMu.Lock()
+	if _, ok := s.savedSessionLocked(r); !ok {
+		s.authMu.Unlock()
+		return
+	}
+	id := sessionKey(r)
+	if s.sessionSockets == nil {
+		s.sessionSockets = map[string]map[*websocket.Conn]bool{}
+	}
+	if s.sessionSockets[id] == nil {
+		s.sessionSockets[id] = map[*websocket.Conn]bool{}
+	}
+	s.sessionSockets[id][conn] = true
+	s.authMu.Unlock()
+	defer func() {
+		s.authMu.Lock()
+		delete(s.sessionSockets[id], conn)
+		if len(s.sessionSockets[id]) == 0 {
+			delete(s.sessionSockets, id)
+		}
+		s.authMu.Unlock()
+	}()
 	ch := make(chan domain.Event, 256)
 	s.mu.Lock()
 	s.subscribers[ch] = true
@@ -406,7 +372,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		case <-s.ctx.Done():
 			return
 		case e, ok := <-ch:
-			if !ok {
+			if !ok || !s.authenticated(r) {
 				return
 			}
 			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))

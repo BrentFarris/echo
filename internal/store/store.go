@@ -208,6 +208,25 @@ func (s *Store) List(ns string) ([]json.RawMessage, error) {
 	return out, rows.Err()
 }
 
+// Entries includes record keys for namespaces whose values predate embedded IDs.
+func (s *Store) Entries(ns string) (map[string]json.RawMessage, error) {
+	rows, err := s.db.Query("SELECT id,data FROM records WHERE namespace=?", ns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]json.RawMessage{}
+	for rows.Next() {
+		var id string
+		var data []byte
+		if err := rows.Scan(&id, &data); err != nil {
+			return nil, err
+		}
+		out[id] = data
+	}
+	return out, rows.Err()
+}
+
 // Update serializes read/modify/write, including a missing record. Callbacks must
 // not call Store methods (the database intentionally has one write connection).
 func (s *Store) Update(ns, id string, fn func(json.RawMessage) (any, error)) error {

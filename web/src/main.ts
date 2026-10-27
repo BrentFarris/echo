@@ -6,6 +6,7 @@ import { fileChangesFooter } from './fileChanges';
 import { ReferenceSearch } from './referenceSearch';
 import { endpointForm, endpointValues } from './modelSettings';
 import { mountDevelopment } from './development';
+import { mountHosting } from './hosting';
 import { composerMarkup, icons, autosizeComposer, wireComposerMenus, attachmentCard, previewAttachment, releaseAttachments, type DraftAttachment } from './composer';
 import { activeMention, escapeHTML as esc, groupChats } from './helpers';
 import type { Attachment, Bot, Chat, Endpoint, Generation, Message, Plugin, Schedule, Segment, State } from './types';
@@ -289,7 +290,14 @@ function connect() {
   const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/v1/events`);
   let recovering = false, backlog: any[] = [];
   ws.onopen = () => { q('#connection').textContent = ''; };
-  ws.onclose = () => { q('#connection').textContent = 'Reconnecting…'; setTimeout(connect, 1500); };
+  ws.onclose = async () => {
+    q('#connection').textContent = 'Reconnecting…';
+    try {
+      const response = await fetch('/api/v1/session');
+      if (response.status === 401) { location.reload(); return; }
+    } catch { /* Retry when the server or network returns. */ }
+    setTimeout(connect, 1500);
+  };
   ws.onmessage = event => {
     const e = JSON.parse(event.data);
     if (e.type === 'reset') {
@@ -424,8 +432,7 @@ function pluginSettings(root: HTMLElement, plugin: Plugin) {
   root.querySelector<HTMLButtonElement>('#rollback-plugin')?.addEventListener('click', action(async () => { await api(`/plugins/${plugin.id}/rollback`, 'POST', {}); await refresh(); settings(plugin.id); }));
   for (const button of root.querySelectorAll<HTMLButtonElement>('.open-view')) button.onclick = action(() => openPlugin(plugin.id, button.dataset.view!, 'echo'));
   if (plugin.id === 'hosted-server') {
-    q('#plugin-extra', root).innerHTML = '<hr><form class="form" id="password-form"><label>Remote access password<input name="password" type="password" minlength="12" maxlength="72" required autocomplete="new-password"></label><button>Set password</button><small>A password is required before remote hosting can start. TLS certificate and key fields enable HTTPS.</small></form>';
-    q<HTMLFormElement>('#password-form', root).onsubmit = e => { e.preventDefault(); action(async () => { const f = q<HTMLFormElement>('#password-form', root); await api('/hosting/password', 'POST', { password: new FormData(f).get('password') }); f.reset(); notice('Password saved'); })(); };
+    mountHosting(q('#plugin-extra', root), api, notice);
   }
   if (plugin.id === 'calendar') calendarSettings(q('#plugin-extra', root));
   if (plugin.id === 'workspaces') q('#plugin-extra', root).innerHTML = '<p class="subtle">Assign folders in Bots → Edit, or ask Echo to bind a bot. Existing folder restrictions stay enforced when this plugin is disabled.</p>';
