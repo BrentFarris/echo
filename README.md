@@ -2,6 +2,8 @@
 
 The chat-first Echo application now lives at the repository root. Echo, named bots, model streaming, scoped file operations and deterministic bot coordination form the core. Features are installed plugins. The previous application is kept temporarily in the Git-ignored `OLD/` folder for reference; its source, scripts, dependencies and local files are archived there.
 
+Open **Apps → Monaco Editor** for the built-in code editor. Choose a bot above the explorer to browse its configured folders; each bot keeps separate tabs, pins, drafts and undo history. A single click opens an italic preview, double-click keeps it open, and pinning protects it from closing. **Open in Window** and **Open Embedded** switch any app's presentation while retaining its contents. **Back to chat** hides the editor; **Close** asks about unsaved work. Editor Settings stores preferences in the Monaco plugin configuration. The editor includes bundled language services, search/replace, bookmarks, outline, Markdown and media previews, without the old chat, terminal, debugger or external-language-server integrations.
+
 ## Run on Windows
 
 Run `echo.exe`, then open **http://localhost:3740**. The app is named Echo; data continues to use `%LOCALAPPDATA%\Echo2` and its existing database and credential identifiers, preserving your bots, chats, model settings and protected credentials without a migration. Stop the console with Ctrl+C to flush active streams and terminate child processes. Only one server may open a data directory.

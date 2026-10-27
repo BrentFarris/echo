@@ -24,6 +24,7 @@ import (
 	"github.com/brent/echo/internal/credentials"
 	"github.com/brent/echo/internal/development"
 	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/editorfs"
 	"github.com/brent/echo/internal/model"
 	"github.com/brent/echo/internal/plugins"
 	"github.com/brent/echo/internal/store"
@@ -31,6 +32,11 @@ import (
 )
 
 type Server struct {
+	EditorFS          *editorfs.Service
+	EditorWatch       *editorfs.WatchManager
+	editorMu          sync.Mutex
+	editorClients     map[string]map[chan any]bool
+	editorBookmarkMu  sync.Mutex
 	Store             *store.Store
 	Plugins           *plugins.Host
 	Calendar          *calendar.Calendar
@@ -143,6 +149,7 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 		s.Close()
 		return nil, e
 	}
+	s.initEditor()
 	go func() {
 		t := time.NewTicker(5 * time.Minute)
 		defer t.Stop()
@@ -158,6 +165,12 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 	return s, nil
 }
 func (s *Server) Close() {
+	if s.EditorWatch != nil {
+		s.EditorWatch.Close()
+	}
+	if s.EditorFS != nil {
+		s.EditorFS.Close()
+	}
 	s.cancel()
 	s.References.Close()
 	if s.Development != nil {

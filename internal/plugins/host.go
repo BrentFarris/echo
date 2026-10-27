@@ -378,8 +378,8 @@ func (h *Host) Install(m domain.PluginManifest, wasm []byte) (domain.PluginManif
 		if v.Kind == "" {
 			v.Kind = "floating"
 		}
-		if !validID.MatchString(v.ID) || viewNames[v.ID] || (v.Kind != "floating" && v.Kind != "renderer") {
-			return m, errors.New("views need unique lowercase ids and floating or renderer kind")
+		if !validID.MatchString(v.ID) || viewNames[v.ID] || (v.Kind != "floating" && v.Kind != "embedded" && v.Kind != "renderer") {
+			return m, errors.New("views need unique lowercase ids and floating, embedded or renderer kind")
 		}
 		viewNames[v.ID] = true
 		if len(v.HTML) > 2<<20 {

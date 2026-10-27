@@ -16,6 +16,7 @@ import (
 
 func (s *Server) routes(mux *http.ServeMux) {
 	s.appRoutes(mux)
+	s.editorRoutes(mux)
 	s.developmentRoutes(mux)
 	s.sourceControlRoutes(mux)
 	s.attachmentRoutes(mux)

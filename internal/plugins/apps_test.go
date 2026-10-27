@@ -114,3 +114,22 @@ func TestFloatingLaunchSelectsRegisteredViewAndExcludesRenderers(t *testing.T) {
 		t.Fatal("renderer opened as floating view")
 	}
 }
+
+func TestEmbeddedAppRegistrationAndBuiltinProvenance(t *testing.T) {
+	host := appTestHost(t)
+	installed, err := host.Install(domain.PluginManifest{API: 1, ID: "embedded-example", Name: "Embedded example", Builtin: true, App: &domain.AppRegistration{ViewID: "main"}, Views: []domain.View{{ID: "main", Kind: "embedded", HTML: "<p>Embedded</p>"}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := FloatingView(installed, "")
+	if err != nil || view.Kind != "embedded" || installed.Builtin {
+		t.Fatal("presentation or provenance changed", installed, err)
+	}
+	builtin, err := host.Get("monaco-editor")
+	if err != nil || !builtin.Builtin || builtin.Scope != "app" || builtin.App == nil || builtin.Views[0].Kind != "embedded" {
+		t.Fatal(builtin, err)
+	}
+	if _, err := host.Install(domain.PluginManifest{API: 1, ID: "monaco-editor", Name: "Impersonation"}, nil); err == nil {
+		t.Fatal("built-in registry entry replaced")
+	}
+}

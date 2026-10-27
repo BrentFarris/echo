@@ -1,0 +1,135 @@
+.code-markdown-modes {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 1px;
+  margin-left: 6px;
+}
+
+.code-breadcrumbs .code-markdown-modes button {
+  padding: 0 7px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.code-markdown-modes button[aria-pressed="true"] {
+  background: var(--code-selected);
+  color: var(--code-fg);
+}
+
+.code-markdown-modes button:focus-visible,
+.code-markdown-preview:focus-visible {
+  outline: 1px solid var(--code-accent);
+  outline-offset: -1px;
+}
+
+.code-file-surface {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.code-file-surface > .code-monaco-host {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.code-file-surface[hidden],
+.code-markdown-modes[hidden],
+.code-markdown-resizer[hidden],
+.code-markdown-preview[hidden] {
+  display: none;
+}
+
+.code-markdown-resizer {
+  z-index: 1;
+  cursor: col-resize;
+  touch-action: none;
+  background: var(--code-border);
+}
+
+.code-markdown-resizer:hover,
+.code-markdown-resizer:focus-visible {
+  background: var(--code-accent);
+  outline: none;
+}
+
+.code-markdown-preview {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+  overflow-wrap: anywhere;
+  color: var(--code-fg);
+  background: var(--code-editor-surface);
+  font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  user-select: text;
+}
+
+.code-markdown-content {
+  box-sizing: border-box;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px 32px 64px;
+}
+
+.code-markdown-content > :first-child { margin-top: 0; }
+.code-markdown-content h1,
+.code-markdown-content h2,
+.code-markdown-content h3,
+.code-markdown-content h4,
+.code-markdown-content h5,
+.code-markdown-content h6 { margin: 1.4em 0 0.6em; line-height: 1.3; font-weight: 600; }
+.code-markdown-content h1 { font-size: 2em; }
+.code-markdown-content h2 { font-size: 1.5em; }
+.code-markdown-content h3 { font-size: 1.25em; }
+.code-markdown-content h4 { font-size: 1em; }
+.code-markdown-content h5 { font-size: 0.9em; }
+.code-markdown-content h6 { font-size: 0.85em; color: var(--code-muted); }
+.code-markdown-content h1,
+.code-markdown-content h2 { padding-bottom: 0.3em; border-bottom: 1px solid var(--code-border); }
+.code-markdown-content p,
+.code-markdown-content ul,
+.code-markdown-content ol,
+.code-markdown-content dl,
+.code-markdown-content pre,
+.code-markdown-content blockquote,
+.code-markdown-content table,
+.code-markdown-content details { margin: 0 0 1em; }
+.code-markdown-content ul,
+.code-markdown-content ol { padding-left: 2em; }
+.code-markdown-content li > ul,
+.code-markdown-content li > ol { margin-bottom: 0; }
+.code-markdown-content li + li { margin-top: 0.2em; }
+.code-markdown-content li > input[type="checkbox"] { margin-right: 0.5em; }
+.code-markdown-content a { color: var(--code-info); text-decoration: underline; cursor: pointer; }
+.code-markdown-content a:not([href]) { color: inherit; text-decoration: none; cursor: text; }
+.code-markdown-content img { max-width: 100%; height: auto; }
+.code-markdown-content pre,
+.code-markdown-content code,
+.code-markdown-content kbd,
+.code-markdown-content samp { font-family: "Cascadia Code", Consolas, monospace; font-size: 0.9em; }
+.code-markdown-content code,
+.code-markdown-content kbd { padding: 0.15em 0.35em; background: var(--code-hover); border-radius: 4px; }
+.code-markdown-content pre { overflow: auto; padding: 16px; background: var(--code-chrome-bg); border-radius: 6px; overflow-wrap: normal; }
+.code-markdown-content pre code { padding: 0; background: none; border-radius: 0; font-size: inherit; }
+.code-markdown-content blockquote { padding: 0 1em; border-left: 4px solid var(--code-border); color: var(--code-muted); }
+.code-markdown-content table { display: block; max-width: 100%; overflow: auto; border-collapse: collapse; }
+.code-markdown-content th,
+.code-markdown-content td { padding: 6px 12px; border: 1px solid var(--code-border); }
+.code-markdown-content th,
+.code-markdown-content tr:nth-child(even) { background: var(--code-chrome-bg); }
+.code-markdown-content hr { margin: 24px 0; border: 0; border-top: 1px solid var(--code-border); }
+.code-markdown-content details { padding: 0.5em 1em; border: 1px solid var(--code-border); border-radius: 4px; }
+.code-markdown-content summary { cursor: pointer; font-weight: 600; }
+.code-markdown-content dd { margin-left: 2em; }
+
+@media (max-width: 720px) {
+  .code-markdown-content { padding: 16px 12px 40px; }
+  .code-breadcrumbs .code-markdown-modes button { padding: 0 4px; }
+}

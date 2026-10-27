@@ -12,8 +12,12 @@
   },
   "dependencies": {
     "dompurify": "3.4.17",
-    "marked": "14.0.0"
+    "marked": "14.0.0",
+    "monaco-editor": "0.56.0",
+    "@tanstack/virtual-core": "3.17.7",
+    "@vscode/codicons": "0.0.46-24"
   },
+  "overrides": { "monaco-editor": { "dompurify": "$dompurify" } },
   "devDependencies": {
     "@playwright/test": "1.62.1",
     "@types/node": "26.2.0",

@@ -17,7 +17,7 @@ try {
     $runtimeRoot = go env GOROOT
     [void]$notices.AppendLine("`n===== Go runtime =====")
     [void]$notices.AppendLine((Get-Content -Raw -LiteralPath (Join-Path $runtimeRoot 'LICENSE')))
-    foreach ($package in @('dompurify', 'marked', 'vite')) {
+    foreach ($package in @('dompurify', 'marked', 'vite', 'monaco-editor', '@tanstack/virtual-core', '@vscode/codicons')) {
         [void]$notices.AppendLine("`n===== $package =====")
         foreach ($license in Get-ChildItem -LiteralPath "web/node_modules/$package" -File | Where-Object { $_.Name -like 'LICENSE*' -or $_.Name -like 'COPYING*' }) {
             [void]$notices.AppendLine((Get-Content -Raw -LiteralPath $license.FullName))

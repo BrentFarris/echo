@@ -1,0 +1,3576 @@
+import { watchFiles } from "./events";
+import type { Bot } from "../types";
+import type { CodeSidebar } from "./navigation";
+import { Virtualizer, elementScroll, observeElementOffset, observeElementRect } from "@tanstack/virtual-core";
+import type { editor as MonacoEditor, IPosition as MonacoPosition, IRange as MonacoRange, languages as MonacoLanguages, Uri as MonacoUri } from "monaco-editor";
+import { api } from "./api";
+import * as editorAPI from "./editorApi";
+import type { APIError } from "./editorApi";
+import { languageForPath, monaco } from "./language";
+import { loadSession, saveSession } from "./persistence";
+import { editorSettingsWriter, indentationDefaults, indentationLabel, openIndentationPopover, type Indentation } from "./indentation";
+import { columnGuideRulers, type ColumnGuideSettings } from "./columnGuides";
+import { lineEndingsOnSave, type LineEndingsOnSave } from "./lineEndings";
+import { previewKindForPath, type PreviewKind } from "./preview";
+import { isMarkdownPath, MarkdownPreview, restoreMarkdownViewState } from "./markdownPreview";
+import { randomUUID } from "./randomUUID";
+import { SearchView } from "./searchView";
+import { BookmarksController } from "./bookmarksController";
+import { BookmarksView } from "./bookmarksView";
+import type { Bookmark } from "./bookmarkTypes";
+import "./bookmarks.css";
+import { NavigationModelCache } from "./navigationModelCache";
+import { OutlineView } from "./outlineView";
+import { resolveOutlineSymbols } from "./outlineProviders";
+import type { OutlineResult } from "./outlineTypes";
+import "./outline.css";
+import { ExplorerDirectoryLoader, needsDirectoryRefresh, preservedTreeScrollTop, reconcileDirectory, type FilesystemChange, type TreeNode } from "./explorerTree";
+import { renderExplorerRows, type ExplorerRow } from "./explorerRows";
+import { updateSelection, type SelectionState } from "./listSelection";
+import { canDeleteTreeNodes, runTreeOperation, topLevelTreeNodes, treeMoveDestination } from "./explorerSelection";
+import {
+  CodeNavigationHistory, isLargeCodeNavigationJump, type CodeNavigationLocation,
+} from "./codeNavigationHistory";
+import { beginMruCycle, nextMruCycle, pruneMruCycle, removeFromMru, type MruCycleState } from "./mruTabOrder";
+import { reorderTabs, type TabDropPosition } from "./tabOrder";
+import { restoreTabOpenState, setTabPinned } from "./tabState";
+import {
+  commandPalettePresentation, loadRecentCommandIds, pruneRecentCommandIds,
+  recordRecentCommandId, saveRecentCommandIds,
+} from "./commandHistory";
+import type {
+  FileRef, FileSnapshot, MarkdownViewMode, MarkdownViewState, PersistedTab, PersistedWorkspaceSession,
+  SearchResult, TextReplaceUpdate, TextSearchMatch, TextSearchOverlay, TrashItem, WorkspaceRoot,
+} from "./types";
+import { isRefWithin, joinRef, refKey } from "./types";
+import {
+  choiceDialog, closeContextMenu, copyText, escapeHTML, installMenuDismissal,
+  promptDialog, showContextMenu, toast,
+} from "./ui";
+import { attachVideoVolumeControl } from "./mediaVolume";
+
+type Workspace = Bot;
+
+type OpenTab = MarkdownViewState & {
+  kind: "file" | "media";
+  id: string;
+  ref: FileRef | null;
+  title: string;
+  hostPath: string;
+  keepOpen: boolean;
+  pinned: boolean;
+  dirty: boolean;
+  deleted: boolean;
+  conflict: boolean;
+  revision: string;
+  hasBom: boolean;
+  eol: "lf" | "crlf";
+  model: MonacoEditor.ITextModel;
+  viewState: MonacoEditor.ICodeEditorViewState | null;
+  changeDisposable: { dispose(): void };
+  applying: boolean;
+	readOnly?: boolean;
+	transient?: boolean;
+  media?: { kind: PreviewKind; url: string };
+};
+
+type Command = { id: string; label: string; keybinding?: string; run(): unknown | Promise<unknown> };
+
+const treeRowHeight = 22;
+const minEditorFontSize = 8;
+const maxEditorFontSize = 30;
+const defaultEditorFontSize = 13.5;
+const codeTabDragType = "application/x-echo-code-tab";
+export class CodeView {
+  private readonly abort = new AbortController();
+  private workspace: Workspace | null = null;
+  private roots: WorkspaceRoot[] = [];
+  private nodes = new Map<string, TreeNode>();
+  private flatTree: TreeNode[] = [];
+  private expanded = new Set<string>();
+  private readonly directoryLoader = new ExplorerDirectoryLoader({
+    isCurrent: (node) => !this.abort.signal.aborted && Boolean(this.workspace) && this.nodes.get(node.key) === node,
+    listEntries: (ref) => editorAPI.listEntries(this.workspace!.id, ref),
+    apply: (node, entries) => {
+      const previousKeys = new Set(this.nodes.keys());
+      reconcileDirectory(this.nodes, this.expanded, node, entries);
+      if (!this.treeMutationBusy) this.pruneTreeSelection(new Set([...previousKeys].filter((key) => !this.nodes.has(key))));
+    },
+    render: () => this.renderTree(true),
+    onError: (error) => toast(error instanceof Error ? error.message : String(error)),
+  });
+  private selectedTreeKey: string | null = null;
+  private treeSelection: SelectionState = { selected: new Set(), anchor: null };
+  private treeSelectionVersion = 0;
+  private outlineView: OutlineView | null = null;
+  private treeMutationBusy = false;
+  private pendingTreeChanges: FilesystemChange[] = [];
+  private renamingKey: string | null = null;
+  private draggingTreeNodes: TreeNode[] = [];
+  private treeDropTargetKey: string | null = null;
+  private treeDropExpandKey: string | null = null;
+  private treeDropExpandTimer = 0;
+  private treeDragScrollFrame = 0;
+  private treeDragScrollClientY = 0;
+  private treeDragScrollActive = false;
+  private tabs: OpenTab[] = [];
+  private activeTabId: string | null = null;
+  private draggingTabId: string | null = null;
+  private tabDragStartedOnAction = false;
+  private tabDragScrollFrame = 0;
+  private tabDragScrollClientX = 0;
+  private tabDragScrollActive = false;
+  private mruTabIds: string[] = [];
+  private mruCycle: MruCycleState | null = null;
+  private mruSwitcherOverlay: HTMLElement | null = null;
+  private untitledCounter = 1;
+  private editor!: MonacoEditor.IStandaloneCodeEditor;
+  private markdownPreview: MarkdownPreview | null = null;
+  private searchView: SearchView | null = null;
+  private bookmarks: BookmarksController | null = null;
+  private bookmarksView: BookmarksView | null = null;
+  private bookmarkActions: Array<{ dispose(): void }> = [];
+  private activeSidebar: CodeSidebar = "explorer";
+  private leadingWhitespaceIndicators = true;
+  private editorFontSize = 13.5;
+  private editorRulers: number[] = [];
+  private indentation: Indentation = indentationDefaults({});
+  private editorLineEndingsOnSave: LineEndingsOnSave = "unchanged";
+  private closeIndentationPopover: (() => void) | null = null;
+  private saveEditorSettings = editorSettingsWriter(
+    async () => (await api("/api/settings", { method: "GET" })).settings,
+    async (settings) => { await api("/api/settings", { method: "PUT", body: { settings } }); },
+  );
+  private editorFontSizeSaveTimer = 0;
+  private modelReferences = new Map<MonacoEditor.ITextModel, number>();
+  private treeScroller!: HTMLElement;
+  private treeCanvas!: HTMLElement;
+  private treeVirtualizer!: Virtualizer<HTMLElement, HTMLElement>;
+  private disposeVirtualizer: (() => void) | null = null;
+  private persistTimer = 0;
+  private persistenceFailed = false;
+  private explorerWidth = 280;
+  private restoredTreeScrollTop = 0;
+  private explorerRevealGeneration = 0;
+  private lastSequence = 0;
+  private pollTimer = 0;
+  private commands: Command[] = [];
+  private recentCommandIds = loadRecentCommandIds();
+  private mediaTheme = window.matchMedia("(prefers-color-scheme: dark)");
+  private readonly navigationModels = new NavigationModelCache<MonacoEditor.ITextModel>(6);
+  private editorOpener: { dispose(): void } | null = null;
+  private codeNavigation: CodeNavigationHistory | null = null;
+  private navigationReady = false;
+  private navigationSuppression = 0;
+  private navigationRestoreGeneration = 0;
+  private navigationSkipping = false;
+  private lastNavigationLocation: CodeNavigationLocation | null = null;
+  private restoredTabIdAliases = new Map<string, string>();
+
+  constructor(private readonly root: HTMLElement, private bot: Bot) { this.workspace = bot; }
+  private active = false;
+  private dialogAbort = new AbortController();
+  private overlays = new Set<HTMLElement>();
+  private choiceDialog(options: Parameters<typeof choiceDialog>[0]) { return choiceDialog({ ...options, signal: this.dialogAbort.signal }); }
+  private promptDialog(options: Parameters<typeof promptDialog>[0]) { return promptDialog({ ...options, signal: this.dialogAbort.signal }); }
+  private appendOverlay(element: HTMLElement) {
+    for (const overlay of this.overlays) if (!overlay.isConnected) this.overlays.delete(overlay);
+    this.overlays.add(element); document.body.append(element);
+  }
+  private dismissOverlays() {
+    this.dialogAbort.abort();
+    for (const overlay of this.overlays) {
+      overlay.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      if (overlay instanceof HTMLDialogElement && overlay.open) overlay.close();
+      overlay.remove();
+    }
+    this.overlays.clear(); closeContextMenu();
+    if (!this.abort.signal.aborted) this.dialogAbort = new AbortController();
+  }
+  setVisible(value: boolean) { this.active = value && !this.abort.signal.aborted; if (this.active && this.editor) { this.subscribeFilesystem(); this.editor.layout();  void this.pollOpenTabs(); } else { this.dismissOverlays(); this.watchStop?.(); this.watchStop = undefined; if (this.navigationReady) void this.persistNow(); this.finishMruCycle(); } }
+  private rootsGeneration = 0;
+  async updateBot(bot: Bot) {
+    if (this.abort.signal.aborted) return;
+    const generation = ++this.rootsGeneration;
+    this.bot = bot; this.workspace = bot;
+    const roots = await editorAPI.getRoots(bot.id);
+    if (this.abort.signal.aborted || generation !== this.rootsGeneration) return;
+    this.roots = roots; this.nodes.clear();
+    this.expanded = new Set([...this.expanded].filter(key => roots.some(root => key.startsWith(root.id + ':'))));
+    for (const root of roots) {
+      if (this.abort.signal.aborted || generation !== this.rootsGeneration) return;
+      await this.ensureRoot(root);
+    }
+    if (this.abort.signal.aborted || generation !== this.rootsGeneration) return;
+    await this.restoreTreeExpansion(); this.renderTree();
+    if (this.active) await this.pollOpenTabs();
+  }
+  applyPreferences(config: Record<string, unknown>) {
+    if (this.abort.signal.aborted) return;
+    const settings = { editorFontSize: config.editorFontSize, editorInsertSpaces: config.editorInsertSpaces, editorTabSize: config.editorTabSize, editorLineEndingsOnSave: config.editorLineEndingsOnSave, hideLeadingWhitespaceIndicators: config.hideLeadingWhitespaceIndicators, editorColumnGuidesEnabled: config.editorColumnGuidesEnabled, editorColumnGuides: typeof config.editorColumnGuides === 'string' ? config.editorColumnGuides.split(',').map(Number) : config.editorColumnGuides };
+    this.editorFontSize = this.clampEditorFontSize(Number(settings.editorFontSize) || 13.5);
+    this.indentation = indentationDefaults(settings); this.editorLineEndingsOnSave = lineEndingsOnSave(settings);
+    this.editorRulers = columnGuideRulers(settings); this.leadingWhitespaceIndicators = settings.hideLeadingWhitespaceIndicators !== true;
+    this.editor?.updateOptions({ fontSize: this.editorFontSize, lineHeight: Math.round(this.editorFontSize * 1.48), rulers: this.editorRulers, renderWhitespace: this.leadingWhitespaceIndicators ? 'boundary' : 'none' });
+  }
+  async beforeClose(): Promise<boolean> { for (const tab of [...this.tabs]) { if (!tab.dirty) continue; const choice = await this.choiceDialog({ title: `${this.bot.name}: ${tab.title}`, message: "Save changes before closing the editor?", choices: [{id:"cancel",label:"Cancel"},{id:"discard",label:"Discard"},{id:"save",label:"Save",primary:true}] }); if (choice === "cancel" || !choice) return false; if (choice === "save" && !await this.saveTab(tab)) return false; if (choice === "discard") { tab.dirty = false; this.removeTab(tab); } } return await this.persistNow(); }
+
+  async start(): Promise<void> {
+    try {
+      this.renderShell(); this.installNavigation(); installMenuDismissal(this.abort.signal);
+      this.roots = await editorAPI.getRoots(this.bot.id);
+      const {settings} = await api("/api/settings");
+      if (this.abort.signal.aborted) return;
+      this.leadingWhitespaceIndicators = settings.hideLeadingWhitespaceIndicators !== true;
+      this.indentation = indentationDefaults(settings); this.editorLineEndingsOnSave = lineEndingsOnSave(settings);
+      this.editorRulers = columnGuideRulers(settings); this.editorFontSize = this.clampEditorFontSize(settings.editorFontSize || 13.5);
+      this.codeNavigation = new CodeNavigationHistory(this.bot.id, {local:true});
+      this.initializeEditor(); this.initializeTree(); this.initializeOutline(); this.installEvents();
+      this.initializeSearchView(); this.initializeBookmarks(); this.registerCommands();
+      await this.restoreWorkspace();
+      if (this.abort.signal.aborted) return;
+      for (const root of this.roots) await this.ensureRoot(root);
+      await this.restoreTreeExpansion(); this.renderTree(); this.treeScroller.scrollTop = this.restoredTreeScrollTop;
+      this.navigationReady = true;
+      const initial = this.captureNavigationLocation(); if (initial) this.codeNavigation.attachInitial(initial);
+      this.renderTabs(); this.updateEditorSurface(); this.renderStatus(); this.subscribeFilesystem();
+    } catch (error) { if (!this.abort.signal.aborted) this.showFatal(error); }
+    finally { this.root.querySelector(".code-app-shell")?.setAttribute("aria-busy", "false"); }
+  }
+
+  private renderShell(): void {
+    const workspaceName = this.workspace?.name || "No workspace";
+    const explorerActive = this.activeSidebar === "explorer";
+    this.root.innerHTML = `
+      <div class="code-app-shell" aria-busy="true" style="--explorer-width:${this.explorerWidth}px">
+        <nav class="code-left-nav" aria-label="Editor tools"><button data-code-sidebar="explorer" title="Explorer"><span class="codicon codicon-files"></span></button><button data-code-sidebar="search" title="Search"><span class="codicon codicon-search"></span></button><button data-code-sidebar="bookmarks" title="Bookmarks"><span class="codicon codicon-bookmark"></span></button></nav>
+        <section class="code-workbench">
+          <div class="code-sidebar-backdrop" data-mobile-sidebar-backdrop aria-hidden="true"></div>
+          <div class="code-sidebar">
+          <aside class="code-explorer" aria-label="Explorer" data-sidebar-view="explorer"${explorerActive ? "" : " hidden"}>
+            <header class="code-explorer-header">
+              <span>EXPLORER</span>
+              <div class="code-header-actions">
+                <button type="button" title="New File" aria-label="New File" data-tree-action="new-file"><span class="codicon codicon-new-file"></span></button>
+                <button type="button" title="New Folder" aria-label="New Folder" data-tree-action="new-folder"><span class="codicon codicon-new-folder"></span></button>
+                <button type="button" title="Refresh Explorer" aria-label="Refresh Explorer" data-tree-action="refresh"><span class="codicon codicon-refresh"></span></button>
+                <button type="button" title="Collapse All" aria-label="Collapse All" data-tree-action="collapse-all"><span class="codicon codicon-collapse-all"></span></button>
+                <button type="button" title="Trash" aria-label="Trash" data-tree-action="trash"><span class="codicon codicon-trash"></span></button>
+              </div>
+            </header>
+            <div class="code-workspace-title" title="${escapeHTML(workspaceName)}"><span class="codicon codicon-chevron-down"></span><strong>${escapeHTML(workspaceName)}</strong></div>
+            <div class="code-tree" role="tree" aria-label="Workspace files" aria-multiselectable="true" tabindex="0" data-code-tree>
+              <div class="code-tree-canvas" data-tree-canvas></div>
+            </div>
+            <section aria-label="Outline" data-code-outline></section>
+          </aside>
+          <aside class="code-search-view" aria-label="Search" data-sidebar-view="search"${this.activeSidebar === "search" ? "" : " hidden"}></aside>
+          <aside class="code-bookmarks-view" aria-label="Bookmarks" data-sidebar-view="bookmarks"${this.activeSidebar === "bookmarks" ? "" : " hidden"}></aside>
+          </div>
+          <div class="code-explorer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Explorer" tabindex="0"></div>
+          <main class="code-editor-column">
+            <div class="code-tabs-scroll" role="tablist" aria-label="Open editors" data-code-tabs><div class="code-tabs" data-tabs-list></div></div>
+            <div class="code-editor-workspace">
+              <div class="code-editor-pane">
+                <nav class="code-breadcrumbs" aria-label="Breadcrumb" data-breadcrumbs>
+                  <span class="code-breadcrumb-path" data-breadcrumb-path></span>
+                  <div class="code-markdown-modes" role="group" aria-label="Markdown view" data-markdown-modes hidden>
+                    <button type="button" data-markdown-mode="source" aria-pressed="true" title="Show Markdown source">Source</button>
+                    <button type="button" data-markdown-mode="split" aria-pressed="false" title="Show source and Markdown preview">Split</button>
+                    <button type="button" data-markdown-mode="preview" aria-pressed="false" title="Show Markdown preview">Preview</button>
+                  </div>
+                </nav>
+                <section class="code-editor-area">
+                  <div class="code-editor-placeholder" data-editor-placeholder>
+                    <span class="codicon codicon-code"></span>
+                    <h2>Monaco Editor</h2>
+                    <p>Open a file from Explorer or press <kbd>Ctrl+P</kbd>.</p>
+                  </div>
+                  <div class="code-file-surface" data-file-surface hidden>
+                    <div class="code-monaco-host" data-monaco-host></div>
+                    <div class="code-markdown-resizer" data-markdown-resizer role="separator" aria-label="Resize Markdown source" aria-orientation="vertical" aria-valuemin="20" aria-valuemax="80" aria-valuenow="50" tabindex="0" hidden></div>
+                    <section class="code-markdown-preview" data-markdown-preview aria-label="Markdown preview" tabindex="0" hidden></section>
+                  </div>
+                  <div class="code-media-preview" data-media-preview-host hidden></div>
+                </section>
+                <footer class="code-statusbar" data-statusbar>
+                  <div><button type="button" class="code-mobile-explorer" data-mobile-explorer aria-label="Toggle Sidebar" aria-expanded="false"><span class="codicon codicon-${this.sidebarIcon(this.activeSidebar)}"></span></button></div>
+                  <div class="code-status-right"><span data-status="cursor">Ln 1, Col 1</span><button type="button" data-status="indentation" aria-haspopup="dialog" aria-expanded="false" title="Change indentation for the current file and saved default">Tabs: 4</button><span>UTF-8</span><span data-status="eol">LF</span><span data-status="language">Plain Text</span></div>
+                </footer>
+              </div>
+            </div>
+          </main>
+        </section>
+      </div>
+    `;
+  }
+
+  private installNavigation(): void { this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach(button => button.addEventListener("click", () => this.setSidebar(button.dataset.codeSidebar as CodeSidebar), {signal:this.abort.signal})); }
+
+  private initializeSearchView(): void {
+    if (!this.workspace) return;
+    const host = this.root.querySelector<HTMLElement>("[data-sidebar-view=search]");
+    if (!host) return;
+    this.searchView = new SearchView(host, {
+      workspaceId: this.workspace.id,
+      signal: this.abort.signal,
+      getOverlays: () => this.searchOverlays(),
+      openResult: (ref, match, keepOpen) => this.openSearchResult(ref, match, keepOpen),
+      confirmReplace: (details) => this.confirmSearchReplace(details),
+      applyUpdates: (updates) => this.applySearchUpdates(updates),
+      focusEditor: () => this.focusActiveEditor(),
+    });
+    if (this.activeSidebar === "search") this.searchView.open();
+  }
+
+  private initializeBookmarks(): void {
+          const host = this.root.querySelector<HTMLElement>("[data-sidebar-view=bookmarks]")!;
+          this.bookmarksView = new BookmarksView(host, {
+            roots: () => this.roots,
+            toggle: () => { void this.toggleBookmark(); },
+            open: mark => { void this.openBookmark(mark); },
+            rename: (id, label) => { void this.bookmarks?.rename(id, label); },
+            remove: id => { void this.bookmarks?.remove(id); },
+            retry: () => { void this.bookmarks?.retry(); },
+          });
+          this.bookmarks = new BookmarksController({
+            workspaceId: this.bot.id,
+            refForModel: model => {
+              const tab = this.tabs.find(candidate => candidate.model === model && candidate.kind !== "media");
+              return tab ? this.worktreeRef(tab) : this.refForFileURI(model.uri.toString());
+            },
+            changed: (marks, loaded, error) => this.bookmarksView?.update(marks, loaded, error),
+            reportError: message => toast(message, { sticky: true }),
+          });
+          for (const editor of [this.editor]) {
+            this.bookmarkActions.push(editor.addAction({
+              id: "echo.bookmarks.toggle", label: "Bookmarks: Toggle", precondition: "editorTextFocus",
+              keybindings: [
+                monaco.KeyMod.chord(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, monaco.KeyCode.KeyK),
+                monaco.KeyMod.chord(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK),
+              ],
+              run: () => this.toggleBookmark(),
+            }));
+          }
+  }
+
+  private async toggleBookmark(): Promise<void> {
+    const tab = this.activeTab();
+    const editor = this.activeCodeEditor();
+    const ref = tab && tab.kind !== "media" && !tab.deleted ? this.worktreeRef(tab) : null;
+    const position = editor?.getPosition();
+    if (!this.bookmarks || !ref || !position || !tab) return;
+    await this.bookmarks.toggle(ref, position.lineNumber, tab.model.getLineContent(position.lineNumber));
+  }
+
+  private async openBookmark(mark: Bookmark): Promise<void> {
+    await this.recordCodeNavigation(async () => {
+      if (!await this.openFile(mark.ref, true)) return;
+      this.revealMarkdownSource();
+      const editor = this.activeCodeEditor();
+      const model = editor?.getModel();
+      if (!editor || !model) return;
+      const line = Math.max(1, Math.min(model.getLineCount(), mark.line));
+      editor.setPosition({ lineNumber: line, column: 1 });
+      editor.revealLineInCenter(line);
+      this.setMobileExplorer(false);
+      editor.focus();
+    });
+  }
+
+  private disposeBookmarks(): void {
+    this.bookmarkActions.splice(0).forEach(action => action.dispose());
+    this.bookmarks?.dispose();
+    this.bookmarks = null;
+    this.bookmarksView?.dispose();
+    this.bookmarksView = null;
+  }
+
+  private setSidebar(view: CodeSidebar, updateRoute = true): void {
+    if (view === "bookmarks" && !this.bookmarks) view = "explorer";
+    this.activeSidebar = view;
+    this.root.querySelectorAll<HTMLElement>("[data-sidebar-view]").forEach((element) => { element.hidden = element.dataset.sidebarView !== view; });
+    this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach((button) => {
+      const active = button.dataset.codeSidebar === view;
+      button.classList.toggle("is-active", active);
+      if (button.classList.contains("mobile-nav-tab")) {
+        if (active) button.setAttribute("aria-current", "page");
+        else button.removeAttribute("aria-current");
+      }
+    });
+    const mobile = this.root.querySelector<HTMLElement>("[data-mobile-explorer] .codicon");
+    this.root.querySelectorAll<HTMLElement>('[data-plugin-id="bookmarks"][data-plugin-view-id="bookmarks"]').forEach(button => {
+      button.classList.toggle("is-active", view === "bookmarks");
+      if (view === "bookmarks") button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+    });
+    if (mobile) mobile.className = `codicon codicon-${this.sidebarIcon(view)}`;
+    if (window.innerWidth <= 720) this.setMobileExplorer(true);
+    if (view === "search") this.searchView?.open();
+  }
+
+  private sidebarIcon(view: CodeSidebar): string {
+    if (view === "bookmarks") return "bookmark";
+    if (view === "search") return "search";
+    return "files";
+  }
+
+  private searchOverlays(): TextSearchOverlay[] {
+    const overlays: TextSearchOverlay[] = [];
+    const seen = new Set<string>();
+    for (const tab of this.tabs) {
+      const ref = this.worktreeRef(tab);
+      if (!ref || !tab.dirty) continue;
+      const key = refKey(ref);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      overlays.push({ ref, revision: tab.revision, content: tab.model.getValue(), hasBom: tab.hasBom });
+    }
+    return overlays;
+  }
+
+  private async openSearchResult(ref: FileRef, match: TextSearchMatch, keepOpen: boolean): Promise<void> {
+    await this.recordCodeNavigation(async () => {
+      await this.openFile(ref, keepOpen);
+      const tab = this.tabs.find((candidate) => {
+        const candidateRef = this.worktreeRef(candidate);
+        return candidateRef && refKey(candidateRef) === refKey(ref);
+      });
+      if (!tab) return;
+      this.activateTab(tab.id, false);
+      this.revealMarkdownSource();
+      const target = this.editor;
+      target.setSelection({
+        startLineNumber: match.line, startColumn: match.column,
+        endLineNumber: match.endLine, endColumn: match.endColumn,
+      });
+      target.revealRangeInCenter({
+        startLineNumber: match.line, startColumn: match.column,
+        endLineNumber: match.endLine, endColumn: match.endColumn,
+      });
+      target.focus();
+    });
+  }
+
+  private async confirmSearchReplace(details: {
+    scope: "match" | "file" | "all";
+    matches: number;
+    files: number;
+    dirtyFiles: number;
+  }): Promise<boolean> {
+    const dirty = details.dirtyFiles
+      ? ` ${details.dirtyFiles} affected file${details.dirtyFiles === 1 ? " has" : "s have"} unsaved edits; those complete buffers will be saved.`
+      : "";
+    const choice = await this.choiceDialog({
+      title: details.scope === "all" ? "Replace all workspace results?" : "Save unsaved edits and replace?",
+      message: `Replace ${details.matches.toLocaleString()} result${details.matches === 1 ? "" : "s"} in ${details.files.toLocaleString()} file${details.files === 1 ? "" : "s"}.${dirty}`,
+      choices: [
+        { id: "cancel", label: "Cancel" },
+        { id: "replace", label: details.scope === "all" ? "Replace All" : "Replace", danger: true, primary: true },
+      ],
+    });
+    return choice === "replace";
+  }
+
+  private async applySearchUpdates(updates: TextReplaceUpdate[]): Promise<void> {
+    if (!this.workspace) return;
+    for (const update of updates) {
+      const tabs = this.tabs.filter((candidate) => {
+        const candidateRef = this.worktreeRef(candidate);
+        return candidateRef && refKey(candidateRef) === refKey(update.ref);
+      });
+      if (!tabs.length) continue;
+      let snapshot: FileSnapshot;
+      if (update.content !== undefined) {
+        snapshot = {
+          ref: update.ref, hostPath: tabs[0].hostPath, content: update.content,
+          revision: update.revision, size: update.size, modifiedAt: update.modifiedAt,
+          encoding: "utf-8", eol: update.eol, hasBom: update.hasBom,
+        };
+      } else {
+        snapshot = await editorAPI.readFile(this.workspace.id, update.ref);
+      }
+      const models = new Set<MonacoEditor.ITextModel>();
+      for (const tab of tabs) {
+        if (models.has(tab.model)) continue;
+        models.add(tab.model);
+        this.applyDiskSnapshot(tab, snapshot);
+      }
+    }
+    this.renderTabs();
+    this.schedulePersist();
+  }
+
+  private focusActiveEditor(): void {
+    const tab = this.activeTab();
+    if (this.markdownMode(tab) === "preview") this.root.querySelector<HTMLElement>("[data-markdown-preview]")?.focus({ preventScroll: true });
+    else this.editor?.focus();
+  }
+
+  private markdownMode(tab = this.activeTab()): MarkdownViewMode {
+    return isMarkdownTab(tab) ? restoreMarkdownViewState(tab).markdownViewMode : "source";
+  }
+
+  private setMarkdownMode(mode: MarkdownViewMode, focus = true): void {
+    const tab = this.activeTab();
+    if (!isMarkdownTab(tab)) return;
+    if (this.markdownMode(tab) !== "preview") tab.viewState = this.editor.saveViewState();
+    this.markdownPreview?.captureScroll();
+    tab.markdownViewMode = mode;
+    this.updateEditorSurface();
+    if (mode !== "preview" && tab.viewState) this.editor.restoreViewState(tab.viewState);
+    if (focus) this.focusActiveEditor();
+    this.schedulePersist();
+  }
+
+  private revealMarkdownSource(): void {
+    if (this.markdownMode() === "preview") this.setMarkdownMode("split", false);
+  }
+
+  private initializeMarkdownPreview(): void {
+    this.markdownPreview = new MarkdownPreview(this.root.querySelector<HTMLElement>("[data-markdown-preview]")!, {
+      mediaURL: ref => editorAPI.mediaURL(this.workspace!.id, ref),
+      changed: () => this.schedulePersist(),
+      openFile: (ref, fragment) => {
+        void this.recordCodeNavigation(async () => {
+          if (!await this.openFile(ref, true) || !fragment || !isMarkdownTab(this.activeTab())) return;
+          if (this.markdownMode() === "source") this.setMarkdownMode("split", false);
+          this.markdownPreview?.scrollToAnchor(fragment);
+        });
+      },
+    });
+    const signal = this.abort.signal;
+    this.root.querySelectorAll<HTMLButtonElement>("[data-markdown-mode]").forEach(button => {
+      button.addEventListener("click", () => this.setMarkdownMode(button.dataset.markdownMode as MarkdownViewMode), { signal });
+    });
+    const divider = this.root.querySelector<HTMLElement>("[data-markdown-resizer]")!;
+    const surface = this.root.querySelector<HTMLElement>("[data-file-surface]")!;
+    let dragging: OpenTab | null = null;
+    const resize = (ratio: number) => {
+      const tab = this.activeTab();
+      if (!isMarkdownTab(tab) || this.markdownMode(tab) !== "split") return;
+      tab.markdownSplitRatio = restoreMarkdownViewState({ markdownSplitRatio: ratio }).markdownSplitRatio;
+      this.updateEditorSurface();
+      this.schedulePersist();
+    };
+    divider.addEventListener("pointerdown", event => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      dragging = this.activeTab() || null;
+      divider.setPointerCapture(event.pointerId);
+      divider.focus();
+    }, { signal });
+    divider.addEventListener("pointermove", event => {
+      if (!dragging || dragging !== this.activeTab()) return;
+      const bounds = surface.getBoundingClientRect();
+      if (bounds.width > 4) resize((event.clientX - bounds.left - 2) / (bounds.width - 4));
+    }, { signal });
+    divider.addEventListener("pointerup", event => {
+      dragging = null;
+      if (divider.hasPointerCapture(event.pointerId)) divider.releasePointerCapture(event.pointerId);
+    }, { signal });
+    divider.addEventListener("lostpointercapture", () => { dragging = null; }, { signal });
+    divider.addEventListener("keydown", event => {
+      const ratio = restoreMarkdownViewState(this.activeTab()).markdownSplitRatio;
+      const next = event.key === "ArrowLeft" ? ratio - 0.05 : event.key === "ArrowRight" ? ratio + 0.05
+        : event.key === "Home" ? 0.2 : event.key === "End" ? 0.8 : null;
+      if (next === null) return;
+      event.preventDefault();
+      resize(next);
+    }, { signal });
+    divider.addEventListener("dblclick", () => resize(0.5), { signal });
+  }
+
+  private showWorkspaceSearch(replace = false): void {
+    let seed = "";
+    const tab = this.activeTab();
+    const editor = this.editor;
+    const selection = editor?.getSelection();
+    if (selection && selection.startLineNumber === selection.endLineNumber && !selection.isEmpty()) {
+      seed = editor.getModel()?.getValueInRange(selection) || "";
+    }
+    this.setSidebar("search");
+    this.searchView?.open({ replace, seed });
+  }
+
+  private showFatal(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const target = this.root.querySelector<HTMLElement>(".code-workbench") || this.root;
+    target.innerHTML = `<div class="code-fatal"><span class="codicon codicon-error"></span><h2>Could not open Echo Code</h2><p>${escapeHTML(message)}</p><button type="button" class="code-primary-button">Retry</button></div>`;
+    target.querySelector("button")?.addEventListener("click", () => location.reload());
+  }
+
+  private initializeEditor(): void {
+    this.initializeMarkdownPreview();
+    const host = this.root.querySelector<HTMLElement>("[data-monaco-host]")!;
+    this.editor = monaco.editor.create(host, {
+      model: null,
+      theme: this.mediaTheme.matches ? "vs-dark" : "vs",
+      automaticLayout: true,
+      fontFamily: "Cascadia Code, JetBrains Mono, Consolas, monospace",
+      fontSize: this.editorFontSize,
+      rulers: this.editorRulers,
+      lineHeight: Math.round(this.editorFontSize * 1.48),
+      lineNumbers: "on",
+      minimap: { enabled: true, maxColumn: 120, renderCharacters: true, showSlider: "mouseover" },
+      folding: true,
+      codeLens: true,
+      foldingHighlight: true,
+      glyphMargin: true,
+      renderLineHighlight: "line",
+      renderWhitespace: this.leadingWhitespaceIndicators ? "boundary" : "none",
+      bracketPairColorization: { enabled: true, independentColorPoolPerBracketType: true },
+      guides: { indentation: true, bracketPairs: true, highlightActiveIndentation: true },
+      stickyScroll: { enabled: true },
+      smoothScrolling: false,
+      cursorSmoothCaretAnimation: "off",
+      wordWrap: "off",
+      selectionHighlight: true,
+      selectionHighlightMultiline: false,
+      occurrencesHighlight: "singleFile",
+      padding: { top: 4, bottom: 4 },
+      scrollBeyondLastLine: true,
+      fixedOverflowWidgets: true,
+      gotoLocation: {
+        multipleDefinitions: "peek",
+        multipleTypeDefinitions: "peek",
+        multipleDeclarations: "peek",
+        multipleImplementations: "peek",
+        multipleReferences: "peek",
+        alternativeDefinitionCommand: "editor.action.referenceSearch.trigger",
+        alternativeTypeDefinitionCommand: "editor.action.referenceSearch.trigger",
+        alternativeDeclarationCommand: "editor.action.referenceSearch.trigger",
+      },
+    });
+    this.editor.onDidChangeCursorPosition(() => { this.renderStatus(); this.observeNavigationLocation(true); });
+    this.editor.onDidScrollChange(() => { this.observeNavigationLocation(false); this.schedulePersist(); });
+    this.editorOpener = monaco.editor.registerEditorOpener({
+      openCodeEditor: (_source, resource, selectionOrPosition) => this.openNavigationTarget(resource, selectionOrPosition),
+    });
+    this.mediaTheme.addEventListener("change", () => monaco.editor.setTheme(this.mediaTheme.matches ? "vs-dark" : "vs"), { signal: this.abort.signal });
+
+  }
+
+  private initializeTree(): void {
+    this.treeScroller = this.root.querySelector<HTMLElement>("[data-code-tree]")!;
+    this.treeCanvas = this.root.querySelector<HTMLElement>("[data-tree-canvas]")!;
+    this.treeVirtualizer = new Virtualizer<HTMLElement, HTMLElement>({
+      count: 0,
+      getScrollElement: () => this.treeScroller,
+      estimateSize: () => treeRowHeight,
+      getItemKey: (index) => this.flatTree[index]?.key || index,
+      overscan: 10,
+      observeElementRect,
+      observeElementOffset,
+      scrollToFn: elementScroll,
+      onChange: () => this.renderTreeRows(),
+    });
+    this.disposeVirtualizer = this.treeVirtualizer._didMount();
+    this.treeVirtualizer._willUpdate();
+  }
+
+  private async ensureRoot(root: WorkspaceRoot): Promise<void> {
+    const key = refKey({ rootId: root.id, path: "" });
+    if (!this.nodes.has(key)) {
+      this.nodes.set(key, {
+        key, ref: { rootId: root.id, path: "" }, name: root.label, hostPath: root.hostPath,
+        kind: "directory", isRoot: true, isSymlink: false, readOnly: false, depth: 0, parentKey: null,
+        blockedReason: root.blockedReason, loaded: false, loading: false, children: [],
+      });
+    }
+    this.expanded.add(key);
+    await this.loadChildren(this.nodes.get(key)!);
+  }
+
+  private loadChildren(node: TreeNode, force = false): Promise<void> {
+    return this.directoryLoader.load(node, force);
+  }
+
+  private rebuildFlatTree(): void {
+    const result: TreeNode[] = [];
+    const append = (node: TreeNode) => {
+      result.push(node);
+      if (node.kind === "directory" && this.expanded.has(node.key)) {
+        node.children.forEach((key) => {
+          const child = this.nodes.get(key);
+          if (child) append(child);
+        });
+      }
+    };
+    for (const root of this.roots) {
+      const node = this.nodes.get(refKey({ rootId: root.id, path: "" }));
+      if (node) append(node);
+    }
+    this.flatTree = result;
+  }
+
+  private renderTree(preserveViewport = false): void {
+    if (!this.treeVirtualizer) return;
+    const previous = this.flatTree;
+    const scrollTop = this.treeScroller.scrollTop;
+    this.rebuildFlatTree();
+    const flatTree = this.flatTree;
+    this.treeVirtualizer.setOptions({
+      ...this.treeVirtualizer.options,
+      count: flatTree.length,
+      getItemKey: (index) => flatTree[index]?.key || index,
+    });
+    if (preserveViewport) {
+      // Set the final height and offset together, before computing the virtual window.
+      // Reading scrollTop here also respects scrolling while the request was in flight.
+      this.updateTreeHeight();
+      const offset = preservedTreeScrollTop(previous, flatTree, scrollTop, this.treeScroller.clientHeight, treeRowHeight);
+      if (this.treeScroller.scrollTop !== offset) this.treeScroller.scrollTop = offset;
+      this.treeVirtualizer.scrollOffset = offset;
+    }
+    this.treeVirtualizer._willUpdate();
+    this.renderTreeRows();
+  }
+
+  private updateTreeHeight(): void {
+    const height = `${this.treeVirtualizer.getTotalSize()}px`;
+    if (this.treeCanvas.style.height !== height) this.treeCanvas.style.height = height;
+  }
+
+  private renderTreeRows(): void {
+    if (!this.treeCanvas || !this.treeVirtualizer) return;
+    const items = this.treeVirtualizer.getVirtualItems();
+    this.updateTreeHeight();
+    const rows: ExplorerRow[] = items.flatMap((virtual) => {
+      const node = this.flatTree[virtual.index];
+      if (!node) return [];
+      const selected = this.treeSelection.selected.has(node.key);
+      const expanded = this.expanded.has(node.key);
+      const isDirectory = node.kind === "directory";
+
+      const diagnosticPresentation = {className:"", description:""};
+      const indent = 7 + node.depth * 14;
+      const icon = isDirectory
+        ? (expanded ? "folder-opened" : "folder")
+        : this.fileIcon(node.name);
+      const draggable = !node.isRoot && !node.readOnly && !node.blockedReason;
+      const dragging = this.draggingTreeNodes.some((candidate) => candidate.key === node.key);
+      const dropTarget = node.key === this.treeDropTargetKey;
+      const ariaLabel = diagnosticPresentation.description ? `${node.name}, ${diagnosticPresentation.description}` : node.name;
+      const title = node.blockedReason || (diagnosticPresentation.description ? `${node.hostPath} — ${diagnosticPresentation.description}` : node.hostPath);
+      return [{
+        key: node.key,
+        attributes: {
+          class: `code-tree-row ${selected ? "is-selected" : ""} ${node.blockedReason ? "is-blocked" : ""} ${dragging ? "is-dragging" : ""} ${dropTarget ? "is-drop-target" : ""}`,
+          role: "treeitem", "aria-label": ariaLabel, "aria-selected": String(selected),
+          ...(isDirectory ? { "aria-expanded": String(expanded) } : {}),
+          draggable: String(draggable), "data-tree-key": node.key, "data-tree-kind": node.kind, "data-tree-root": String(node.isRoot),
+          style: `transform:translateY(${virtual.start}px);padding-left:${indent}px`, title,
+        },
+        chevronClass: isDirectory ? `codicon codicon-${node.loading ? "loading codicon-modifier-spin" : expanded ? "chevron-down" : "chevron-right"}` : "code-tree-spacer",
+        iconClass: `codicon codicon-${icon} code-tree-icon`,
+        labelClass: `code-tree-label${diagnosticPresentation.className ? ` ${diagnosticPresentation.className}` : ""}`,
+        name: node.name, renaming: this.renamingKey === node.key,
+      }];
+    });
+    const input = renderExplorerRows(this.treeCanvas, rows);
+    if (input) {
+      requestAnimationFrame(() => {
+        if (!input.isConnected || document.activeElement === input) return;
+        input.focus({ preventScroll: true });
+        const dot = input.value.lastIndexOf(".");
+        input.setSelectionRange(0, dot > 0 ? dot : input.value.length);
+      });
+    }
+  }
+
+  private fileIcon(name: string): string {
+    const extension = name.split(".").pop()?.toLowerCase();
+    if (["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico", "avif"].includes(extension || "")) return "file-media";
+    if (["mp4", "m4v", "webm", "ogv"].includes(extension || "")) return "play-circle";
+    if (["mp3", "wav", "ogg", "oga", "opus", "flac", "m4a", "aac", "weba"].includes(extension || "")) return "music";
+    if (["json", "yaml", "yml", "toml", "ini"].includes(extension || "")) return "json";
+    if (["md", "markdown", "txt"].includes(extension || "")) return "markdown";
+    return "file-code";
+  }
+
+  private syncTreeSelectionState(): void {
+    if (!this.treeCanvas) return;
+    this.treeCanvas.querySelectorAll<HTMLElement>("[data-tree-key]").forEach((element) => {
+      const selected = this.treeSelection.selected.has(element.dataset.treeKey || "");
+      element.classList.toggle("is-selected", selected);
+      element.setAttribute("aria-selected", String(selected));
+    });
+  }
+
+  private setTreeSelection(selection: SelectionState, focusedKey: string | null): void {
+    this.treeSelection = selection;
+    this.selectedTreeKey = focusedKey;
+    this.treeSelectionVersion++;
+    this.explorerRevealGeneration++;
+    this.syncTreeSelectionState();
+    this.schedulePersist();
+  }
+
+  private selectTreeKey(key: string | null, options = { toggle: false, range: false }): void {
+    const ordered = this.flatTree.map((node) => node.key);
+    if (options.range && (!this.treeSelection.anchor || !ordered.includes(this.treeSelection.anchor))) options = { toggle: false, range: false };
+    this.setTreeSelection(key === null ? { selected: new Set(), anchor: null }
+      : updateSelection(this.treeSelection, ordered, key, options), key);
+  }
+
+  private pruneTreeSelection(removed: Set<string>): void {
+    const selected = new Set([...this.treeSelection.selected].filter((key) => !removed.has(key)));
+    const focusRemoved = this.selectedTreeKey !== null && removed.has(this.selectedTreeKey);
+    const anchorRemoved = this.treeSelection.anchor !== null && removed.has(this.treeSelection.anchor);
+    if (selected.size === this.treeSelection.selected.size && !focusRemoved && !anchorRemoved) return;
+    this.setTreeSelection({ selected, anchor: anchorRemoved ? null : this.treeSelection.anchor },
+      focusRemoved ? selected.values().next().value || null : this.selectedTreeKey);
+  }
+
+  private selectedTreeNodes(): TreeNode[] {
+    // Snapshot references: directory refreshes may replace nodes while a dialog or request is open.
+    return [...this.treeSelection.selected].flatMap((key) => {
+      const node = this.nodes.get(key);
+      return node ? [{ ...node, ref: { ...node.ref } }] : [];
+    });
+  }
+
+  private initializeOutline(): void {
+    const host = this.root.querySelector<HTMLElement>("[data-code-outline]");
+    if (!host || !this.workspace) return;
+    const workspaceId = this.workspace.id;
+    this.outlineView = new OutlineView(host, {
+      selection: () => this.selectedTreeNodes(),
+      list: (ref, signal) => editorAPI.listEntries(workspaceId, ref, signal),
+      resolve: (ref, signal) => this.resolveFileOutline(ref, signal),
+      label: (ref) => this.roots.length > 1
+        ? `${this.roots.find((root) => root.id === ref.rootId)?.label || ref.rootId}/${ref.path}` : ref.path || this.workspace!.name,
+      navigate: async (ref, range) => {
+        if (!await this.openNavigationTarget(this.modelURI(ref), range)) throw new Error("This outline file is no longer available. Reopen Outline to refresh.");
+        if (window.innerWidth <= 720) this.setMobileExplorer(false);
+      },
+      saveSize: () => this.schedulePersist(),
+    });
+  }
+
+  private async resolveFileOutline(ref: FileRef, signal: AbortSignal): Promise<OutlineResult> {
+    if (previewKindForPath(ref.path)) return { status: "unsupported", symbols: [], message: "Media files do not have a code outline." };
+    signal.throwIfAborted();
+    const uri = this.modelURI(ref);
+    let model = monaco.editor.getModel(uri);
+    if (!model) {
+      const snapshot = await editorAPI.readFile(this.workspace!.id, ref, signal);
+      signal.throwIfAborted();
+      if (this.abort.signal.aborted) throw new Error("Editor closed");
+      // A tab or another navigation request may have created this model during the read.
+      model = monaco.editor.getModel(uri);
+      if (!model) {
+        model = this.createEditorModel(snapshot.content, languageForPath(ref.path), uri);
+        model.setEOL(snapshot.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+      }
+    }
+    // Transfer any navigation-cache ownership into the shared reference count. Tabs opened
+    // during the request retain the same model, so releasing Outline cannot dispose their buffer.
+    for (const [key, cached] of this.navigationModels.entries()) if (cached === model) this.navigationModels.take(key);
+    this.retainModel(model);
+    try { return await resolveOutlineSymbols(model, null, signal); }
+    finally { this.releaseModel(model); }
+  }
+
+  private collapseTreeNode(node: TreeNode): void {
+    this.expanded.delete(node.key);
+    const hidden = (key: string | null) => key !== null && key !== node.key
+      && Boolean(this.nodes.get(key) && isRefWithin(this.nodes.get(key)!.ref, node.ref));
+    this.setTreeSelection({
+      selected: new Set([...this.treeSelection.selected].filter((key) => !hidden(key))),
+      anchor: hidden(this.treeSelection.anchor) ? node.key : this.treeSelection.anchor,
+    }, hidden(this.selectedTreeKey) ? node.key : this.selectedTreeKey);
+  }
+
+  private collapseAll(): void {
+    this.selectTreeKey(null);
+    this.expanded.clear();
+    this.renderTree();
+    this.schedulePersist();
+
+  }
+
+  private clampEditorFontSize(value: number): number {
+    if (!Number.isFinite(value) || value <= 0) return defaultEditorFontSize;
+    return Math.min(maxEditorFontSize, Math.max(minEditorFontSize, value));
+  }
+
+  async showSettings(): Promise<void> {
+    const {settings} = await api('/api/settings');
+    const dialog = document.createElement('dialog'); dialog.className = 'editor-settings';
+    dialog.innerHTML = `<form class="form"><h2>Editor Settings</h2>
+      <label>Font size<input name="font" type="number" min="8" max="30" step="0.5" value="${this.editorFontSize}"></label>
+      <label>Indentation width<input name="width" type="number" min="1" max="8" value="${this.indentation.tabSize}"></label>
+      <label class="check"><input name="spaces" type="checkbox" ${this.indentation.insertSpaces ? 'checked' : ''}>Use spaces</label>
+      <label class="check"><input name="whitespace" type="checkbox" ${this.leadingWhitespaceIndicators ? 'checked' : ''}>Show whitespace</label>
+      <label class="check"><input name="guides" type="checkbox" ${settings.editorColumnGuidesEnabled ? 'checked' : ''}>Show column guides</label>
+      <label>Guide columns<input name="columns" value="${escapeHTML((settings.editorColumnGuides || [80,90]).join(', '))}"></label>
+      <label>Line endings on save<select name="eol"><option value="unchanged">Preserve</option><option value="lf">LF</option><option value="crlf">CRLF</option></select></label>
+      <p role="alert" data-error></p><div class="button-row"><button type="submit" class="primary">Save</button><button type="button" data-cancel>Cancel</button></div></form>`;
+    dialog.querySelector<HTMLSelectElement>('[name=eol]')!.value = this.editorLineEndingsOnSave;
+    const close = () => { dialog.close(); dialog.remove(); };
+    dialog.querySelector<HTMLButtonElement>('[data-cancel]')!.onclick = close;
+    dialog.oncancel = close;
+    dialog.querySelector('form')!.onsubmit = async event => {
+      event.preventDefault(); const form = new FormData(dialog.querySelector('form')!);
+      const columns = String(form.get('columns')).split(',').map(v => Number(v.trim()));
+      if (!columns.length || columns.some(v => !Number.isInteger(v) || v < 1 || v > 10000)) { dialog.querySelector('[data-error]')!.textContent = 'Enter comma-separated columns from 1 to 10,000.'; return; }
+      const patch = { editorFontSize: Number(form.get('font')), editorTabSize: Number(form.get('width')), editorInsertSpaces: form.has('spaces'), hideLeadingWhitespaceIndicators: !form.has('whitespace'), editorColumnGuidesEnabled: form.has('guides'), editorColumnGuides: columns, editorLineEndingsOnSave: String(form.get('eol')) };
+      try {
+        await this.saveEditorSettings(patch);
+        this.setEditorFontSize(patch.editorFontSize); this.indentation = indentationDefaults(patch); this.editorLineEndingsOnSave = lineEndingsOnSave(patch);
+        this.leadingWhitespaceIndicators = !patch.hideLeadingWhitespaceIndicators; this.editorRulers = columnGuideRulers(patch);
+        this.editor.updateOptions({ rulers:this.editorRulers, renderWhitespace:this.leadingWhitespaceIndicators ? 'boundary' : 'none' });
+        this.activeTab()?.model.updateOptions({ ...this.indentation, indentSize:this.indentation.tabSize }); this.renderStatus(); close();
+      } catch (error) { dialog.querySelector('[data-error]')!.textContent = String(error); }
+    };
+    this.appendOverlay(dialog); dialog.showModal();
+  }
+
+  private setEditorFontSize(value: number): void {
+    const next = this.clampEditorFontSize(value);
+    if (next === this.editorFontSize) return;
+    this.editorFontSize = next;
+    const lineHeight = Math.round(next * 1.48);
+    this.editor?.updateOptions({ fontSize: next, lineHeight });
+    window.clearTimeout(this.editorFontSizeSaveTimer);
+    this.editorFontSizeSaveTimer = window.setTimeout(() => {
+      this.editorFontSizeSaveTimer = 0;
+      this.persistEditorSettings({ editorFontSize: next });
+    }, 150);
+  }
+
+  private persistEditorSettings(patch: Record<string, unknown>): void {
+    void this.saveEditorSettings(patch).catch((error) => {
+      toast(`Could not save editor preferences: ${error instanceof Error ? error.message : String(error)}`, { sticky: true });
+    });
+  }
+
+  private createEditorModel(content: string, language?: string, uri?: MonacoUri): MonacoEditor.ITextModel {
+    const model = monaco.editor.createModel(content, language, uri);
+    model.detectIndentation(this.indentation.insertSpaces, this.indentation.tabSize);
+    model.onDidChangeOptions(() => {
+      if (this.activeTab()?.model === model) this.renderStatus();
+    });
+    return model;
+  }
+
+  private showIndentationPopover(button: HTMLButtonElement): void {
+    if (button.getAttribute("aria-expanded") === "true") {
+      this.closeIndentationPopover?.();
+      return;
+    }
+    this.closeIndentationPopover?.();
+    closeContextMenu();
+    const tab = this.activeTab();
+    const model = tab && tab.kind !== "media" ? tab.model : null;
+    this.closeIndentationPopover = openIndentationPopover(button, model?.getOptions() || this.indentation, (options) => {
+      this.indentation = options;
+      if (model && !model.isDisposed()) model.updateOptions({ ...options, indentSize: options.tabSize });
+      this.renderStatus();
+      this.persistEditorSettings({ editorInsertSpaces: options.insertSpaces, editorTabSize: options.tabSize });
+    });
+  }
+
+  private async toggleNode(node: TreeNode): Promise<void> {
+    this.selectTreeKey(node.key);
+    if (node.kind === "directory" && !node.blockedReason) {
+      if (this.expanded.has(node.key)) this.collapseTreeNode(node);
+      else {
+        this.expanded.add(node.key);
+        await this.loadChildren(node);
+      }
+      this.renderTree();
+      this.schedulePersist();
+
+    } else if (node.kind === "file" && !node.blockedReason) {
+      await this.recordCodeNavigation(() => this.openFile(node.ref, false, false));
+      if (window.innerWidth <= 720) this.setMobileExplorer(false);
+    }
+  }
+
+  private createModel(snapshot: FileSnapshot, id: string): OpenTab {
+    const uri = this.modelURI(snapshot.ref, snapshot.hostPath);
+    const shared = this.tabs.find(candidate => candidate.ref && refKey(candidate.ref) === refKey(snapshot.ref));
+    let prepared = this.navigationModels.take(uri.toString());
+    if (!prepared) {
+      const equivalent = this.navigationModels.entries().find(([cachedURI]) => {
+        const cachedRef = this.refForFileURI(cachedURI);
+        return cachedRef && refKey(cachedRef) === refKey(snapshot.ref);
+      });
+      if (equivalent) prepared = this.navigationModels.take(equivalent[0]);
+    }
+    const reusable = shared?.model || prepared || monaco.editor.getModel(uri);
+    if (prepared && prepared !== reusable) prepared.dispose();
+    const model = reusable || this.createEditorModel(snapshot.content, languageForPath(snapshot.ref.path), uri);
+    if (prepared === model && !shared) {
+      if (model.getValue() !== snapshot.content) model.setValue(snapshot.content);
+      model.setEOL(snapshot.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+    }
+    this.retainModel(model);
+    if (!reusable) model.setEOL(snapshot.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+    const tab: OpenTab = {
+      kind: "file", id, ref: snapshot.ref, title: snapshot.ref.path.split("/").pop() || snapshot.ref.path,
+      hostPath: snapshot.hostPath, keepOpen: false, pinned: false, dirty: shared?.dirty || false, deleted: shared?.deleted || false, conflict: shared?.conflict || false,
+      revision: shared?.revision || snapshot.revision, hasBom: shared?.hasBom ?? snapshot.hasBom, eol: shared?.eol || snapshot.eol,
+      model, viewState: null, changeDisposable: { dispose() {} }, applying: false,
+    };
+    tab.changeDisposable = model.onDidChangeContent(() => {
+      if (tab.applying) return;
+      this.markModelDirty(model);
+    });
+    return tab;
+  }
+
+  private modelURI(ref: FileRef, _hostPath?: string): MonacoUri {
+    return monaco.Uri.from({ scheme: "file", authority: this.bot.id, path: `/${ref.rootId}/${ref.path}` });
+  }
+
+  private refForFileURI(uri: string): FileRef | null {
+    try {
+      const parsed = monaco.Uri.parse(uri);
+      if (parsed.scheme !== "file" || parsed.authority !== this.bot.id) return null;
+      const [, rootId, ...parts] = parsed.path.split("/");
+      return this.roots.some(root => root.id === rootId) ? { rootId, path: parts.join("/") } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async openNavigationTarget(resource: MonacoUri, selectionOrPosition?: MonacoRange | MonacoPosition): Promise<boolean> {
+    return await this.recordCodeNavigation(async () => {
+      const ref = this.refForFileURI(resource.toString());
+      if (!this.active || !ref || !ref.path) return false;
+      await this.openFile(ref, false, false);
+      const tab = this.tabs.find((candidate) => {
+        const candidateRef = this.worktreeRef(candidate);
+        return candidateRef && refKey(candidateRef) === refKey(ref);
+      });
+      if (!tab) return false;
+      this.activateTab(tab.id, false);
+      this.revealMarkdownSource();
+      const editor = this.activeCodeEditor();
+      if (!editor) return false;
+      if (selectionOrPosition) {
+        if ("endLineNumber" in selectionOrPosition) {
+          const position = {
+            lineNumber: selectionOrPosition.startLineNumber,
+            column: selectionOrPosition.startColumn,
+          };
+          editor.setPosition(position);
+          editor.revealPositionInCenter(position);
+        } else {
+          editor.setPosition(selectionOrPosition);
+          editor.revealPositionInCenter(selectionOrPosition);
+        }
+      }
+      editor.focus();
+      return true;
+    });
+  }
+
+  private retainModel(model: MonacoEditor.ITextModel): void {
+    this.modelReferences.set(model, (this.modelReferences.get(model) || 0) + 1);
+  }
+
+  private releaseModel(model: MonacoEditor.ITextModel): void {
+    const references = (this.modelReferences.get(model) || 1) - 1;
+    if (references > 0) {
+      this.modelReferences.set(model, references);
+      return;
+    }
+    this.modelReferences.delete(model);
+    model.dispose();
+  }
+
+  private async openFile(ref: FileRef, keepOpen: boolean, focusEditor = true, showErrors = true, activate = true, isCurrent?: () => boolean): Promise<boolean> {
+    if (!this.workspace || isCurrent?.() === false) return false;
+    const selectionVersion = this.treeSelectionVersion;
+    const previewKind = previewKindForPath(ref.path);
+    if (previewKind) {
+      await this.openMedia(ref, keepOpen, focusEditor);
+      return false;
+    }
+    const existing = this.tabs.find((tab) => tab.ref && refKey(tab.ref) === refKey(ref));
+    if (existing) {
+      if (keepOpen) existing.keepOpen = true;
+      if (activate) this.activateTab(existing.id, focusEditor, true, selectionVersion === this.treeSelectionVersion);
+      this.renderTabs();
+
+      return true;
+    }
+    try {
+      const snapshot = await editorAPI.readFile(this.workspace.id, ref);
+      if (isCurrent?.() === false) return false;
+      // A double-click emits both click and dblclick handlers. Their reads can
+      // overlap, so check again after I/O before creating a second tab for the
+      // same file. The Keep Open request wins regardless of completion order.
+      const concurrentlyOpened = this.tabs.find((tab) => tab.ref && refKey(tab.ref) === refKey(ref));
+      if (concurrentlyOpened) {
+        if (keepOpen) concurrentlyOpened.keepOpen = true;
+        if (activate) this.activateTab(concurrentlyOpened.id, focusEditor, true, selectionVersion === this.treeSelectionVersion);
+        this.renderTabs();
+        this.schedulePersist();
+
+        return true;
+      }
+      const tab = this.createModel(snapshot, randomUUID());
+      tab.keepOpen = keepOpen;
+      if (!keepOpen) {
+        const previewIndex = this.tabs.findIndex((candidate) => !candidate.keepOpen && !candidate.dirty);
+        if (previewIndex >= 0) {
+          this.disposeTab(this.tabs[previewIndex]);
+          this.tabs.splice(previewIndex, 1, tab);
+        } else {
+          this.tabs.push(tab);
+        }
+      } else {
+        this.tabs.push(tab);
+      }
+      if (activate) this.activateTab(tab.id, focusEditor, true, selectionVersion === this.treeSelectionVersion);
+      this.renderTabs();
+      this.schedulePersist();
+
+      return true;
+    } catch (error) {
+      if (!showErrors || isCurrent?.() === false) return false;
+      const apiError = error as APIError;
+      const message = apiError.payload?.code === "file_too_large"
+        ? "This file is larger than Echo Code's 10 MiB editor limit."
+        : apiError.payload?.code === "unsupported_file"
+          ? "This file is binary or is not valid UTF-8."
+          : error instanceof Error ? error.message : String(error);
+      const choice = await this.choiceDialog({
+        title: "Cannot edit this file", message,
+        choices: [
+          { id: "cancel", label: "Close" },
+          { id: "reload", label: "Reload" },
+          { id: "reveal", label: "Reveal on Echo host", primary: true },
+        ],
+      });
+      if (choice === "reload") return await this.openFile(ref, keepOpen, focusEditor, showErrors, activate, isCurrent);
+      if (choice === "reveal") await this.reveal(ref);
+      return false;
+    }
+  }
+
+  private setTreeDropTarget(key: string | null): void {
+    if (this.treeDropTargetKey === key) return;
+    if (this.treeDropTargetKey) {
+      this.treeCanvas.querySelector<HTMLElement>(`[data-tree-key="${CSS.escape(this.treeDropTargetKey)}"]`)?.classList.remove("is-drop-target");
+    }
+    this.treeDropTargetKey = key;
+    if (key) {
+      this.treeCanvas.querySelector<HTMLElement>(`[data-tree-key="${CSS.escape(key)}"]`)?.classList.add("is-drop-target");
+    }
+    window.clearTimeout(this.treeDropExpandTimer);
+    this.treeDropExpandTimer = 0;
+    this.treeDropExpandKey = null;
+    const target = key ? this.nodes.get(key) : null;
+    if (!target || this.expanded.has(target.key) || target.loading) return;
+    this.treeDropExpandKey = target.key;
+    this.treeDropExpandTimer = window.setTimeout(() => {
+      this.treeDropExpandTimer = 0;
+      if (this.treeDropExpandKey !== target.key || this.treeDropTargetKey !== target.key) return;
+      this.expanded.add(target.key);
+      void this.loadChildren(target).then(() => {
+        this.schedulePersist();
+
+      });
+    }, 600);
+  }
+
+  private clearTreeDragState(): void {
+    window.clearTimeout(this.treeDropExpandTimer);
+    this.treeDropExpandTimer = 0;
+    this.treeDropExpandKey = null;
+    if (this.treeDragScrollFrame) {
+      cancelAnimationFrame(this.treeDragScrollFrame);
+      this.treeDragScrollFrame = 0;
+    }
+    this.treeDragScrollActive = false;
+    this.treeCanvas.querySelectorAll(".code-tree-row.is-dragging, .code-tree-row.is-drop-target")
+      .forEach((row) => row.classList.remove("is-dragging", "is-drop-target"));
+    this.draggingTreeNodes = [];
+    this.treeDropTargetKey = null;
+  }
+
+  private startTreeDragScroll(clientY: number): void {
+    this.treeDragScrollClientY = clientY;
+    if (this.treeDragScrollActive) return;
+    this.treeDragScrollActive = true;
+    const step = () => {
+      this.treeDragScrollFrame = 0;
+      if (!this.treeDragScrollActive) return;
+      const bounds = this.treeScroller.getBoundingClientRect();
+      const edge = 28;
+      const speed = 12;
+      if (this.treeDragScrollClientY < bounds.top + edge) {
+        this.treeScroller.scrollTop -= speed;
+      } else if (this.treeDragScrollClientY > bounds.bottom - edge) {
+        this.treeScroller.scrollTop += speed;
+      } else {
+        this.treeDragScrollActive = false;
+        return;
+      }
+      this.treeDragScrollFrame = requestAnimationFrame(step);
+    };
+    this.treeDragScrollFrame = requestAnimationFrame(step);
+  }
+
+  private rewrittenTreeRef(candidate: FileRef, previous: FileRef, next: FileRef): FileRef {
+    if (!isRefWithin(candidate, previous)) return candidate;
+    const suffix = candidate.path.slice(previous.path.length).replace(/^\//, "");
+    return { rootId: next.rootId, path: suffix ? `${next.path}/${suffix}` : next.path };
+  }
+
+  private async moveTreeNodes(selection: TreeNode[], destination: TreeNode): Promise<void> {
+    if (!this.workspace || this.treeMutationBusy || !treeMoveDestination(selection, destination)) return;
+    const workspaceId = this.workspace.id;
+    const references = new Map([...this.nodes].map(([key, node]) => [key, node.ref]));
+    let expandedRefs = [...this.expanded].flatMap((key) => references.get(key) ? [references.get(key)!] : []);
+    this.treeMutationBusy = true;
+    this.treeSelectionVersion++;
+    this.explorerRevealGeneration++;
+    try {
+      const result = await runTreeOperation(topLevelTreeNodes(selection), async (node) => {
+        if (this.abort.signal.aborted) throw new Error("Workspace closed");
+        return editorAPI.moveEntry(workspaceId, node.ref, destination.ref);
+      });
+      if (this.abort.signal.aborted) return;
+      for (const { item: node, value } of result.succeeded) {
+        expandedRefs = expandedRefs.map((ref) => this.rewrittenTreeRef(ref, node.ref, value.entry.ref));
+        const rewriteKey = (key: string | null): string | null => {
+          const ref = key ? references.get(key) : undefined;
+          return ref ? refKey(this.rewrittenTreeRef(ref, node.ref, value.entry.ref)) : key;
+        };
+        this.setTreeSelection({ selected: new Set([...this.treeSelection.selected].map((key) => rewriteKey(key)!)),
+          anchor: rewriteKey(this.treeSelection.anchor) }, rewriteKey(this.selectedTreeKey));
+        this.codeNavigation?.remapRef(node.ref, value.entry.ref);
+        this.rewriteOpenRefs(node.ref, value.entry.ref, node.hostPath, value.entry.hostPath);
+        await this.bookmarks?.remap(node.ref, value.entry.ref);
+      }
+      if (result.succeeded.length) {
+        this.expanded = new Set(expandedRefs.map(refKey));
+        this.expanded.add(destination.key);
+        const parents = selection.flatMap((node) => node.parentKey && references.get(node.parentKey) ? [references.get(node.parentKey)!] : []);
+        await this.refreshTreeParents([...parents, destination.ref]);
+        const index = this.flatTree.findIndex((node) => node.key === this.selectedTreeKey);
+        if (index >= 0) this.treeVirtualizer.scrollToIndex(index, { align: "auto" });
+      }
+      this.reportTreeOperation(`Moved ${result.succeeded.length} item${result.succeeded.length === 1 ? "" : "s"}`, result.failed);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), { sticky: true });
+    } finally {
+      this.finishTreeMutation();
+    }
+  }
+
+  private async refreshTreeParents(refs: FileRef[]): Promise<void> {
+    for (const ref of new Map(refs.map((ref) => [refKey(ref), ref])).values()) {
+      const node = this.nodes.get(refKey(ref));
+      if (node?.kind === "directory") await this.reloadChildrenPreservingExpansion(node);
+    }
+  }
+
+  private finishTreeMutation(): void {
+    this.treeMutationBusy = false;
+    if (this.abort.signal.aborted) return;
+    const keys = [...this.treeSelection.selected, this.selectedTreeKey, this.treeSelection.anchor];
+    this.pruneTreeSelection(new Set(keys.filter((key): key is string => key !== null && !this.nodes.has(key))));
+    this.renderTree(true);
+    this.schedulePersist();
+    this.searchView?.refresh();
+
+    const changes = this.pendingTreeChanges.splice(0);
+    if (changes.length) void this.applyFilesystemChanges(changes);
+  }
+
+  private reportTreeOperation(message: string, failures: Array<{ item: { ref: FileRef }; error: string }>, undo?: () => Promise<void>): void {
+    const detail = failures.map(({ item, error }) => `${item.ref.path}: ${error}`).join("; ");
+    toast(detail ? `${message}. Failed: ${detail}` : message, {
+      sticky: failures.length > 0,
+      ...(undo ? { actionLabel: "Undo", action: undo } : {}),
+    });
+  }
+
+  // Media tabs carry a placeholder text model so the shared tab machinery
+  // (view state, persistence, disposal) works unchanged; the visible surface
+  // is an <img>/<video> fed by the /fs/media stream.
+  private mediaStubModel(ref: FileRef): MonacoEditor.ITextModel {
+    const uri = monaco.Uri.from({
+      scheme: "echo-media", authority: this.workspace?.id || "workspace",
+      path: `/${encodeURIComponent(ref.rootId)}/${ref.path.split("/").map(encodeURIComponent).join("/")}`,
+    });
+    const model = monaco.editor.getModel(uri) || this.createEditorModel("", "plaintext", uri);
+    this.retainModel(model);
+    return model;
+  }
+
+  private async openMedia(ref: FileRef, keepOpen: boolean, focusEditor = true): Promise<void> {
+    if (!this.workspace) return;
+    const kind = previewKindForPath(ref.path);
+    if (!kind) return;
+    const existing = this.tabs.find((tab) => tab.ref && refKey(tab.ref) === refKey(ref));
+    if (existing) {
+      if (keepOpen) existing.keepOpen = true;
+      this.activateTab(existing.id, focusEditor);
+      this.renderTabs();
+
+      return;
+    }
+    const tab: OpenTab = {
+      kind: "media", id: randomUUID(), ref, title: ref.path.split("/").pop() || ref.path,
+      hostPath: "", keepOpen, pinned: false, dirty: false, deleted: false, conflict: false, revision: "",
+      hasBom: false, eol: "lf", model: this.mediaStubModel(ref), viewState: null,
+      changeDisposable: { dispose() {} }, applying: false,
+      media: { kind, url: editorAPI.mediaURL(this.workspace.id, ref) },
+    };
+    if (!keepOpen) {
+      const previewIndex = this.tabs.findIndex((candidate) => !candidate.keepOpen && !candidate.dirty);
+      if (previewIndex >= 0) {
+        this.disposeTab(this.tabs[previewIndex]);
+        this.tabs.splice(previewIndex, 1, tab);
+      } else {
+        this.tabs.push(tab);
+      }
+    } else {
+      this.tabs.push(tab);
+    }
+    this.activateTab(tab.id, focusEditor);
+    this.renderTabs();
+    this.schedulePersist();
+
+  }
+
+  private worktreeRef(tab: OpenTab): FileRef | null {
+    return tab.ref;
+  }
+
+  private markModelDirty(model: MonacoEditor.ITextModel): void {
+    for (const tab of this.tabs) {
+      if (tab.model !== model) continue;
+      tab.dirty = true;
+      tab.keepOpen = true;
+      tab.eol = model.getEOL() === "\r\n" ? "crlf" : "lf";
+    }
+    this.renderTabs();
+    this.renderStatus();
+    this.schedulePersist();
+  }
+
+  private activateTab(id: string, focusEditor = true, mru = true, revealInExplorer = true): void {
+    const next = this.tabs.find((tab) => tab.id === id);
+    if (!next) return;
+    if (mru) this.touchMru(id);
+    const active = this.activeTab();
+    // Re-selecting the current tab must not re-attach its model or restore the
+    // last captured view state. That state is intentionally only a snapshot
+    // for switching away and back; restoring it here rewinds the live caret
+    // and selection to an older editing position.
+    if (active?.id === next.id) {
+      this.syncActiveTabState();
+      if (revealInExplorer && !this.treeMutationBusy) this.revealTabInExplorer(next);
+      if (focusEditor) {
+        if (next.kind !== "media") this.focusActiveEditor();
+      }
+      this.schedulePersist();
+      return;
+    }
+    if (active && active.id !== next.id) {
+      if (this.markdownMode(active) !== "preview") active.viewState = this.editor.saveViewState();
+    }
+    this.activeTabId = id;
+    this.syncActiveTabState();
+    if (next.kind === "media") {
+      this.editor.setModel(null);
+      this.renderMediaPreview(next);
+    } else {
+		this.editor.updateOptions({ readOnly: Boolean(next.readOnly) });
+      this.editor.setModel(next.model);
+    }
+    this.updateEditorSurface();
+    if (next.kind === "file" && next.viewState && this.markdownMode(next) !== "preview") this.editor.restoreViewState(next.viewState);
+    if (focusEditor && next.kind !== "media") this.focusActiveEditor();
+    this.renderBreadcrumbs();
+    this.renderStatus();
+    if (revealInExplorer && !this.treeMutationBusy) this.revealTabInExplorer(next);
+    this.schedulePersist();
+  }
+
+  private touchMru(id: string): void {
+    if (this.mruTabIds[0] === id) return;
+    this.mruTabIds = [id, ...this.mruTabIds.filter((candidate) => candidate !== id)];
+  }
+
+  private activeTab(): OpenTab | undefined {
+    return this.tabs.find((tab) => tab.id === this.activeTabId);
+  }
+
+  private syncActiveTabState(): void {
+    const list = this.root.querySelector<HTMLElement>("[data-tabs-list]");
+    if (!list) return;
+    let activeElement: HTMLElement | null = null;
+    list.querySelectorAll<HTMLElement>("[data-tab-id]").forEach((element) => {
+      const active = element.dataset.tabId === this.activeTabId;
+      element.classList.toggle("is-active", active);
+      element.setAttribute("aria-selected", String(active));
+      element.tabIndex = active ? 0 : -1;
+      if (active) activeElement = element;
+    });
+    if (activeElement) {
+      requestAnimationFrame(() => {
+        if (activeElement?.isConnected) activeElement.scrollIntoView({ block: "nearest", inline: "nearest" });
+      });
+    }
+  }
+
+  private tabDropFromEvent(event: DragEvent): { targetId: string | null; position: TabDropPosition } | null {
+    if (!this.draggingTabId) return null;
+    const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-tab-id]") : null;
+    const targetId = target?.dataset.tabId || null;
+    const position: TabDropPosition = target && event.clientX < target.getBoundingClientRect().left + target.offsetWidth / 2
+      ? "before"
+      : "after";
+    return reorderTabs(this.tabs, this.draggingTabId, targetId, position) ? { targetId, position } : null;
+  }
+
+  private setTabDropIndicator(targetId: string | null, position: TabDropPosition): void {
+    const list = this.root.querySelector<HTMLElement>("[data-tabs-list]");
+    if (!list) return;
+    list.querySelectorAll(".code-tab.is-drop-before, .code-tab.is-drop-after")
+      .forEach((tab) => tab.classList.remove("is-drop-before", "is-drop-after"));
+    const indicator = targetId
+      ? list.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(targetId)}"]`)
+      : list.lastElementChild as HTMLElement | null;
+    indicator?.classList.add(position === "before" ? "is-drop-before" : "is-drop-after");
+  }
+
+  private clearTabDropIndicator(): void {
+    this.root.querySelectorAll(".code-tab.is-drop-before, .code-tab.is-drop-after")
+      .forEach((tab) => tab.classList.remove("is-drop-before", "is-drop-after"));
+  }
+
+  private stopTabDragScroll(): void {
+    this.tabDragScrollActive = false;
+    if (this.tabDragScrollFrame) cancelAnimationFrame(this.tabDragScrollFrame);
+    this.tabDragScrollFrame = 0;
+  }
+
+  private startTabDragScroll(scroller: HTMLElement, clientX: number): void {
+    this.tabDragScrollClientX = clientX;
+    if (this.tabDragScrollActive) return;
+    this.tabDragScrollActive = true;
+    const step = () => {
+      this.tabDragScrollFrame = 0;
+      if (!this.tabDragScrollActive) return;
+      const bounds = scroller.getBoundingClientRect();
+      const edge = 36;
+      const speed = 12;
+      const previous = scroller.scrollLeft;
+      if (this.tabDragScrollClientX < bounds.left + edge) scroller.scrollLeft -= speed;
+      else if (this.tabDragScrollClientX > bounds.right - edge) scroller.scrollLeft += speed;
+      else {
+        this.tabDragScrollActive = false;
+        return;
+      }
+      if (scroller.scrollLeft === previous) {
+        this.tabDragScrollActive = false;
+        return;
+      }
+      this.tabDragScrollFrame = requestAnimationFrame(step);
+    };
+    this.tabDragScrollFrame = requestAnimationFrame(step);
+  }
+
+  private clearTabDragState(): void {
+    this.stopTabDragScroll();
+    this.clearTabDropIndicator();
+    this.root.querySelectorAll(".code-tab.is-dragging").forEach((tab) => tab.classList.remove("is-dragging"));
+    this.draggingTabId = null;
+    this.tabDragStartedOnAction = false;
+  }
+
+  private renderTabs(): void {
+    const list = this.root.querySelector<HTMLElement>("[data-tabs-list]");
+    if (!list) return;
+    list.innerHTML = this.tabs.map((tab) => `
+      <div class="code-tab ${tab.id === this.activeTabId ? "is-active" : ""} ${!tab.keepOpen ? "is-preview" : ""} ${tab.pinned ? "is-pinned" : ""}" role="tab" aria-selected="${tab.id === this.activeTabId}" tabindex="${tab.id === this.activeTabId ? 0 : -1}" draggable="true" data-tab-id="${escapeHTML(tab.id)}" title="${escapeHTML(tab.hostPath || tab.title)}">
+        <span class="codicon codicon-${this.tabIcon(tab)} code-tab-icon"></span>
+        <span class="code-tab-title">${escapeHTML(tab.title)}</span>
+        ${tab.conflict ? `<span class="codicon codicon-warning code-tab-conflict" title="Changed on disk"></span>` : ""}
+        ${tab.deleted ? `<span class="codicon codicon-trash code-tab-conflict" title="Deleted on disk"></span>` : ""}
+        <span class="code-tab-dirty ${tab.dirty ? "is-visible" : ""}" aria-label="${tab.dirty ? "Unsaved changes" : ""}"></span>
+        ${tab.pinned
+          ? `<button type="button" class="code-tab-unpin" draggable="false" data-tab-action data-tab-unpin aria-label="Unpin ${escapeHTML(tab.title)}" title="Unpin ${escapeHTML(tab.title)}"><span class="codicon codicon-pinned" aria-hidden="true"></span></button>`
+          : `<button type="button" class="code-tab-close" draggable="false" data-tab-action data-tab-close aria-label="Close ${escapeHTML(tab.title)}"><span class="codicon codicon-close" aria-hidden="true"></span></button>`}
+      </div>
+    `).join("");
+    this.syncActiveTabState();
+    this.renderBreadcrumbs();
+    if (this.mruCycle) this.renderMruSwitcher();
+  }
+
+  private tabIcon(tab: OpenTab): string {
+    if (tab.kind !== "media") return "file-code";
+    if (tab.media?.kind === "video") return "play-circle";
+    if (tab.media?.kind === "audio") return "music";
+    return "file-media";
+  }
+
+  private mruTabContext(tab: OpenTab): string {
+    const directoryFor = (path: string): string => {
+      const normalized = path.replace(/\\/g, "/");
+      return normalized.includes("/") ? normalized.slice(0, normalized.lastIndexOf("/")) : "";
+    };
+    if (tab.ref) {
+      const root = this.roots.find((candidate) => candidate.id === tab.ref?.rootId);
+      return [root?.label, directoryFor(tab.ref.path)].filter(Boolean).join(" · ");
+    }
+    return tab.kind === "file" ? "Untitled" : "";
+  }
+
+  private renderMruSwitcher(): void {
+    const state = this.mruCycle;
+    if (!state?.order.length) {
+      this.removeMruSwitcher();
+      return;
+    }
+    if (!this.mruSwitcherOverlay) {
+      const overlay = document.createElement("div");
+      overlay.className = "code-mru-switcher-overlay";
+      overlay.innerHTML = `
+        <section class="code-picker code-mru-switcher" aria-label="Recently used editors">
+          <div class="code-picker-meta">Recently used editors</div>
+          <div class="code-picker-list code-mru-switcher-list" role="listbox" aria-label="Recently used editors" data-mru-switcher-list></div>
+        </section>`;
+      overlay.addEventListener("click", (event) => {
+        const row = (event.target as Element).closest<HTMLElement>("[data-mru-tab-id]");
+        if (row?.dataset.mruTabId) {
+          this.chooseMruTab(row.dataset.mruTabId);
+        } else if (event.target === overlay) {
+          this.finishMruCycle(true);
+        }
+      });
+      this.appendOverlay(overlay);
+      this.mruSwitcherOverlay = overlay;
+    }
+    const list = this.mruSwitcherOverlay.querySelector<HTMLElement>("[data-mru-switcher-list]");
+    if (!list) return;
+    list.innerHTML = state.order.map((id, index) => {
+      const tab = this.tabs.find((candidate) => candidate.id === id);
+      if (!tab) return "";
+      const selected = index === state.index;
+      const context = this.mruTabContext(tab);
+      const states = [tab.dirty ? "Unsaved changes" : "", tab.deleted ? "Deleted on disk" : "", tab.conflict ? "Changed on disk" : ""].filter(Boolean);
+      const accessibleName = [tab.title, context, ...states].filter(Boolean).join(", ");
+      return `
+        <button type="button" role="option" tabindex="-1" aria-label="${escapeHTML(accessibleName)}" aria-selected="${selected}" class="${selected ? "is-selected" : ""}" data-mru-tab-id="${escapeHTML(tab.id)}">
+          <span class="codicon codicon-${this.tabIcon(tab)}"></span>
+          <strong>${escapeHTML(tab.title)}</strong>
+          <span class="code-mru-switcher-context">${escapeHTML(context)}</span>
+          <span class="code-mru-switcher-status" aria-hidden="true">
+            ${tab.dirty ? `<span class="code-mru-switcher-dirty" title="Unsaved changes"></span>` : ""}
+            ${tab.deleted ? `<span class="codicon codicon-trash" title="Deleted on disk"></span>` : ""}
+            ${tab.conflict ? `<span class="codicon codicon-warning" title="Changed on disk"></span>` : ""}
+          </span>
+        </button>`;
+    }).join("");
+    const selected = list.querySelector<HTMLElement>("[aria-selected=true]");
+    requestAnimationFrame(() => {
+      if (selected?.isConnected) selected.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  private removeMruSwitcher(): void {
+    this.mruSwitcherOverlay?.remove();
+    this.mruSwitcherOverlay = null;
+  }
+
+  private finishMruCycle(focusEditor = false): void {
+    const state = this.mruCycle;
+    if (state) {
+      const finalId = state.order[state.index];
+      if (finalId) this.touchMru(finalId);
+    }
+    this.mruCycle = null;
+    this.removeMruSwitcher();
+    if (focusEditor && this.activeTab()?.kind !== "media") this.focusActiveEditor();
+  }
+
+  private chooseMruTab(id: string): void {
+    const state = this.mruCycle;
+    const index = state?.order.indexOf(id) ?? -1;
+    if (!state || index < 0 || !this.tabs.some((tab) => tab.id === id)) return;
+    this.mruCycle = { ...state, index };
+    void this.recordCodeNavigation(() => this.activateTab(id, true, false));
+    this.finishMruCycle();
+  }
+
+  private renderBreadcrumbs(): void {
+    const target = this.root.querySelector<HTMLElement>("[data-breadcrumb-path]");
+    const tab = this.activeTab();
+    if (!target || !tab) {
+      if (target) target.innerHTML = "";
+      return;
+    }
+    if (!tab.ref) {
+      target.innerHTML = `<span>${escapeHTML(tab.title)}</span>`;
+      return;
+    }
+    const root = this.roots.find((candidate) => candidate.id === tab.ref?.rootId);
+    const parts = tab.ref.path.split("/");
+    target.innerHTML = [root?.label || "workspace", ...parts].map((part, index) => `
+      ${index ? `<span class="codicon codicon-chevron-right"></span>` : ""}
+      <button type="button" data-breadcrumb-index="${index}">${escapeHTML(part)}</button>
+    `).join("");
+  }
+
+  private renderStatus(): void {
+    const tab = this.activeTab();
+    const position = this.markdownMode(tab) === "preview" ? tab?.viewState?.cursorState[0]?.position
+      : tab && tab.kind !== "media" ? this.editor?.getPosition() : undefined;
+    const cursor = this.root.querySelector<HTMLElement>("[data-status=cursor]");
+    const eol = this.root.querySelector<HTMLElement>("[data-status=eol]");
+    const language = this.root.querySelector<HTMLElement>("[data-status=language]");
+    const indentation = this.root.querySelector<HTMLButtonElement>("[data-status=indentation]");
+    if (indentation) indentation.textContent = indentationLabel(tab && tab.kind !== "media" ? tab.model.getOptions() : this.indentation);
+    if (cursor) cursor.textContent = position ? `Ln ${position.lineNumber}, Col ${position.column}` : "Ln 1, Col 1";
+    if (eol) eol.textContent = tab?.model.getEOL() === "\r\n" ? "CRLF" : "LF";
+    if (language) language.textContent = tab ? monaco.languages.getLanguages().find((item) => item.id === tab.model.getLanguageId())?.aliases?.[0] || tab.model.getLanguageId() : "Plain Text";
+
+  }
+
+  private updateEditorSurface(): void {
+    const placeholder = this.root.querySelector<HTMLElement>("[data-editor-placeholder]");
+    const host = this.root.querySelector<HTMLElement>("[data-monaco-host]");
+    const mediaHost = this.root.querySelector<HTMLElement>("[data-media-preview-host]");
+    const tab = this.activeTab();
+    const hasTab = Boolean(tab);
+    const isMedia = tab?.kind === "media" && Boolean(tab.media);
+    const mode = this.markdownMode(tab);
+    const fileSurface = this.root.querySelector<HTMLElement>("[data-file-surface]");
+    const modes = this.root.querySelector<HTMLElement>("[data-markdown-modes]");
+    const divider = this.root.querySelector<HTMLElement>("[data-markdown-resizer]");
+    // Detach before hiding the surface so its scroll position can be captured.
+    const previewDocument = isMarkdownTab(tab) && mode !== "source" ? { model: tab.model, ref: tab.ref, state: tab } : null;
+    if (!previewDocument) this.markdownPreview?.show(null);
+    if (fileSurface) {
+      fileSurface.hidden = !hasTab || isMedia;
+      const ratio = restoreMarkdownViewState(tab).markdownSplitRatio;
+      fileSurface.style.gridTemplateColumns = mode === "split" ? `minmax(0, ${ratio}fr) 4px minmax(0, ${1 - ratio}fr)` : "minmax(0, 1fr)";
+      if (divider) {
+        divider.hidden = mode !== "split";
+        divider.setAttribute("aria-valuenow", String(Math.round(ratio * 100)));
+        divider.setAttribute("aria-valuetext", `${Math.round(ratio * 100)}% source`);
+      }
+    }
+    if (modes) {
+      modes.hidden = !isMarkdownTab(tab);
+      modes.querySelectorAll<HTMLButtonElement>("[data-markdown-mode]").forEach(button => {
+        button.setAttribute("aria-pressed", String(button.dataset.markdownMode === mode));
+      });
+    }
+    if (placeholder) placeholder.hidden = hasTab;
+    if (host) host.hidden = !hasTab || isMedia || mode === "preview";
+    if (previewDocument) this.markdownPreview?.show(previewDocument);
+    if (mediaHost) mediaHost.hidden = !isMedia;
+    this.editor?.layout();
+
+  }
+
+  private renderMediaPreview(tab: OpenTab): void {
+    const host = this.root.querySelector<HTMLElement>("[data-media-preview-host]");
+    if (!host || !tab.media) return;
+    const url = `${tab.media.url}&v=${Date.now()}`;
+    const icon = tab.media.kind === "video" ? "play-circle" : tab.media.kind === "audio" ? "music" : "file-media";
+    const noun = tab.media.kind === "video" ? "video" : tab.media.kind === "audio" ? "audio" : "image";
+    const mediaTag = tab.media.kind === "video"
+      ? `<video src="${escapeHTML(url)}" controls loop playsinline muted></video>`
+      : tab.media.kind === "audio"
+        ? `<audio src="${escapeHTML(url)}" controls preload="metadata"></audio>`
+        : `<img src="${escapeHTML(url)}" alt="${escapeHTML(tab.title)}">`;
+    host.innerHTML = `
+      <div class="code-media-frame${tab.media.kind === "audio" ? " code-media-frame-audio" : ""}">
+        ${mediaTag}
+        <div class="code-media-volume-slot"></div>
+        <div class="code-media-error" hidden>
+          <span class="codicon codicon-${icon}"></span>
+          <h2>This ${noun} cannot be displayed</h2>
+          <p>The file may be larger than the preview limit or its container format is not playable.</p>
+        </div>
+      </div>`;
+    const element = host.querySelector<HTMLVideoElement | HTMLImageElement | HTMLAudioElement>(
+      tab.media.kind === "video" ? "video" : tab.media.kind === "audio" ? "audio" : "img",
+    );
+    const errorPanel = host.querySelector<HTMLElement>(".code-media-error");
+    const volumeSlot = host.querySelector<HTMLElement>(".code-media-volume-slot");
+    if (tab.media.kind === "video" && element instanceof HTMLVideoElement && volumeSlot) {
+      volumeSlot.appendChild(attachVideoVolumeControl(element, "code-media-volume"));
+    }
+    // <img>, <video>, and <audio> all raise "error" when the stream fails
+    // (missing file, oversized refusal, unplayable container), so one handler
+    // covers every failure mode.
+    element?.addEventListener("error", () => {
+      if (!element || !errorPanel) return;
+      element.hidden = true;
+      errorPanel.hidden = false;
+      if (volumeSlot) volumeSlot.hidden = true;
+    }, { once: true });
+  }
+
+  private disposeTab(tab: OpenTab): void {
+    if (tab.id === this.activeTabId) this.markdownPreview?.show(null);
+    tab.changeDisposable.dispose();
+    this.releaseModel(tab.model);
+  }
+
+  private async closeTab(tab: OpenTab, skipPrompt = false): Promise<boolean> {
+    if (tab.pinned || !this.tabs.includes(tab)) return false;
+    if (tab.dirty && !skipPrompt) {
+      const choice = await this.choiceDialog({
+        title: `Save changes to ${tab.title}?`, message: "Your changes will be lost if you close this editor without saving.",
+        choices: [{ id: "cancel", label: "Cancel" }, { id: "discard", label: "Discard", danger: true }, { id: "save", label: "Save", primary: true }],
+      });
+      if (!choice || choice === "cancel") return false;
+      if (choice === "save" && !(await this.saveTab(tab))) return false;
+    }
+    // A tab can become pinned while a save or confirmation is pending.
+    if (tab.pinned || !this.tabs.includes(tab)) return false;
+    this.removeTab(tab);
+    return true;
+  }
+
+  /** Internal cleanup after confirmed file deletion or a successful Save As. */
+  private removeTab(tab: OpenTab): void {
+    const index = this.tabs.indexOf(tab);
+    if (index < 0) return;
+    this.tabs.splice(index, 1);
+    this.mruTabIds = removeFromMru(this.mruTabIds, tab.id);
+    if (this.mruCycle) this.mruCycle = pruneMruCycle(this.mruCycle, this.tabs.map((t) => t.id));
+    this.disposeTab(tab);
+    if (tab.id === this.activeTabId) {
+      const next = this.tabs[Math.min(index, this.tabs.length - 1)];
+      this.activeTabId = null;
+      if (next) this.activateTab(next.id);
+      else {
+        this.editor.setModel(null);
+        this.updateEditorSurface();
+        this.renderBreadcrumbs();
+        this.renderStatus();
+      }
+    }
+    this.renderTabs();
+    this.schedulePersist();
+
+  }
+
+  private newUntitled(): void {
+    const title = `Untitled-${this.untitledCounter++}`;
+    const id = randomUUID();
+    const model = this.createEditorModel("", "plaintext", monaco.Uri.from({ scheme: "untitled", authority: this.workspace?.id || "workspace", path: `/${id}` }));
+    this.retainModel(model);
+    const tab: OpenTab = {
+      kind: "file", id, ref: null, title, hostPath: "", keepOpen: true, pinned: false, dirty: false,
+      deleted: false, conflict: false, revision: "", hasBom: false, eol: "lf", model,
+      viewState: null, changeDisposable: { dispose() {} }, applying: false,
+    };
+    tab.changeDisposable = model.onDidChangeContent(() => {
+      if (tab.applying) return;
+      this.markModelDirty(model);
+    });
+    this.tabs.push(tab);
+    this.activateTab(tab.id);
+    this.renderTabs();
+  }
+
+  private setModelLineEndings(model: MonacoEditor.ITextModel, eol: FileSnapshot["eol"]): void {
+    if (model.getEOL() === (eol === "crlf" ? "\r\n" : "\n")) return;
+    model.pushStackElement();
+    model.pushEOL(eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+    model.pushStackElement();
+  }
+
+  // Call after any formatter and immediately before each write, including retries.
+  private contentForSave(tab: OpenTab): string {
+    if (this.editorLineEndingsOnSave !== "unchanged") this.setModelLineEndings(tab.model, this.editorLineEndingsOnSave);
+    return tab.model.getValue();
+  }
+
+  private async saveTab(tab = this.activeTab()): Promise<boolean> {
+    if (!tab || !this.workspace || this.abort.signal.aborted || tab.model.isDisposed()) return false;
+	if (tab.readOnly) {
+		toast("This file is read-only.");
+		return false;
+	}
+
+    if (tab.kind === "media") {
+      toast("Media previews are read-only.");
+      return false;
+    }
+    if (!tab.ref) return this.saveUntitled(tab);
+    if (!this.roots.some(root => root.id === tab.ref!.rootId && !root.blockedReason)) {
+      toast('This folder is no longer available to the selected bot. Use Save As to save in a configured folder.');
+      return false;
+    }
+    if (tab.deleted) {
+      const choice = await this.choiceDialog({
+        title: "Recreate deleted file?", message: `${tab.title} was deleted from disk. Saving will recreate it.`,
+        choices: [{ id: "cancel", label: "Cancel" }, { id: "recreate", label: "Recreate", primary: true }],
+      });
+      if (choice !== "recreate") return false;
+      try {
+        const parentPath = tab.ref.path.includes("/") ? tab.ref.path.slice(0, tab.ref.path.lastIndexOf("/")) : "";
+        const result = await editorAPI.createEntry(this.workspace.id, {
+          parent: { rootId: tab.ref.rootId, path: parentPath }, name: tab.title, kind: "file",
+          content: this.contentForSave(tab), hasBom: tab.hasBom,
+        });
+        if (result.file) this.applySavedSnapshot(tab, result.file);
+        tab.deleted = false;
+        return !tab.dirty;
+      } catch (error) {
+        toast(error instanceof Error ? error.message : String(error));
+        return false;
+      }
+    }
+    try {
+      const snapshot = await editorAPI.saveFile(this.workspace.id, {
+        ref: tab.ref, content: this.contentForSave(tab), expectedRevision: tab.revision, hasBom: tab.hasBom,
+      });
+      this.applySavedSnapshot(tab, snapshot);
+      return !tab.dirty;
+    } catch (error) {
+      const apiError = error as APIError;
+      if (apiError.payload?.code === "revision_conflict" && apiError.payload.details?.current) {
+        return this.resolveSaveConflict(tab, apiError.payload.details.current);
+      }
+      toast(error instanceof Error ? error.message : String(error), { sticky: true });
+      return false;
+    }
+  }
+
+  private applySavedSnapshot(tab: OpenTab, snapshot: FileSnapshot): void {
+    if (this.abort.signal.aborted || tab.model.isDisposed()) return;
+    for (const candidate of this.tabs) {
+      if (candidate.model !== tab.model) continue;
+      candidate.revision = snapshot.revision;
+      candidate.hostPath = snapshot.hostPath;
+      candidate.hasBom = snapshot.hasBom;
+      candidate.eol = tab.model.getEOL() === "\r\n" ? "crlf" : "lf";
+      candidate.dirty = candidate.model.getValue() !== snapshot.content;
+      candidate.conflict = false;
+      candidate.deleted = false;
+      candidate.keepOpen = true;
+    }
+    this.renderTabs();
+    this.renderStatus();
+    this.schedulePersist();
+
+  }
+
+  private async resolveSaveConflict(tab: OpenTab, disk: FileSnapshot): Promise<boolean> {
+    if (this.abort.signal.aborted || !this.active || tab.model.isDisposed()) return false;
+    const choice = await this.choiceDialog({
+      title: `${tab.title} changed on disk`,
+      message: "Compare the versions, reload the file, or overwrite the current disk revision.",
+      choices: [
+        { id: "cancel", label: "Cancel" },
+        { id: "compare", label: "Compare" },
+        { id: "reload", label: "Reload from Disk" },
+        { id: "overwrite", label: "Overwrite", primary: true },
+      ],
+    });
+    if (choice === "compare") {
+      await this.showDiff(tab, disk);
+      return this.resolveSaveConflict(tab, disk);
+    }
+    if (choice === "reload") {
+      this.applyDiskSnapshot(tab, disk);
+      return false;
+    }
+    if (choice === "overwrite" && tab.ref && this.workspace) {
+      try {
+        const snapshot = await editorAPI.saveFile(this.workspace.id, {
+          ref: tab.ref, content: this.contentForSave(tab), expectedRevision: disk.revision, hasBom: tab.hasBom,
+        });
+        this.applySavedSnapshot(tab, snapshot);
+        return !tab.dirty;
+      } catch (error) {
+        const next = error as APIError;
+        if (next.payload?.code === "revision_conflict" && next.payload.details?.current) {
+          return this.resolveSaveConflict(tab, next.payload.details.current);
+        }
+        toast(error instanceof Error ? error.message : String(error));
+      }
+    }
+    return false;
+  }
+
+  private showDiff(tab: OpenTab, disk: FileSnapshot): Promise<void> {
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "code-modal-overlay code-diff-overlay";
+      overlay.innerHTML = `<section class="code-diff-dialog" role="dialog" aria-modal="true"><header><strong>Disk ↔ Unsaved — ${escapeHTML(tab.title)}</strong><button type="button" aria-label="Close"><span class="codicon codicon-close"></span></button></header><div data-diff-host></div></section>`;
+      this.appendOverlay(overlay);
+      const original = this.createEditorModel(disk.content, tab.model.getLanguageId());
+      const modified = this.createEditorModel(tab.model.getValue(), tab.model.getLanguageId());
+      const diff = monaco.editor.createDiffEditor(overlay.querySelector<HTMLElement>("[data-diff-host]")!, {
+        theme: this.mediaTheme.matches ? "vs-dark" : "vs", automaticLayout: true, readOnly: true,
+        originalEditable: false, minimap: { enabled: false }, renderSideBySide: true,
+        selectionHighlight: true, selectionHighlightMultiline: false,
+        occurrencesHighlight: "singleFile",
+      });
+      diff.setModel({ original, modified });
+      const close = () => {
+        diff.dispose();
+        original.dispose();
+        modified.dispose();
+        overlay.remove();
+        resolve();
+      };
+      overlay.querySelector("button")?.addEventListener("click", close);
+      overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
+      overlay.querySelector<HTMLButtonElement>("button")?.focus();
+    });
+  }
+
+  private applyDiskSnapshot(tab: OpenTab, snapshot: FileSnapshot): void {
+    if (this.abort.signal.aborted || tab.model.isDisposed()) return;
+    const sharedTabs = this.tabs.filter((candidate) => candidate.model === tab.model);
+    sharedTabs.forEach((candidate) => { candidate.applying = true; });
+    tab.model.setValue(snapshot.content);
+    tab.model.setEOL(snapshot.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+    for (const candidate of sharedTabs) {
+      candidate.applying = false;
+      candidate.revision = snapshot.revision;
+      candidate.hostPath = snapshot.hostPath;
+      candidate.hasBom = snapshot.hasBom;
+      candidate.eol = snapshot.eol;
+      candidate.dirty = false;
+      candidate.conflict = false;
+      candidate.deleted = false;
+    }
+    this.renderTabs();
+    this.renderStatus();
+    this.schedulePersist();
+  }
+
+  private async saveUntitled(tab: OpenTab): Promise<boolean> {
+    if (!this.workspace || !this.roots.length) { toast("Configure folders for this bot before saving a file."); return false; }
+    const destination = await this.saveAsDialog(tab.title);
+    if (!destination) return false;
+    const parent: FileRef = { rootId: destination.rootId, path: destination.directory };
+    const destinationRef = joinRef(parent, destination.name);
+    const duplicate = this.tabs.find((candidate) => candidate !== tab && candidate.ref && refKey(candidate.ref) === refKey(destinationRef));
+    if (duplicate?.dirty) {
+      const choice = await this.choiceDialog({
+        title: `${destination.name} is already open`,
+        message: "That editor has unsaved changes. Continuing will discard its buffer if this Save As succeeds.",
+        choices: [
+          { id: "cancel", label: "Cancel" },
+          { id: "continue", label: "Discard Open Buffer and Continue", danger: true },
+        ],
+      });
+      if (choice !== "continue") return false;
+    }
+    const removeDuplicate = () => {
+      if (!duplicate || !this.tabs.includes(duplicate)) return;
+      if (duplicate.pinned) setTabPinned(tab, true);
+      this.removeTab(duplicate);
+    };
+    try {
+      const result = await editorAPI.createEntry(this.workspace.id, {
+        parent, name: destination.name, kind: "file", content: this.contentForSave(tab), hasBom: tab.hasBom,
+      });
+      if (!result.file) throw new Error("The server did not return the new file");
+      removeDuplicate();
+      this.adoptFile(tab, result.file);
+      await this.refreshParent(parent);
+      return !tab.dirty;
+    } catch (error) {
+      const apiError = error as APIError;
+      if (apiError.payload?.code === "already_exists") {
+        const replace = await this.choiceDialog({
+          title: "Replace existing file?", message: `${destination.name} already exists in this folder.`,
+          choices: [{ id: "cancel", label: "Cancel" }, { id: "replace", label: "Replace", danger: true, primary: true }],
+        });
+        if (replace !== "replace") return false;
+        try {
+          const current = await editorAPI.readFile(this.workspace.id, destinationRef);
+          const saved = await editorAPI.saveFile(this.workspace.id, {
+            ref: destinationRef, content: this.contentForSave(tab), expectedRevision: current.revision, hasBom: tab.hasBom,
+          });
+          removeDuplicate();
+          this.adoptFile(tab, saved);
+          return !tab.dirty;
+        } catch (replaceError) {
+          toast(replaceError instanceof Error ? replaceError.message : String(replaceError));
+          return false;
+        }
+      }
+      toast(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+  }
+
+  private adoptFile(tab: OpenTab, snapshot: FileSnapshot): void {
+    if (this.abort.signal.aborted || tab.model.isDisposed()) return;
+    const content = tab.model.getValue();
+    const eol = tab.model.getEndOfLineSequence();
+    const language = languageForPath(snapshot.ref.path);
+    const viewState = tab.id === this.activeTabId && this.markdownMode(tab) !== "preview" ? this.editor.saveViewState() : tab.viewState;
+    tab.changeDisposable.dispose();
+    this.releaseModel(tab.model);
+    tab.ref = snapshot.ref;
+    tab.title = snapshot.ref.path.split("/").pop() || snapshot.ref.path;
+    tab.hostPath = snapshot.hostPath;
+    tab.model = this.createEditorModel(content, language, this.modelURI(snapshot.ref, snapshot.hostPath));
+    tab.model.setEOL(eol);
+    this.retainModel(tab.model);
+    tab.changeDisposable = tab.model.onDidChangeContent(() => {
+      if (tab.applying) return;
+      this.markModelDirty(tab.model);
+    });
+    tab.viewState = viewState;
+    this.applySavedSnapshot(tab, snapshot);
+    if (tab.id === this.activeTabId) {
+      this.editor.setModel(tab.model);
+      this.updateEditorSurface();
+      if (viewState) this.editor.restoreViewState(viewState);
+    }
+    this.renderBreadcrumbs();
+  }
+
+  private saveAsDialog(initialName: string): Promise<{ rootId: string; directory: string; name: string } | null> {
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "code-modal-overlay";
+      overlay.innerHTML = `
+        <form class="code-modal code-save-as" role="dialog" aria-modal="true">
+          <h2>Save As</h2>
+          <label>Workspace folder<select name="rootId">${this.roots.map((root) => `<option value="${escapeHTML(root.id)}">${escapeHTML(root.label)} — ${escapeHTML(root.hostPath)}</option>`).join("")}</select></label>
+          <label>Directory <span>(root-relative)</span><input name="directory" placeholder="src/components"></label>
+          <label>File name<input name="name" value="${escapeHTML(initialName)}" required></label>
+          <div class="code-modal-actions"><button type="button" data-cancel>Cancel</button><button type="submit" class="is-primary">Save</button></div>
+        </form>`;
+      const form = overlay.querySelector<HTMLFormElement>("form")!;
+      const finish = (value: { rootId: string; directory: string; name: string } | null) => { overlay.remove(); resolve(value); };
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const values = new FormData(form);
+        const directory = String(values.get("directory") || "").trim().replace(/^\/+|\/+$/g, "");
+        const name = String(values.get("name") || "").trim();
+        if (name) finish({ rootId: String(values.get("rootId")), directory, name });
+      });
+      overlay.querySelector("[data-cancel]")?.addEventListener("click", () => finish(null));
+      overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") finish(null); });
+      this.appendOverlay(overlay);
+      requestAnimationFrame(() => form.querySelector<HTMLInputElement>("[name=name]")?.select());
+    });
+  }
+
+  private async beginRename(node: TreeNode): Promise<void> {
+    if (this.treeMutationBusy || this.treeSelection.selected.size !== 1 || !this.treeSelection.selected.has(node.key) || node.isRoot || node.readOnly) return;
+    this.selectTreeKey(node.key);
+    this.renamingKey = node.key;
+    this.renderTreeRows();
+  }
+
+  private renameTreeSelection(): void {
+    const selection = this.selectedTreeNodes();
+    if (selection.length === 1) void this.beginRename(selection[0]);
+  }
+
+  private async commitRename(node: TreeNode, newName: string): Promise<void> {
+    this.renamingKey = null;
+    newName = newName.trim();
+    if (!newName || newName === node.name || !this.workspace || this.treeMutationBusy) {
+      this.renderTreeRows();
+      return;
+    }
+    try {
+      const previousRef = node.ref;
+      const result = await editorAPI.renameEntry(this.workspace.id, previousRef, newName);
+      await this.bookmarks?.remap(previousRef, result.entry.ref);
+      this.codeNavigation?.remapRef(previousRef, result.entry.ref);
+      this.rewriteOpenRefs(previousRef, result.entry.ref, node.hostPath, result.entry.hostPath);
+      this.rewriteExpandedRefs(previousRef, result.entry.ref);
+      const parent = node.parentKey ? this.nodes.get(node.parentKey) : null;
+      if (parent) await this.reloadChildrenPreservingExpansion(parent);
+      this.selectTreeKey(refKey(result.entry.ref));
+      this.renderTree();
+      this.schedulePersist();
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error));
+      this.renderTreeRows();
+    }
+  }
+
+  private rewriteOpenRefs(previous: FileRef, next: FileRef, previousHost: string, nextHost: string): void {
+    for (const tab of this.tabs) {
+      if (!tab.ref || !isRefWithin(tab.ref, previous)) continue;
+      const suffix = tab.ref.path.slice(previous.path.length).replace(/^\//, "");
+      const nextRef = { rootId: next.rootId, path: suffix ? `${next.path}/${suffix}` : next.path };
+      const content = tab.model.getValue();
+      const eol = tab.model.getEndOfLineSequence();
+      const language = languageForPath(nextRef.path);
+      const viewState = tab.id === this.activeTabId && this.markdownMode(tab) !== "preview" ? this.editor.saveViewState() : tab.viewState;
+      tab.changeDisposable.dispose();
+      this.releaseModel(tab.model);
+      tab.ref = nextRef;
+      tab.title = nextRef.path.split("/").pop() || nextRef.path;
+      tab.hostPath = tab.hostPath.startsWith(previousHost) ? nextHost + tab.hostPath.slice(previousHost.length) : nextHost;
+      tab.model = this.createEditorModel(content, language, this.modelURI(nextRef, tab.hostPath));
+      tab.model.setEOL(eol);
+      this.retainModel(tab.model);
+      tab.changeDisposable = tab.model.onDidChangeContent(() => {
+        if (tab.applying) return;
+        this.markModelDirty(tab.model);
+      });
+      tab.viewState = viewState;
+      if (tab.id === this.activeTabId) {
+        this.editor.setModel(tab.model);
+        this.updateEditorSurface();
+        if (viewState) this.editor.restoreViewState(viewState);
+      }
+    }
+    this.renderTabs();
+  }
+
+  private rewriteExpandedRefs(previous: FileRef, next: FileRef): void {
+    const rewritten = new Set<string>();
+    for (const key of this.expanded) {
+      const node = this.nodes.get(key);
+      if (!node || !isRefWithin(node.ref, previous)) {
+        rewritten.add(key);
+        continue;
+      }
+      const suffix = node.ref.path.slice(previous.path.length).replace(/^\//, "");
+      rewritten.add(refKey({ rootId: next.rootId, path: suffix ? `${next.path}/${suffix}` : next.path }));
+    }
+    this.expanded = rewritten;
+  }
+
+  private async deleteTreeSelection(selection = this.selectedTreeNodes()): Promise<void> {
+    if (!this.workspace || this.treeMutationBusy || !canDeleteTreeNodes(selection)) return;
+    const workspaceId = this.workspace.id;
+    const nodes = topLevelTreeNodes(selection);
+    const label = nodes.length === 1 ? nodes[0].name : `${nodes.length} items`;
+    const parents = nodes.flatMap((node) => {
+      const parent = node.parentKey ? this.nodes.get(node.parentKey) : undefined;
+      return parent ? [parent.ref] : [];
+    });
+    const affected = this.tabs.filter((tab) => tab.ref && nodes.some((node) => isRefWithin(tab.ref!, node.ref)));
+    this.treeMutationBusy = true;
+    this.treeSelectionVersion++;
+    this.explorerRevealGeneration++;
+    try {
+      const dirty = affected.filter((tab) => tab.dirty);
+      const choice = await this.choiceDialog({
+        title: `Delete ${label}?`,
+        message: dirty.length ? "One or more selected files or files inside selected folders have unsaved changes."
+          : "The selected items and their contents will move to Echo Trash.",
+        detail: nodes.map((node) => node.ref.path).join(", "),
+        choices: dirty.length ? [
+          { id: "cancel", label: "Cancel" },
+          { id: "discard", label: "Discard changes and delete", danger: true },
+          { id: "save", label: "Save All, Then Delete", primary: true },
+        ] : [{ id: "cancel", label: "Cancel" }, { id: "delete", label: "Move to Trash", danger: true, primary: true }],
+      });
+      if (!choice || choice === "cancel" || this.abort.signal.aborted) return;
+      if (choice === "save") {
+        for (const tab of dirty) if (!(await this.saveTab(tab))) return;
+      }
+      const result = await runTreeOperation(nodes, async (node) => {
+        if (this.abort.signal.aborted) throw new Error("Workspace closed");
+        const item = await editorAPI.trashEntry(workspaceId, node.ref);
+        if (!this.abort.signal.aborted) {
+          for (const tab of [...this.tabs]) if (tab.ref && isRefWithin(tab.ref, node.ref)) this.removeTab(tab);
+        }
+        return item;
+      });
+      if (this.abort.signal.aborted) return;
+      await this.refreshTreeParents(parents);
+      const trashed = result.succeeded.map(({ value }) => value);
+      this.reportTreeOperation(`Moved ${trashed.length === nodes.length ? label : `${trashed.length} items`} to Echo Trash`, result.failed,
+        trashed.length ? () => this.restoreTreeItems(workspaceId, trashed, parents) : undefined);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), { sticky: true });
+    } finally {
+      this.finishTreeMutation();
+    }
+  }
+
+  private async restoreTreeItems(workspaceId: string, items: TrashItem[], parents: FileRef[]): Promise<void> {
+    if (this.treeMutationBusy) {
+      toast("Wait for the current file operation to finish, then restore these items from Echo Trash.");
+      return;
+    }
+    this.treeMutationBusy = true;
+    try {
+      const result = await runTreeOperation(items, (item) => editorAPI.restoreTrash(workspaceId, item.id));
+      if (!this.abort.signal.aborted) await this.refreshTreeParents(parents);
+      this.reportTreeOperation(`Restored ${result.succeeded.length} item${result.succeeded.length === 1 ? "" : "s"}`, result.failed);
+    } finally {
+      this.finishTreeMutation();
+    }
+  }
+
+  private async createUnderSelection(kind: "file" | "directory", selected = this.selectedTreeKey ? this.nodes.get(this.selectedTreeKey) : null): Promise<void> {
+    if (!this.workspace || !this.roots.length || this.treeMutationBusy) return;
+    const parent = selected?.kind === "directory" ? selected : selected?.parentKey ? this.nodes.get(selected.parentKey) : this.nodes.get(refKey({ rootId: this.roots[0].id, path: "" }));
+    if (!parent) return;
+    if (parent.readOnly) {
+      toast("This folder is managed by Echo.");
+      return;
+    }
+    const name = await this.promptDialog({ title: kind === "file" ? "New File" : "New Folder", label: "Name", confirmLabel: "Create" });
+    if (!name) return;
+    try {
+      const result = await editorAPI.createEntry(this.workspace.id, { parent: parent.ref, name, kind });
+      this.expanded.add(parent.key);
+      await this.reloadChildrenPreservingExpansion(parent);
+      this.selectTreeKey(refKey(result.entry.ref));
+      this.renderTree();
+      if (kind === "file") await this.recordCodeNavigation(() => this.openFile(result.entry.ref, true));
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  private async refreshParent(ref: FileRef): Promise<void> {
+    const key = refKey(ref);
+    const node = this.nodes.get(key);
+    if (node?.kind === "directory") await this.reloadChildrenPreservingExpansion(node);
+  }
+
+  private async reloadChildrenPreservingExpansion(node: TreeNode): Promise<void> {
+    await this.loadChildren(node, true);
+    await this.loadExpandedChildren(node);
+  }
+
+  private async loadExpandedChildren(node: TreeNode): Promise<void> {
+    if (this.abort.signal.aborted || this.nodes.get(node.key) !== node) return;
+    for (const key of node.children) {
+      const child = this.nodes.get(key);
+      if (!child || child.kind !== "directory" || !this.expanded.has(key)) continue;
+      await this.loadChildren(child);
+      await this.loadExpandedChildren(child);
+    }
+  }
+
+  private async refreshExplorer(preservedExpansion?: FileRef[]): Promise<void> {
+    for (const ref of preservedExpansion || []) this.expanded.add(refKey(ref));
+    // Refresh cached directories too, so reopening a collapsed branch is current.
+    // Parent-first reconciliation discards requests for branches that were removed.
+    const directories = [...this.nodes.values()].filter((node) => node.kind === "directory" && (node.loaded || node.isRoot))
+      .sort((left, right) => left.depth - right.depth);
+    for (const node of directories) await this.loadChildren(node, true);
+    for (const root of this.roots) {
+      const node = this.nodes.get(refKey({ rootId: root.id, path: "" }));
+      if (node) await this.loadExpandedChildren(node);
+      else if (!this.abort.signal.aborted) await this.ensureRoot(root);
+    }
+  }
+
+  private async expandTo(ref: FileRef, select = true, isCurrent = () => true): Promise<void> {
+    if (select) {
+      this.treeSelectionVersion++;
+      this.explorerRevealGeneration++;
+    }
+    const selectionVersion = this.treeSelectionVersion;
+    const currentRequest = () => !this.abort.signal.aborted && selectionVersion === this.treeSelectionVersion && isCurrent();
+    if (!currentRequest()) return;
+    const segments = ref.path.split("/").filter(Boolean);
+    let current = this.nodes.get(refKey({ rootId: ref.rootId, path: "" }));
+    if (!current) return;
+    this.expanded.add(current.key);
+    await this.loadChildren(current);
+    if (!currentRequest()) return;
+    for (let index = 0; index < segments.length; index++) {
+      const nextPath = segments.slice(0, index + 1).join("/");
+      const next = this.nodes.get(refKey({ rootId: ref.rootId, path: nextPath }));
+      if (!next) break;
+      current = next;
+      if (next.kind === "directory" && (index < segments.length - 1 || this.expanded.has(next.key))) {
+        this.expanded.add(next.key);
+        await this.loadChildren(next);
+        if (!currentRequest()) return;
+      }
+    }
+    if (select && current) {
+      this.selectTreeKey(current.key);
+      this.renderTree();
+      const index = this.flatTree.findIndex((node) => node.key === current!.key);
+      if (index >= 0) this.treeVirtualizer.scrollToIndex(index, { align: "auto" });
+    }
+  }
+
+  private revealTabInExplorer(tab: OpenTab): void {
+    const ref = this.worktreeRef(tab);
+    const generation = ++this.explorerRevealGeneration;
+    const selectionVersion = ++this.treeSelectionVersion;
+    if (!ref) return;
+    const isCurrent = () => !this.abort.signal.aborted && generation === this.explorerRevealGeneration
+      && selectionVersion === this.treeSelectionVersion && this.activeTabId === tab.id;
+    void this.expandTo(ref, false, isCurrent).then(() => {
+      if (!isCurrent()) return;
+      const node = this.nodes.get(refKey(ref));
+      if (!node || node.kind !== "file") return;
+      this.selectTreeKey(node.key);
+      this.renderTree();
+      const index = this.flatTree.findIndex((candidate) => candidate.key === node.key);
+      if (index >= 0) this.treeVirtualizer.scrollToIndex(index, { align: "auto" });
+      this.schedulePersist();
+    });
+  }
+
+  private showTreeMenu(event: MouseEvent, node: TreeNode): void {
+    if (this.treeSelection.selected.has(node.key)) this.setTreeSelection(this.treeSelection, node.key);
+    else this.selectTreeKey(node.key);
+    this.renderTreeRows();
+    const selection = this.selectedTreeNodes();
+    showContextMenu(event.clientX, event.clientY, [
+      ...(node.kind === "directory" ? [
+        { label: "New File", icon: "new-file", disabled: this.treeMutationBusy || node.readOnly, run: () => this.createUnderSelection("file", node) },
+        { label: "New Folder", icon: "new-folder", disabled: this.treeMutationBusy || node.readOnly, run: () => this.createUnderSelection("directory", node) },
+      ] : []),
+      { label: "Rename", detail: "F2", icon: "edit", disabled: this.treeMutationBusy || selection.length !== 1 || node.isRoot || node.readOnly, separatorBefore: node.kind === "directory", run: () => this.beginRename(node) },
+      { label: "Delete", detail: "Del", icon: "trash", danger: true, disabled: this.treeMutationBusy || !canDeleteTreeNodes(selection), run: () => this.deleteTreeSelection(selection) },
+      { label: "Reveal in File Browser", icon: "folder-opened", separatorBefore: true, run: () => this.reveal(node.ref) },
+    ]);
+  }
+
+  private showTabMenu(event: MouseEvent, tab: OpenTab): void {
+    showContextMenu(event.clientX, event.clientY, [
+      { label: "Close", detail: "Ctrl+W", icon: "close", disabled: tab.pinned, run: () => this.closeTab(tab) },
+      { label: "Close Others", icon: "close-all", run: () => this.closeOthers(tab) },
+      { label: "Copy Path", icon: "copy", separatorBefore: true, disabled: !tab.ref, run: () => this.copyPath(tab, false) },
+      { label: "Copy Relative Path", icon: "copy", disabled: !tab.ref, run: () => this.copyPath(tab, true) },
+      { label: "Show in File Browser", icon: "folder-opened", separatorBefore: true, disabled: !tab.ref, run: () => tab.ref && this.reveal(tab.ref) },
+      { label: "Show in Folder Tree", icon: "list-tree", disabled: !tab.ref, run: () => tab.ref && this.expandTo(tab.ref) },
+      { label: "Keep Open", checked: tab.keepOpen, disabled: tab.pinned, separatorBefore: true, run: () => { tab.keepOpen = !tab.keepOpen; this.renderTabs(); this.schedulePersist(); } },
+      { label: tab.pinned ? "Unpin" : "Pin", icon: "pinned", run: () => this.setPinned(tab, !tab.pinned) },
+    ]);
+  }
+
+  private setPinned(tab: OpenTab, pinned: boolean): void {
+    const focused = document.activeElement;
+    const restoreFocus = focused instanceof Element && focused.hasAttribute("data-tab-action")
+      && focused.closest<HTMLElement>("[data-tab-id]")?.dataset.tabId === tab.id;
+    setTabPinned(tab, pinned);
+    this.renderTabs();
+    this.schedulePersist();
+    if (restoreFocus) {
+      const element = this.root.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(tab.id)}"]`);
+      // Dirty tabs hide their close button until hovered or focused. Focus the
+      // tab first so its replacement action is visible and can receive focus.
+      element?.focus({ preventScroll: true });
+      element?.querySelector<HTMLButtonElement>("[data-tab-action]")?.focus({ preventScroll: true });
+    }
+  }
+
+  private async closeOthers(keep: OpenTab): Promise<void> {
+    const others = this.tabs.filter((tab) => tab !== keep && !tab.pinned);
+    const dirty = others.filter((tab) => tab.dirty);
+    if (dirty.length) {
+      const choice = await this.choiceDialog({
+        title: `Close ${others.length} other editor${others.length === 1 ? "" : "s"}?`,
+        message: `${dirty.length} editor${dirty.length === 1 ? " has" : "s have"} unsaved changes.`,
+        choices: [{ id: "cancel", label: "Cancel" }, { id: "discard", label: "Discard All", danger: true }, { id: "save", label: "Save All", primary: true }],
+      });
+      if (!choice || choice === "cancel") return;
+      if (choice === "save") {
+        for (const tab of dirty) if (!tab.pinned && !(await this.saveTab(tab))) return;
+      }
+    }
+    for (const tab of [...others]) await this.closeTab(tab, true);
+    this.activateTab(keep.id);
+  }
+
+  private async copyPath(tab: OpenTab, relative: boolean): Promise<void> {
+    if (!tab.ref) return;
+    const root = this.roots.find((candidate) => candidate.id === tab.ref?.rootId);
+    const value = relative
+      ? (this.roots.length === 1 ? tab.ref.path : `${root?.label || "workspace"}/${tab.ref.path}`)
+      : tab.hostPath;
+    try {
+      await copyText(value);
+      toast(relative ? "Copied relative path" : "Copied path");
+    } catch (error) {
+      await this.choiceDialog({ title: "Copy path", message: value, detail: error instanceof Error ? error.message : String(error), choices: [{ id: "close", label: "Close", primary: true }] });
+    }
+  }
+
+  private async reveal(ref: FileRef): Promise<void> {
+    if (!this.workspace) return;
+    try {
+      await editorAPI.revealEntry(this.workspace.id, ref);
+      toast("Opened on Echo host");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  private async showTrash(): Promise<void> {
+    if (!this.workspace) return;
+    const overlay = document.createElement("div");
+    overlay.className = "code-modal-overlay";
+    overlay.innerHTML = `<section class="code-modal code-trash-dialog" role="dialog" aria-modal="true"><header><h2>Echo Trash</h2><button type="button" data-close aria-label="Close"><span class="codicon codicon-close"></span></button></header><div class="code-trash-list" data-trash-list><p>Loading…</p></div></section>`;
+    this.appendOverlay(overlay);
+    const close = () => overlay.remove();
+    overlay.querySelector("[data-close]")?.addEventListener("click", close);
+    overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
+    const render = async () => {
+      const list = overlay.querySelector<HTMLElement>("[data-trash-list]")!;
+      try {
+        const items = await editorAPI.listTrash(this.workspace!.id);
+        list.innerHTML = items.length ? items.map((item) => `
+          <div class="code-trash-item" data-trash-id="${escapeHTML(item.id)}">
+            <span class="codicon codicon-${item.kind === "directory" ? "folder" : "file"}"></span>
+            <div><strong>${escapeHTML(item.name)}</strong><span>${escapeHTML(item.hostPath)}</span><small>${new Date(item.deletedAt).toLocaleString()}</small></div>
+            <button type="button" data-restore>Restore</button><button type="button" data-purge class="is-danger">Delete Permanently</button>
+          </div>`).join("") : `<div class="code-empty-list"><span class="codicon codicon-trash"></span><p>Echo Trash is empty.</p></div>`;
+        list.onclick = async (event) => {
+          const row = (event.target as Element).closest<HTMLElement>("[data-trash-id]");
+          if (!row) return;
+          const id = row.dataset.trashId!;
+          if ((event.target as Element).closest("[data-restore]")) {
+            try {
+              await editorAPI.restoreTrash(this.workspace!.id, id);
+              await this.refreshExplorer();
+              await render();
+              toast("Item restored");
+            } catch (error) { toast(error instanceof Error ? error.message : String(error)); }
+          } else if ((event.target as Element).closest("[data-purge]")) {
+            const confirm = await this.choiceDialog({
+              title: "Delete permanently?", message: "This item cannot be recovered after permanent deletion.",
+              choices: [{ id: "cancel", label: "Cancel" }, { id: "delete", label: "Delete Permanently", danger: true }],
+            });
+            if (confirm === "delete") {
+              await editorAPI.purgeTrash(this.workspace!.id, id);
+              await render();
+            }
+          }
+        };
+      } catch (error) {
+        list.innerHTML = `<p class="code-error-text">${escapeHTML(error instanceof Error ? error.message : String(error))}</p>`;
+      }
+    };
+    await render();
+    overlay.querySelector<HTMLButtonElement>("[data-close]")?.focus();
+  }
+
+  private registerCommands(): void {
+    this.commands = [
+      ...(this.bookmarks ? [
+        { id: "bookmarks.toggle", label: "Bookmarks: Toggle", keybinding: "Ctrl+K, K", run: () => this.toggleBookmark() },
+        { id: "bookmarks.open", label: "View: Bookmarks", run: () => this.setSidebar("bookmarks") },
+      ] : []),
+      { id: "file.save", label: "File: Save", keybinding: "Ctrl+S", run: () => this.saveTab() },
+      { id: "file.saveAs", label: "File: Save As…", keybinding: "Ctrl+Shift+S", run: () => this.saveAsActive() },
+      { id: "file.new", label: "File: New Untitled File", keybinding: "Ctrl+N", run: () => this.newUntitled() },
+      { id: "file.quickOpen", label: "Go to File…", keybinding: "Ctrl+P", run: () => this.showQuickOpen() },
+      { id: "view.commandPalette", label: "View: Show Command Palette", keybinding: "Ctrl+Shift+P", run: () => this.showCommandPalette() },
+      { id: "navigation.back", label: "Go: Back", keybinding: "Alt+Left", run: () => this.navigateHistory(-1) },
+      { id: "navigation.forward", label: "Go: Forward", keybinding: "Alt+Right", run: () => this.navigateHistory(1) },
+      { id: "search.findInFiles", label: "Search: Find in Files", keybinding: "Ctrl+Shift+F", run: () => this.showWorkspaceSearch() },
+      { id: "search.replaceInFiles", label: "Search: Replace in Files", keybinding: "Ctrl+Shift+H", run: () => this.showWorkspaceSearch(true) },
+      { id: "file.close", label: "View: Close Editor", keybinding: "Ctrl+W", run: () => { const tab = this.activeTab(); if (tab) return this.closeTab(tab); } },
+      { id: "explorer.refresh", label: "Explorer: Refresh", run: () => this.refreshExplorer() },
+      { id: "explorer.collapseAll", label: "Explorer: Collapse All", run: () => this.collapseAll() },
+      { id: "explorer.newFile", label: "Explorer: New File", run: () => this.createUnderSelection("file") },
+      { id: "explorer.newFolder", label: "Explorer: New Folder", run: () => this.createUnderSelection("directory") },
+      { id: "explorer.trash", label: "Explorer: Open Echo Trash", run: () => this.showTrash() },
+      { id: "editor.find", label: "Editor: Find", keybinding: "Ctrl+F", run: () => this.showEditorFind() },
+      { id: "editor.replace", label: "Editor: Replace", keybinding: "Ctrl+H", run: () => this.showEditorFind(true) },
+      { id: "editor.gotoLine", label: "Go to Line/Column…", keybinding: "Ctrl+G", run: () => this.showGoToLine() },
+      { id: "editor.rename", label: "Editor: Rename Symbol", keybinding: "F2", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.rename", null) },
+      { id: "editor.duplicateSelection", label: "Editor: Duplicate Selection", keybinding: "Ctrl+D", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.duplicateSelection", null) },
+      { id: "editor.action.transformToUppercase", label: "Transform to Uppercase", run: () => this.runCaseTransform("editor.action.transformToUppercase") },
+      { id: "editor.action.transformToLowercase", label: "Transform to Lowercase", run: () => this.runCaseTransform("editor.action.transformToLowercase") },
+      { id: "editor.action.transformToCamelcase", label: "Transform to Camel Case", run: () => this.runCaseTransform("editor.action.transformToCamelcase") },
+      { id: "editor.action.transformToKebabcase", label: "Transform to Kebab Case", run: () => this.runCaseTransform("editor.action.transformToKebabcase") },
+      { id: "editor.action.transformToPascalcase", label: "Transform to Pascal Case", run: () => this.runCaseTransform("editor.action.transformToPascalcase") },
+      { id: "editor.action.transformToSnakecase", label: "Transform to Snake Case", run: () => this.runCaseTransform("editor.action.transformToSnakecase") },
+      { id: "editor.action.transformToTitlecase", label: "Transform to Title Case", run: () => this.runCaseTransform("editor.action.transformToTitlecase") },
+      { id: "editor.hover", label: "Editor: Show Hover", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.showHover", {}) },
+      { id: "editor.goToDefinition", label: "Go to Definition", keybinding: "F12", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.revealDefinition", null) },
+      { id: "editor.peekDefinition", label: "Peek Definition", keybinding: "Alt+F12", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.peekDefinition", null) },
+      { id: "editor.goToDeclaration", label: "Go to Declaration", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.revealDeclaration", null) },
+      { id: "editor.peekDeclaration", label: "Peek Declaration", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.peekDeclaration", null) },
+      { id: "editor.goToTypeDefinition", label: "Go to Type Definition", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.goToTypeDefinition", null) },
+      { id: "editor.peekTypeDefinition", label: "Peek Type Definition", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.peekTypeDefinition", null) },
+      { id: "editor.goToImplementation", label: "Go to Implementations", keybinding: "Ctrl+F12", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.goToImplementation", null) },
+      { id: "editor.peekImplementation", label: "Peek Implementations", keybinding: "Ctrl+Shift+F12", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.peekImplementation", null) },
+      { id: "editor.peekReferences", label: "Peek References", keybinding: "Shift+F12", run: () => this.activeCodeEditor()?.trigger("echo", "editor.action.referenceSearch.trigger", null) },
+      { id: "editor.format", label: "Editor: Format Document", keybinding: "Shift+Alt+F", run: () => this.formatActiveDocument(false) },
+      { id: "editor.formatSelection", label: "Editor: Format Selection", keybinding: "Ctrl+K Ctrl+F", run: () => this.formatActiveDocument(true) },
+      { id: "editor.action.indentationToSpaces", label: "Convert tabs to spaces", run: () => this.runEditorAction("editor.action.indentationToSpaces") },
+      { id: "editor.action.indentationToTabs", label: "Convert spaces to tabs", run: () => this.runEditorAction("editor.action.indentationToTabs") },
+      { id: "editor.convertLineEndingsToLF", label: "Convert line endings to LF", run: () => this.runEditorEdit((editor) => this.setModelLineEndings(editor.getModel()!, "lf")) },
+      { id: "editor.convertLineEndingsToCRLF", label: "Convert line endings to CRLF", run: () => this.runEditorEdit((editor) => this.setModelLineEndings(editor.getModel()!, "crlf")) },
+      { id: "editor.undo", label: "Editor: Undo", keybinding: "Ctrl+Z", run: () => this.runEditorAction("undo") },
+      { id: "editor.redo", label: "Editor: Redo", keybinding: "Ctrl+Shift+Z", run: () => this.runEditorAction("redo") },
+      { id: "editor.cursorBelow", label: "Editor: Add Cursor Below", keybinding: "Ctrl+Alt+Down", run: () => this.editor.trigger("echo", "editor.action.insertCursorBelow", null) },
+      { id: "editor.fold", label: "Editor: Fold", run: () => this.editor.trigger("echo", "editor.fold", null) },
+      { id: "editor.unfold", label: "Editor: Unfold", run: () => this.editor.trigger("echo", "editor.unfold", null) },
+      { id: "editor.bracket", label: "Editor: Go to Bracket", run: () => this.editor.trigger("echo", "editor.action.jumpToBracket", null) },
+    ];
+    this.recentCommandIds = pruneRecentCommandIds(this.recentCommandIds, this.commands.map((command) => command.id));
+    saveRecentCommandIds(this.recentCommandIds);
+  }
+
+  private activeCodeEditor(): MonacoEditor.ICodeEditor | null {
+    const tab = this.activeTab();
+    return this.editor || null;
+  }
+
+  private showGoToLine(): void {
+    this.revealMarkdownSource();
+    const tab = this.activeTab();
+    const editor = this.activeCodeEditor();
+    if (!tab || tab.kind === "media" || !editor?.getModel()) return;
+    editor.focus();
+    editor.trigger("echo", "editor.action.gotoLine", null);
+  }
+
+  private runCaseTransform(actionId: string): void {
+    this.runEditorAction(actionId);
+  }
+
+  private runEditorAction(actionId: string): void {
+    this.runEditorEdit((editor) => editor.trigger("echo", actionId, null));
+  }
+
+  private runEditorEdit(edit: (editor: MonacoEditor.ICodeEditor) => void): void {
+    const tab = this.activeTab();
+    if (!tab || tab.kind === "media" || tab.readOnly) return;
+    this.revealMarkdownSource();
+    const editor = this.activeCodeEditor();
+    if (!editor || editor.getModel() !== tab.model) return;
+    edit(editor);
+    requestAnimationFrame(() => {
+      if (!this.abort.signal.aborted && editor === this.activeCodeEditor()) editor.focus();
+    });
+  }
+
+  private captureNavigationLocation(): CodeNavigationLocation | null {
+    const tab = this.activeTab();
+    if (!this.workspace || !tab || tab.kind === "media") return null;
+    const ref = this.worktreeRef(tab);
+    const editor = this.activeCodeEditor();
+    if (!ref || !editor?.getModel()) return null;
+    return {
+      workspaceId: this.workspace.id,
+      ref: { ...ref },
+      tabId: tab.id,
+      editorKind: "file",
+      selections: (editor.getSelections() || []).map((selection) => ({
+        selectionStartLineNumber: selection.selectionStartLineNumber,
+        selectionStartColumn: selection.selectionStartColumn,
+        positionLineNumber: selection.positionLineNumber,
+        positionColumn: selection.positionColumn,
+      })),
+      scrollTop: editor.getScrollTop(),
+      scrollLeft: editor.getScrollLeft(),
+    };
+  }
+
+  private observeNavigationLocation(recordLargeJump: boolean): void {
+    if (!this.navigationReady || this.navigationSuppression || !this.codeNavigation) return;
+    const next = this.captureNavigationLocation();
+    if (!next) return;
+    const previous = this.lastNavigationLocation;
+    if (recordLargeJump && isLargeCodeNavigationJump(previous, next)) {
+      this.codeNavigation.recordTransition(previous, next);
+    } else {
+      this.codeNavigation.updateCurrent(next);
+    }
+    this.lastNavigationLocation = next;
+  }
+
+  private async recordCodeNavigation<T>(operation: () => T | Promise<T>): Promise<T> {
+    if (!this.navigationReady || !this.codeNavigation) return await operation();
+    const source = this.captureNavigationLocation();
+    this.navigationSuppression++;
+    try {
+      return await operation();
+    } finally {
+      this.navigationSuppression--;
+      const destination = this.captureNavigationLocation();
+      this.codeNavigation.recordTransition(source, destination);
+      this.lastNavigationLocation = destination;
+    }
+  }
+
+  private async restoreNavigationLocation(location: CodeNavigationLocation): Promise<boolean> {
+    if (!this.workspace || location.workspaceId !== this.workspace.id) return false;
+    this.navigationSuppression++;
+    try {
+      let tab = location.tabId ? this.tabs.find((candidate) => candidate.id === location.tabId) : undefined;
+      const existingTabRef = tab ? this.worktreeRef(tab) : null;
+      if (!tab || !existingTabRef || refKey(existingTabRef) !== refKey(location.ref)) {
+        if (!(await this.openFile(location.ref, false, false, false))) return false;
+        tab = this.tabs.find((candidate) => {
+          const ref = this.worktreeRef(candidate);
+          return ref && refKey(ref) === refKey(location.ref);
+        });
+      }
+      if (!tab) return false;
+      const tabRef = this.worktreeRef(tab);
+      if (!tabRef || refKey(tabRef) !== refKey(location.ref)) return false;
+      /* A closed editable diff falls back to its workspace file because the
+         location deliberately stores no source-control snapshot payload. */
+      if (tab.kind === "media") return false;
+      this.activateTab(tab.id, false);
+      // Startup restores the tab's chosen reading mode. Explicit history
+      // traversal reveals source before applying a code location.
+      if (this.navigationReady) this.revealMarkdownSource();
+      const editor = this.activeCodeEditor();
+      const model = editor?.getModel();
+      if (!editor || !model) return false;
+      const selections = location.selections.map((selection) => {
+        const start = model.validatePosition({
+          lineNumber: selection.selectionStartLineNumber,
+          column: selection.selectionStartColumn,
+        });
+        const position = model.validatePosition({
+          lineNumber: selection.positionLineNumber,
+          column: selection.positionColumn,
+        });
+        return {
+          selectionStartLineNumber: start.lineNumber,
+          selectionStartColumn: start.column,
+          positionLineNumber: position.lineNumber,
+          positionColumn: position.column,
+        };
+      });
+      if (selections.length) editor.setSelections(selections);
+      editor.setScrollPosition({ scrollTop: Math.max(0, location.scrollTop), scrollLeft: Math.max(0, location.scrollLeft) });
+      this.focusActiveEditor();
+      const restored = this.captureNavigationLocation() || location;
+      this.codeNavigation?.finishTraversal(restored);
+      this.lastNavigationLocation = restored;
+      return true;
+    } finally {
+      this.navigationSuppression--;
+    }
+  }
+
+  private showEditorFind(replace = false): void {
+    this.revealMarkdownSource();
+    const editor = this.activeCodeEditor();
+    if (!editor?.getModel()) return;
+    editor.trigger("echo", replace ? "editor.action.startFindReplaceAction" : "actions.find", null);
+  }
+
+  private async formatActiveDocument(selectionOnly: boolean): Promise<void> { const editor = this.activeCodeEditor(); if (!editor) return; await editor.getAction(selectionOnly ? "editor.action.formatSelection" : "editor.action.formatDocument")?.run(); }
+
+  private async saveAsActive(): Promise<void> {
+    const active = this.activeTab();
+    if (!active) return;
+    if (!active.ref) {
+      await this.saveUntitled(active);
+      return;
+    }
+    const duplicate = this.newUntitledFrom(active.model.getValue(), active.title, undefined, active.model.getEOL() === "\r\n" ? "crlf" : "lf");
+    duplicate.hasBom = active.hasBom;
+    await this.saveUntitled(duplicate);
+  }
+
+  private newUntitledFrom(content: string, title: string, id: string = randomUUID(), eol?: FileSnapshot["eol"]): OpenTab {
+    const model = this.createEditorModel(content, languageForPath(title), monaco.Uri.from({ scheme: "untitled", authority: this.workspace?.id || "workspace", path: `/${id}` }));
+    if (eol) model.setEOL(eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+    this.retainModel(model);
+    const tab: OpenTab = {
+      kind: "file", id, ref: null, title, hostPath: "", keepOpen: true, pinned: false, dirty: true,
+      deleted: false, conflict: false, revision: "", hasBom: false, eol: model.getEOL() === "\r\n" ? "crlf" : "lf",
+      model, viewState: null, changeDisposable: { dispose() {} }, applying: false,
+    };
+    tab.changeDisposable = model.onDidChangeContent(() => {
+      if (!tab.applying) this.markModelDirty(model);
+    });
+    this.tabs.push(tab);
+    this.activateTab(tab.id);
+    this.renderTabs();
+    return tab;
+  }
+
+  private showQuickOpen(): void {
+    if (!this.workspace) return;
+    const overlay = document.createElement("div");
+    overlay.className = "code-picker-overlay";
+    overlay.innerHTML = `<section class="code-picker" role="dialog" aria-modal="true"><div class="code-picker-input"><span class="codicon codicon-search"></span><input aria-label="Go to File" placeholder="Type a file name, optionally followed by :line"></div><div class="code-picker-meta" data-picker-meta>Type to search workspace files</div><div class="code-picker-list" role="listbox" data-picker-list></div></section>`;
+    this.appendOverlay(overlay);
+    const input = overlay.querySelector<HTMLInputElement>("input")!;
+    const list = overlay.querySelector<HTMLElement>("[data-picker-list]")!;
+    const meta = overlay.querySelector<HTMLElement>("[data-picker-meta]")!;
+    let results: SearchResult[] = [];
+    let selected = 0;
+    let timer = 0;
+    let closed = false;
+    let searchGeneration = 0;
+    const close = () => { closed = true; window.clearTimeout(timer); overlay.remove(); };
+    const render = () => {
+      list.innerHTML = results.map((result, index) => {
+        const root = this.roots.find((candidate) => candidate.id === result.ref.rootId);
+        const directory = result.ref.path.includes("/") ? result.ref.path.slice(0, result.ref.path.lastIndexOf("/")) : root?.label || "";
+        return `<button type="button" role="option" aria-selected="${index === selected}" class="${index === selected ? "is-selected" : ""}" data-result-index="${index}"><span class="codicon codicon-file-code"></span><strong>${escapeHTML(result.name)}</strong><span>${escapeHTML(directory)}</span></button>`;
+      }).join("");
+    };
+    const search = async () => {
+      const generation = ++searchGeneration;
+      const query = input.value;
+      try {
+        const response = await editorAPI.searchFiles(this.workspace!.id, parseQuickOpenQuery(query).query);
+        if (closed || generation !== searchGeneration || query !== input.value) return;
+        results = response.items;
+        selected = Math.min(selected, Math.max(0, results.length - 1));
+        meta.textContent = response.indexing ? `Indexing… ${response.indexed.toLocaleString()} files available` : `${response.indexed.toLocaleString()} files indexed${response.truncated ? " (index limit reached)" : ""}`;
+        render();
+        if (response.indexing) timer = window.setTimeout(search, 450);
+      } catch (error) {
+        meta.textContent = error instanceof Error ? error.message : String(error);
+      }
+    };
+    const choose = async () => {
+      const result = results[selected];
+      if (!result) return;
+      const { line } = parseQuickOpenQuery(input.value);
+      close();
+      await this.recordCodeNavigation(async () => {
+        if (!await this.openFile(result.ref, true) || line === undefined) return;
+        this.revealMarkdownSource();
+        const editor = this.activeCodeEditor();
+        const model = editor?.getModel();
+        if (!editor || !model) return;
+        const lineNumber = Math.max(1, Math.min(model.getLineCount(), line));
+        editor.setPosition({ lineNumber, column: 1 });
+        editor.revealLineInCenter(lineNumber);
+        editor.focus();
+      });
+    };
+    input.addEventListener("input", () => {
+      searchGeneration++;
+      results = []; selected = 0; render();
+      window.clearTimeout(timer);
+      timer = window.setTimeout(search, 120);
+    });
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) close();
+      const row = (event.target as Element).closest<HTMLElement>("[data-result-index]");
+      if (row) { selected = Number(row.dataset.resultIndex); void choose(); }
+    });
+    overlay.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") close();
+      else if (event.key === "ArrowDown") { event.preventDefault(); selected = Math.min(results.length - 1, selected + 1); render(); }
+      else if (event.key === "ArrowUp") { event.preventDefault(); selected = Math.max(0, selected - 1); render(); }
+      else if (event.key === "Enter") { event.preventDefault(); void choose(); }
+    });
+    input.focus();
+    void search();
+  }
+
+  private showCommandPalette(): void {
+    const overlay = document.createElement("div");
+    overlay.className = "code-picker-overlay";
+    overlay.innerHTML = `<section class="code-picker" role="dialog" aria-modal="true"><div class="code-picker-input"><span>&gt;</span><input aria-label="Command Palette" placeholder="Type a command"></div><div class="code-picker-list" role="listbox" data-picker-list></div></section>`;
+    this.appendOverlay(overlay);
+    const input = overlay.querySelector<HTMLInputElement>("input")!;
+    const list = overlay.querySelector<HTMLElement>("[data-picker-list]")!;
+    let filtered = this.commands;
+    let selected = 0;
+    const close = () => overlay.remove();
+    const render = () => {
+      const presentation = commandPalettePresentation(this.commands, this.recentCommandIds, input.value);
+      filtered = presentation.commands;
+      selected = Math.min(selected, Math.max(0, filtered.length - 1));
+      let commandIndex = 0;
+      list.innerHTML = presentation.groups.map((group) => {
+        const heading = group.label
+          ? `<div class="code-picker-section-label" role="presentation" aria-hidden="true">${group.label}</div>`
+          : "";
+        const rows = group.commands.map((command) => {
+          const index = commandIndex++;
+          const active = index === selected;
+          return `<button type="button" role="option" aria-selected="${active}" class="${active ? "is-selected" : ""}" data-command-index="${index}"><span class="codicon codicon-terminal"></span><strong>${escapeHTML(command.label)}</strong>${command.keybinding ? `<kbd>${escapeHTML(command.keybinding)}</kbd>` : ""}</button>`;
+        }).join("");
+        return heading + rows;
+      }).join("");
+    };
+    const choose = () => {
+      const command = filtered[selected];
+      close();
+      if (!command) return;
+      this.recentCommandIds = recordRecentCommandId(this.recentCommandIds, command.id);
+      saveRecentCommandIds(this.recentCommandIds);
+      if (command.id.startsWith("editor.")) this.revealMarkdownSource();
+      void command.run();
+    };
+    input.addEventListener("input", render);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) close();
+      const row = (event.target as Element).closest<HTMLElement>("[data-command-index]");
+      if (row) { selected = Number(row.dataset.commandIndex); choose(); }
+    });
+    overlay.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") close();
+      else if (event.key === "ArrowDown") { event.preventDefault(); selected = Math.min(filtered.length - 1, selected + 1); render(); }
+      else if (event.key === "ArrowUp") { event.preventDefault(); selected = Math.max(0, selected - 1); render(); }
+      else if (event.key === "Enter") { event.preventDefault(); choose(); }
+    });
+    render();
+    input.focus();
+  }
+
+  private installEvents(): void {
+    const signal = this.abort.signal;
+
+    window.addEventListener("pagehide", () => this.codeNavigation?.dispose(this.captureNavigationLocation()), { signal });
+    this.treeCanvas.addEventListener("click", (event) => {
+      if ((event.target as Element).closest("[data-rename-input]")) return;
+      const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
+      if (!row) return;
+      const node = this.nodes.get(row.dataset.treeKey || "");
+      if (!node) return;
+      this.treeScroller.focus();
+      if (event.ctrlKey || event.metaKey || event.shiftKey) {
+        event.preventDefault();
+        this.selectTreeKey(node.key, { toggle: event.ctrlKey || event.metaKey, range: event.shiftKey });
+      } else void this.toggleNode(node);
+    }, { signal });
+    this.treeCanvas.addEventListener("dblclick", (event) => {
+      if (event.ctrlKey || event.metaKey || event.shiftKey || (event.target as Element).closest("[data-rename-input]")) return;
+      const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
+      const node = row ? this.nodes.get(row.dataset.treeKey || "") : null;
+      if (node?.kind === "file" && !node.blockedReason) void this.recordCodeNavigation(() => this.openFile(node.ref, true, false));
+    }, { signal });
+    this.treeCanvas.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
+      const node = row ? this.nodes.get(row.dataset.treeKey || "") : null;
+      if (node) this.showTreeMenu(event, node);
+    }, { signal });
+    this.treeCanvas.addEventListener("dragstart", (event) => {
+      const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
+      const node = row ? this.nodes.get(row.dataset.treeKey || "") : null;
+      if (!row || !node || this.treeMutationBusy || (event.target as Element).closest("[data-rename-input]") || !event.dataTransfer) {
+        event.preventDefault();
+        return;
+      }
+      if (!this.treeSelection.selected.has(node.key)) this.selectTreeKey(node.key);
+      const selection = this.selectedTreeNodes();
+      if (!selection.length || selection.some((candidate) => candidate.isRoot || candidate.readOnly || candidate.blockedReason)) {
+        event.preventDefault();
+        return;
+      }
+      this.renamingKey = null;
+      this.draggingTreeNodes = selection;
+      this.renderTreeRows();
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("application/x-echo-tree-entry", node.key);
+      event.dataTransfer.setData("text/plain", selection.map((candidate) => candidate.name).join("\n"));
+    }, { signal });
+    this.treeCanvas.addEventListener("dragover", (event) => {
+      const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
+      const target = row ? this.nodes.get(row.dataset.treeKey || "") : undefined;
+      const destination = treeMoveDestination(this.draggingTreeNodes, target);
+      this.setTreeDropTarget(destination?.key || null);
+      if (this.draggingTreeNodes.length) this.startTreeDragScroll(event.clientY);
+      if (!destination || !event.dataTransfer) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+    }, { signal });
+    this.treeCanvas.addEventListener("drop", (event) => {
+      const selection = this.draggingTreeNodes;
+      const row = (event.target as Element).closest<HTMLElement>("[data-tree-key]");
+      const target = row ? this.nodes.get(row.dataset.treeKey || "") : undefined;
+      const destination = treeMoveDestination(selection, target);
+      if (destination) event.preventDefault();
+      this.clearTreeDragState();
+      if (destination) void this.moveTreeNodes(selection, destination);
+    }, { signal });
+    this.treeCanvas.addEventListener("dragend", () => this.clearTreeDragState(), { signal });
+    this.treeCanvas.addEventListener("dragleave", (event) => {
+      if (!this.treeCanvas.contains(event.relatedTarget as Node | null)) this.setTreeDropTarget(null);
+    }, { signal });
+    this.treeCanvas.addEventListener("keydown", (event) => {
+      const input = (event.target as Element).closest<HTMLInputElement>("[data-rename-input]");
+      if (!input || !this.renamingKey) return;
+      const node = this.nodes.get(this.renamingKey);
+      if (!node) return;
+      if (event.key === "Enter") { event.preventDefault(); void this.commitRename(node, input.value); }
+      if (event.key === "Escape") { event.preventDefault(); this.renamingKey = null; this.renderTreeRows(); this.treeScroller.focus(); }
+    }, { signal });
+    this.treeCanvas.addEventListener("focusout", (event) => {
+      const input = (event.target as Element).closest<HTMLInputElement>("[data-rename-input]");
+      if (!input || !this.renamingKey) return;
+      const node = this.nodes.get(this.renamingKey);
+      if (node) window.setTimeout(() => { if (this.renamingKey === node.key) void this.commitRename(node, input.value); }, 0);
+    }, { signal });
+    this.treeScroller.addEventListener("keydown", (event) => this.handleTreeKeyboard(event), { signal });
+    this.treeScroller.addEventListener("scroll", () => this.schedulePersist(), { signal, passive: true });
+
+    this.root.querySelector("[data-tree-action=new-file]")?.addEventListener("click", () => void this.createUnderSelection("file"), { signal });
+    this.root.querySelector("[data-tree-action=new-folder]")?.addEventListener("click", () => void this.createUnderSelection("directory"), { signal });
+    this.root.querySelector("[data-tree-action=refresh]")?.addEventListener("click", () => void this.refreshExplorer(), { signal });
+    this.root.querySelector("[data-tree-action=collapse-all]")?.addEventListener("click", () => this.collapseAll(), { signal });
+    this.root.querySelector("[data-tree-action=trash]")?.addEventListener("click", () => void this.showTrash(), { signal });
+    this.root.querySelector<HTMLButtonElement>("[data-status=indentation]")?.addEventListener("click", (event) => {
+      this.showIndentationPopover(event.currentTarget as HTMLButtonElement);
+    }, { signal });
+    this.root.querySelector("[data-mobile-explorer]")?.addEventListener("click", () => {
+      const shell = this.root.querySelector<HTMLElement>(".code-app-shell");
+      this.setMobileExplorer(!shell?.classList.contains("is-explorer-open"));
+    }, { signal });
+    this.root.querySelector("[data-mobile-sidebar-backdrop]")?.addEventListener("click", () => {
+      this.setMobileExplorer(false);
+    }, { signal });
+
+    const tabs = this.root.querySelector<HTMLElement>("[data-code-tabs]")!;
+    tabs.addEventListener("dragstart", (event) => {
+      const element = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-tab-id]") : null;
+      const tab = element ? this.tabs.find((candidate) => candidate.id === element.dataset.tabId) : null;
+      const startedOnAction = this.tabDragStartedOnAction;
+      this.clearTabDragState();
+      if (!element || !tab || startedOnAction || !event.dataTransfer) {
+        event.preventDefault();
+        return;
+      }
+      this.draggingTabId = tab.id;
+      element.classList.add("is-dragging");
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData(codeTabDragType, tab.id);
+      event.dataTransfer.setData("text/plain", tab.title);
+    }, { signal });
+    tabs.addEventListener("dragover", (event) => {
+      if (!this.draggingTabId || !event.dataTransfer) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      const drop = this.tabDropFromEvent(event);
+      if (drop) this.setTabDropIndicator(drop.targetId, drop.position);
+      else this.clearTabDropIndicator();
+      this.startTabDragScroll(tabs, event.clientX);
+    }, { signal });
+    tabs.addEventListener("drop", (event) => {
+      if (!this.draggingTabId) return;
+      event.preventDefault();
+      const sourceId = this.draggingTabId;
+      const drop = this.tabDropFromEvent(event);
+      const reordered = drop ? reorderTabs(this.tabs, sourceId, drop.targetId, drop.position) : null;
+      this.clearTabDragState();
+      if (!reordered) return;
+      this.tabs = reordered;
+      this.renderTabs();
+      this.schedulePersist();
+    }, { signal });
+    tabs.addEventListener("dragend", () => this.clearTabDragState(), { signal });
+    tabs.addEventListener("dragleave", (event) => {
+      if (tabs.contains(event.relatedTarget as Node | null)) return;
+      this.stopTabDragScroll();
+      this.clearTabDropIndicator();
+    }, { signal });
+    tabs.addEventListener("click", (event) => {
+      const element = (event.target as Element).closest<HTMLElement>("[data-tab-id]");
+      if (!element) return;
+      const tab = this.tabs.find((candidate) => candidate.id === element.dataset.tabId);
+      if (!tab) return;
+      if ((event.target as Element).closest("[data-tab-unpin]")) this.setPinned(tab, false);
+      else if ((event.target as Element).closest("[data-tab-close]")) void this.closeTab(tab);
+      else void this.recordCodeNavigation(() => this.activateTab(tab.id));
+    }, { signal });
+    tabs.addEventListener("mousedown", (event) => {
+      this.tabDragStartedOnAction = event.button === 0 && Boolean((event.target as Element).closest("[data-tab-action]"));
+      // Suppress the browser's native middle-click autoscroll when the tab bar
+      // overflows and becomes scrollable, so middle-click keeps closing tabs
+      // instead of starting a horizontal scroll drag.
+      if (event.button !== 1) return;
+      if (!(event.target as Element).closest("[data-tab-id]")) return;
+      event.preventDefault();
+    }, { signal });
+    tabs.addEventListener("auxclick", (event) => {
+      if (event.button !== 1) return;
+      const element = (event.target as Element).closest<HTMLElement>("[data-tab-id]");
+      if (!element) return;
+      const tab = this.tabs.find((candidate) => candidate.id === element.dataset.tabId);
+      if (!tab) return;
+      event.preventDefault();
+      void this.closeTab(tab);
+    }, { signal });
+    tabs.addEventListener("dblclick", (event) => {
+      if ((event.target as Element).closest("[data-tab-action]")) return;
+      const element = (event.target as Element).closest<HTMLElement>("[data-tab-id]");
+      if (element) {
+        const tab = this.tabs.find((candidate) => candidate.id === element.dataset.tabId);
+        if (tab) { tab.keepOpen = true; this.renderTabs(); this.schedulePersist(); }
+      } else {
+        this.newUntitled();
+      }
+    }, { signal });
+    tabs.addEventListener("contextmenu", (event) => {
+      const element = (event.target as Element).closest<HTMLElement>("[data-tab-id]");
+      if (!element) return;
+      event.preventDefault();
+      const tab = this.tabs.find((candidate) => candidate.id === element.dataset.tabId);
+      if (tab) this.showTabMenu(event, tab);
+    }, { signal });
+    tabs.addEventListener("wheel", (event) => {
+      if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+        tabs.scrollLeft += event.deltaY;
+        event.preventDefault();
+      }
+    }, { signal, passive: false });
+    document.addEventListener("mouseup", () => { this.tabDragStartedOnAction = false; }, { signal });
+
+    this.root.querySelector("[data-breadcrumbs]")?.addEventListener("click", (event) => {
+      const button = (event.target as Element).closest<HTMLElement>("[data-breadcrumb-index]");
+      const tab = this.activeTab();
+      if (!button || !tab?.ref) return;
+      const index = Number(button.dataset.breadcrumbIndex);
+      const parts = tab.ref.path.split("/");
+      const target: FileRef = { rootId: tab.ref.rootId, path: index === 0 ? "" : parts.slice(0, index).join("/") };
+      void this.expandTo(target);
+    }, { signal });
+
+    document.addEventListener("keydown", (event) => this.handleGlobalKeyboard(event), { signal, capture: true });
+    document.addEventListener("click", (event) => this.handleReferencePeekClick(event), { signal, capture: true });
+    document.addEventListener("keyup", (event) => {
+      if (event.key === "Control" || event.key === "Meta") this.finishMruCycle();
+    }, { signal });
+    window.addEventListener("blur", () => this.finishMruCycle(), { signal });
+    document.addEventListener("wheel", (event) => {
+      if (!event.ctrlKey) return;
+      const target = event.target as Element | null;
+      const inEditor = Boolean(target?.closest && target.closest("[data-monaco-host], [data-monaco-diff-host]"));
+      if (!inEditor) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.setEditorFontSize(this.editorFontSize + (event.deltaY < 0 ? 1 : -1));
+    }, { signal, capture: true, passive: false });
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") void this.persistNow(); }, { signal });
+    window.addEventListener("beforeunload", (event) => {
+      void this.persistNow();
+      if (this.persistenceFailed && this.tabs.some((tab) => tab.dirty)) event.preventDefault();
+    }, { signal });
+    this.installResizer();
+  }
+
+  private handleTreeKeyboard(event: KeyboardEvent): void {
+    if ((event.target as Element).closest("[data-rename-input]")) return;
+    const currentIndex = this.flatTree.findIndex((node) => node.key === this.selectedTreeKey);
+    let nextIndex = currentIndex;
+    if (event.key === "ArrowDown") nextIndex = Math.min(this.flatTree.length - 1, currentIndex + 1);
+    else if (event.key === "ArrowUp") nextIndex = Math.max(0, currentIndex < 0 ? 0 : currentIndex - 1);
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = this.flatTree.length - 1;
+    else if (event.key === "F2") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.renameTreeSelection();
+      return;
+    } else if (event.key === "Delete") {
+      event.preventDefault();
+      void this.deleteTreeSelection();
+      return;
+    } else if (event.key === "Enter" || event.key === " ") {
+      const node = this.nodes.get(this.selectedTreeKey || "");
+      if (node) { event.preventDefault(); void this.toggleNode(node); }
+      return;
+    } else if (event.key === "ArrowRight") {
+      const node = this.nodes.get(this.selectedTreeKey || "");
+      if (node?.kind === "directory" && !this.expanded.has(node.key)) { event.preventDefault(); void this.toggleNode(node); }
+      return;
+    } else if (event.key === "ArrowLeft") {
+      const node = this.nodes.get(this.selectedTreeKey || "");
+      if (node?.kind === "directory" && this.expanded.has(node.key)) { event.preventDefault(); void this.toggleNode(node); }
+      else if (node?.parentKey) { event.preventDefault(); this.selectTreeKey(node.parentKey); this.renderTree(); }
+      return;
+    } else return;
+    if (nextIndex >= 0 && this.flatTree[nextIndex]) {
+      event.preventDefault();
+      this.selectTreeKey(this.flatTree[nextIndex].key);
+      this.renderTreeRows();
+      this.treeVirtualizer.scrollToIndex(nextIndex, { align: "auto" });
+    }
+  }
+
+  private handleGlobalKeyboard(event: KeyboardEvent): void {
+    if (!this.active || !this.root.closest(".plugin-content")?.parentElement?.contains(document.activeElement)) return;
+    if (document.querySelector(".code-modal-overlay, .code-picker-overlay")) return;
+    // Monaco owns navigation and cancellation while its quick input is focused.
+    if (event.target instanceof Element && event.target.closest(".quick-input-widget")) return;
+    if (this.handleReferencePeekKeyboard(event)) return;
+    if (event.key === "Escape" && this.root.querySelector(".code-app-shell.is-explorer-open")) {
+      event.preventDefault();
+      this.setMobileExplorer(false);
+      return;
+    }
+    const modifier = event.ctrlKey || event.metaKey;
+    const key = event.key.toLowerCase();
+    const activeEditor = this.activeCodeEditor();
+    const activeTab = this.activeTab();
+    const editorHasTextFocus = activeEditor?.hasTextFocus() === true;
+    const hasMultilineSelection = activeEditor?.getSelections()
+      ?.some((selection) => selection.startLineNumber !== selection.endLineNumber) === true;
+    const selectionIsEditable = (activeTab?.kind === "file" && !activeTab.readOnly);
+    const shouldHandleTab = (key === "tab" || event.code === "Tab")
+      && editorHasTextFocus && selectionIsEditable && (event.shiftKey || hasMultilineSelection);
+    if (!modifier && event.altKey && !event.shiftKey && key === "arrowleft") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.navigateHistory(-1);
+    } else if (!modifier && event.altKey && !event.shiftKey && key === "arrowright") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.navigateHistory(1);
+    } else if (activeEditor && !modifier && !event.altKey && shouldHandleTab) {
+      event.preventDefault();
+      event.stopPropagation();
+      activeEditor.trigger("echo", event.shiftKey ? "outdent" : "tab", null);
+    } else if (modifier && event.shiftKey && key === "f") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(); }
+    else if (modifier && !event.shiftKey && key === "f" && activeEditor?.getModel()) { event.preventDefault(); event.stopPropagation(); this.showEditorFind(); }
+    else if (modifier && !event.shiftKey && key === "g" && activeEditor?.getModel()) { event.preventDefault(); event.stopPropagation(); this.showGoToLine(); }
+    else if (modifier && event.shiftKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.peekImplementation", null); }
+    else if (modifier && !event.shiftKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.goToImplementation", null); }
+    else if (!modifier && event.shiftKey && !event.altKey && key === "f12" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.referenceSearch.trigger", null); }
+    else if (!modifier && event.shiftKey && event.altKey && key === "f") { event.preventDefault(); event.stopPropagation(); void this.formatActiveDocument(false); }
+    else if (modifier && event.shiftKey && key === "h") { event.preventDefault(); event.stopPropagation(); this.showWorkspaceSearch(true); }
+    else if (modifier && event.shiftKey && key === "j" && this.activeSidebar === "search") { event.preventDefault(); event.stopPropagation(); this.searchView?.toggleDetails(); }
+    else if (modifier && event.shiftKey && key === "p") { event.preventDefault(); event.stopPropagation(); this.showCommandPalette(); }
+    else if (modifier && event.shiftKey && key === "s") { event.preventDefault(); event.stopPropagation(); void this.saveAsActive(); }
+    else if (modifier && key === "p") { event.preventDefault(); event.stopPropagation(); this.showQuickOpen(); }
+    else if (modifier && key === "s") { event.preventDefault(); event.stopPropagation(); void this.saveTab(); }
+    else if (modifier && key === "w") { const tab = this.activeTab(); if (tab) { event.preventDefault(); event.stopPropagation(); void this.closeTab(tab); } }
+    else if (modifier && key === "n") { event.preventDefault(); event.stopPropagation(); this.newUntitled(); }
+    else if (modifier && !event.shiftKey && key === "d" && this.activeCodeEditor()?.hasTextFocus()) { event.preventDefault(); event.stopPropagation(); this.activeCodeEditor()?.trigger("echo", "editor.action.duplicateSelection", null); }
+    else if (modifier && key === "tab") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.cycleCodeTabs(event.shiftKey);
+    } else if (event.key === "F2" && this.treeScroller.contains(document.activeElement)) {
+      event.preventDefault();
+      this.renameTreeSelection();
+    } else if (event.key === "F2" && this.activeCodeEditor()?.hasTextFocus()) {
+      event.preventDefault();
+      this.activeCodeEditor()?.trigger("echo", "editor.action.rename", null);
+    } else if (event.key === "F4" && this.activeSidebar === "search") {
+      event.preventDefault();
+      this.searchView?.navigateResult(event.shiftKey ? -1 : 1);
+    }
+  }
+
+  private referencePeekContext(target: EventTarget | null): {
+    editor: MonacoEditor.ICodeEditor;
+    tree: HTMLElement;
+    match: HTMLElement | null;
+  } | null {
+    if (!(target instanceof Element)) return null;
+    const tree = target.closest<HTMLElement>(".reference-zone-widget .ref-tree");
+    if (!tree) return null;
+    const editors = [
+      this.editor,
+    ];
+    const editor = editors.find((candidate) => candidate.getDomNode()?.contains(tree));
+    if (!editor) return null;
+    return {
+      editor,
+      tree,
+      match: tree.querySelector<HTMLElement>(".monaco-list-row.focused .referenceMatch"),
+    };
+  }
+
+  private handleReferencePeekKeyboard(event: KeyboardEvent): boolean {
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return false;
+    const context = this.referencePeekContext(event.target);
+    if (!context) return false;
+    if (event.key === "Enter" && context.match) {
+      event.preventDefault();
+      event.stopPropagation();
+      context.editor.trigger("echo", "openReference", null);
+      return true;
+    }
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      requestAnimationFrame(() => {
+        if (this.abort.signal.aborted || !context.tree.isConnected) return;
+        this.referencePeekContext(context.tree)?.match?.click();
+      });
+    }
+    return false;
+  }
+
+  private handleReferencePeekClick(event: MouseEvent): void {
+    if (event.button !== 0 || event.detail !== 2 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    const context = this.referencePeekContext(event.target);
+    if (!context?.match || !context.match.contains(event.target as Node)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    context.editor.trigger("echo", "openReference", null);
+  }
+
+  /**
+   * True while a file search/replace is currently active: either the workspace
+   * search sidebar input is focused, or Monaco's in-editor find/replace widget
+   * is visible. Used so Escape closes the active search before falling back to
+   * closing the code chat.
+   */
+  private async navigateHistory(direction: number) { const location = this.codeNavigation?.traverse(direction, this.captureNavigationLocation()); if (location) await this.restoreNavigationLocation(location); }
+
+  private searchIsActive(): boolean {
+    if (this.activeSidebar === "search" && document.activeElement instanceof HTMLInputElement) return true;
+    const editor = this.activeCodeEditor();
+    if (!editor) return false;
+    const findController = editor.getContribution<MonacoEditor.IEditorContribution & { getState(): { isRevealed: boolean } }>("editor.contrib.findController");
+    return findController?.getState().isRevealed === true;
+  }
+
+  private cycleCodeTabs(reverse: boolean): void {
+    if (this.tabs.length <= 1) return;
+    if (!this.mruCycle) {
+      this.mruCycle = beginMruCycle(
+        this.mruTabIds,
+        this.activeTabId,
+        this.tabs.map((tab) => tab.id),
+      );
+    }
+    const { nextId, state } = nextMruCycle(this.mruCycle, reverse);
+    this.mruCycle = state;
+    if (nextId) void this.recordCodeNavigation(() => this.activateTab(nextId, true, false));
+    this.renderMruSwitcher();
+  }
+
+  private installResizer(): void {
+    const resizer = this.root.querySelector<HTMLElement>(".code-explorer-resizer")!;
+    const shell = this.root.querySelector<HTMLElement>(".code-app-shell")!;
+    const setWidth = (value: number) => {
+      this.explorerWidth = Math.max(220, Math.min(520, value));
+      shell.style.setProperty("--explorer-width", `${this.explorerWidth}px`);
+      this.editor?.layout();
+    };
+    resizer.addEventListener("pointerdown", (event) => {
+      if (window.innerWidth <= 720) return;
+      event.preventDefault();
+      resizer.setPointerCapture(event.pointerId);
+      const startX = event.clientX;
+      const startWidth = this.explorerWidth;
+      const move = (moveEvent: PointerEvent) => setWidth(startWidth + moveEvent.clientX - startX);
+      const up = () => {
+        resizer.removeEventListener("pointermove", move);
+        resizer.removeEventListener("pointerup", up);
+        resizer.classList.remove("is-dragging");
+        this.schedulePersist();
+      };
+      resizer.classList.add("is-dragging");
+      resizer.addEventListener("pointermove", move);
+      resizer.addEventListener("pointerup", up);
+    }, { signal: this.abort.signal });
+    resizer.addEventListener("dblclick", () => { setWidth(280); this.schedulePersist(); }, { signal: this.abort.signal });
+    resizer.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowLeft") { setWidth(this.explorerWidth - 10); event.preventDefault(); }
+      if (event.key === "ArrowRight") { setWidth(this.explorerWidth + 10); event.preventDefault(); }
+    }, { signal: this.abort.signal });
+  }
+
+  private setMobileExplorer(open: boolean): void {
+    this.root.querySelector(".code-app-shell")?.classList.toggle("is-explorer-open", open);
+    this.root.querySelector("[data-mobile-explorer]")?.setAttribute("aria-expanded", String(open));
+  }
+
+  private async restoreWorkspace(): Promise<void> {
+    if (!this.workspace) return;
+    let saved: PersistedWorkspaceSession | null = null;
+    try { saved = await loadSession(this.workspace.id); } catch (error) { console.warn("restore editor session", error); }
+    if (this.abort.signal.aborted) return;
+    if (!saved || (saved.version !== 1 && saved.version !== 2 && saved.version !== 3 && saved.version !== 4 && saved.version !== 5)) {
+      return;
+    }
+    this.explorerWidth = Math.max(220, Math.min(520, saved.explorerWidth || 280));
+    this.outlineView?.restoreSize(saved.outlineSizeRatio);
+    const shell = this.root.querySelector<HTMLElement>(".code-app-shell");
+    shell?.style.setProperty("--explorer-width", `${this.explorerWidth}px`);
+    this.expanded = new Set(saved.expanded || []);
+    this.selectTreeKey(saved.selectedTreeKey || null);
+    for (const persisted of saved.tabs || []) {
+      if (this.abort.signal.aborted) return;
+      await this.restoreTab(persisted);
+    }
+    if (this.abort.signal.aborted) return;
+    // restoreTab temporarily attaches models so Monaco can materialize their
+    // view state. Clear that transient active marker before choosing the
+    // persisted active editor, otherwise a later activation could save one
+    // model's view state onto a different tab.
+    this.activeTabId = null;
+    const untitledNumbers = (saved.tabs || [])
+      .map((tab) => /^Untitled-(\d+)$/.exec(tab.title))
+      .filter(Boolean)
+      .map((match) => Number(match![1]));
+    this.untitledCounter = Math.max(1, ...untitledNumbers.map((value) => value + 1));
+    const restoredActiveId = saved.activeTabId ? this.restoredTabIdAliases.get(saved.activeTabId) || saved.activeTabId : null;
+    const active = this.tabs.find((tab) => tab.id === restoredActiveId) || this.tabs[0];
+    if (active) {
+      this.activateTab(active.id);
+      const persisted = saved.tabs.find((tab) => (this.restoredTabIdAliases.get(tab.id) || tab.id) === active.id);
+      if (active.kind !== "media") {
+        const restoredEditor = this.editor;
+        if (persisted?.cursor) restoredEditor.setPosition(persisted.cursor);
+        if (typeof persisted?.scrollTop === "number") restoredEditor.setScrollTop(persisted.scrollTop);
+      }
+    }
+    this.restoredTreeScrollTop = saved.treeScrollTop || 0;
+  }
+
+  private async restoreTab(persisted: PersistedTab): Promise<void> {
+    if (!this.workspace) return;
+    try {
+      if (persisted.kind === "media") {
+        const ref = persisted.ref;
+        if (!ref) return;
+        const existing = this.tabs.find((candidate) => candidate.ref && refKey(candidate.ref) === refKey(ref));
+        if (existing) {
+          Object.assign(existing, restoreTabOpenState(persisted));
+          return;
+        }
+        await this.openMedia(ref, true, false);
+        const opened = this.tabs.find((candidate) => candidate.ref && refKey(candidate.ref) === refKey(ref));
+        if (opened) Object.assign(opened, restoreTabOpenState(persisted));
+        return;
+      }
+      if (!persisted.ref) {
+        const tab = this.newUntitledFrom(persisted.content || "", persisted.title, persisted.id, persisted.eol);
+        tab.hasBom = persisted.hasBom;
+        Object.assign(tab, restoreTabOpenState(persisted));
+        tab.dirty = persisted.dirty;
+        this.captureRestoredViewState(tab, persisted);
+        return;
+      }
+      let disk: FileSnapshot | null = null;
+      try { disk = await editorAPI.readFile(this.workspace.id, persisted.ref); } catch { /* preserve dirty orphan below */ }
+      if (this.abort.signal.aborted) return;
+      if (!disk && !persisted.dirty) return;
+      const snapshot: FileSnapshot = disk || {
+        ref: persisted.ref, hostPath: persisted.hostPath, content: persisted.content || "", revision: persisted.revision,
+        size: (persisted.content || "").length, modifiedAt: "", encoding: "utf-8", eol: persisted.eol, hasBom: persisted.hasBom,
+      };
+      if (persisted.dirty && persisted.content !== undefined) {
+        snapshot.content = persisted.content;
+        snapshot.eol = persisted.eol;
+        snapshot.hasBom = persisted.hasBom;
+      }
+      const tab = this.createModel(snapshot, persisted.id);
+      Object.assign(tab, restoreTabOpenState(persisted));
+      if (isMarkdownTab(tab)) Object.assign(tab, restoreMarkdownViewState(persisted));
+      tab.dirty = persisted.dirty;
+      tab.deleted = !disk || persisted.deleted;
+      tab.conflict = Boolean(disk && persisted.dirty && disk.revision !== persisted.revision);
+      tab.revision = persisted.dirty ? persisted.revision : disk?.revision || persisted.revision;
+      this.tabs.push(tab);
+      this.captureRestoredViewState(tab, persisted);
+    } catch (error) {
+      if (!this.abort.signal.aborted) console.warn(`restore tab ${persisted.title}`, error);
+    }
+  }
+
+  private captureRestoredViewState(tab: OpenTab, persisted: PersistedTab): void {
+    this.editor.setModel(tab.model);
+    if (persisted.cursor) this.editor.setPosition(persisted.cursor);
+    if (typeof persisted.scrollTop === "number") this.editor.setScrollTop(persisted.scrollTop);
+    tab.viewState = this.editor.saveViewState();
+  }
+
+  private async restoreTreeExpansion(): Promise<void> {
+    const refs = [...this.expanded].map((key) => {
+      const separator = key.indexOf(":");
+      return separator >= 0 ? { rootId: key.slice(0, separator), path: key.slice(separator + 1) } : null;
+    }).filter(Boolean) as FileRef[];
+    for (const ref of refs.sort((left, right) => left.path.split("/").length - right.path.split("/").length)) {
+      if (ref.path) await this.expandTo(ref, false);
+    }
+  }
+
+  private schedulePersist(): void {
+    window.clearTimeout(this.persistTimer);
+    this.persistTimer = window.setTimeout(() => void this.persistNow(), 750);
+  }
+
+  private async persistNow(): Promise<boolean> {
+    if (!this.workspace) return true;
+    window.clearTimeout(this.persistTimer);
+    const active = this.activeTab();
+    if (active && this.markdownMode(active) !== "preview") active.viewState = this.editor.saveViewState();
+    this.markdownPreview?.captureScroll();
+    const tabs: PersistedTab[] = this.tabs.filter((tab) => !tab.transient).map((tab) => {
+      const position = tab.id === this.activeTabId && this.markdownMode(tab) !== "preview"
+        ? (this.editor.getPosition()) || undefined
+        : tab.viewState?.cursorState[0]?.position;
+      return {
+        kind: tab.kind, id: tab.id, ref: tab.ref, title: tab.title, hostPath: tab.hostPath, pinned: tab.keepOpen, closeProtected: tab.pinned,
+        preview: !tab.keepOpen, dirty: tab.dirty, deleted: tab.deleted, revision: tab.revision,
+        hasBom: tab.hasBom, eol: tab.model.getEOL() === "\r\n" ? "crlf" : "lf",
+        ...(isMarkdownTab(tab) ? restoreMarkdownViewState(tab) : {}),
+        ...(tab.dirty || (tab.kind === "file" && !tab.ref) ? { content: tab.model.getValue() } : {}),
+        cursor: position ? { lineNumber: position.lineNumber, column: position.column } : undefined,
+        scrollTop: tab.id === this.activeTabId && this.markdownMode(tab) !== "preview"
+          ? (this.editor.getScrollTop())
+          : tab.viewState?.viewState.scrollTop,
+      };
+    });
+    try {
+      await saveSession(this.workspace.id, {
+        version: 5, activeTabId: this.activeTabId, tabs, expanded: [...this.expanded],
+        selectedTreeKey: this.selectedTreeKey && this.treeSelection.selected.has(this.selectedTreeKey)
+          ? this.selectedTreeKey : this.treeSelection.selected.values().next().value || null,
+        explorerWidth: this.explorerWidth,
+        outlineSizeRatio: this.outlineView?.sizeRatio,
+        treeScrollTop: this.treeScroller?.scrollTop || 0,
+      });
+      this.persistenceFailed = false;
+      return true;
+    } catch (error) {
+      if (!this.persistenceFailed) toast(`Unsaved-buffer recovery is unavailable: ${error instanceof Error ? error.message : String(error)}`, { sticky: true });
+      this.persistenceFailed = true;
+      return false;
+    }
+  }
+
+  private subscribeFilesystem(): void { if (!this.active || this.watchStop) return; this.watchStop = watchFiles(this.bot.id, () => { if (!this.abort.signal.aborted) void this.pollOpenTabs(); }, () => [...this.nodes.values()].filter(n => this.expanded.has(n.key)).map(n => n.ref).concat(this.tabs.flatMap(t => t.ref ? [t.ref] : []))); }
+  private watchStop?: () => void;
+
+  private async applyFilesystemChanges(changes: FilesystemChange[]): Promise<void> {
+    // A batch remaps editor and selection references after its requests complete.
+    // Process watcher notifications against those final references.
+    if (this.treeMutationBusy) {
+      this.pendingTreeChanges.push(...changes);
+      return;
+    }
+
+    const parents = new Map<string, FileRef>();
+    for (const change of changes) {
+      this.navigationModels.invalidate((uri) => {
+        const ref = this.refForFileURI(uri);
+        return Boolean(ref && isRefWithin(ref, change.ref));
+      });
+      if (needsDirectoryRefresh(change, this.nodes)) {
+        const slash = change.ref.path.lastIndexOf("/");
+        const parent = { rootId: change.ref.rootId, path: slash >= 0 ? change.ref.path.slice(0, slash) : "" };
+        parents.set(refKey(parent), parent);
+      }
+      for (const tab of this.tabs) {
+        const tabRef = this.worktreeRef(tab);
+        if (!tabRef || !isRefWithin(tabRef, change.ref)) continue;
+        if (change.op === "delete" || change.op === "rename") {
+          tab.deleted = true;
+          if (tab.dirty) tab.conflict = true;
+        } else if (change.op === "write" && refKey(tabRef) === refKey(change.ref)) {
+          if (tab.dirty) tab.conflict = true;
+          else await this.reloadCleanTab(tab);
+        }
+      }
+    }
+    for (const parent of parents.values()) {
+      const node = this.nodes.get(refKey(parent));
+      if (node?.loaded) await this.reloadChildrenPreservingExpansion(node);
+    }
+    this.renderTabs();
+    this.schedulePersist();
+    this.searchView?.refresh();
+
+  }
+
+  private async reloadCleanTab(tab: OpenTab): Promise<void> {
+    const ref = this.worktreeRef(tab);
+    if (!this.workspace || !ref || tab.dirty) return;
+    if (tab.kind === "media") return;
+    try {
+      const snapshot = await editorAPI.readFile(this.workspace.id, ref);
+      if (this.abort.signal.aborted || tab.model.isDisposed() || tab.dirty) return;
+      tab.deleted = false;
+      if (snapshot.revision !== tab.revision) {
+        const activeEditor = this.editor;
+        const viewState = tab.id === this.activeTabId
+          ? activeEditor.saveViewState()
+          : tab.viewState;
+        this.applyDiskSnapshot(tab, snapshot);
+        if (tab.id === this.activeTabId && viewState) activeEditor.restoreViewState(viewState);
+      } else {
+        tab.conflict = false;
+      }
+    } catch (error) {
+      const apiError = error as APIError;
+      if (apiError.status === 404) tab.deleted = true;
+      else tab.conflict = true;
+    }
+  }
+
+  private polling = false;
+  private async pollOpenTabs(): Promise<void> {
+    if (!this.editor || this.polling || this.treeMutationBusy || this.abort.signal.aborted) return;
+    this.polling = true; try {
+    for (const tab of this.tabs) {
+      if (this.abort.signal.aborted || !this.active) return;
+      const ref = this.worktreeRef(tab);
+      if (!ref) continue;
+      if (tab.dirty && this.workspace) {
+        try {
+          const disk = await editorAPI.readFile(this.workspace.id, ref);
+          tab.deleted = false;
+          tab.conflict = disk.revision !== tab.revision;
+        } catch (error) {
+          const apiError = error as APIError;
+          if (apiError.status === 404) tab.deleted = true;
+          tab.conflict = true;
+        }
+      } else {
+        await this.reloadCleanTab(tab);
+      }
+    }
+    await this.refreshExplorer();
+    this.renderTabs();
+    } finally { this.polling = false; }
+  }
+
+  dispose(): void {
+    this.disposeBookmarks();
+    this.closeIndentationPopover?.();
+    if (this.editorFontSizeSaveTimer) {
+      window.clearTimeout(this.editorFontSizeSaveTimer);
+      this.editorFontSizeSaveTimer = 0;
+      this.persistEditorSettings({ editorFontSize: this.editorFontSize });
+    }
+    if (this.abort.signal.aborted) return;
+    this.watchStop?.();
+    this.finishMruCycle();
+    this.clearTabDragState();
+    void this.persistNow();
+    this.outlineView?.dispose();
+    this.markdownPreview?.dispose();
+    this.markdownPreview = null;
+    this.codeNavigation?.dispose(this.captureNavigationLocation());
+    this.codeNavigation = null;
+    this.abort.abort();
+    this.dismissOverlays();
+    window.clearTimeout(this.persistTimer);
+    window.clearTimeout(this.treeDropExpandTimer);
+    if (this.treeDragScrollFrame) cancelAnimationFrame(this.treeDragScrollFrame);
+    window.clearInterval(this.pollTimer);
+    closeContextMenu();
+    this.editorOpener?.dispose();
+    this.editorOpener = null;
+    this.disposeVirtualizer?.();
+    for (const tab of this.tabs) this.disposeTab(tab);
+    this.tabs = [];
+    this.navigationModels.dispose();
+    this.editor?.dispose();
+  }
+}
+
+function parseQuickOpenQuery(value: string): { query: string; line?: number } {
+  const query = value.trim();
+  // Keep matching files while the user types the colon before a line number.
+  const match = /^(.*):(\d*)$/.exec(query);
+  return { query: match ? match[1] : query, line: match?.[2] ? Number(match[2]) : undefined };
+}
+
+function isMarkdownTab(tab: OpenTab | undefined): tab is OpenTab & { ref: FileRef } {
+  return tab?.kind === "file" && Boolean(tab.ref && isMarkdownPath(tab.ref.path));
+}

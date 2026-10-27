@@ -8,6 +8,11 @@ require (
 )
 
 require (
+	github.com/fsnotify/fsnotify v1.9.0
+	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06
+)
+
+require (
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3

@@ -46,12 +46,13 @@ func Builtins() []domain.PluginManifest {
 			tool("plugin_list", "List plugins and their configuration.", "plugin.list", map[string]any{}),
 			tool("plugin_install", "Install a UI plugin, or a Go/WASI backend compiled from backendSource. HTML-only installs register an app in Apps; full manifests opt in with app.viewId and an optional image data URL app.icon. HTML runs in an isolated iframe; no scripts are run during installation. New privileged capabilities require owner approval.", "plugin.install", map[string]any{"id": S("Lowercase kebab-case id"), "name": S("Plugin name"), "html": S("Self-contained HTML/CSS/JavaScript for a draggable window"), "backendSource": S("Optional complete Go/WASI source using the provided SDK"), "manifest": map[string]any{"type": "object", "description": "Optional complete API 1 manifest, including app registration, views, or backend tools"}}, "id", "name"),
 			tool("plugin_configure", "Change enabled state or non-secret settings of a plugin.", "plugin.configure", map[string]any{"id": S("Plugin id"), "enabled": B("Enabled"), "config": map[string]any{"type": "object"}}, "id"),
-			tool("plugin_open", "Open or focus a plugin's floating view. Defaults to its registered app view, then its first floating view; renderer views cannot be opened.", "plugin.open", map[string]any{"id": S("Plugin id"), "viewId": S("Optional floating view id")}, "id"),
+			tool("plugin_open", "Open or focus a plugin app in its embedded or floating presentation. Defaults to its registered app view, then its first eligible view; renderer views cannot be opened.", "plugin.open", map[string]any{"id": S("Plugin id"), "viewId": S("Optional embedded or floating view id")}, "id"),
 			tool("plugin_rollback", "Restore the previous installed version.", "plugin.rollback", map[string]any{"id": S("Plugin id")}, "id"),
 		}},
 	}
 	ms = append(ms, sourceControlPlugins()...)
 	ms = append(ms, comfyUIPlugin())
+	ms = append(ms, monacoEditorPlugin())
 	for i := range ms {
 		m := &ms[i]
 		m.API = 1

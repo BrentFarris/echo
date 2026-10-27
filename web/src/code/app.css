@@ -1,0 +1,14 @@
+.monaco-app{display:flex;flex-direction:column;color:var(--code-fg)}
+.editor-bot-toolbar{display:flex;align-items:center;gap:8px;flex:none;padding:5px 8px;background:var(--code-chrome-bg);border-bottom:1px solid var(--code-border)}
+.editor-bot-toolbar label{display:flex;align-items:center;gap:6px;min-width:0}.editor-bot-toolbar select{max-width:260px;padding:4px}.editor-bot-toolbar button{font-size:11px;padding:5px 7px}
+.editor-bot-session{flex:1;min-height:0;min-width:0;position:relative}.editor-bot-session[hidden]{display:none}
+.monaco-app .code-app-shell{grid-template-columns:42px minmax(0,1fr);grid-template-rows:minmax(0,1fr);grid-template-areas:"code-nav code-main"}
+.monaco-app .code-left-nav{display:flex;flex-direction:column;padding:6px 3px;gap:7px;grid-area:code-nav;border-right:1px solid var(--code-border)}
+.monaco-app .code-left-nav button{border:0;padding:7px;background:transparent}.monaco-app .code-left-nav .is-active{color:var(--code-accent);background:var(--code-selected)}
+.editor-no-folders .code-tree-canvas:empty:after{content:"No folders configured for this bot. Use Configure Folders above.";display:block;padding:14px;color:var(--code-muted);line-height:1.5}
+.monaco-app .code-workbench{min-height:0}.monaco-app button,.code-picker-overlay button,.code-modal-overlay button,.code-context-menu button{font-family:inherit}
+@media(max-width:720px){.editor-bot-toolbar{flex-wrap:wrap}.editor-bot-toolbar label{flex:1}.editor-bot-toolbar select{width:100%}.monaco-app .code-app-shell{grid-template-columns:36px minmax(0,1fr)}}
+
+.monaco-app .code-header-actions button,.monaco-app .code-tab-close,.monaco-app .code-tab-unpin,.monaco-app .code-breadcrumbs button,.monaco-app .code-statusbar button{padding:0;border:0;background:transparent;color:inherit}
+.monaco-app .code-breadcrumbs button{padding:0 3px}.monaco-app .code-statusbar button{padding:0 5px}
+.monaco-app .code-header-actions button:hover,.monaco-app .code-tab-unpin:hover,.monaco-app .code-breadcrumbs button:hover{background:var(--code-hover)}

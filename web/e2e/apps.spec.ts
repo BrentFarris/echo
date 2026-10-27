@@ -106,6 +106,7 @@ test('package changes close windows and registration removal and rollback retain
 });
 
 test('Apps navigation preserves drafts, attachments, selected thread, and an ongoing response', async ({ page }) => {
+  await install(page, { ...manifest('embedded-draft', 'Embedded draft'), views: [{ id: 'main', kind: 'embedded', title: 'Embedded draft', html: '<p>Embedded app</p>' }] });
   const chatId = new URL(page.url()).hash.slice(1);
   for (const [handle, name] of [['apps-alpha', 'Apps Alpha'], ['apps-beta', 'Apps Beta']]) {
     await page.request.post('/api/v1/bots', { data: { handle, name, prompt: '', plugins: {}, roots: [] } });
@@ -122,9 +123,11 @@ test('Apps navigation preserves drafts, attachments, selected thread, and an ong
   });
   const selectedThread = await page.locator('.bot-tabs [aria-selected="true"]').getAttribute('data-bot-thread');
   await page.locator('#apps-button').click();
+  await card(page, 'embedded-draft').getByRole('button', { name: 'Open Embedded draft', exact: true }).click();
+  await expect(page.locator('.embedded-plugin')).toBeVisible();
   await expect(page.locator('.composer')).toBeHidden();
   await expect.poll(async () => (await state(page)).runs.some((run: any) => run.chatId === chatId && run.status === 'completed')).toBe(true);
-  await expect(page).toHaveURL(/#apps$/);
+  await expect(page).toHaveURL(/#app\/embedded-draft\/main\/echo$/);
   await page.locator(`[data-chat="${chatId}"]`).click();
   await expect(input).toHaveText('Keep this draft'); await expect(page.locator('.attachment-drafts')).toContainText('notes.txt');
   await expect(page.locator('.message.assistant')).toContainText('A stream that survives a browser reload.');
@@ -153,4 +156,23 @@ test('square dock icons scroll with wheel and keyboard and remain usable on mobi
   await dock(page).locator('button').last().focus(); await page.keyboard.press('Enter');
   await expect(page.locator('.sidebar')).not.toHaveClass(/open/);
   await expect(page.locator('.floating-plugin')).toBeVisible();
+});
+
+
+test('HTML app preserves its browsing context through presentation switches', async ({ page }) => {
+  await install(page, manifest('stateful-mode', 'Stateful mode'));
+  await page.locator('#apps-button').click();
+  await card(page, 'stateful-mode').getByRole('button', { name: 'Open Stateful mode', exact: true }).click();
+  const iframe = page.frameLocator('iframe[title="Stateful mode"]');
+  await iframe.getByLabel('Value').fill('live iframe state');
+  const original = await page.locator('iframe[title="Stateful mode"]').elementHandle();
+  await page.getByRole('button', { name: 'Open Embedded', exact: true }).click();
+  await expect(page.locator('.embedded-plugin')).toBeVisible();
+  await expect(iframe.getByLabel('Value')).toHaveValue('live iframe state');
+  await page.locator('#apps-button').click();
+  await card(page, 'stateful-mode').getByRole('button', { name: 'Open Stateful mode', exact: true }).click();
+  await expect(iframe.getByLabel('Value')).toHaveValue('live iframe state');
+  await page.getByRole('button', { name: 'Open in Window', exact: true }).click();
+  await expect(iframe.getByLabel('Value')).toHaveValue('live iframe state');
+  expect(await original!.evaluate(el => el === document.querySelector('iframe[title="Stateful mode"]'))).toBe(true);
 });

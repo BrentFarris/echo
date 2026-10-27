@@ -13,7 +13,16 @@
 .sidebar-footer #install-echo{flex-basis:auto}.sidebar-footer #install-echo,.sidebar-footer #missed-button{width:100%;flex:none}
 .sidebar-footer-actions{display:flex;gap:8px}.sidebar-footer-actions button{flex:1;min-width:0}.sidebar-footer-actions [aria-current=page]{background:var(--muted)}
 .app-dock{display:flex;gap:7px;overflow-x:auto;overflow-y:hidden;min-width:0;max-width:100%;padding:3px 2px 7px;overscroll-behavior-x:contain;touch-action:pan-x;scrollbar-width:thin}
-.sidebar-footer .app-dock-button{flex:0 0 44px;width:44px;height:44px;padding:0;border-radius:9px;overflow:hidden}
-.app-dock-button .app-icon{width:100%;height:100%;border-radius:inherit}.app-dock-button:hover .app-icon{background:var(--border)}
+.sidebar-footer .app-dock-button{flex:0 0 22px;width:22px;height:22px;padding:0;border-radius:5px;overflow:hidden}
+.app-dock-button .app-icon{width:100%;height:100%;border-radius:inherit;font-size:10px}.app-dock-button:hover .app-icon{background:var(--border)}
 .plugin-window-layer{position:fixed;inset:0;z-index:20;pointer-events:none}.plugin-window-layer .floating-plugin{pointer-events:auto}
 @media(max-width:760px){.apps-view{padding:20px 14px}.app-card{padding:16px}.app-card-actions button{min-height:40px}}
+
+.embedded-app-view{flex:1;min-height:0;min-width:0}.embedded-app-view[hidden],.plugin-window-layer section[hidden]{display:none}
+.embedded-plugin{position:fixed;display:flex;flex-direction:column;overflow:hidden;pointer-events:auto;background:var(--surface);border:0}
+.embedded-plugin>header{display:flex;align-items:center;gap:4px;height:32px;padding:3px 8px;border-bottom:1px solid var(--border);flex:none;min-width:0}
+.embedded-plugin>header strong{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:500;line-height:1.2}.plugin-content{flex:1;min-width:0;min-height:0;display:flex;position:relative;overflow:hidden}
+.plugin-content>iframe{width:100%;height:100%;border:0;flex:1}.floating-plugin>header{gap:6px;flex:none}
+.plugin-window-layer{z-index:12}.floating-plugin>header button,.embedded-plugin>header button{font-size:12px;white-space:nowrap}
+.embedded-plugin>header button{display:grid;place-items:center;flex:0 0 24px;width:24px;height:24px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--subtle)}
+.embedded-plugin>header button:hover{background:var(--muted);color:var(--text)}.embedded-plugin>header button svg{width:14px;height:14px}.embedded-plugin>header [data-close]{font-size:18px;line-height:1}

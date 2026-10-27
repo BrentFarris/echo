@@ -17,10 +17,10 @@ func validateApp(m domain.PluginManifest) error {
 		return nil
 	}
 	if m.App.ViewID == "" {
-		return errors.New("app registration needs a floating viewId")
+		return errors.New("app registration needs an app viewId")
 	}
 	if _, err := FloatingView(m, m.App.ViewID); err != nil {
-		return errors.New("app viewId must name a declared floating view")
+		return errors.New("app viewId must name a declared floating or embedded view")
 	}
 	icon := m.App.Icon
 	if icon == "" {
@@ -45,15 +45,15 @@ func validateApp(m domain.PluginManifest) error {
 	return nil
 }
 
-// FloatingView resolves a launch target without treating renderer views as apps.
+// FloatingView resolves an app launch target, including embedded views.
 func FloatingView(m domain.PluginManifest, id string) (domain.View, error) {
 	if id == "" && m.App != nil {
 		id = m.App.ViewID
 	}
 	for _, view := range m.Views {
-		if (view.Kind == "floating" || view.Kind == "") && (id == "" || view.ID == id) {
+		if (view.Kind == "floating" || view.Kind == "embedded" || view.Kind == "") && (id == "" || view.ID == id) {
 			return view, nil
 		}
 	}
-	return domain.View{}, errors.New("floating view not found")
+	return domain.View{}, errors.New("app view not found")
 }

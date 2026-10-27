@@ -1,0 +1,58 @@
+.code-explorer:has(.code-outline) {
+  grid-template-rows: 35px 23px minmax(0, 1fr) auto;
+}
+.code-outline {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 26px;
+  min-height: 0;
+  min-width: 0;
+  border-top: 1px solid var(--code-border);
+  color: var(--code-fg);
+  font-size: 13px;
+}
+.code-outline [hidden] { display: none !important; }
+.code-outline-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 25px;
+  width: 100%;
+  padding: 0 8px;
+  text-align: left;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 11px;
+}
+.code-outline-toggle:hover { background: var(--code-hover); }
+.code-outline-toggle:focus-visible, .code-outline-tree:focus-visible {
+  outline: 1px solid var(--code-accent);
+  outline-offset: -1px;
+}
+.code-outline-body { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; }
+.code-outline-status { flex: none; padding: 7px 12px; color: var(--code-muted); font-size: 12px; overflow-wrap: anywhere; }
+.code-outline-tree { flex: 1; min-height: 0; overflow: auto; outline: none; overflow-anchor: none; }
+.code-outline-canvas { position: relative; min-width: 100%; }
+.code-outline-row {
+  position: absolute;
+  inset: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding-right: 8px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.code-outline-row:hover { background: var(--code-hover); }
+.code-outline-tree:focus .code-outline-row.is-selected { background: var(--code-selected); }
+.code-outline-row.is-message { color: var(--code-muted); cursor: default; }
+.code-outline-row > .codicon { flex: 0 0 16px; }
+.code-outline-row > .codicon[class*="codicon-symbol-"] { color: var(--code-info); }
+.code-outline-chevron { flex: 0 0 12px; width: 12px; }
+.code-outline-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.code-outline-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--code-muted); font-size: 12px; }
+.code-outline-divider { position: absolute; inset: -3px 0 auto; z-index: 2; height: 5px; cursor: row-resize; touch-action: none; }
+.code-outline-divider:hover, .code-outline-divider:focus-visible, .code-outline-divider.is-dragging { background: var(--code-accent); outline: none; }

@@ -165,7 +165,7 @@ type View struct {
 	Kind  string `json:"kind"`
 }
 
-// AppRegistration exposes a plugin's primary floating view in Apps.
+// AppRegistration exposes a plugin's primary floating or embedded view in Apps.
 type AppRegistration struct {
 	ViewID string `json:"viewId"`
 	Icon   string `json:"icon,omitempty"`
