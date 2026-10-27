@@ -43,11 +43,13 @@ function currentBot(id?: string) { return state.bots.find(b => b.id === id); }
 function pluginEnabled(id: string, botId?: string) { const plugin = state.plugins.find(p => p.id === id); return !!plugin?.enabled && !plugin.pending && (plugin.scope !== 'echo' || botId === 'echo') && currentBot(botId)?.plugins[id] !== false; }
 
 function shell() {
-  app.innerHTML = `<aside class="sidebar"><div class="brand"><span class="brand-mark" aria-hidden="true">E</span>Echo</div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button></div><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="missed-button" hidden>Missed jobs</button><button id="settings-button">⚙ Settings</button></div></aside>
-  <main class="main"><header class="chat-header"><button class="icon mobile-menu" aria-label="Toggle sidebar">☰</button><strong id="chat-title">Echo</strong><span id="connection" class="subtle">Connecting…</span></header><div class="chat-log" role="log" aria-label="Conversation"></div>
+  app.innerHTML = `<aside id="sidebar" class="sidebar"><div class="brand"><span class="brand-mark" aria-hidden="true">E</span>Echo<button class="icon sidebar-close" aria-label="Close sidebar">×</button></div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button></div><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="missed-button" hidden>Missed jobs</button><button id="settings-button">⚙ Settings</button></div></aside><div class="sidebar-backdrop" aria-hidden="true"></div>
+  <main class="main"><header class="chat-header"><button class="icon mobile-menu" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">☰</button><strong id="chat-title">Echo</strong><span id="connection" class="subtle">Connecting…</span></header><div class="chat-log" role="log" aria-label="Conversation"></div>
   ${composerMarkup}</main>`;
   q('#new-chat').onclick = action(newChat); q('#settings-button').onclick = () => settings(); q('#missed-button').onclick = showMissed;
-  q('.mobile-menu').onclick = () => q('.sidebar').classList.toggle('open');
+  q('.mobile-menu').onclick = () => setSidebarOpen(!q('.sidebar').classList.contains('open'));
+  q('.sidebar-close').onclick = q('.sidebar-backdrop').onclick = () => setSidebarOpen(false);
+  app.onkeydown = e => { if (e.key === 'Escape' && q('.sidebar').classList.contains('open')) { e.preventDefault(); setSidebarOpen(false); } };
   q<HTMLFormElement>('.composer').onsubmit = e => { e.preventDefault(); action(async () => { if (busy()) { await api(`/chats/${chatId}/stop`, 'POST', {}); await refresh(); } else await send(); })(); };
   wireComposerMenus(addFiles);
   q('#manage-models').onclick = () => { q<HTMLDetailsElement>('.model-settings').open = false; settings('models'); };
@@ -66,6 +68,13 @@ function shell() {
   for (const selector of ['#model', '#thinking', '#temperature']) q<HTMLInputElement>(selector).onchange = saveGeneration;
   document.addEventListener('click', e => { if (!(e.target as HTMLElement).closest('.picker, #composer')) q('.picker').hidden = true; });
 }
+function setSidebarOpen(open: boolean, restoreFocus = true) {
+  const sidebar = q('.sidebar'), wasOpen = sidebar.classList.contains('open');
+  sidebar.classList.toggle('open', open);
+  q('.mobile-menu').setAttribute('aria-expanded', String(open));
+  if (open) q('.sidebar-close').focus();
+  else if (wasOpen && restoreFocus) q('.mobile-menu').focus();
+}
 function rememberDraft() { drafts.set(chatId, { text: q<HTMLTextAreaElement>('#composer').value, references: [...references], generation: { ...generation }, attachments: [...attachments] }); }
 function saveGeneration() {
   if (!chatId || !generation.endpointId) return;
@@ -82,7 +91,7 @@ async function newChat() {
 async function selectChat(id: string) {
   if (submitting) return;
   if (id !== chatId) rememberDraft(); chatId = id; history.replaceState(null, '', '#' + id); const c = state.chats.find(c => c.id === id), draft = drafts.get(id);
-  generation = { ...(draft?.generation || c?.generation || generation) }; references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<HTMLTextAreaElement>('#composer').value = draft?.text || ''; renderModels(); renderRefs(); renderAttachments(); renderSidebar(); updateSendButton(); autosizeComposer(); q('.sidebar').classList.remove('open');
+  generation = { ...(draft?.generation || c?.generation || generation) }; references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<HTMLTextAreaElement>('#composer').value = draft?.text || ''; renderModels(); renderRefs(); renderAttachments(); renderSidebar(); updateSendButton(); autosizeComposer(); setSidebarOpen(false, false);
   messages = id ? await api<Message[]>(`/chats/${id}/messages`) : []; renderMessages(true); q<HTMLTextAreaElement>('#composer').focus();
 }
 async function send() {
