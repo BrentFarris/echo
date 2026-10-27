@@ -45,6 +45,8 @@ type Server struct {
 	cancel            context.CancelFunc
 	mu                sync.Mutex
 	dispatches        map[string]*dispatch
+	botQueues         map[string][]*dispatch
+	botReservations   map[string]map[string]bool
 	streams           map[string]domain.Message
 	subscribers       map[chan domain.Event]bool
 	seq               atomic.Int64
@@ -67,6 +69,9 @@ type dispatch struct {
 	mu         sync.Mutex
 	wg         sync.WaitGroup
 	err        error
+	ctx        context.Context
+	admitted   map[string]chan struct{}
+	timer      *time.Timer // Protected by Server.mu; starts at first admission.
 }
 type SendRequest struct {
 	Content      string            `json:"content"`
@@ -404,6 +409,16 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 var handlePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,47}$`)
 
 func (s *Server) saveBot(b domain.Bot) (domain.Bot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, err := s.normalizeBot(b)
+	if err != nil {
+		return b, err
+	}
+	return s.saveBotLocked(b)
+}
+
+func (s *Server) normalizeBot(b domain.Bot) (domain.Bot, error) {
 	b.Handle = strings.ToLower(strings.TrimSpace(b.Handle))
 	if !handlePattern.MatchString(b.Handle) {
 		return b, errors.New("handle must start with a letter and contain letters, digits, - or _")
@@ -435,18 +450,13 @@ func (s *Server) saveBot(b domain.Bot) (domain.Bot, error) {
 			return b, errors.New("workspace cannot contain Echo private application data")
 		}
 	}
-	if old, e := s.Bot(b.ID); e == nil {
-		b.Revision = old.Revision + 1
-	} else {
-		b.Revision = 1
-	}
 	if b.ID == "echo" {
 		b.Handle = "echo"
 	}
 	if b.Plugins == nil {
 		b.Plugins = map[string]bool{}
 	}
-	return b, s.Store.Put("bots", b.ID, b)
+	return b, nil
 }
 func (s *Server) key(ctx context.Context, e domain.Endpoint) (string, error) {
 	if e.Credential == "" {

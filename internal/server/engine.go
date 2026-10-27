@@ -178,17 +178,16 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 			return nil, errors.New("this chat is still running; stop it or wait before sending")
 		}
 	}
-	ctx, cancel := context.WithTimeout(s.ctx, 2*time.Hour)
-	d := &dispatch{id: domain.ID(), chatID: chatID, group: coordinator.New(ids), cancel: cancel, done: make(chan struct{}), wake: map[string]chan struct{}{}, active: map[string]bool{}}
+	ctx, cancel := context.WithCancel(s.ctx)
+	d := &dispatch{id: domain.ID(), chatID: chatID, group: coordinator.New(ids), ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: map[string]chan struct{}{}, active: map[string]bool{}, admitted: map[string]chan struct{}{}}
 	for _, b := range bots {
 		d.wake[b.ID] = make(chan struct{}, 1)
 		d.active[b.ID] = true
+		d.admitted[b.ID] = make(chan struct{})
 	}
 	s.dispatches[d.id] = d
-	s.mu.Unlock()
 	failed := func(err error) (*dispatch, error) {
 		cancel()
-		s.mu.Lock()
 		delete(s.dispatches, d.id)
 		s.mu.Unlock()
 		close(d.done)
@@ -219,7 +218,12 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 	if e = s.Store.Accept(c, m, runs, req.RequestID, d.id); e != nil {
 		return failed(e)
 	}
-	s.emit("message", chatID, "", "", m)
+	s.emitLocked("message", chatID, "", "", m)
+	for _, run := range runs {
+		s.emitLocked("run", chatID, run.ID, run.BotID, run)
+	}
+	s.enqueueLocked(d)
+	s.mu.Unlock()
 	d.group.OnSend = func(r coordinator.Request) {
 		s.emit("handoff", chatID, "", r.From, r)
 		d.mu.Lock()
@@ -234,15 +238,24 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 		d.wg.Add(1)
 		go func(bot domain.Bot, run domain.Run) {
 			defer d.wg.Done()
+			admissionErr := d.awaitAdmission(ctx, bot.ID)
 			for {
-				run.Status = "running"
-				run.Error = ""
-				run.UpdatedAt = domain.Now()
-				if e := s.Store.Put("runs", run.ID, run); e != nil {
-					return
+				err := admissionErr
+				if err == nil {
+					err = ctx.Err()
 				}
-				s.emit("run", chatID, run.ID, bot.ID, run)
-				err := s.runBot(ctx, d, bot, run, endpoint)
+				if err == nil {
+					run.Status = "running"
+					run.Error = ""
+					run.UpdatedAt = domain.Now()
+					err = s.Store.Put("runs", run.ID, run)
+					if err == nil {
+						s.emit("run", chatID, run.ID, bot.ID, run)
+						err = s.runBot(ctx, d, bot, run, endpoint)
+					} else {
+						cancel()
+					}
+				}
 				run.Status = "completed"
 				if err != nil {
 					d.group.Fail(bot.ID, err)
@@ -291,6 +304,7 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 		d.group.Close()
 		s.mu.Lock()
 		delete(s.dispatches, d.id)
+		s.releaseLocked(d)
 		s.mu.Unlock()
 		close(d.done)
 		s.emit("changed", chatID, "", "", nil)

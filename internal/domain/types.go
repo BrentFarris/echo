@@ -17,13 +17,14 @@ func ID() string {
 func Now() time.Time { return time.Now().UTC() }
 
 type Bot struct {
-	ID       string          `json:"id"`
-	Handle   string          `json:"handle"`
-	Name     string          `json:"name"`
-	Prompt   string          `json:"prompt"`
-	Roots    []string        `json:"roots"`
-	Plugins  map[string]bool `json:"plugins"`
-	Revision int64           `json:"revision"`
+	EnableMultitasking bool            `json:"enableMultitasking"`
+	ID                 string          `json:"id"`
+	Handle             string          `json:"handle"`
+	Name               string          `json:"name"`
+	Prompt             string          `json:"prompt"`
+	Roots              []string        `json:"roots"`
+	Plugins            map[string]bool `json:"plugins"`
+	Revision           int64           `json:"revision"`
 }
 type Generation struct {
 	EndpointID  string  `json:"endpointId"`

@@ -58,11 +58,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
-		if b.ID != "" {
-			finish := s.stopBot(b.ID)
-			defer finish()
-		}
-		value, e := s.saveBot(b)
+		value, e := s.updateBot(b, nil)
 		if e == nil {
 			e = s.Calendar.ReconcileActivation(domain.Now())
 		}

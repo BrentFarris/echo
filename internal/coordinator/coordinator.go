@@ -149,6 +149,17 @@ func (g *Group) Wait(ctx context.Context, bot, id string) (Request, error) {
 		g.mu.Lock()
 	}
 }
+
+// WaitTarget validates ownership before the caller waits for scheduler admission.
+func (g *Group) WaitTarget(bot, id string) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	r := g.requests[id]
+	if r == nil || r.From != bot {
+		return "", errors.New("request does not belong to this bot")
+	}
+	return r.To, nil
+}
 func (g *Group) Close() {
 	g.mu.Lock()
 	defer g.mu.Unlock()

@@ -43,8 +43,8 @@ func (s *Server) coreTools(bot domain.Bot) []domain.Tool {
 	}
 	if bot.ID == "echo" {
 		out = append(out,
-			coreTool("bot_list", "List available bots, their ids, prompts, folders and plugin overrides.", map[string]any{}),
-			coreTool("bot_save", "Create or update a bot. Existing fields are preserved when omitted. Pass folders to bind its filesystem scope.", map[string]any{"id": S("Existing bot id"), "handle": S("Unique @handle"), "name": S("Display name"), "prompt": S("System prompt"), "roots": A("Existing absolute folders; empty array removes restrictions"), "plugins": map[string]any{"type": "object"}}, "handle"),
+			coreTool("bot_list", "List available bots, their ids, prompts, folders, multitasking settings and plugin overrides.", map[string]any{}),
+			coreTool("bot_save", "Create or update a bot. Existing fields are preserved when omitted. Pass folders to bind its filesystem scope. Multitasking defaults to off for new bots; enable it to work in multiple chats simultaneously, or disable it to queue requests.", map[string]any{"id": S("Existing bot id"), "handle": S("Unique @handle"), "name": S("Display name"), "prompt": S("System prompt"), "roots": A("Existing absolute folders; empty array removes restrictions"), "plugins": map[string]any{"type": "object"}, "enableMultitasking": plugins.B("Allow simultaneous work across chats; false queues requests in order")}, "handle"),
 			coreTool("bot_delete", "Delete a named bot and its schedules. Historical messages remain attributed.", map[string]any{"id": S("Bot id or handle")}, "id"),
 			coreTool("model_list", "List configured model endpoints.", map[string]any{}),
 			coreTool("model_save", "Configure a local or cloud endpoint, preserving omitted fields on updates. Credentials must be entered through the protected settings field.", modelSettingsProperties(), "name", "url", "model"),
@@ -159,6 +159,13 @@ func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionSc
 	case "bot_reply":
 		return "reply delivered", d.group.Reply(scope.Bot.ID, text(a, "requestId"), text(a, "content"))
 	case "bot_wait":
+		target, err := d.group.WaitTarget(scope.Bot.ID, text(a, "requestId"))
+		if err != nil {
+			return nil, err
+		}
+		if err = d.awaitAdmission(ctx, target); err != nil {
+			return nil, err
+		}
 		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		return d.group.Wait(waitCtx, scope.Bot.ID, text(a, "requestId"))
@@ -171,17 +178,12 @@ func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionSc
 			if e != nil {
 				return nil, e
 			}
-			if e = s.managementTarget(scope, id); e != nil {
-				return nil, e
-			}
-			finish := s.stopBot(id)
-			defer finish()
 		}
 		data, _ := json.Marshal(a)
 		if e = json.Unmarshal(data, &b); e != nil {
 			return nil, e
 		}
-		b, e = s.saveBot(b)
+		b, e = s.updateBot(b, &scope)
 		s.emit("changed", "", "", "", nil)
 		return b, e
 	case "bot_delete":

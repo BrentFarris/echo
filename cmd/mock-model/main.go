@@ -34,6 +34,13 @@ func main() {
 			}
 		}
 		lower := strings.ToLower(user)
+		if strings.Contains(lower, "multitasking hold") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Holding this request.\"}}]}\n\n")
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			return
+		}
 		if strings.Contains(lower, "file change report") {
 			w.Header().Set("Content-Type", "text/event-stream")
 			delta := map[string]any{"content": "Finished the file change report."}
@@ -176,6 +183,12 @@ func main() {
 			}
 			tool = "bot_save"
 			args = map[string]any{"handle": name, "name": name, "prompt": "Help with this workspace."}
+			if strings.Contains(lower, "multitasking enabled") {
+				args["enableMultitasking"] = true
+			}
+			if strings.Contains(lower, "multitasking disabled") {
+				args["enableMultitasking"] = false
+			}
 		} else if strings.Contains(lower, "list my bots") {
 			tool = "bot_list"
 		}

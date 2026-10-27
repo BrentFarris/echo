@@ -1,5 +1,5 @@
 export type Generation = { endpointId: string; model: string; thinking: string; temperature: number };
-export type Bot = { id: string; handle: string; name: string; prompt: string; roots: string[]; plugins: Record<string, boolean>; revision: number };
+export type Bot = { enableMultitasking: boolean; id: string; handle: string; name: string; prompt: string; roots: string[]; plugins: Record<string, boolean>; revision: number };
 export type Endpoint = { id: string; name: string; url: string; model: string; cloud: boolean; contextTokens: number; compact: boolean; credential?: string; provider?: string; temperature?: number; topK?: number; topP?: number; minP?: number; maxTokens?: number; frequencyPenalty?: number; presencePenalty?: number; repetitionPenalty?: number; reasoningEffort?: string; thinkingTokenBudget?: number; compressionThreshold?: number; requestTimeoutSeconds?: number; streamIdleTimeoutSeconds?: number };
 export type Attachment = { id: string; chatId: string; name: string; mediaType: string; size: number };
 export type Chat = { id: string; title: string; bots: Record<string, string>; generation: Generation; updatedAt: string };

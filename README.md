@@ -35,6 +35,7 @@ Installed model providers appear in the connection editor's Provider field. The 
 ## Work through chat
 
 - Ask Echo to create, list, configure or delete bots. Unmentioned messages go to Echo even inside a named-bot chat.
+- **Settings → Bots → Edit → Enable Multitasking** lets a bot work in several chats simultaneously. It defaults to off for new and existing bots, including Echo; requests then queue in arrival order. You can also ask “Create a bot named kaiju with multitasking enabled” or ask Echo to change an existing bot’s setting. Available bots in a group request start immediately while busy bots wait. A bot stays reserved until the whole request finishes, including handoffs. Changing only this checkbox preserves active work: enabling releases queued requests; disabling waits for already active requests to finish. Stop cancels queued work, and unfinished requests are marked interrupted after a server restart.
 - Mention `@kaiju` anywhere to address that bot. Mention several bots for independent work or explicit handoffs. Unknown handles are rejected before execution.
 - Type `#` to choose files from the recipients' accessible folders. Suggestions label which bots can access each file. Both references and permissions are checked again on submission.
 - Ask a bot to schedule work: “Every day at 3pm, have @kaiju report how many tests pass.” Schedules retain the prompt, model settings and resolved timezone and survive deletion of the source chat.
