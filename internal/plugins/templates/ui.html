@@ -1,0 +1,20 @@
+<!doctype html><meta charset="utf-8">
+<style>body{font-family:system-ui;padding:20px}input,button{font:inherit;padding:8px;margin:4px}output{display:block;font-size:24px;margin:16px}</style>
+<h2>Calculator</h2>
+<label>First number <input id="a" type="number" value="2"></label>
+<label>Second number <input id="b" type="number" value="3"></label>
+<div><button data-op="add">Add</button><button data-op="subtract">Subtract</button><button data-op="multiply">Multiply</button><button data-op="divide">Divide</button></div>
+<output aria-live="polite" id="result">5</output>
+<script>
+document.addEventListener('click',event=>{
+ const operation=event.target.dataset.op;if(!operation)return;
+ const a=Number(document.querySelector('#a').value),b=Number(document.querySelector('#b').value);
+ document.querySelector('#result').textContent=({add:()=>a+b,subtract:()=>a-b,multiply:()=>a*b,divide:()=>b===0?'Cannot divide by zero':a/b}[operation])();
+});
+// Optional bridge: Echo delivers a per-window nonce, identity and theme.
+let echo;
+addEventListener('message',event=>{if(event.source!==parent)return;
+ if(event.data.type==='echo-plugin-init'){echo=event.data;document.body.style.background=echo.theme.background;document.body.style.color=echo.theme.text;}
+});
+parent.postMessage({type:'echo-plugin-ready'},'*');
+</script>

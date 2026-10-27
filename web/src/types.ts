@@ -1,0 +1,17 @@
+export type Generation = { endpointId: string; model: string; thinking: string; temperature: number };
+export type Bot = { id: string; handle: string; name: string; prompt: string; roots: string[]; plugins: Record<string, boolean>; revision: number };
+export type Endpoint = { id: string; name: string; url: string; model: string; cloud: boolean; contextTokens: number; compact: boolean; credential?: string; provider?: string; temperature?: number; topK?: number; topP?: number; minP?: number; maxTokens?: number; frequencyPenalty?: number; presencePenalty?: number; repetitionPenalty?: number; reasoningEffort?: string; thinkingTokenBudget?: number; compressionThreshold?: number; requestTimeoutSeconds?: number; streamIdleTimeoutSeconds?: number };
+export type Attachment = { id: string; chatId: string; name: string; mediaType: string; size: number };
+export type Chat = { id: string; title: string; bots: Record<string, string>; generation: Generation; updatedAt: string };
+export type Segment = { type: string; botId?: string; path?: string; text?: string; allowedBots?: string[] };
+export type Message = { id: string; chatId: string; runId?: string; botId?: string; author: string; role: string; content: string; reasoning?: string; status: string; toolCalls?: unknown[]; createdAt: string; attachments?: Attachment[] };
+export type Run = { id: string; chatId: string; botId: string; status: string; error?: string };
+export type Plugin = { id: string; name: string; enabled: boolean; pending: boolean; builtin: boolean; scope: string; digest?: string; capabilities: string[]; config: Record<string, unknown>; providers?: string[]; renderers?: string[]; settings: { properties: Record<string, { type: string; description?: string }> }; views?: { id: string; title: string; html: string; kind?: string }[] };
+export type Schedule = { id: string; botId: string; prompt: string; recurrence: string; timezone: string; paused: boolean; generation: Generation; next: string };
+export type Occurrence = { id: string; scheduleId: string; botId: string; prompt: string; intendedAt: string; status: string; error?: string; timezone?: string; recurrence?: string };
+export type ToolCall = { id: string; type: 'function'; function: { name: string; arguments: string } };
+export type ExecutionScope = { bot: Bot; chatId: string; runId: string; dispatchId: string; pluginId: string; toolMessageId?: string };
+export type PluginManifest = Plugin & { api: 1; version: string; tools: { name: string; description: string; parameters: Record<string, unknown>; capability?: string }[]; providers?: string[]; renderers?: string[]; digest?: string; backend?: string };
+export type EchoEvent = { sequence: number; type: string; chatId?: string; runId?: string; botId?: string; payload: unknown };
+export type State = { bots: Bot[]; chats: Chat[]; endpoints: Endpoint[]; plugins: Plugin[]; schedules: Schedule[]; occurrences: Occurrence[]; runs: Run[] };
+export type FileEntry = { path: string; name: string; directory: boolean; allowedBots: string[] };

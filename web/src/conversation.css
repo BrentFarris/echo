@@ -1,0 +1,28 @@
+.chat-header{height:40px;padding:0 14px}
+.chat-log{padding:10px 14px;scrollbar-gutter:auto}
+.message,.response-group{min-width:0;border:1px solid var(--border);border-radius:7px;margin:0 0 8px;padding:8px 10px;background:var(--bg);overflow-wrap:anywhere}
+.message-meta{align-items:center;gap:7px;margin-bottom:4px;line-height:1.4;font-size:11px}
+.message-meta strong{font-size:12px;font-weight:600}
+.message-content{line-height:1.5;min-width:0}.message-content:empty{display:none}
+.message-content p,.message-content ul,.message-content ol,.message-content blockquote,.message-content pre{margin:0 0 7px}
+.message-content ul,.message-content ol{padding-left:23px}.message-content li+li{margin-top:3px}
+.message-content h1,.message-content h2,.message-content h3,.message-content h4{line-height:1.35;margin:9px 0 5px}
+.message-content h1{font-size:20px}.message-content h2{font-size:17px}.message-content h3{font-size:15px}
+.message-content>:first-child{margin-top:0}.message-content>:last-child{margin-bottom:0}
+.message-content table{width:auto;max-width:100%;display:block;overflow-x:auto;margin:7px 0}.message-content th,.message-content td{padding:5px 8px}
+.message-content pre{padding:8px 10px;line-height:1.45;overflow-x:auto}
+.message details{margin:3px 0}.message summary,.work-disclosure>summary{cursor:pointer;font-size:12px;line-height:1.5;padding:3px 2px;min-height:24px;border-radius:4px;color:var(--subtle)}
+.message summary:hover,.work-disclosure>summary:hover{color:var(--text);background:var(--muted)}
+.message summary:focus-visible,.work-disclosure>summary:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.message summary .badge{margin-left:8px}.badge{padding:1px 5px;line-height:1.5;font-weight:400}
+.response-group>.message,.work-content>.message{border:0;background:transparent;border-radius:0;margin:0;padding:0}
+.response-group>.message+.message,.work-content>.message+.message{margin-top:5px}
+.response-group>.message.tool,.work-content>.message.tool{padding:0}
+.response-group .message pre{margin:4px 0 6px;padding:8px 10px;line-height:1.45}
+.response-group .message details:first-child{margin-top:0}.response-group .message details:last-child{margin-bottom:0}
+.response-group>.message.user,.work-content>.message.user{border-left:2px solid var(--border);padding-left:8px;color:var(--subtle)}
+.handoff-label{font-size:11px;font-weight:600;margin-bottom:3px}
+.work-disclosure{margin:0 0 5px}.work-content{border-left:1px solid var(--border);padding:6px 0 5px 10px;margin:3px 0 6px}
+.work-content>.reasoning{margin:5px 0;color:var(--subtle)}.work-content>.reasoning pre{padding:8px 10px;margin:4px 0 6px}
+.run-error{margin:6px 0;padding:7px 10px;font-size:12px}
+@media(max-width:760px){.chat-header{height:38px;padding:0 8px}.chat-log{padding:8px}.message,.response-group{padding:7px 9px;margin-bottom:6px}.message-meta{margin-bottom:3px}.message summary,.work-disclosure>summary{min-height:28px;padding:5px 2px}.work-content{padding-left:8px}.message-content th,.message-content td{padding:4px 6px}}

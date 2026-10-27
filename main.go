@@ -4,86 +4,81 @@ import (
 	"context"
 	"embed"
 	"flag"
-	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"syscall"
+	"path/filepath"
 	"time"
 
-	"github.com/brent/echo/internal/launch"
 	"github.com/brent/echo/internal/server"
 )
 
 //go:embed web/dist
-var embeddedWeb embed.FS
+var frontend embed.FS
+
+//go:embed internal/plugins/guest/builtin.wasm
+var guest []byte
 
 func main() {
-	port := flag.Int("port", 3740, "port to listen on")
-	webDir := flag.String("web", "", "serve SPA assets from this directory instead of the embedded production build")
-	dataPath := flag.String("data", "", "path to Echo's application-data JSON (defaults to the platform config directory)")
-	resetAuth := flag.Bool("reset-auth", false, "clear the owner password and remembered sessions")
-	safeMode := flag.Bool("safe-mode", false, "start with all optional plugins disabled")
-	noOpen := flag.Bool("no-open", false, "do not open the Echo app or browser on startup")
+	port := flag.Int("port", 3740, "HTTP port")
+	data := flag.String("data", "", "Echo data directory (defaults to the existing user profile)")
+	web := flag.String("web", "", "serve frontend assets from this directory")
 	flag.Parse()
-
-	addr := fmt.Sprintf(":%d", *port)
-	var srv *server.Server
-	if *webDir != "" {
-		srv = server.NewWithSettingsPathOptions(addr, *webDir, *dataPath, server.ServerOptions{SafeMode: *safeMode})
+	if *data == "" {
+		base := os.Getenv("LOCALAPPDATA")
+		if base == "" {
+			base, _ = os.UserConfigDir()
+		}
+		// Preserve the existing profile path when changing the app's display name.
+		*data = filepath.Join(base, "Echo2")
+	}
+	var assets fs.FS
+	var e error
+	if *web != "" {
+		assets = os.DirFS(*web)
 	} else {
-		assets, err := fs.Sub(embeddedWeb, "web/dist")
-		if err != nil {
-			log.Fatalf("load embedded frontend: %v", err)
+		assets, e = fs.Sub(frontend, "web/dist")
+		if e != nil {
+			log.Fatal(e)
 		}
-		srv = server.NewWithAssetsOptions(addr, assets, *dataPath, server.ServerOptions{SafeMode: *safeMode})
 	}
-	if *resetAuth {
-		code, err := srv.ResetAuthentication()
-		if err != nil {
-			log.Fatalf("reset authentication: %v", err)
-		}
-		log.Printf("Echo authentication was reset. New setup code: %s", code)
-	} else if code := srv.AuthenticationSetupCode(); code != "" {
-		log.Printf("Echo authentication setup code: %s", code)
+	app, e := server.New(*data, assets, guest)
+	if e != nil {
+		log.Fatal(e)
 	}
-
-	// Run the server in a goroutine so we can wait for signals.
-	errCh := make(chan error, 1)
+	defer app.Close()
+	addr, cert, key, e := app.ListenAddress(*port)
+	if e != nil {
+		log.Fatal(e)
+	}
+	httpServer := &http.Server{Addr: addr, Handler: app.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second}
+	done := make(chan error, 1)
 	go func() {
-		log.Printf("Echo web server listening on http://localhost:%d", *port)
-		errCh <- srv.ListenAndServe()
-	}()
-
-	// Open the installed Echo PWA (echo:// scheme) once the server answers,
-	// falling back to the default browser when the PWA is not installed.
-	// launch.Open logs its own failures and never blocks startup.
-	if !*noOpen {
-		go launch.Open(*port)
-	}
-
-	// Wait for an interrupt or a fatal serve error.
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-
-	select {
-	case err := <-errCh:
-		if err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
+		if cert != "" {
+			done <- httpServer.ListenAndServeTLS(cert, key)
+		} else {
+			done <- httpServer.ListenAndServe()
 		}
-	case sig := <-stop:
-		log.Printf("received signal %v, shutting down", sig)
-	case <-srv.RestartRequested():
-		log.Printf("rebuilt Echo is ready; shutting down for relaunch")
-	case <-srv.TerminationRequested():
-		log.Printf("termination requested from development settings; shutting down")
+	}()
+	scheme := "http"
+	if cert != "" {
+		scheme = "https"
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_, actualPort, _ := net.SplitHostPort(addr)
+	log.Printf("Echo: %s://localhost:%s (data: %s)", scheme, actualPort, *data)
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt)
+	select {
+	case <-stop:
+	case e := <-done:
+		if e != http.ErrServerClosed {
+			log.Print(e)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Printf("shutdown error: %v", err)
-	}
+	httpServer.Shutdown(ctx)
 }
