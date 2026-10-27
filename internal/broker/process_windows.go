@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -468,14 +469,39 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	go func() { windows.WaitForSingleObject(pi.Process, windows.INFINITE); close(processDone) }()
 	select {
 	case <-ctx.Done():
-		windows.TerminateJobObject(job, 1)
+		if e := windows.TerminateJobObject(job, 1); e != nil {
+			err = fmt.Errorf("terminate command job: %w", e)
+			// Still stop the shell if job termination failed.
+			windows.TerminateProcess(pi.Process, 1)
+		}
 		<-processDone
-		err = ctx.Err()
+		err = errors.Join(ctx.Err(), err)
 	case <-processDone:
 	}
 	windows.GetExitCodeProcess(pi.Process, &result.ExitCode)
 	// Terminate background descendants before awaiting their inherited pipe handles.
-	windows.TerminateJobObject(job, 0)
-	<-done
+	if e := windows.TerminateJobObject(job, 0); e != nil {
+		err = errors.Join(err, fmt.Errorf("terminate command descendants: %w", e))
+	}
+	if e := drainProcessOutput(read, done, 2*time.Second); e != nil {
+		result.Truncated = true
+		err = errors.Join(err, e)
+	}
 	return result, err
+}
+
+// A descendant or another process holding an inherited write handle may keep
+// stdout open after the shell exits. Bound that wait even after cancellation,
+// and join the reader before accessing its result or removing the sandbox.
+func drainProcessOutput(read *os.File, done <-chan struct{}, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return nil
+	case <-timer.C:
+		read.Close()
+		<-done
+		return fmt.Errorf("command output pipe remained open after process exit; output may be incomplete")
+	}
 }
