@@ -24,6 +24,7 @@ type Entry struct {
 	Name        string   `json:"name"`
 	Directory   bool     `json:"directory"`
 	AllowedBots []string `json:"allowedBots,omitempty"`
+	Score       int      `json:"-"`
 }
 
 func Within(root, path string) bool {

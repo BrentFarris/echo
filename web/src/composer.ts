@@ -14,9 +14,9 @@ export const icons = {
 };
 
 export const composerMarkup = `<form class="composer">
-  <div class="picker" role="listbox" hidden></div><div class="refs"></div>
+  <div class="picker" id="reference-picker" role="listbox" aria-label="File and bot suggestions" hidden></div><div class="refs"></div>
   <div class="attachment-drafts" aria-label="Attachments" hidden></div>
-  <textarea id="composer" aria-label="Message" rows="1" placeholder="Ask Echo, mention @bots, or reference #files…"></textarea>
+  <textarea id="composer" aria-label="Message" aria-controls="reference-picker" aria-expanded="false" aria-autocomplete="list" rows="1" placeholder="Ask Echo, mention @bots, or reference #files…"></textarea>
   <div class="composer-bottom">
     <details class="attachment-menu composer-menu"><summary class="toolbar-icon" title="Attach file" aria-label="Attach file" aria-haspopup="menu">${icons.plus}</summary>
       <div class="attachment-popup popover" role="menu" aria-label="Attachment types">

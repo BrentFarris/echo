@@ -4,12 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/brent/echo/internal/broker"
 	"github.com/brent/echo/internal/calendar"
 	"github.com/brent/echo/internal/domain"
 	"github.com/brent/echo/internal/model"
@@ -251,54 +248,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
-		allBots, _ := s.Bots()
-		entries := map[string]*broker.Entry{}
-		for _, bot := range bots {
-			roots := bot.Roots
-			if len(roots) == 0 {
-				if filepath.IsAbs(a.Query) {
-					roots = []string{filepath.Dir(a.Query)}
-				} else {
-					for _, other := range allBots {
-						roots = append(roots, other.Roots...)
-					}
-				}
-			}
-			for _, root := range roots {
-				query := a.Query
-				if filepath.IsAbs(query) {
-					query = filepath.Base(query)
-				}
-				found, err := s.Files.Search(bot, root, query, false)
-				if err != nil {
-					continue
-				}
-				for _, entry := range found {
-					key := strings.ToLower(entry.Path)
-					existing := entries[key]
-					if existing == nil {
-						entry.AllowedBots = []string{}
-						existing = &entry
-						entries[key] = existing
-					}
-					exists := false
-					for _, id := range existing.AllowedBots {
-						if id == bot.ID {
-							exists = true
-						}
-					}
-					if !exists {
-						existing.AllowedBots = append(existing.AllowedBots, bot.ID)
-					}
-				}
-			}
-		}
-		out := []broker.Entry{}
-		for _, entry := range entries {
-			out = append(out, *entry)
-		}
-		sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-		respond(w, out, nil)
+		out, status, e := s.fileReferences(r.Context(), bots, a.Query)
+		w.Header().Set("X-Echo-Reference-Indexing", strconv.FormatBool(status.Indexing))
+		w.Header().Set("X-Echo-Reference-Incomplete", strconv.FormatBool(status.Incomplete))
+		respond(w, out, e)
 	})
 	mux.HandleFunc("POST /api/v1/references/validate", func(w http.ResponseWriter, r *http.Request) {
 		var a SendRequest

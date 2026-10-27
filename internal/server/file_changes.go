@@ -37,6 +37,18 @@ func (s *Server) mutateFile(ctx context.Context, bot domain.Bot, method string, 
 }
 
 func (s *Server) trackFileChanges(ctx context.Context, bot domain.Bot, paths []string, operation func() (any, error)) (any, error) {
+	defer func() {
+		absolute := make([]string, 0, len(paths))
+		for _, path := range paths {
+			if !filepath.IsAbs(path) && len(bot.Roots) > 0 {
+				path = filepath.Join(bot.Roots[0], path)
+			}
+			if filepath.IsAbs(path) {
+				absolute = append(absolute, path)
+			}
+		}
+		s.References.Invalidate(absolute)
+	}()
 	collector, _ := ctx.Value(fileChangesKey{}).(*fileChangeCollector)
 	if collector == nil {
 		return operation()

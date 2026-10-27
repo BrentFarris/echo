@@ -1,11 +1,12 @@
 import { Renderers } from './renderers';
 import { conversationItems, type ResponseGroup } from './conversation';
 import { fileChangesFooter } from './fileChanges';
+import { ReferenceSearch } from './referenceSearch';
 import { endpointForm, endpointValues } from './modelSettings';
 import { mountDevelopment } from './development';
 import { composerMarkup, icons, autosizeComposer, wireComposerMenus, attachmentCard, previewAttachment, releaseAttachments, type DraftAttachment } from './composer';
 import { activeMention, escapeHTML as esc, groupChats } from './helpers';
-import type { Attachment, Bot, Chat, Endpoint, FileEntry, Generation, Message, Plugin, Schedule, Segment, State } from './types';
+import type { Attachment, Bot, Chat, Endpoint, Generation, Message, Plugin, Schedule, Segment, State } from './types';
 import './style.css';
 import './composer.css';
 import './conversation.css';
@@ -14,7 +15,9 @@ const app = document.querySelector<HTMLDivElement>('#app')!;
 let state: State = { bots: [], chats: [], endpoints: [], plugins: [], schedules: [], occurrences: [], runs: [] };
 let chatId = location.hash.slice(1), messages: Message[] = [], references: Segment[] = [];
 let generation: Generation = { endpointId: '', model: '', thinking: '', temperature: .6 };
-let refreshing: Promise<void> | null = null, refreshTimer = 0, pickerVersion = 0, selectedSuggestion = 0;
+let refreshing: Promise<void> | null = null, refreshTimer = 0, selectedSuggestion = 0;
+const referenceSearch = new ReferenceSearch();
+let pickerStatus = '', pickerLoading = false;
 let suggestions: { label: string; hint: string; insert: string; ref?: Segment }[] = [];
 let referenceTimer = 0, referenceVersion = 0;
 let sidebarMarkup = '';
@@ -55,18 +58,22 @@ function shell() {
   q('#manage-models').onclick = () => { q<HTMLDetailsElement>('.model-settings').open = false; settings('models'); };
   const composer = q<HTMLTextAreaElement>('#composer'); composer.oninput = () => { autosizeComposer(); rememberDraft(); updateSendButton(); void showPicker(); clearTimeout(referenceTimer); referenceTimer = window.setTimeout(() => action(validateReferences)(), 180); };
   composer.onkeydown = e => {
-    if (!q('.picker').hidden && suggestions.length) {
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); selectedSuggestion = (selectedSuggestion + (e.key === 'ArrowDown' ? 1 : -1) + suggestions.length) % suggestions.length; renderPicker(); return; }
-      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); chooseSuggestion(selectedSuggestion); return; }
-      if (e.key === 'Escape') { e.preventDefault(); q('.picker').hidden = true; return; }
+    if (e.isComposing) return;
+    if (!q('.picker').hidden) {
+      if (e.key === 'Escape') { e.preventDefault(); closePicker(); return; }
+      if (suggestions.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); selectedSuggestion = (selectedSuggestion + (e.key === 'ArrowDown' ? 1 : -1) + suggestions.length) % suggestions.length; renderPicker(); q('[aria-selected="true"]', q('.picker')).scrollIntoView({ block: 'nearest' }); return; }
+      if ((e.key === 'Enter' && !e.shiftKey) || (e.key === 'Tab' && suggestions.length)) { e.preventDefault(); if (suggestions.length) chooseSuggestion(selectedSuggestion); return; }
+      if (e.key === 'Tab') closePicker();
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); action(send)(); }
   };
+  composer.onclick = () => showPicker();
+  composer.onkeyup = e => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) showPicker(); };
   q<HTMLInputElement>('#model').oninput = () => { generation.model = q<HTMLInputElement>('#model').value; q('#model-name').textContent = generation.model; rememberDraft(); };
   q<HTMLInputElement>('#thinking').oninput = () => { generation.thinking = thinking[Number(q<HTMLInputElement>('#thinking').value)]; q('#thinking-label').textContent = thinkingLabel(); rememberDraft(); };
   q<HTMLInputElement>('#temperature').oninput = () => { generation.temperature = Number(q<HTMLInputElement>('#temperature').value); q('#temperature-label').textContent = generation.temperature.toFixed(2); rememberDraft(); };
   for (const selector of ['#model', '#thinking', '#temperature']) q<HTMLInputElement>(selector).onchange = saveGeneration;
-  document.addEventListener('click', e => { if (!(e.target as HTMLElement).closest('.picker, #composer')) q('.picker').hidden = true; });
+  document.addEventListener('click', e => { if (!(e.target as HTMLElement).closest('.picker, #composer')) closePicker(); });
 }
 function setSidebarOpen(open: boolean, restoreFocus = true) {
   const sidebar = q('.sidebar'), wasOpen = sidebar.classList.contains('open');
@@ -90,6 +97,7 @@ async function newChat() {
 }
 async function selectChat(id: string) {
   if (submitting) return;
+  closePicker();
   if (id !== chatId) rememberDraft(); chatId = id; history.replaceState(null, '', '#' + id); const c = state.chats.find(c => c.id === id), draft = drafts.get(id);
   generation = { ...(draft?.generation || c?.generation || generation) }; references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<HTMLTextAreaElement>('#composer').value = draft?.text || ''; renderModels(); renderRefs(); renderAttachments(); renderSidebar(); updateSendButton(); autosizeComposer(); setSidebarOpen(false, false);
   messages = id ? await api<Message[]>(`/chats/${id}/messages`) : []; renderMessages(true); q<HTMLTextAreaElement>('#composer').focus();
@@ -109,7 +117,7 @@ async function send() {
     const segments = references.filter(ref => content.includes('#' + ref.text));
     await generationSaves.get(chatId);
     await api(`/chats/${chatId}/messages`, 'POST', { content, segments, attachments: attachments.map(a => a.uploaded!.id), generation, requestId: crypto.randomUUID() });
-    q<HTMLTextAreaElement>('#composer').value = ''; references = []; releaseAttachments(attachments); attachments = []; drafts.delete(chatId); renderRefs(); renderAttachments(); autosizeComposer(); q('.picker').hidden = true; await refresh(); messages = await api(`/chats/${chatId}/messages`); renderMessages(true);
+    q<HTMLTextAreaElement>('#composer').value = ''; references = []; releaseAttachments(attachments); attachments = []; drafts.delete(chatId); renderRefs(); renderAttachments(); autosizeComposer(); closePicker(); await refresh(); messages = await api(`/chats/${chatId}/messages`); renderMessages(true);
   } finally { submitting = false; q<HTMLTextAreaElement>('#composer').disabled = false; updateSendButton(); q<HTMLTextAreaElement>('#composer').focus(); }
 }
 function updateSendButton() {
@@ -305,16 +313,36 @@ async function validateReferences() {
   if (version === referenceVersion) { references = updated; renderRefs(); rememberDraft(); }
 }
 
-async function showPicker() {
-  const composer = q<HTMLTextAreaElement>('#composer'), match = activeMention(composer.value, composer.selectionStart), version = ++pickerVersion;
-  if (!match) { q('.picker').hidden = true; return; }
-  selectedSuggestion = 0;
-  if (match.type === '@') suggestions = state.bots.filter(b => `${b.handle} ${b.name}`.toLowerCase().includes(match.query.toLowerCase())).map(b => ({ label: '@' + b.handle, hint: b.roots?.length ? b.roots.join(', ') : 'Unbound', insert: '@' + b.handle }));
-  else { try { const entries = await api<FileEntry[]>('/references', 'POST', { content: composer.value, query: match.query }); if (version !== pickerVersion) return; suggestions = entries.map(e => ({ label: (e.directory ? '▣ ' : '') + e.name, hint: e.allowedBots.map(id => currentBot(id)?.handle || id).join(', ') + ' · ' + e.path, insert: '#' + e.name, ref: { type: 'file', path: e.path, text: e.name, allowedBots: e.allowedBots } })); } catch { suggestions = []; } }
-  renderPicker();
+function closePicker() {
+  referenceSearch.close(); suggestions = []; pickerStatus = ''; pickerLoading = false;
+  q('.picker').hidden = true;
+  q('#composer').setAttribute('aria-expanded', 'false'); q('#composer').removeAttribute('aria-activedescendant');
 }
-function renderPicker() { const picker = q('.picker'); picker.hidden = !suggestions.length; picker.innerHTML = suggestions.map((s, i) => `<button type="button" role="option" aria-selected="${i === selectedSuggestion}" class="${i === selectedSuggestion ? 'selected' : ''}" data-suggestion="${i}"><span>${esc(s.label)}</span><small title="${esc(s.hint)}">${esc(s.hint)}</small></button>`).join(''); for (const el of picker.querySelectorAll<HTMLButtonElement>('button')) el.onmousedown = e => { e.preventDefault(); chooseSuggestion(Number(el.dataset.suggestion)); }; }
-function chooseSuggestion(index: number) { const composer = q<HTMLTextAreaElement>('#composer'), match = activeMention(composer.value, composer.selectionStart), item = suggestions[index]; if (!match || !item) return; composer.setRangeText(item.insert + ' ', match.start, match.end, 'end'); if (item.ref && !references.some(r => r.path === item.ref!.path)) references.push(item.ref); q('.picker').hidden = true; renderRefs(); rememberDraft(); composer.focus(); }
+function showPicker() {
+  const composer = q<HTMLTextAreaElement>('#composer'), match = activeMention(composer.value, composer.selectionStart);
+  closePicker();
+  if (!match) return;
+  selectedSuggestion = 0;
+  if (match.type === '@') {
+    suggestions = state.bots.filter(b => `${b.handle} ${b.name}`.toLowerCase().includes(match.query.toLowerCase())).map(b => ({ label: '@' + b.handle, hint: b.roots?.length ? b.roots.join(', ') : 'Unbound', insert: '@' + b.handle }));
+    pickerStatus = suggestions.length ? '' : 'No matching bots.'; renderPicker();
+  } else referenceSearch.search(composer.value, match.query, result => {
+    const selected = suggestions[selectedSuggestion]?.ref?.path;
+    suggestions = result.entries.map(e => ({ label: (e.directory ? '▣ ' : '') + e.name, hint: e.allowedBots.map(id => currentBot(id)?.handle || id).join(', ') + ' · ' + e.path, insert: '#' + e.name, ref: { type: 'file', path: e.path, text: e.name, allowedBots: e.allowedBots } }));
+    selectedSuggestion = Math.max(0, suggestions.findIndex(s => s.ref?.path === selected));
+    pickerLoading = !!result.loading || result.indexing;
+    pickerStatus = result.error || (result.loading ? 'Searching files and folders…' : result.indexing ? 'Searching workspace… more matches may appear.' : result.incomplete ? 'Some folders could not be searched. Try a full path.' : suggestions.length ? '' : 'No matching files or folders. Try a name or full path.');
+    renderPicker();
+  });
+}
+function renderPicker() {
+  const picker = q('.picker'); picker.hidden = false;
+  picker.setAttribute('aria-busy', String(pickerLoading)); q('#composer').setAttribute('aria-expanded', 'true');
+  picker.innerHTML = (pickerStatus ? `<p class="picker-status" role="status">${esc(pickerStatus)}</p>` : '') + suggestions.map((s, i) => `<button type="button" id="reference-option-${i}" role="option" aria-selected="${i === selectedSuggestion}" class="${i === selectedSuggestion ? 'selected' : ''}" data-suggestion="${i}"><span>${esc(s.label)}</span><small title="${esc(s.hint)}">${esc(s.hint)}</small></button>`).join('');
+  if (suggestions.length) q('#composer').setAttribute('aria-activedescendant', `reference-option-${selectedSuggestion}`); else q('#composer').removeAttribute('aria-activedescendant');
+  for (const el of picker.querySelectorAll<HTMLButtonElement>('button')) { el.onmousedown = e => e.preventDefault(); el.onclick = () => chooseSuggestion(Number(el.dataset.suggestion)); }
+}
+function chooseSuggestion(index: number) { const composer = q<HTMLTextAreaElement>('#composer'), match = activeMention(composer.value, composer.selectionStart), item = suggestions[index]; if (!match || !item) return; composer.setRangeText(item.insert + ' ', match.start, match.end, 'end'); if (item.ref && !references.some(r => r.path === item.ref!.path)) references.push(item.ref); closePicker(); renderRefs(); rememberDraft(); autosizeComposer(); updateSendButton(); composer.focus(); }
 function renderRefs() { q('.refs').innerHTML = references.map(r => `<span class="ref" title="${esc(r.path)}">#${esc(r.text)} · ${esc(r.allowedBots?.map(id => currentBot(id)?.handle || id).join(', '))}</span>`).join(''); }
 
 function dialog(title: string, body: string) { const el = document.createElement('dialog'); el.innerHTML = `<div class="dialog-heading"><h2>${esc(title)}</h2><button class="icon" aria-label="Close">×</button></div>${body}`; document.body.append(el); q('.dialog-heading button', el).onclick = () => el.close(); el.addEventListener('close', () => el.remove()); el.showModal(); return el; }

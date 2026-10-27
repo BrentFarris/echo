@@ -38,6 +38,7 @@ type Server struct {
 	Plugins           *plugins.Host
 	Calendar          *calendar.Calendar
 	Files             *broker.Files
+	References        *broker.ReferenceIndex
 	Process           *broker.ProcessBroker
 	Model             *model.Client
 	Secrets           credentials.SecretStore
@@ -91,6 +92,7 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 	s := &Server{Store: db, Dir: dir, Assets: assets, ctx: ctx, cancel: cancel, Files: &broker.Files{Private: dir}, Process: &broker.ProcessBroker{Dir: filepath.Join(dir, "runtime")}, Model: model.New(), Secrets: credentials.New(), dispatches: map[string]*dispatch{}, streams: map[string]domain.Message{}, subscribers: map[chan domain.Event]bool{}, loginAttempts: map[string][]time.Time{}}
 	s.revoking = map[string]int{}
 	s.closingChats = map[string]int{}
+	s.References = broker.NewReferenceIndex(ctx, s.Files)
 	s.shutdownRequested = make(chan struct{}, 1)
 	var developmentConfig development.Config
 	if err := db.Get("settings", "development", &developmentConfig); err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -153,6 +155,7 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 }
 func (s *Server) Close() {
 	s.cancel()
+	s.References.Close()
 	if s.Development != nil {
 		s.Development.Close()
 	}

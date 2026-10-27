@@ -17,6 +17,10 @@ The Echo name is independent of storage identifiers. The default `%LOCALAPPDATA%
 
 ## HTTP surface
 
+File-reference suggestions use a lazy, in-memory filename index for explicit workspace roots, separate from the bounded file-content search tool. The picker ranks exact names and normalized paths before prefixes, substrings, multiword and fuzzy matches, then limits the displayed results to 200. Each root indexes at most 250,000 entries; `.git`, `.hg`, `.svn`, `node_modules`, `.cache` and `.echo` contents are omitted from recursive scans but remain reachable through explicit authorized paths. Typed paths also find newly created entries before indexing finishes. Unbound absolute-path completion only reads the typed directory rather than indexing a drive.
+
+Indexes refresh on demand after five seconds and invalidate after Echo file/process mutations. Streaming index results expose `X-Echo-Reference-Indexing` and `X-Echo-Reference-Incomplete` response headers without changing the `/references` JSON array contract. The browser debounces edits, cancels stale requests, polls while indexing and shows incomplete or empty-search status. Every returned path is checked through the invoking bot's filesystem scope, and selecting or submitting references retains the existing recipient-specific validation.
+
 All paths below are under `/api/v1`. Local bootstrap requires a loopback connection and a local Host; remote bootstrap requires the configured password. Mutating browser requests reject foreign or opaque Origins.
 
 | Route | Behavior |
