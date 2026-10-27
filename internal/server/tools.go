@@ -127,18 +127,12 @@ func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionSc
 	switch name {
 	case "file_read":
 		return s.Files.Read(scope.Bot, text(a, "path"))
-	case "file_write":
-		return s.Files.Write(scope.Bot, text(a, "path"), text(a, "content"), text(a, "revision"))
+	case "file_write", "file_delete", "file_move", "file_mkdir":
+		return s.mutateFile(ctx, scope.Bot, strings.ReplaceAll(name, "_", "."), a)
 	case "file_list":
 		return s.Files.List(scope.Bot, text(a, "path"))
 	case "file_search":
 		return s.Files.Search(scope.Bot, text(a, "path"), text(a, "query"), boolean(a, "contents"))
-	case "file_delete":
-		return "deleted", s.Files.Delete(scope.Bot, text(a, "path"))
-	case "file_move":
-		return "moved", s.Files.Move(scope.Bot, text(a, "from"), text(a, "to"))
-	case "file_mkdir":
-		return "created", s.Files.Mkdir(scope.Bot, text(a, "path"))
 	case "chat_search":
 		ms, e := s.Store.Messages(scope.ChatID)
 		if e != nil {
@@ -282,16 +276,12 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		return plugins.Template(text(a, "kind"))
 	case "file.read":
 		return s.Files.Read(scope.Bot, text(a, "path"))
-	case "file.write":
-		return s.Files.Write(scope.Bot, text(a, "path"), text(a, "content"), text(a, "revision"))
+	case "file.write", "file.delete", "file.move":
+		return s.mutateFile(ctx, scope.Bot, method, a)
 	case "file.list":
 		return s.Files.List(scope.Bot, text(a, "path"))
 	case "file.search":
 		return s.Files.Search(scope.Bot, text(a, "path"), text(a, "query"), boolean(a, "contents"))
-	case "file.delete":
-		return "deleted", s.Files.Delete(scope.Bot, text(a, "path"))
-	case "file.move":
-		return "moved", s.Files.Move(scope.Bot, text(a, "from"), text(a, "to"))
 	case "file.mkdir":
 		return "created", s.Files.Mkdir(scope.Bot, text(a, "path"))
 	case "storage.get", "storage.set", "storage.delete":
@@ -361,7 +351,7 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		}
 		ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
-		return s.Process.Run(ctx, broker.ProcessRequest{BotID: scope.Bot.ID, Roots: scope.Bot.Roots, Command: text(a, "command"), Directory: text(a, "directory"), Toolchains: stringsValue(grants.Config["toolchains"])}, func(value string) {
+		return s.runTrackedProcess(ctx, scope.Bot, broker.ProcessRequest{BotID: scope.Bot.ID, Roots: scope.Bot.Roots, Command: text(a, "command"), Directory: text(a, "directory"), Toolchains: stringsValue(grants.Config["toolchains"])}, func(value string) {
 			s.nativeOutput(ctx, scope, value)
 		})
 	case "workspace.bind":

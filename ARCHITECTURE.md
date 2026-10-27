@@ -28,6 +28,7 @@ All paths below are under `/api/v1`. Local bootstrap requires a loopback connect
 | `POST /chats`, `DELETE /chats/{id}` | Create/delete chats |
 | `POST /chats/{id}/messages` | `{content, segments, generation, requestId}`; validates all recipients before accepting |
 | `POST /chats/{id}/stop` | Cancel the entire dispatch |
+| `POST /chats/{id}/files/reveal` | `{messageId, path}`; authenticated loopback-only native reveal of a recorded file change, with current scope revalidation |
 | `GET /chats/{id}/messages` | Complete stored transcript plus active stream buffers |
 | `GET /chats/{id}/snapshot` | Transcript plus sequence watermark for reconnect recovery |
 | `POST /references`, `POST /references/validate` | Lazy file suggestions and recipient-specific revalidation |

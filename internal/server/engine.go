@@ -487,7 +487,8 @@ func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run do
 			s.emit("message", tm.ChatID, tm.RunID, tm.BotID, tm)
 			scope := domain.ExecutionScope{Bot: bot, ChatID: run.ChatID, RunID: run.ID, DispatchID: d.id, ToolMessageID: tm.ID}
 			toolBuffer := &streamBuffer{s: s, m: tm}
-			toolCtx, stopOutput := context.WithCancel(context.WithValue(ctx, toolOutputKey{}, toolBuffer))
+			changes := &fileChangeCollector{}
+			toolCtx, stopOutput := context.WithCancel(context.WithValue(context.WithValue(ctx, toolOutputKey{}, toolBuffer), fileChangesKey{}, changes))
 			outputDone := make(chan struct{})
 			go func() {
 				defer close(outputDone)
@@ -517,6 +518,12 @@ func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run do
 			}
 			b, _ := json.Marshal(value)
 			tm.Content = string(b)
+			changes.mu.Lock()
+			tm.FileChanges = append([]domain.FileChange(nil), changes.changes...)
+			if changes.incomplete {
+				tm.FileChangesNotice = "Some paths could not be inspected within the file-tracking limits; this list may be incomplete."
+			}
+			changes.mu.Unlock()
 			tm.Status = "completed"
 			if toolErr != nil {
 				tm.Status = "failed"

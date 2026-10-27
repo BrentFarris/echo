@@ -25,4 +25,11 @@
 .work-disclosure{margin:0 0 5px}.work-content{border-left:1px solid var(--border);padding:6px 0 5px 10px;margin:3px 0 6px}
 .work-content>.reasoning{margin:5px 0;color:var(--subtle)}.work-content>.reasoning pre{padding:8px 10px;margin:4px 0 6px}
 .run-error{margin:6px 0;padding:7px 10px;font-size:12px}
+.files-changed{border-top:1px solid var(--border);margin-top:10px;padding-top:7px;min-width:0}
+.files-changed-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:11px;line-height:1.5;margin-bottom:4px}.files-changed-heading>span{color:var(--subtle)}
+.changed-file-list{list-style:none;padding:0;margin:0;max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:5px}.changed-file-list:empty{display:none}.changed-file-list li+li{border-top:1px solid var(--border)}
+.file-change{display:flex;align-items:center;gap:7px;width:100%;min-width:0;min-height:28px;padding:4px 7px;border:0;border-radius:0;background:transparent;text-align:left}.file-change:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}.file-change>svg{width:14px;height:14px;flex:none}.changed-file-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11px ui-monospace,SFMono-Regular,Consolas,monospace}.file-operation{flex:none;font-size:11px;font-weight:600}.file-operation.created{color:#197a3e}.file-operation.edited{color:var(--accent)}.file-operation.deleted{color:var(--danger)}
+.file-changes-note{font-size:11px;color:var(--subtle);margin:6px 0 0;line-height:1.4}
+@media(prefers-color-scheme:dark){.file-operation.created{color:#65d58a}}
+@media(max-width:760px){.file-change{min-height:36px}.changed-file-list{max-height:185px}.files-changed{margin-top:8px}}
 @media(max-width:760px){.chat-header{height:38px;padding:0 8px}.chat-log{padding:8px}.message,.response-group{padding:7px 9px;margin-bottom:6px}.message-meta{margin-bottom:3px}.message summary,.work-disclosure>summary{min-height:28px;padding:5px 2px}.work-content{padding-left:8px}.message-content th,.message-content td{padding:4px 6px}}

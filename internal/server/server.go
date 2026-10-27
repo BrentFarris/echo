@@ -52,6 +52,7 @@ type Server struct {
 	loginAttempts map[string][]time.Time
 	revoking      map[string]int
 	closingChats  map[string]int
+	revealFile    func(broker.RevealTarget) error
 }
 type dispatch struct {
 	id, chatID string

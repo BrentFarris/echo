@@ -268,6 +268,48 @@ test('keyboard references edit an authorized file and deleting a bot keeps autho
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('completed replies list net file changes outside Show work and reveal from the keyboard', async ({ page }) => {
+  const root = await mkdtemp(join(tmpdir(), 'echo-changes-'));
+  try {
+    await writeFile(join(root, 'edited.txt'), 'before'); await writeFile(join(root, 'deleted.txt'), 'before');
+    await setup(page);
+    await page.request.post('/api/v1/bots', { data: { handle: 'kaiju', name: 'Kaiju', prompt: '', roots: [root], plugins: {} } });
+    await page.reload();
+    await send(page, `@kaiju prepare the file change report.\nChange report folder: ${root}`);
+    const footer = page.getByRole('region', { name: 'Files changed' });
+    await expect(footer).toBeVisible(); await expect(footer.locator('button')).toHaveCount(3);
+    await expect(footer).toContainText('3 files');
+    for (const label of ['Created', 'Edited', 'Deleted']) await expect(footer.getByText(label, { exact: true })).toBeVisible();
+    await expect(page.locator('.work-disclosure')).not.toHaveAttribute('open', '');
+    await expect(page.locator('.work-disclosure .files-changed')).toHaveCount(0);
+    const response = footer.locator('..');
+    expect(await response.locator('.message.assistant').last().evaluate(el => el.compareDocumentPosition(el.parentElement!.querySelector('.files-changed')!) & Node.DOCUMENT_POSITION_FOLLOWING)).toBeTruthy();
+    const id = new URL(page.url()).hash.slice(1);
+    const messages = await (await page.request.get(`/api/v1/chats/${id}/messages`)).json();
+    expect(messages.flatMap((m: any) => m.fileChanges || [])).toHaveLength(4);
+    await page.reload(); await expect(footer.locator('button')).toHaveCount(3);
+    const requests: any[] = [];
+    await page.route('**/api/v1/chats/*/files/reveal', async route => { requests.push(route.request().postDataJSON()); await route.fulfill({ json: { path: root, select: false } }); });
+    const deleted = footer.getByRole('button', { name: /containing folder.*deleted.txt/ });
+    await deleted.focus(); await page.keyboard.press('Enter');
+    await expect.poll(() => requests.length).toBe(1);
+    expect(requests[0].path.toLowerCase()).toBe(join(root, 'deleted.txt').toLowerCase());
+    expect(messages.some((m: any) => m.id === requests[0].messageId && m.role === 'tool')).toBeTruthy();
+    await expect(page.getByRole('status')).toContainText('Opened the containing folder');
+    await page.route('**/api/v1/chats/*/files/reveal', route => route.fulfill({ status: 403, json: { error: 'Open Echo on this Windows computer to reveal files in File Explorer.' } }));
+    await footer.getByRole('button', { name: /Show in File Explorer.*created.txt/ }).click();
+    await expect(page.getByRole('alert')).toContainText('Open Echo on this Windows computer');
+    await page.reload(); await expect(footer.locator('button')).toHaveCount(3);
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    await expect(footer.locator('button')).toHaveCount(3);
+    await page.screenshot({ path: 'test-results/echo-files-changed-mobile.png', fullPage: true });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.screenshot({ path: 'test-results/echo-files-changed-desktop.png', fullPage: true });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('stream reconnect, stop, and deletion leave no running dispatch or transcript', async ({ page }) => {
   await setup(page); await send(page, 'slow stream');
   await expect(page.locator('.message.assistant')).toContainText('A stream'); await page.reload();

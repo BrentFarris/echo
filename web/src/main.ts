@@ -1,5 +1,6 @@
 import { Renderers } from './renderers';
 import { conversationItems, type ResponseGroup } from './conversation';
+import { fileChangesFooter } from './fileChanges';
 import { endpointForm, endpointValues } from './modelSettings';
 import { composerMarkup, icons, autosizeComposer, wireComposerMenus, attachmentCard, previewAttachment, releaseAttachments, type DraftAttachment } from './composer';
 import { activeMention, escapeHTML as esc, groupChats } from './helpers';
@@ -222,12 +223,20 @@ function paintResponse(group: ResponseGroup) {
   } else {
     for (const m of group.messages) el.append(paintMessage(m, undefined, true));
   }
+  const files = fileChangesFooter(group, async file => {
+    try {
+      const result = await api<{ select: boolean }>(`/chats/${encodeURIComponent(group.messages[0].chatId)}/files/reveal`, 'POST', { messageId: file.messageId, path: file.path });
+      if (!result.select) notice('Opened the containing folder in File Explorer.');
+    } catch (error) { notice(error, true); }
+  });
+  if (files) el.append(files);
   restoreDisclosures(el); return el;
 }
 function renderMessages(tail = false, force = false) {
   const log = document.querySelector<HTMLElement>('.chat-log'); if (!log) return;
   const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 100, previousTop = log.scrollTop;
   const focused = log.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLDetailsElement>('details[data-disclosure]')?.dataset.disclosure : undefined;
+  const focusedFile = log.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.fileChange : undefined;
   const anchor = [...log.children].find(child => child.getBoundingClientRect().bottom > log.getBoundingClientRect().top) as HTMLElement | undefined;
   const anchorKey = anchor?.dataset.timelineKey || anchor?.id, anchorOffset = anchor?.offsetTop;
   if (renderedChatId !== chatId) { disclosureState.clear(); messageMarkup.clear(); renderers.clearPending(); renderedChatId = chatId; } else rememberDisclosures(log);
@@ -237,6 +246,7 @@ function renderMessages(tail = false, force = false) {
   for (const item of conversationItems(messages, state.runs)) log.append(item.kind === 'response' ? paintResponse(item.group) : paintMessage(item.message));
   renderRunErrors(); document.querySelector<HTMLButtonElement>('#setup-model')?.addEventListener('click', () => settings('models'));
   if (focused) [...log.querySelectorAll<HTMLDetailsElement>('details[data-disclosure]')].find(d => d.dataset.disclosure === focused)?.querySelector('summary')?.focus({ preventScroll: true });
+  if (focusedFile) [...log.querySelectorAll<HTMLButtonElement>('.file-change')].find(button => button.dataset.fileChange === focusedFile)?.focus({ preventScroll: true });
   if (tail || nearBottom) log.scrollTop = log.scrollHeight;
   else { const replacement = [...log.children].find(child => (child as HTMLElement).dataset.timelineKey === anchorKey || child.id === anchorKey) as HTMLElement | undefined; log.scrollTop = previousTop + (replacement && anchorOffset !== undefined ? replacement.offsetTop - anchorOffset : 0); }
 }

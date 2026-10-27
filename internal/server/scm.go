@@ -246,7 +246,7 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 		output.WriteString(chunk)
 		s.nativeOutput(ctx, scope, chunk)
 	}
-	result, err := s.Process.Run(ctx, broker.ProcessRequest{BotID: scope.Bot.ID, Roots: scope.Bot.Roots, Executable: binary, Args: args, Input: text(a, "input"), Environment: env, Directory: directory, Toolchains: toolchains, Internet: boolean(m.Config, "internet"), PrivateNetwork: boolean(m.Config, "privateNetwork")}, func(chunk string) { emit(filter.push(chunk, false)) })
+	result, err := s.runTrackedProcess(ctx, scope.Bot, broker.ProcessRequest{BotID: scope.Bot.ID, Roots: scope.Bot.Roots, Executable: binary, Args: args, Input: text(a, "input"), Environment: env, Directory: directory, Toolchains: toolchains, Internet: boolean(m.Config, "internet"), PrivateNetwork: boolean(m.Config, "privateNetwork")}, func(chunk string) { emit(filter.push(chunk, false)) })
 	emit(filter.push("", true))
 	result.Output = output.String()
 	if err != nil {

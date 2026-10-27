@@ -8,6 +8,7 @@ import (
 	"github.com/brent/echo/internal/model"
 	"log"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -33,6 +34,31 @@ func main() {
 			}
 		}
 		lower := strings.ToLower(user)
+		if strings.Contains(lower, "file change report") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			delta := map[string]any{"content": "Finished the file change report."}
+			if last.Role != "tool" {
+				marker := "Change report folder: "
+				if !strings.Contains(user, marker) {
+					http.Error(w, "missing fixture folder", 400)
+					return
+				}
+				root := strings.TrimSpace(strings.SplitN(user, marker, 2)[1])
+				calls := []any{}
+				for i, item := range []struct{ tool, path, content string }{{"file_write", "created.txt", "new"}, {"file_write", "created.txt", "updated"}, {"file_write", "edited.txt", "updated"}, {"file_delete", "deleted.txt", ""}} {
+					args := map[string]any{"path": filepath.Join(root, item.path)}
+					if item.tool == "file_write" {
+						args["content"] = item.content
+					}
+					encoded, _ := json.Marshal(args)
+					calls = append(calls, map[string]any{"index": i, "id": fmt.Sprintf("change-%d", i), "function": map[string]any{"name": item.tool, "arguments": string(encoded)}})
+				}
+				delta = map[string]any{"tool_calls": calls}
+			}
+			data, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": delta}}})
+			fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", data)
+			return
+		}
 		if strings.Contains(lower, "work disclosure") {
 			w.Header().Set("Content-Type", "text/event-stream")
 			emit := func(delta map[string]any) {

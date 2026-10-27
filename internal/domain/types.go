@@ -80,21 +80,32 @@ type Chat struct {
 	UpdatedAt  time.Time         `json:"updatedAt"`
 }
 type Message struct {
-	ID          string       `json:"id"`
-	ChatID      string       `json:"chatId"`
-	RunID       string       `json:"runId,omitempty"`
-	BotID       string       `json:"botId,omitempty"`
-	Author      string       `json:"author"`
-	Role        string       `json:"role"`
-	Content     string       `json:"content"`
-	Attachments []Attachment `json:"attachments,omitempty"`
-	Reasoning   string       `json:"reasoning,omitempty"`
-	Segments    []Segment    `json:"segments,omitempty"`
-	Recipients  []string     `json:"recipients,omitempty"`
-	Calls       []ToolCall   `json:"toolCalls,omitempty"`
-	CallID      string       `json:"toolCallId,omitempty"`
-	Status      string       `json:"status"`
-	CreatedAt   time.Time    `json:"createdAt"`
+	ID                string       `json:"id"`
+	ChatID            string       `json:"chatId"`
+	RunID             string       `json:"runId,omitempty"`
+	BotID             string       `json:"botId,omitempty"`
+	Author            string       `json:"author"`
+	Role              string       `json:"role"`
+	Content           string       `json:"content"`
+	Attachments       []Attachment `json:"attachments,omitempty"`
+	Reasoning         string       `json:"reasoning,omitempty"`
+	Segments          []Segment    `json:"segments,omitempty"`
+	Recipients        []string     `json:"recipients,omitempty"`
+	Calls             []ToolCall   `json:"toolCalls,omitempty"`
+	CallID            string       `json:"toolCallId,omitempty"`
+	Status            string       `json:"status"`
+	CreatedAt         time.Time    `json:"createdAt"`
+	FileChanges       []FileChange `json:"fileChanges,omitempty"`
+	FileChangesNotice string       `json:"fileChangesNotice,omitempty"`
+}
+
+// File changes are host-observed metadata, never inferred from model prose.
+type FileChange struct {
+	Path        string `json:"path"`
+	DisplayPath string `json:"displayPath"`
+	Operation   string `json:"operation"`
+	Before      string `json:"before,omitempty"`
+	After       string `json:"after,omitempty"`
 }
 type ToolCall struct {
 	ID       string       `json:"id"`
