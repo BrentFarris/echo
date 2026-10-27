@@ -40,7 +40,6 @@ func Builtins() []domain.PluginManifest {
 			tool("schedule_delete", "Delete a schedule.", "calendar.delete", map[string]any{"id": S("Schedule id")}, "id"),
 			tool("schedule_missed", "List missed jobs requiring the user's selection.", "calendar.missed", map[string]any{}),
 		}, Settings: Schema(map[string]any{"timezone": S("Default IANA timezone")})},
-		{ID: "cloud-models", Name: "Cloud Models", Scope: "app", Providers: []string{"openai-compatible-cloud"}},
 		{ID: "hosted-server", Name: "Hosted Server", Scope: "app", Settings: Schema(map[string]any{"remote": B("Allow remote connections; takes effect on restart"), "port": N("Server port"), "certificate": S("Optional TLS certificate PEM path"), "key": S("Optional TLS private key PEM path")})},
 		{ID: "plugin-authoring", Name: "Plugin Authoring", Scope: "echo", Tools: []domain.Tool{
 			tool("plugin_template", "Get a working UI, renderer, model provider, or Go/WASI backend template and the plugin SDK. Use before authoring a plugin.", "plugin.template", map[string]any{"kind": S("ui, backend, provider, or renderer")}, "kind"),
@@ -57,7 +56,7 @@ func Builtins() []domain.PluginManifest {
 		m.API = 1
 		m.Version = "1.0.0"
 		m.Builtin = true
-		m.Enabled = m.ID != "cloud-models"
+		m.Enabled = true
 		if m.Scope == "" {
 			m.Scope = "bot"
 		}

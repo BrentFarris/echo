@@ -146,9 +146,6 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 	ids := []string{}
 	for _, b := range bots {
 		ids = append(ids, b.ID)
-		if endpoint.Cloud && !s.Plugins.Enabled(b, "cloud-models") {
-			return nil, fmt.Errorf("Cloud Models is disabled for @%s", b.Handle)
-		}
 		if endpoint.Provider != "" {
 			if _, e := s.Plugins.Provider(b, endpoint.Provider); e != nil {
 				return nil, e
@@ -189,7 +186,6 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, 2*time.Hour)
 	d := &dispatch{id: domain.ID(), chatID: chatID, group: coordinator.New(ids), cancel: cancel, done: make(chan struct{}), wake: map[string]chan struct{}{}, active: map[string]bool{}}
-	d.cloud = endpoint.Cloud
 	for _, b := range bots {
 		d.wake[b.ID] = make(chan struct{}, 1)
 		d.active[b.ID] = true

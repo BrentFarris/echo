@@ -118,13 +118,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 				return
 			}
 		}
-		if e.Cloud {
-			echo, _ := s.Bot("echo")
-			if !s.Plugins.Enabled(echo, "cloud-models") {
-				respond(w, nil, errors.New("enable Cloud Models first"))
-				return
-			}
-		}
 		if a.APIKey != nil {
 			if *a.APIKey == "" {
 				if old.Credential != "" {
@@ -164,13 +157,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 			return
 		}
 		key, err := s.key(r.Context(), e)
-		if e.Cloud {
-			echo, _ := s.Bot("echo")
-			if !s.Plugins.Enabled(echo, "cloud-models") {
-				respond(w, nil, errors.New("Cloud Models is disabled"))
-				return
-			}
-		}
 		if err != nil {
 			respond(w, nil, err)
 			return
@@ -372,9 +358,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 		e = s.Plugins.Save(m)
 		if e == nil && m.ID == "p4" && oldCredential != "" && oldCredential != text(m.Config, "credential") {
 			s.Secrets.Delete(r.Context(), oldCredential)
-		}
-		if e == nil && m.ID == "cloud-models" && !m.Enabled {
-			s.stopCloudRuns()
 		}
 		if e == nil {
 			e = s.Calendar.ReconcileActivation(domain.Now())

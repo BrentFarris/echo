@@ -99,6 +99,11 @@ func New(ctx context.Context, s *store.Store, dir string, guest []byte, broker B
 		r.Close(ctx)
 		return nil, e
 	}
+	// Cloud connections are core model settings, not a switchable plugin.
+	if e = s.Delete("plugins", "cloud-models"); e != nil {
+		r.Close(ctx)
+		return nil, e
+	}
 	for _, m := range Builtins() {
 		var current domain.PluginManifest
 		if s.Get("plugins", m.ID, &current) == nil {
@@ -164,6 +169,10 @@ func (h *Host) Tools(bot domain.Bot) []domain.Tool {
 	return out
 }
 func (h *Host) Provider(bot domain.Bot, name string) (domain.PluginManifest, error) {
+	// Preserve endpoints saved with the former built-in provider identifier.
+	if name == "openai-compatible-cloud" {
+		return domain.PluginManifest{ID: "cloud-models", Builtin: true, Enabled: true, Scope: "app"}, nil
+	}
 	ms, e := h.List()
 	if e != nil {
 		return domain.PluginManifest{}, e

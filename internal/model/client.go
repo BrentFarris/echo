@@ -51,7 +51,7 @@ func New() *Client {
 		if local, _ := ctx.Value(localEndpointKey{}).(bool); local {
 			for _, ip := range ips {
 				if !ip.IP.IsLoopback() && !ip.IP.IsPrivate() {
-					return nil, errors.New("local model resolved to a public destination; enable Cloud Models")
+					return nil, errors.New("local model resolved to a public destination; add it as a cloud connection")
 				}
 			}
 		}
@@ -87,7 +87,7 @@ func ValidateEndpoint(e domain.Endpoint) error {
 		}
 		for _, ip := range ips {
 			if !ip.IsLoopback() && !ip.IsPrivate() {
-				return errors.New("public endpoints require the Cloud Models plugin")
+				return errors.New("public endpoints must be added as cloud connections")
 			}
 		}
 	}

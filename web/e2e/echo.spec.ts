@@ -16,23 +16,33 @@ async function setup(page: Page) {
 }
 async function send(page: Page, value: string) { await page.getByRole('textbox', { name: 'Message', exact: true }).fill(value); await page.getByRole('button', { name: 'Send message', exact: true }).click(); }
 
-test('cloud models are selected for the chat without a per-bot switch', async ({ page }) => {
+test('cloud connections can be added and selected without enable switches', async ({ page }) => {
   await setup(page);
+  let endpointId = '';
   try {
-    for (const enabled of [false, true]) {
-      expect((await page.request.patch('/api/v1/plugins/cloud-models', { data: { enabled, config: {} } })).ok()).toBe(true);
-      await page.reload();
-      await page.getByRole('button', { name: '⚙ Settings', exact: true }).click();
-      for (const button of ['Edit', '＋ Add bot']) {
-        await page.getByRole('button', { name: button, exact: true }).click();
-        const editor = page.getByRole('dialog').last();
-        await expect(editor.getByLabel('Handle', { exact: true })).toBeVisible();
-        await expect(editor).not.toContainText('Cloud Models');
-        await expect(editor.getByLabel('Git', { exact: true })).toBeVisible();
-        await editor.getByRole('button', { name: 'Close', exact: true }).click();
-      }
+    await page.getByRole('button', { name: '⚙ Settings', exact: true }).click();
+    for (const button of ['Edit', '＋ Add bot']) {
+      await page.getByRole('button', { name: button, exact: true }).click();
+      const editor = page.getByRole('dialog').last();
+      await expect(editor.getByLabel('Handle', { exact: true })).toBeVisible();
+      await expect(editor).not.toContainText('Cloud Models');
+      await expect(editor.getByLabel('Git', { exact: true })).toBeVisible();
+      await editor.getByRole('button', { name: 'Close', exact: true }).click();
     }
-    expect((await page.request.post('/api/v1/endpoints', { data: { endpoint: { id: 'test-cloud', name: 'Test cloud model', url: 'http://127.0.0.1:3743/v1', model: 'echo-test', cloud: true } } })).ok()).toBe(true);
+    await page.locator('.settings-nav').getByRole('button', { name: 'Cloud Models', exact: true }).click();
+    await expect(page.getByRole('checkbox', { name: 'Enable Cloud Models' })).toHaveCount(0);
+    await page.getByRole('button', { name: '＋ Add connection', exact: true }).click();
+    await page.getByLabel('Name', { exact: true }).fill('Test cloud model');
+    await page.getByLabel('Model', { exact: true }).fill('echo-test');
+    await page.getByLabel('Endpoint URL', { exact: true }).fill('http://127.0.0.1:3743/v1');
+    await page.getByRole('button', { name: 'Save connection', exact: true }).click();
+    await expect(page.locator('.settings-content')).toContainText('Test cloud model');
+    const state = await (await page.request.get('/api/v1/state')).json();
+    endpointId = state.endpoints.find((e: any) => e.name === 'Test cloud model').id;
+    expect(state.plugins.some((p: any) => p.id === 'cloud-models')).toBe(false);
+    const discovery = await page.request.get(`/api/v1/endpoints/${endpointId}/models`);
+    expect(discovery.ok()).toBe(true);
+    expect((await discovery.json()).data.some((m: any) => m.id === 'echo-test')).toBe(true);
     await page.reload();
     await page.locator('.model-settings summary').click();
     await expect(page.getByRole('option', { name: 'Test local model — echo-test', exact: true })).toBeVisible();
@@ -44,8 +54,7 @@ test('cloud models are selected for the chat without a per-bot switch', async ({
     await page.reload();
     await expect(page.locator('#model-name')).toHaveText('Test cloud model');
   } finally {
-    await page.request.delete('/api/v1/endpoints/test-cloud');
-    await page.request.patch('/api/v1/plugins/cloud-models', { data: { enabled: false, config: {} } });
+    if (endpointId) await page.request.delete(`/api/v1/endpoints/${endpointId}`);
   }
 });
 

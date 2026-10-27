@@ -63,7 +63,6 @@ type dispatch struct {
 	mu         sync.Mutex
 	wg         sync.WaitGroup
 	err        error
-	cloud      bool
 }
 type SendRequest struct {
 	Content      string            `json:"content"`
@@ -159,16 +158,6 @@ func (s *Server) Bot(id string) (domain.Bot, error) {
 	var b domain.Bot
 	e := s.Store.Get("bots", id, &b)
 	return b, e
-}
-func (s *Server) stopCloudRuns() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, d := range s.dispatches {
-		if d.cloud {
-			d.cancel()
-			d.group.Close()
-		}
-	}
 }
 func (s *Server) Bots() ([]domain.Bot, error) {
 	r, e := s.Store.List("bots")

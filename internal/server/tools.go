@@ -246,9 +246,6 @@ func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionSc
 				return nil, e
 			}
 		}
-		if endpoint.Cloud && !s.Plugins.Enabled(scope.Bot, "cloud-models") {
-			return nil, errors.New("enable Cloud Models first")
-		}
 		if e = s.Store.Put("endpoints", endpoint.ID, endpoint); e != nil {
 			return nil, e
 		}
@@ -480,9 +477,6 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 			m.Config = cfg
 		}
 		e = s.Plugins.Save(m)
-		if e == nil && m.ID == "cloud-models" && !m.Enabled {
-			s.stopCloudRuns()
-		}
 		if e == nil {
 			e = s.Calendar.ReconcileActivation(domain.Now())
 		}

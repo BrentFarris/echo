@@ -82,29 +82,21 @@ func TestInterruptedToolHistoryAndChatModelAvailability(t *testing.T) {
 	}
 	a, _ := s.saveBot(domain.Bot{Handle: "a"})
 	b, _ := s.saveBot(domain.Bot{Handle: "b", Plugins: map[string]bool{"cloud-models": false}})
-	cloud, _ := s.Plugins.Get("cloud-models")
+	// A saved disabled flag from an older version must not block cloud models.
+	if e = s.Store.Put("plugins", "cloud-models", domain.PluginManifest{ID: "cloud-models", Enabled: false}); e != nil {
+		t.Fatal(e)
+	}
 	var ep domain.Endpoint
 	s.Store.Get("endpoints", g.EndpointID, &ep)
 	ep.Cloud = true
+	ep.Provider = "openai-compatible-cloud"
 	s.Store.Put("endpoints", ep.ID, ep)
-	before, _ := s.messages(c.ID)
-	if _, e = s.send(c.ID, SendRequest{Content: "@a and @b work", Generation: g}); e == nil {
-		t.Fatal("globally disabled cloud provider was dispatched")
-	}
-	after, _ := s.messages(c.ID)
-	if len(before) != len(after) {
-		t.Fatal("invalid dispatch was persisted")
-	}
-	cloud.Enabled = true
-	if e = s.Plugins.Save(cloud); e != nil {
-		t.Fatal(e)
-	}
 	d, e := s.send(c.ID, SendRequest{Content: "@a and @b work", Generation: g})
 	if e != nil {
 		t.Fatal("legacy per-bot cloud override blocked the chat's selected model", e)
 	}
 	waitDispatch(t, d)
-	after, e = s.messages(c.ID)
+	after, e := s.messages(c.ID)
 	if e != nil {
 		t.Fatal(e)
 	}
