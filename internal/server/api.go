@@ -15,6 +15,7 @@ import (
 )
 
 func (s *Server) routes(mux *http.ServeMux) {
+	s.appRoutes(mux)
 	s.developmentRoutes(mux)
 	s.sourceControlRoutes(mux)
 	s.attachmentRoutes(mux)
@@ -49,8 +50,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
+		dock, e := s.appDock()
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
 		runs, e := s.Store.List("runs")
-		respond(w, map[string]any{"bots": bots, "chats": chats, "endpoints": endpoints, "plugins": ps, "schedules": schedules, "occurrences": jobs, "runs": runs}, e)
+		respond(w, map[string]any{"bots": bots, "chats": chats, "endpoints": endpoints, "plugins": ps, "schedules": schedules, "occurrences": jobs, "runs": runs, "appDock": dock}, e)
 	})
 	mux.HandleFunc("POST /api/v1/bots", func(w http.ResponseWriter, r *http.Request) {
 		var b domain.Bot
@@ -341,17 +347,24 @@ func (s *Server) routes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
-		if !m.Enabled || m.Pending {
+		botID := r.URL.Query().Get("botId")
+		if botID == "" {
+			botID = "echo"
+		}
+		bot, e := s.Bot(botID)
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		if !s.Plugins.Enabled(bot, m.ID) {
 			respond(w, nil, errors.New("plugin is inactive"))
 			return
 		}
-		for _, view := range m.Views {
-			if view.ID == r.PathValue("view") {
-				respond(w, view, nil)
-				return
-			}
-		}
-		respond(w, nil, errors.New("view not found"))
+		view, e := plugins.FloatingView(m, r.PathValue("view"))
+		respond(w, struct {
+			domain.View
+			Digest string `json:"digest"`
+		}{view, m.Digest}, e)
 	})
 	mux.HandleFunc("POST /api/v1/plugins/{id}/bridge", func(w http.ResponseWriter, r *http.Request) {
 		var a struct {

@@ -26,7 +26,7 @@ All paths below are under `/api/v1`. Local bootstrap requires a loopback connect
 | Route | Behavior |
 |---|---|
 | `POST /session` | Local owner bootstrap or remote password login; HttpOnly session cookie |
-| `GET /state` | Bots, all chat metadata, model connections, plugins, schedules, occurrences and runs |
+| `GET /state` | Bots, all chat metadata, model connections, plugins, schedules, occurrences, runs and ordered `appDock` plugin IDs |
 | `POST /bots`, `DELETE /bots/{id}` | Bot management; Echo is permanent |
 | `POST /endpoints`, `DELETE /endpoints/{id}`, `GET /endpoints/{id}/models` | Compatible model connections and discovery |
 | `POST /chats`, `DELETE /chats/{id}` | Create/delete chats |
@@ -41,7 +41,8 @@ All paths below are under `/api/v1`. Local bootstrap requires a loopback connect
 | `PATCH /plugins/{id}` | Owner settings and activation |
 | `POST /plugins/{id}/approve` | Approve `{digest}`; stale package reviews are rejected |
 | `POST /plugins/{id}/rollback` | Restore the previous package |
-| `GET /plugins/{id}/views/{view}`, `POST /plugins/{id}/bridge` | View source and restricted, namespaced UI storage |
+| `GET /plugins/{id}/views/{view}?botId=echo`, `POST /plugins/{id}/bridge` | Floating view source plus package digest, checked against the bot's effective plugin availability; restricted, namespaced UI storage |
+| `PUT /plugins/{id}/app/dock` | Owner-only `{docked: boolean}`; returns ordered dock plugin IDs and broadcasts a state change |
 | `POST /hosting/password` | Replace password and invalidate previous sessions |
 | `POST /schedules`, `DELETE /schedules/{id}`, `POST /missed/review` | Calendar management and explicit catch-up selection |
 | `GET /events` | Authenticated WebSocket; reset/snapshot recovery, message/delta/run/handoff/plugin-open/changed events |
@@ -58,6 +59,12 @@ Clients buffer incoming events during recovery, apply a snapshot, then replay ev
 The core composer stores plain text plus atomic bot/file reference segments. Optional segment `range: {start, end}` values are half-open UTF-16 offsets into `content`; file segments also carry a server-derived `kind` (`file` or `directory`). Each file occurrence retains its own path, including when labels repeat. The server validates file ranges, masks those spans when detecting bot recipients, and recomputes access on send. Existing messages without ranges remain readable; the UI only associates legacy file descriptors with unambiguous text occurrences. Native reveal remains Windows-only and loopback-only, with the same filesystem containment checks as changed-file reveal. No database migration is needed because segments are stored in the existing serialized message.
 
 ## Plugin ABI and package sources
+
+A plugin may explicitly register one primary GUI with `app: {"viewId":"main","icon":"data:image/svg+xml,..."}`. `viewId` must name a floating view; `icon` is optional and accepts SVG, PNG, JPEG or WebP data URLs capped at 256 KiB. The catalog uses the plugin's ID and name, and displays icons as images with initials as a fallback. Registration is included in the immutable package digest and rollback. It adds no privileges; the existing `scope: "app"` denotes app-wide permission scope and does not register a GUI. Floating views without registration are not listed in Apps. The UI template and HTML-only `plugin_install` shorthand emit registration; complete manifests must opt in.
+
+Apps and dock launches use Echo's bot context and fetch the current floating view with that context, without broadcasting a launch to other browsers. The browser maintains one window per plugin/view/bot, coalesces concurrent opens, and focuses existing windows without reinitializing their contents. State refresh closes windows when effective availability changes, their view disappears, or their package digest changes. Chat-driven `plugin_open` defaults to the registered view, then the first floating view; renderer views are never opened as windows. Plugin startup continues to use the iframe ready/init handshake below.
+
+Dock ordering is stored under `settings/app-dock` in the existing records table. Owner mutations are serialized, idempotent per plugin, and publish `changed` after successful persistence; no schema migration is required. Only currently available registered apps are shown in the dock, while saved IDs survive disablement, pending approval and registration removal. Unpinning remains possible for unavailable entries. `#apps` selects the catalog while conversation DOM, drafts and event processing remain mounted.
 
 ComfyUI is a built-in bot-scoped plugin with `comfyui.generate`, `comfyui.generate_video`, `comfyui.save_image`, and `comfyui.save_video` capabilities. Its WASI guest delegates to the host's endpoint-confined ComfyUI client. The owner selects the HTTP(S) server; models cannot expand that grant, and requests reject redirects. Workflow and input-image reads and binary output saves go through the rooted file broker. Generated bytes bypass WASI/model JSON and are compressed into attachment storage, linked immediately to the tool message. Metadata is hydrated from those rows on recovery, and deletion follows the chat's existing foreign-key cascade. The browser renders tool attachments outside collapsed work. Generated image content is inserted after a complete tool-result group for the originating bot; video results stay metadata-only. This port preserves workflow precedence, image upload precedence, all image/video template controls, first-output display, and workspace save tools from `OLD/`.
 

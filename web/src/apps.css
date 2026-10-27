@@ -1,0 +1,19 @@
+.chat-view{display:flex;flex:1;flex-direction:column;min-width:0;min-height:0}
+.chat-view[hidden],.apps-view[hidden],.app-dock[hidden]{display:none}
+.apps-view{flex:1;min-height:0;overflow:auto;padding:28px;scrollbar-gutter:stable}
+.apps-view>h1{font-size:24px;font-weight:600;margin:0 0 8px}.apps-view>p{margin-bottom:24px}
+.apps-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,240px),1fr));gap:16px;max-width:1200px}
+.app-card{display:flex;flex-direction:column;gap:16px;min-width:0;padding:20px;border:1px solid var(--border);border-radius:10px;background:var(--bg)}
+.app-card-heading{display:flex;align-items:center;gap:12px;min-width:0}.app-card-heading h2{font-size:16px;margin:0;overflow-wrap:anywhere}
+.app-icon{width:44px;height:44px;flex:none;display:grid;place-items:center;overflow:hidden;border-radius:9px;background:var(--muted);color:var(--accent);font-size:17px;font-weight:650}
+.app-icon img{display:block;width:100%;height:100%;object-fit:contain}.app-status{margin:0;font-size:12px}
+.app-card-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:auto}.app-card-actions button{padding:7px 9px}
+.apps-empty{padding:28px 0}
+.sidebar .sidebar-footer{flex-direction:column;flex-wrap:nowrap;flex:none;min-width:0;gap:8px}
+.sidebar-footer #install-echo{flex-basis:auto}.sidebar-footer #install-echo,.sidebar-footer #missed-button{width:100%;flex:none}
+.sidebar-footer-actions{display:flex;gap:8px}.sidebar-footer-actions button{flex:1;min-width:0}.sidebar-footer-actions [aria-current=page]{background:var(--muted)}
+.app-dock{display:flex;gap:7px;overflow-x:auto;overflow-y:hidden;min-width:0;max-width:100%;padding:3px 2px 7px;overscroll-behavior-x:contain;touch-action:pan-x;scrollbar-width:thin}
+.sidebar-footer .app-dock-button{flex:0 0 44px;width:44px;height:44px;padding:0;border-radius:9px;overflow:hidden}
+.app-dock-button .app-icon{width:100%;height:100%;border-radius:inherit}.app-dock-button:hover .app-icon{background:var(--border)}
+.plugin-window-layer{position:fixed;inset:0;z-index:20;pointer-events:none}.plugin-window-layer .floating-plugin{pointer-events:auto}
+@media(max-width:760px){.apps-view{padding:20px 14px}.app-card{padding:16px}.app-card-actions button{min-height:40px}}

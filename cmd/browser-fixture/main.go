@@ -2,6 +2,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/brent/echo/internal/calendar"
@@ -28,6 +29,20 @@ func main() {
 	defer app.Close()
 	mux := http.NewServeMux()
 	mux.Handle("/", app.Handler())
+	mux.HandleFunc("POST /__fixtures/app", func(w http.ResponseWriter, r *http.Request) {
+		var manifest domain.PluginManifest
+		if err := json.NewDecoder(r.Body).Decode(&manifest); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		installed, err := app.Plugins.Install(manifest, nil)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(installed)
+	})
 	mux.HandleFunc("POST /__fixtures/renderer", func(w http.ResponseWriter, r *http.Request) {
 		template, _ := plugins.Template("renderer")
 		m := template.(map[string]any)["manifest"].(domain.PluginManifest)

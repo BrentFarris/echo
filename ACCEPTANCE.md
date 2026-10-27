@@ -4,6 +4,8 @@ Run `build.ps1 -Release` from the repository root on Windows. It must succeed be
 
 ## Automated coverage
 
+- Apps: explicit registration and icon validation; UI template and HTML-only authoring; registration digests and rollback; bot-scoped launch checks; authenticated, serialized dock mutations and restart persistence; cross-browser dock synchronization; singleton floating windows without state resets; inactive/pending status and retained pins; registration removal and restoration; draft/attachment/thread preservation during streaming; square icons, keyboard/wheel scrolling and mobile layout.
+
 ComfyUI coverage includes the ported workflow/client suite, actual WASI invocation against mock ComfyUI servers, text/image/video workflow selection, inline/path/default precedence, all template parameters, attached-image uploads, nested output paths and custom GIF storage, persisted media/downloads, workspace saves and overwrite protection, bot/folder isolation, disabled-plugin cancellation, and model image hydration with metadata-only video results. Browser acceptance checks image/video/GIF results outside Show work, previews/downloads, reload, mobile layout, and the five plugin settings. These tests use local mock servers and do not require a GPU or a running ComfyUI installation.
 
 - Go: compressed incremental persistence, interrupted work, deletion without resurrection, directory locking, scope boundaries, optimistic file revisions, explicit handoffs beyond 32 requests, duplicate requests, cycle detection, model runs beyond 128 rounds, cancellation, per-bot histories, provider availability, WASI capability checks, no ambient filesystem/environment, termination, plugin revocation, origin/authentication gates and credential redaction across stream chunks.

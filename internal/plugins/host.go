@@ -386,6 +386,9 @@ func (h *Host) Install(m domain.PluginManifest, wasm []byte) (domain.PluginManif
 			return m, errors.New("view source exceeds 2 MiB")
 		}
 	}
+	if err := validateApp(m); err != nil {
+		return m, err
+	}
 	for _, provider := range m.Providers {
 		found := false
 		for _, t := range m.Tools {

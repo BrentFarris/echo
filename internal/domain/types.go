@@ -164,22 +164,29 @@ type View struct {
 	HTML  string `json:"html"`
 	Kind  string `json:"kind"`
 }
+
+// AppRegistration exposes a plugin's primary floating view in Apps.
+type AppRegistration struct {
+	ViewID string `json:"viewId"`
+	Icon   string `json:"icon,omitempty"`
+}
 type PluginManifest struct {
-	API          int            `json:"api"`
-	ID           string         `json:"id"`
-	Name         string         `json:"name"`
-	Version      string         `json:"version"`
-	Scope        string         `json:"scope"`
-	Builtin      bool           `json:"builtin"`
-	Enabled      bool           `json:"enabled"`
-	Capabilities []string       `json:"capabilities"`
-	Tools        []Tool         `json:"tools"`
-	Views        []View         `json:"views,omitempty"`
-	Renderers    []string       `json:"renderers,omitempty"`
-	Providers    []string       `json:"providers,omitempty"`
-	Settings     map[string]any `json:"settings"`
-	Config       map[string]any `json:"config"`
-	Digest       string         `json:"digest,omitempty"`
-	Backend      string         `json:"backend,omitempty"`
-	Pending      bool           `json:"pending"`
+	API          int              `json:"api"`
+	ID           string           `json:"id"`
+	Name         string           `json:"name"`
+	Version      string           `json:"version"`
+	Scope        string           `json:"scope"`
+	Builtin      bool             `json:"builtin"`
+	Enabled      bool             `json:"enabled"`
+	Capabilities []string         `json:"capabilities"`
+	Tools        []Tool           `json:"tools"`
+	Views        []View           `json:"views,omitempty"`
+	App          *AppRegistration `json:"app,omitempty"`
+	Renderers    []string         `json:"renderers,omitempty"`
+	Providers    []string         `json:"providers,omitempty"`
+	Settings     map[string]any   `json:"settings"`
+	Config       map[string]any   `json:"config"`
+	Digest       string           `json:"digest,omitempty"`
+	Backend      string           `json:"backend,omitempty"`
+	Pending      bool             `json:"pending"`
 }

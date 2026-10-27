@@ -489,17 +489,12 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		if !s.Plugins.Enabled(scope.Bot, m.ID) {
 			return nil, errors.New("plugin is disabled or awaiting permission")
 		}
-		view := text(a, "viewId")
-		if view == "" && len(m.Views) > 0 {
-			view = m.Views[0].ID
+		view, e := plugins.FloatingView(m, text(a, "viewId"))
+		if e != nil {
+			return nil, e
 		}
-		for _, v := range m.Views {
-			if v.ID == view {
-				s.emit("plugin-open", scope.ChatID, scope.RunID, scope.Bot.ID, map[string]any{"id": m.ID, "viewId": view})
-				return "opened", nil
-			}
-		}
-		return nil, errors.New("view not found")
+		s.emit("plugin-open", scope.ChatID, scope.RunID, scope.Bot.ID, map[string]any{"id": m.ID, "viewId": view.ID})
+		return "opened", nil
 	case "plugin.rollback":
 		e = s.Plugins.Rollback(text(a, "id"))
 		s.emit("changed", "", "", "", nil)
@@ -514,6 +509,9 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		}
 		if html := text(a, "html"); html != "" {
 			m.Views = []domain.View{{ID: "main", Title: m.Name, Kind: "floating", HTML: html}}
+			if _, fullManifest := a["manifest"].(map[string]any); !fullManifest {
+				m.App = &domain.AppRegistration{ViewID: "main"}
+			}
 		}
 		var wasm []byte
 		if source := text(a, "backendSource"); source != "" {
@@ -527,8 +525,8 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 			return nil, e
 		}
 		s.emit("changed", "", "", "", nil)
-		if !m.Pending && len(m.Views) > 0 {
-			s.emit("plugin-open", scope.ChatID, scope.RunID, scope.Bot.ID, map[string]any{"id": m.ID, "viewId": m.Views[0].ID})
+		if view, err := plugins.FloatingView(m, ""); err == nil && s.Plugins.Enabled(scope.Bot, m.ID) {
+			s.emit("plugin-open", scope.ChatID, scope.RunID, scope.Bot.ID, map[string]any{"id": m.ID, "viewId": view.ID})
 		}
 		return m, nil
 	}

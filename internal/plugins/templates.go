@@ -23,7 +23,8 @@ func Template(kind string) (any, error) {
 	switch kind {
 	case "ui":
 		manifest.Views = []domain.View{{ID: "main", Title: "My plugin", Kind: "floating", HTML: UITemplate}}
-		return map[string]any{"manifest": manifest, "html": UITemplate, "instructions": "UI packages need no compiler. Install with plugin_install. Views use sandboxed opaque-origin frames. Echo owns drag/resize. The optional bridge requires the delivered nonce, pluginId and viewId. Supported methods are window.close and declared storage.get/set/delete. Network, parent DOM, cookies and other plugin state are unavailable."}, nil
+		manifest.App = &domain.AppRegistration{ViewID: "main"}
+		return map[string]any{"manifest": manifest, "html": UITemplate, "instructions": "UI packages need no compiler. Install with plugin_install. The optional app registration exposes one floating view in Apps under the plugin's name. Set app.viewId to that view's id; app.icon may be an SVG, PNG, JPEG, or WebP image data URL up to 256 KiB. Full manifests without app are not listed in Apps. Clicking the app opens or focuses its window; startup uses the existing echo-plugin-ready/init handshake. Users can dock enabled apps for quick access. Views use sandboxed opaque-origin frames. Echo owns drag/resize. The optional bridge requires the delivered nonce, pluginId and viewId. Supported methods are window.close and declared storage.get/set/delete. Network, parent DOM, cookies and other plugin state are unavailable."}, nil
 	case "renderer":
 		manifest.Renderers = []string{"main"}
 		manifest.Views = []domain.View{{ID: "main", Title: "My renderer", Kind: "renderer", HTML: RendererTemplate}}

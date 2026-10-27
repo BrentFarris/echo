@@ -51,6 +51,7 @@ type Server struct {
 	subscribers       map[chan domain.Event]bool
 	seq               atomic.Int64
 	authMu            sync.Mutex
+	appDockMu         sync.Mutex
 	loginAttempts     map[string][]time.Time
 	sessionSockets    map[string]map[*websocket.Conn]bool
 	revoking          map[string]int

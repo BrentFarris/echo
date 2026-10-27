@@ -53,6 +53,10 @@ File tools and plugin file capabilities record changes directly. Shell and Git/F
 
 ## Plugins and permissions
 
+**Apps**, beside Settings, lists plugins that explicitly register a GUI application. Click **Open** to launch its draggable window; opening the same app again focuses that window and preserves its contents. Apps opens in the main area, and selecting a chat returns to the conversation with its draft and attachments intact. A registered app is still the same plugin, with the same settings, permissions and enablement.
+
+Use **Dock** on an app card to add its square icon above Apps and Settings. The dock scrolls horizontally with touch, the mouse wheel, or keyboard navigation. Dock choices and their order are shared across browsers connected to this Echo profile and survive server restarts. Disabled apps and apps awaiting permission remain in the catalog with a Settings shortcut; their dock icons return when enabled again. **Undock** also works on inactive entries. Window positions remain local to each browser.
+
 Each installed plugin has a settings section. Bot settings include applicable per-bot switches. Web Get, SearXNG, Markdown View, Calendar, Workspaces, Shell, Git, Fossil, P4 (Perforce), Hosted Server and Plugin Authoring start enabled. Local and cloud model connections are core settings, not plugins. SearXNG requires the URL of an existing instance. Web Get allows public HTTP(S) by default; private destinations require exact origin grants in its settings.
 
 Backend plugins run in WASI with no ambient filesystem, environment, network or process access. New capabilities require a direct owner response. Approve the reviewed package in settings, or send `/approve plugin-id digest` using the digest returned by installation. Updates keep the previous working package for rollback. Generated packages never run installation scripts.
