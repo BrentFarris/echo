@@ -64,3 +64,17 @@ On Windows, existing Git loose-ref repositories and tools requiring denied ances
 Custom WASI providers and iframe renderers use the documented host contracts. Acceptance includes native compilation and streaming through a provider, endpoint and credential confinement, rejection before dispatch when a recipient disables the provider, hostile custom-renderer output, and per-bot plain-text fallback. Other provider protocols use bounded HTTP responses; compatible endpoints use native SSE streaming.
 
 Echo listens on port 3740 by default and retains the `%LOCALAPPDATA%\Echo2` Windows profile. Unix uses the platform's user configuration directory with the same `Echo2` basename. Exercise the actual configured models and intended projects on each target OS and check their toolchain compatibility. Startup services are opt-in and must be tested separately under the intended user account. Legacy source and local files remain available in `OLD/` for reference.
+# Chat notification acceptance
+
+Automated coverage includes independent bot completions, rejection of intermediate/failed/cancelled replies, valid pending questions, durable per-device claims, question resolution and deletion, session isolation/revocation, push encryption and Retry-After responses, and background Swarm journal forwarding without browser sockets. Web tests cover independent preferences/sounds, duplicate tabs and push/live races, notification worker display/click handling, deep links after reload, deleted destinations, and settings at a 390px viewport.
+
+Run `go test ./...`, `npm test`, `npm run build`, and `npm run test:e2e -- notifications.spec.ts pwa.spec.ts` (the npm commands run in `web`). Browser fixtures and the mock model must be rebuilt after Go changes.
+
+Physical-device checks are required before claiming verified Android/iOS background delivery. They have **not** been performed by the implementation's automated desktop tests:
+
+1. Serve Echo through HTTPS and enable notifications separately on desktop Chromium, Android Chrome, and an iPhone/iPad Home Screen installation. Verify permission denial and re-enablement instructions.
+2. Start two independent bots in one chat. Leave Echo, lock the phone, and verify each bot's completion notification. Repeat for a pending structured question while another bot continues working.
+3. Tap each alert with Echo open, closed, and at the login screen. Verify the correct machine, chat, bot tab, and message; preserve an unsent draft in another chat.
+4. Verify distinct original sounds in the running app and platform-controlled sounds while suspended. Test the four independent toggles. Verify one sound/popup per event with two desktop tabs, and no popup while the corresponding bot conversation is focused.
+5. Complete a remote Swarm chat with all browser windows closed. Verify phone delivery through the entry server, reconnect recovery, and no duplicate alerts from worker projections. Answer a question before delivery and verify its queued alert is canceled.
+6. Revoke the device session and verify no subsequent delivery. Disable push on one device and verify other enabled devices continue receiving alerts. Confirm existing offline-launch and private-cache checks still pass.

@@ -405,6 +405,9 @@ func (s *Store) DeleteChat(id string) error {
 	if _, e = tx.Exec("DELETE FROM chats WHERE id=?", id); e != nil {
 		return e
 	}
+	if e = cancelChatAlerts(tx, id); e != nil {
+		return e
+	}
 	return tx.Commit()
 }
 func (s *Store) AddMessage(m domain.Message) error {
@@ -415,7 +418,7 @@ func (s *Store) AddMessage(m domain.Message) error {
 	_, e = s.db.Exec("INSERT INTO messages(id,chat_id,data) VALUES(?,?,?)", m.ID, m.ChatID, b)
 	return e
 }
-func (s *Store) FinishMessage(m domain.Message) error {
+func (s *Store) FinishMessage(m domain.Message, alerts ...domain.ChatAlert) error {
 	b, e := pack(m)
 	if e != nil {
 		return e
@@ -435,6 +438,16 @@ func (s *Store) FinishMessage(m domain.Message) error {
 	}
 	if _, e = tx.Exec("DELETE FROM chunks WHERE message_id=?", m.ID); e != nil {
 		return e
+	}
+	if m.Status != "running" {
+		if e = resolveAlerts(tx, m.ChatID, m.ID); e != nil {
+			return e
+		}
+	}
+	for _, a := range alerts {
+		if e = localAlert(tx, a); e != nil {
+			return e
+		}
 	}
 	return tx.Commit()
 }

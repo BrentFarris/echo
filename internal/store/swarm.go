@@ -18,10 +18,10 @@ func (s *Store) migrate() error {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 3 {
+	if version > 4 {
 		return errors.New("this profile was created by a newer Echo; update Echo before opening it")
 	}
-	if version >= 3 {
+	if version >= 4 {
 		return nil
 	}
 	tx, err := s.db.Begin()
@@ -38,7 +38,12 @@ func (s *Store) migrate() error {
 	}
 	// Remember superseded process epochs so a delayed response from an old
 	// connection cannot overwrite results already reconciled after a restart.
-	if _, err = tx.Exec(`ALTER TABLE swarm_checkpoints ADD COLUMN retired TEXT NOT NULL DEFAULT '[]'; PRAGMA user_version=3;`); err != nil {
+	if version < 3 {
+		if _, err = tx.Exec(`ALTER TABLE swarm_checkpoints ADD COLUMN retired TEXT NOT NULL DEFAULT '[]'; PRAGMA user_version=3;`); err != nil {
+			return err
+		}
+	}
+	if err = migrateNotifications(tx); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -46,7 +51,7 @@ func (s *Store) migrate() error {
 
 // MergeReplica commits all deliveries and their source watermark together. A
 // stale source snapshot cannot replace newer output or recreate a deleted chat.
-func (s *Store) MergeReplica(chat, source, epoch string, sequence int64, messages []domain.Message, runs []domain.Run) error {
+func (s *Store) MergeReplica(chat, source, epoch string, sequence int64, messages []domain.Message, runs []domain.Run, alerts ...domain.ChatAlert) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -78,23 +83,45 @@ func (s *Store) MergeReplica(chat, source, epoch string, sequence int64, message
 	if previousEpoch != "" && previousEpoch != epoch {
 		retired = append(retired, previousEpoch)
 	}
+	newCompletions := map[string]bool{}
 	for _, m := range messages {
 		if m.ChatID != chat {
 			return errors.New("replica chat mismatch")
 		}
 		var owner string
-		err = tx.QueryRow("SELECT chat_id FROM messages WHERE id=?", m.ID).Scan(&owner)
+		var priorData []byte
+		err = tx.QueryRow("SELECT chat_id,data FROM messages WHERE id=?", m.ID).Scan(&owner, &priorData)
 		if err == nil && owner != chat {
 			return errors.New("replica message collision")
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
+		var prior domain.Message
+		if len(priorData) > 0 {
+			if err = unpack(priorData, &prior); err != nil {
+				return err
+			}
+		}
+		newCompletions[m.ID] = prior.Status != "completed"
 		data, err := pack(m)
 		if err != nil {
 			return err
 		}
 		if _, err = tx.Exec("INSERT INTO messages(id,chat_id,data) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE messages.chat_id=excluded.chat_id", m.ID, chat, data); err != nil {
+			return err
+		}
+		if m.Status != "running" {
+			if err = resolveAlerts(tx, m.ChatID, m.ID); err != nil {
+				return err
+			}
+		}
+	}
+	for _, a := range alerts {
+		if a.Kind == "completion" && !newCompletions[a.MessageID] {
+			continue
+		}
+		if err = localAlert(tx, a); err != nil {
 			return err
 		}
 	}

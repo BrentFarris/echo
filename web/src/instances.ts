@@ -87,7 +87,7 @@ export function ownedEvent(node: string, e: EchoEvent): EchoEvent {
   let payload = e.payload as any;
   if (e.type === 'message') payload = ownedMessage(node, payload);
   else if (e.type === 'run') payload = { ...payload, id: key(payload.id), chatId: key(payload.chatId), botId: key(payload.botId) };
-  else if (payload?.id) payload = { ...payload, id: key(payload.id) };
+  else if (e.type !== 'notification' && payload?.id) payload = { ...payload, id: key(payload.id) };
   return { ...e, chatId: e.chatId && key(e.chatId), botId: e.botId && key(e.botId), runId: e.runId && key(e.runId), payload };
 }
 

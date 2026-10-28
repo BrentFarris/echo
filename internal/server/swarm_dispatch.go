@@ -789,7 +789,11 @@ func (s *Server) mergeWorker(f *swarmDispatch, node string, snapshot workerSnaps
 			runs = append(runs, run)
 		}
 	}
-	if err := s.Store.MergeReplica(f.ChatID, swarm.Key(node, f.ID), snapshot.Epoch, snapshot.Sequence, messages, runs); err != nil {
+	alerts := []domain.ChatAlert{}
+	for _, m := range messages {
+		alerts = append(alerts, s.messageAlert(m)...)
+	}
+	if err := s.Store.MergeReplica(f.ChatID, swarm.Key(node, f.ID), snapshot.Epoch, snapshot.Sequence, messages, runs, alerts...); err != nil {
 		return
 	}
 	if f.d != nil && snapshot.finished() {

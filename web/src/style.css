@@ -23,3 +23,9 @@ dialog{color:var(--text);background:var(--surface);border:1px solid var(--border
 @keyframes chat-dot-breathe { 0%,100% { opacity:1; } 50% { opacity:.45; } }
 @media(prefers-reduced-motion:reduce){ .chat-dot.busy { animation:none; } }
 @media(prefers-color-scheme:dark){ .chat-dot.busy { background:#d29922; box-shadow:0 0 0 2px #d2992229; } .chat-dot.done { background:#2ea043; box-shadow:0 0 0 2px #2ea04329; } }
+/* Chat alerts remain usable above app windows and on narrow/touch screens. */
+.chat-notifications { position: fixed; z-index: 10000; right: max(16px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); display: grid; gap: 8px; width: min(380px, calc(100vw - 32px)); max-height: 60vh; overflow-y: auto; }
+.chat-notification { display: flex; align-items: start; gap: 8px; padding: 10px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 4px 20px #0005; }
+.chat-notification-open { display: grid; gap: 5px; text-align: left; min-width: 0; flex: 1; white-space: normal; overflow-wrap: anywhere; background: transparent; color: inherit; border: 0; }
+.chat-notification > button { min-height: 44px; }
+.notification-options { display: grid; gap: 10px; margin-block: 16px; }

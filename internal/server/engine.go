@@ -478,7 +478,11 @@ func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run do
 			m.Status = "failed"
 			callErr = persistErr
 		}
-		if e = s.Store.FinishMessage(m); e != nil {
+		if ctx.Err() != nil {
+			m.Status = "cancelled"
+			callErr = ctx.Err()
+		}
+		if e = s.Store.FinishMessage(m, s.messageAlert(m)...); e != nil {
 			return e
 		}
 		s.mu.Lock()

@@ -143,6 +143,10 @@ func (s *Server) askUserQuestions(ctx context.Context, scope domain.ExecutionSco
 	}
 	s.pendingQuestions[scope.ToolMessageID] = wait
 	s.questionsMu.Unlock()
+	m := domain.Message{ID: scope.ToolMessageID, ChatID: scope.ChatID, RunID: scope.RunID, BotID: scope.Bot.ID, Author: scope.Bot.Name + " · " + AskUserQuestionsToolName, Role: "tool", Status: "running", Content: string(raw)}
+	for _, a := range s.messageAlert(m) {
+		_ = s.Store.AddQuestionAlert(a)
+	}
 	s.emit("questions", scope.ChatID, scope.RunID, scope.Bot.ID, map[string]any{"id": scope.ToolMessageID, "questions": set})
 	defer s.clearPendingQuestion(scope.ToolMessageID, wait)
 	select {
@@ -182,6 +186,7 @@ func (s *Server) resolveChatQuestions(chatID, messageID string, answers []PlanAn
 		return e
 	}
 	wait.sent = true
+	_ = s.Store.ResolveQuestionAlert(chatID, messageID)
 	wait.resolved <- questionResolution{answers: normalized, skipped: skipped}
 	return nil
 }

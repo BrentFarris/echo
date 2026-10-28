@@ -12,6 +12,8 @@ import { endpointForm, endpointValues } from './modelSettings';
 import { mountDevelopment } from './development';
 import { mountHosting } from './hosting';
 import { setupPWA } from './pwa';
+import { ChatNotifications } from './notifications';
+import { parseChatRoute } from './notificationRoutes';
 import { composerMarkup, icons, autosizeComposer, wireComposerMenus, attachmentCard, previewAttachment, releaseAttachments, prefixBotMention, type DraftAttachment } from './composer';
 import { generatedMedia } from './generatedMedia';
 import { isQuestionMessage, questionCard, type QuestionSubmission } from './planQuestions';
@@ -30,7 +32,14 @@ const pwa = setupPWA(notice);
 let state: State = { bots: [], chats: [], endpoints: [], plugins: [], appDock: [], schedules: [], occurrences: [], runs: [] };
 let showingApps = location.hash === '#apps';
 let showingApp = !!parseAppRoute(location.hash);
-let chatId = (showingApps || showingApp) ? '' : location.hash.slice(1), messages: Message[] = [], references: Segment[] = [];
+let chatId = (showingApps || showingApp) ? '' : parseChatRoute(location.hash).chatId, messages: Message[] = [], references: Segment[] = [];
+let pendingNotificationHash: string | null = parseChatRoute(location.hash).messageId ? location.hash : null;
+let openingNotification = false;
+const notifications = new ChatNotifications({
+  notice,
+  navigate: hash => { pendingNotificationHash = hash; history.replaceState(null, '', hash || '/'); if (document.querySelector('#composer')) void openNotification(hash).catch(e => notice(e, true)); },
+  viewing: alert => document.visibilityState === 'visible' && document.hasFocus() && !showingApps && !showingApp && !document.querySelector('dialog[open]') && chatId === resourceID(alert.homeNodeId, alert.chatId) && (!visibleBotId || visibleBotId === resourceID(alert.homeNodeId, alert.botId))
+});
 let settingsNode = '', machineFilter = '', modelNode = '';
 let chatNavigation = 0;
 let generationByNode: Record<string, Generation> = {};
@@ -91,7 +100,7 @@ function shell() {
   });
   q('#new-chat').onclick = action(newChat); q('#apps-button').onclick = showApps; q('#settings-button').onclick = () => settings(); q('#missed-button').onclick = showMissed;
   renderMainView();
-  addEventListener('hashchange', () => { if (location.hash === '#apps') showApps(); else if (parseAppRoute(location.hash)) { const r = parseAppRoute(location.hash)!; action(() => pluginWindows.open(r.pluginId, r.viewId, r.botId, 'embedded'))(); } else action(() => selectChat(location.hash.slice(1)))(); });
+  addEventListener('hashchange', () => { if (location.hash === '#apps') { pendingNotificationHash = null; showApps(); } else if (parseAppRoute(location.hash)) { pendingNotificationHash = null; const r = parseAppRoute(location.hash)!; action(() => pluginWindows.open(r.pluginId, r.viewId, r.botId, 'embedded'))(); } else if (parseChatRoute(location.hash).messageId) { pendingNotificationHash = location.hash; action(() => openNotification(location.hash))(); } else { pendingNotificationHash = null; action(() => selectChat(parseChatRoute(location.hash).chatId))(); } });
   pwa.mount(q<HTMLButtonElement>('#install-echo'));
   q('.mobile-menu').onclick = () => setSidebarOpen(!q('.sidebar').classList.contains('open'));
   q('.sidebar-close').onclick = q('.sidebar-backdrop').onclick = () => setSidebarOpen(false);
@@ -182,6 +191,7 @@ async function newChat() {
 }
 async function selectChat(id: string) {
   if (submitting) return;
+  if (!openingNotification) pendingNotificationHash = null;
   const navigation = ++chatNavigation, previous = chatId;
   showingApp = false; showingApps = false; renderMainView();
   closePicker(); ++referenceVersion; clearTimeout(referenceTimer); document.querySelector('.bot-details')?.dispatchEvent(new Event('dismiss'));
@@ -198,6 +208,33 @@ async function selectChat(id: string) {
   messages = loaded; renderMessages(true);
   const loadedBot = selectedThreadBot(messages);
   if (!initialBot || loadedBot?.id !== initialBot.id) addressThread(loadedBot);
+}
+async function openNotification(hash: string) {
+  if (openingNotification || submitting) return;
+  openingNotification = true; pendingNotificationHash = hash;
+  try {
+    await refresh();
+    const target = parseChatRoute(hash);
+    const [node, raw] = splitID(target.chatId), id = resourceID(node, raw);
+    if (!target.chatId) { pendingNotificationHash = null; return; }
+    if (!state.chats.some(c => c.id === id)) {
+      if (!instanceOnline(node)) { notice('This chat’s machine is unavailable. Echo will keep this destination and retry when it reconnects.', true); return; }
+      pendingNotificationHash = null; notice('This chat is no longer available.', true); return;
+    }
+    document.querySelectorAll<HTMLDialogElement>('dialog[open]').forEach(dialog => dialog.close());
+    await selectChat(id);
+    if (target.botId) { const [owner, bot] = splitID(target.botId); selectBotThread(resourceID(owner, bot)); }
+    if (target.messageId) {
+      const [owner, message] = splitID(target.messageId);
+      const element = document.getElementById('message-' + resourceID(owner, message));
+      if (element) {
+        for (let parent: HTMLElement | null = element; parent; parent = parent.parentElement) if (parent instanceof HTMLDetailsElement) parent.open = true;
+        element.querySelectorAll<HTMLDetailsElement>('details.question-card').forEach(card => card.open = true);
+        element.scrollIntoView({ block: 'center' }); element.tabIndex = -1; element.focus({ preventScroll: true });
+      }
+    }
+    pendingNotificationHash = null; history.replaceState(null, '', hash);
+  } finally { openingNotification = false; }
 }
 async function send() {
   if (busy() || submitting) return; const draft = trimmedDraft(q<ReferenceInput>('#composer').snapshot()), content = draft.text; if (!content && !attachments.length) return;
@@ -263,7 +300,7 @@ function renderAttachments() {
 async function refresh() {
   if (refreshing) return refreshing;
   const rendering = () => JSON.stringify([state.plugins.filter(p => p.renderers?.length).map(p => [p.id, p.enabled, p.pending, p.digest]), state.bots.map(b => b.plugins)]), beforeRendering = rendering();
-  refreshing = (async () => { const [local, swarm] = await Promise.all([api<State>('/state'), api<SwarmState>('/swarm/state')]); state = combineState(local, swarm); settingsNode ||= entryNode; modelNode ||= entryNode; if (!state.chats.some(c => c.id === chatId)) {
+  refreshing = (async () => { const [local, swarm] = await Promise.all([api<State>('/state'), api<SwarmState>('/swarm/state')]); state = combineState(local, swarm); chatId = resourceID(...splitID(chatId)); settingsNode ||= entryNode; modelNode ||= entryNode; if (!pendingNotificationHash && !state.chats.some(c => c.id === chatId)) {
       if (chatId) { releaseAttachments(drafts.get(chatId)?.attachments || attachments); drafts.delete(chatId); }
       chatId = state.chats[0]?.id || ''; if (!showingApps && !showingApp) history.replaceState(null, '', chatId ? '#' + chatId : location.pathname);
       const draft = drafts.get(chatId);
@@ -273,7 +310,7 @@ async function refresh() {
     }
     renderSidebar(); renderModels(); if (rendering() !== beforeRendering) { renderers.sync(state.plugins); renderMessages(false, true); } else renderMessages(); updateSendButton();
     renderApps(); pluginWindows.sync(state.plugins, state.bots);
-  })().finally(() => { refreshing = null; }); return refreshing;
+  })().finally(() => { refreshing = null; if (pendingNotificationHash && !openingNotification && instanceOnline(splitID(parseChatRoute(pendingNotificationHash).chatId)[0])) { const hash = pendingNotificationHash; setTimeout(() => { if (pendingNotificationHash === hash) void openNotification(hash).catch(e => notice(e, true)); }, 0); } }); return refreshing;
 }
 function queueRefresh() { clearTimeout(refreshTimer); refreshTimer = window.setTimeout(() => action(refresh)(), 150); }
 function renderSidebar() {
@@ -522,6 +559,7 @@ function connect() {
   ws.onmessage = event => events.push(entryNode, ownedEvent(entryNode, JSON.parse(event.data)));
 }
 function receive(e: any) {
+    if (e.type === 'notification') { notifications.receive(e.payload); return; }
     if (e.type === 'plugin-open') { action(() => openPlugin(e.payload.id, e.payload.viewId, e.botId))(); return; }
     if (e.type === 'run') { state.runs = [...state.runs.filter(r => r.id !== e.payload.id), e.payload]; updateSendButton(); if (e.chatId === chatId) renderMessages(); queueRefresh(); }
     if (e.chatId === chatId && e.type === 'tool-output') {
@@ -612,11 +650,12 @@ function settings(section = 'bots', node = settingsNode || entryNode) {
   const previous = document.querySelector<HTMLDialogElement>('#settings'); if (previous) { previous.close(); previous.remove(); }
   const el = dialog(`Settings · ${machineName(node)}`, '<div class="settings-layout"><nav class="settings-nav" aria-label="Settings sections"></nav><div class="settings-content"></div></div>'); el.id = 'settings';
   const nav = q('.settings-nav', el), content = q('.settings-content', el);
-  const entries = [{ id: 'bots', name: 'Bots' }, { id: 'models', name: 'Local Models' }, { id: 'cloud-models', name: 'Cloud Models' }, ...ownerPlugins.map(p => ({ id: localID(p.id), name: p.name }))];
+  const entries = [{ id: 'bots', name: 'Bots' }, { id: 'models', name: 'Local Models' }, { id: 'cloud-models', name: 'Cloud Models' }, { id: 'notifications', name: 'Notifications' }, ...ownerPlugins.map(p => ({ id: localID(p.id), name: p.name }))];
   const picker = document.createElement('select'); picker.setAttribute('aria-label', 'Settings machine'); picker.innerHTML = [...instances.keys()].map(id => `<option value="${id}">${esc(machineName(id))}</option>`).join(''); picker.value = node; picker.onchange = () => settings(section, picker.value); q('.dialog-heading button', el).before(picker);
   nav.innerHTML = `<div class="settings-nav-main">${entries.map(e => `<button data-section="${esc(e.id)}" class="${section === e.id ? 'active' : ''}">${esc(e.name)}</button>`).join('')}</div><hr><button data-section="development" class="${section === 'development' ? 'active' : ''}">Development</button>`;
   for (const button of nav.querySelectorAll<HTMLButtonElement>('button')) button.onclick = () => settings(button.dataset.section);
   if (section === 'bots') botSettings(content);
+  else if (section === 'notifications') void notifications.mount(content);
   else if (section === 'models' || section === 'cloud-models') modelSettings(content, section === 'cloud-models');
   else if (section === 'development') void mountDevelopment(content, boundAPI, new InstanceClient(node), refresh);
   else pluginSettings(content, ownerPlugins.find(p => localID(p.id) === section)!);
@@ -699,5 +738,5 @@ async function start() {
   catch { app.innerHTML = '<form class="login form"><div class="brand">Echo</div><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="primary">Sign in</button></form>'; q<HTMLFormElement>('form').onsubmit = e => { e.preventDefault(); action(async () => { const f = new FormData(q('form') as HTMLFormElement); await api('/session', 'POST', { password: f.get('password') }); await ready(); })(); }; return; }
   await ready();
 }
-async function ready() { const route = parseAppRoute(location.hash); shell(); await refresh(); if (route) await pluginWindows.open(route.pluginId, route.viewId, route.botId, 'embedded'); else if (chatId && !showingApps) await selectChat(chatId); else renderMessages(); connect(); connectSwarm(); }
+async function ready() { const route = parseAppRoute(location.hash); shell(); await refresh(); if (pendingNotificationHash) await openNotification(pendingNotificationHash); else if (route) await pluginWindows.open(route.pluginId, route.viewId, route.botId, 'embedded'); else if (chatId && !showingApps) await selectChat(chatId); else renderMessages(); connect(); connectSwarm(); void notifications.start(); }
 void start().catch(e => notice(e, true));

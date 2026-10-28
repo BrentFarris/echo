@@ -150,6 +150,9 @@ func main() {
 			default:
 				content = "Tool completed. " + last.Content
 			}
+		} else if strings.Contains(lower, "notification question fixture") {
+			tool = "ask_user_questions"
+			args = map[string]any{"questions": []any{map[string]any{"id": "approach", "question": "Which notification approach?", "options": []string{"First", "Second"}}}}
 		} else if strings.Contains(lower, "hostile markdown") {
 			content = "## Safe heading\n<img src=x onerror=\"window.compromised=true\"><script>window.compromised=true</script><a href='javascript:alert(1)'>unsafe link</a>"
 		} else if strings.Contains(lower, "transform gizmo") && strings.Contains(user, "Referenced path (read with file tools): ") {

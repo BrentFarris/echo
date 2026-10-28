@@ -33,6 +33,10 @@ import (
 )
 
 type Server struct {
+	notificationMu     sync.Mutex
+	notificationWG     sync.WaitGroup
+	notificationClient *http.Client // Injectable transport for push delivery tests.
+
 	Swarm             *swarm.Manager
 	closeOnce         sync.Once
 	swarmMu           sync.Mutex
@@ -188,6 +192,7 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 		return nil, e
 	}
 	s.initEditor()
+	s.startNotifications()
 	go func() {
 		t := time.NewTicker(5 * time.Minute)
 		defer t.Stop()
@@ -256,6 +261,7 @@ func (s *Server) close() {
 		s.Plugins.Close(context.Background())
 	}
 	s.swarmWG.Wait()
+	s.notificationWG.Wait()
 	s.Store.Close()
 }
 func (s *Server) Bot(id string) (domain.Bot, error) {
