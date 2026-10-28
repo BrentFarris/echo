@@ -180,6 +180,35 @@ P4 settings include server, user, client and optional charset/trust file. Save a
 
 Workspace-bound source-control commands start without network access. Grant Internet and/or private-network access directly in the relevant plugin's settings for remote operations. These grants include native descendants; the private-network Windows capability permits both connections and listeners. Filesystem restrictions remain enforced. Chat tools cannot enlarge these grants. Windows loopback isolation can still prevent bound bots from reaching a server on the same machine; Echo does not add machine-wide exemptions or fall back to an unconfined process. Unbound bots retain their unrestricted host scope. [Microsoft's AppContainer isolation reference](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) describes these OS boundaries.
 
+## Workspace skills
+
+Reusable project guidance lives in `<workspace>/skills/<skill-name>/SKILL.md`. Each workspace owns its skills; bots with access to the same folder share them. Root ordering does not select a skill destination or give one workspace precedence. Skills are ordinary files that can be reviewed and committed with the repository, subject to its ignore rules.
+
+At the start of a run, bound bots receive up to three relevant skill summaries from all their roots. They read full instructions with `workspace_skill_read` before using them and can use `workspace_skill_search` for further discovery. Search accepts an optional `workspace`, `query`, and `limit` (default 10, maximum 50); an empty query lists skills. Only immediate `skills/<name>/SKILL.md` entries are discovered. Scans inspect at most 256 entries per workspace and report malformed files, inaccessible directories, or truncation without blocking other roots. Changes made outside Echo are visible on the next search or read.
+
+`workspace_skill_read` requires `workspace` and `name`, and returns metadata, body, absolute path, and a revision. `workspace_skill_save` requires `workspace`, `name`, `description`, and `body`, with optional `triggers` and `revision`. Omitting the revision means create-only; updating an existing file requires its current revision. Conflicting saves fail instead of silently replacing another bot's work. Saves appear in **Files changed**, and the existing workspace editor can open and edit the files.
+
+Reads and saves require an explicit absolute workspace path. For bound bots, it must match a configured root. Unbound bots must also provide a workspace for searches; Echo does not scan their computer. Bots choose the destination from the task context and ask when it is ambiguous. Remote bots use folders on their own host. Existing scope restrictions and private-state protections still apply, including links that would escape the selected workspace.
+
+For example, `skills/build-project/SKILL.md` could contain:
+
+```markdown
+---
+name: build-project
+description: Build and verify this project before release.
+triggers:
+  - release checks
+---
+
+Run the project's documented build and acceptance checks before packaging.
+```
+
+Names must match their directory and use lowercase kebab-case (at most 64 characters). Descriptions are required and limited to 500 characters. Optional triggers allow up to 12 nonempty phrases of 120 characters each. The Markdown body must be nonempty, and the complete UTF-8 file must not exceed 64 KiB. Supporting scripts, references, and assets may live alongside `SKILL.md` and are accessed through ordinary file tools.
+
+Bots may save stable guidance useful across future tasks during authorized work. Skills are reference material, not permission grants: user instructions take precedence, and stale guidance must be checked against the current project. Secrets, temporary task status, and raw conversations should not be saved as skills.
+
+Legacy `.echo/skills` directories are not read or migrated automatically. To retain an old skill, deliberately move its complete folder from `.echo/skills/<name>/` to `skills/<name>/`, review its contents, and resolve any existing destination before moving. No special Echo root or built-in plugin-authoring skill is required.
+
 ## Native workspace restrictions
 
 Unbound bots have the requested host filesystem scope, except Echo's protected private profile. Binding folders confines filesystem tools through `os.Root` and native commands through the platform sandbox. Windows uses a separate AppContainer identity and cancellable Job Object; Echo journals its own ACL entries and cleans them after execution or at startup after a crash. Linux uses bubblewrap namespaces, and macOS uses Seatbelt. Workspaces being disabled never removes these restrictions.

@@ -192,6 +192,10 @@ func (f *Files) Write(bot domain.Bot, path, content, expected string) (any, erro
 			return nil, errors.New("file changed since it was read")
 		}
 	}
+	return writeRootFile(r, p, path, content)
+}
+
+func writeRootFile(r *os.Root, p, path, content string) (any, error) {
 	tmp := p + ".echo2-" + domain.ID()
 	file, e := r.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if e != nil {

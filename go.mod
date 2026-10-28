@@ -13,7 +13,10 @@ require (
 	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06
 )
 
-require github.com/golang-jwt/jwt/v5 v5.2.1 // indirect
+require (
+	github.com/golang-jwt/jwt/v5 v5.2.1 // indirect
+	gopkg.in/yaml.v3 v3.0.1
+)
 
 require (
 	github.com/dustin/go-humanize v1.1.0 // indirect

@@ -405,6 +405,7 @@ func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run do
 	if e != nil {
 		return e
 	}
+	s.addSkillContext(ctx, bot, history)
 	if d.worker != nil {
 		history[0].Content += "\n" + d.worker.rosterPrompt(bot.ID)
 	}

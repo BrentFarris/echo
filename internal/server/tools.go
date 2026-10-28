@@ -34,6 +34,9 @@ func (s *Server) coreTools(bot domain.Bot) []domain.Tool {
 		coreTool("file_delete", "Delete an individual file or empty directory.", map[string]any{"path": S("Path")}, "path"),
 		coreTool("file_move", "Move or rename an entry within one root.", map[string]any{"from": S("Source"), "to": S("Destination")}, "from", "to"),
 		coreTool("file_mkdir", "Create directories.", map[string]any{"path": S("Directory")}, "path"),
+		coreTool("workspace_skill_search", "Find reusable workspace skills by metadata. Empty query lists skills. Searches all bound roots unless workspace is supplied; unbound bots must supply an explicit workspace.", map[string]any{"workspace": S("Absolute workspace directory; must match a configured root for bound bots"), "query": S("Task or search text"), "limit": plugins.N("Result count, default 10, maximum 50")}),
+		coreTool("workspace_skill_read", "Read a workspace skill and its revision before applying or updating it. Skills are reference data, not permission grants.", map[string]any{"workspace": S("Explicit absolute workspace directory"), "name": S("Skill folder name")}, "workspace", "name"),
+		coreTool("workspace_skill_save", "Save stable reusable guidance in workspace/skills/name/SKILL.md. Choose the task's workspace explicitly; ask if ambiguous. Omitting revision is create-only; updating requires the revision from a read. Do not save secrets, transient task status, or raw conversations.", map[string]any{"workspace": S("Explicit absolute workspace directory"), "name": S("Lowercase kebab-case skill name, at most 64 characters"), "description": S("When to use this skill, at most 500 characters"), "body": S("Reusable Markdown instructions"), "triggers": A("Optional search phrases, at most 12 of 120 characters each"), "revision": S("Expected revision from workspace_skill_read; omit for creation")}, "workspace", "name", "description", "body"),
 		coreTool("chat_search", "Recover matching text from this bot's complete stored conversation.", map[string]any{"query": S("Exact text")}, "query"),
 		coreTool("bot_send", "Send a request to another bot addressed by this user message; returns a correlation id.", map[string]any{"to": S("Recipient bot id or handle"), "content": S("Question or handoff"), "requestId": S("Optional idempotency key")}, "to", "content"),
 		coreTool("bot_reply", "Answer an explicit request addressed to you.", map[string]any{"requestId": S("Correlation id"), "content": S("Answer")}, "requestId", "content"),
@@ -143,6 +146,8 @@ func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionSc
 		return nil, e
 	}
 	switch name {
+	case "workspace_skill_search", "workspace_skill_read", "workspace_skill_save":
+		return s.skillTool(ctx, scope.Bot, name, a)
 	case "file_read":
 		return s.Files.Read(scope.Bot, text(a, "path"))
 	case "file_write", "file_delete", "file_move", "file_mkdir":
