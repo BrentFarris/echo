@@ -418,39 +418,52 @@ func (c *Client) Search(ctx context.Context, cql string, limit int, token string
 		}
 		out.Results = append(out.Results, v)
 	}
+	out.NextContinuation, err = c.searchContinuation(raw, "/rest/api/search", cql, binding)
+	if err != nil {
+		return out, err
+	}
+	return out, resultSize(out)
+}
+
+// Follow only the pagination position from an endpoint-confined link. All
+// operation parameters and the destination are constructed again by the caller.
+func (c *Client) searchContinuation(raw map[string]any, path, cql, binding string) (string, error) {
 	if next := str(object(raw["_links"])["next"]); next != "" {
-		base, _ := c.base()
-		endpoint, _ := url.Parse(base + "/rest/api/search")
+		base, err := c.base()
+		if err != nil {
+			return "", err
+		}
+		endpoint, _ := url.Parse(base + path)
 		u, parseErr := url.Parse(next)
 		if parseErr != nil || u.User != nil || u.Fragment != "" || strings.ContainsAny(next, "\\\r\n\x00") {
-			return out, errors.New("unsafe Confluence pagination link")
+			return "", errors.New("unsafe Confluence pagination link")
 		}
 		// Cloud sometimes omits /wiki from API-relative pagination links.
-		if !u.IsAbs() && strings.HasPrefix(u.Path, "/rest/api/search") {
+		if !u.IsAbs() && u.Host == "" && (u.Path == path || c.Config.Deployment == "cloud" && u.Path == "/wiki"+path) {
 			root, _ := url.Parse(base)
-			u.Path = root.Path + u.Path
+			u.Path = root.Path + path
 		}
 		u = endpoint.ResolveReference(u)
 		if u.Scheme != endpoint.Scheme || !strings.EqualFold(u.Host, endpoint.Host) || u.Path != endpoint.Path || u.RawPath != "" {
-			return out, errors.New("Confluence pagination cannot leave the configured search endpoint")
+			return "", errors.New("Confluence pagination cannot leave the configured search endpoint")
 		}
 		q := u.Query()
 		if value := q.Get("cql"); value != "" && value != cql {
-			return out, errors.New("Confluence pagination changed the CQL query")
+			return "", errors.New("Confluence pagination changed the CQL query")
 		}
 		nextToken := continuation{Binding: binding, Start: q.Get("start"), Cursor: q.Get("cursor")}
 		if nextToken.Start != "" {
 			n, e := strconv.Atoi(nextToken.Start)
 			if e != nil || n < 0 {
-				return out, errors.New("invalid Confluence pagination offset")
+				return "", errors.New("invalid Confluence pagination offset")
 			}
 		}
 		if nextToken.Start == "" && nextToken.Cursor == "" {
-			return out, errors.New("Confluence pagination has no cursor or offset")
+			return "", errors.New("Confluence pagination has no cursor or offset")
 		}
-		out.NextContinuation = encodeContinuation(nextToken)
+		return encodeContinuation(nextToken), nil
 	}
-	return out, resultSize(out)
+	return "", nil
 }
 
 type ReadResult struct {

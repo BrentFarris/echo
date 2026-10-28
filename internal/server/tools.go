@@ -304,7 +304,7 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		return nil, errors.New("plugin management belongs to Echo's Plugin Authoring plugin")
 	}
 	switch method {
-	case "confluence.search", "confluence.read":
+	case "confluence.search", "confluence.read", "confluence.users.search", "confluence.users.current":
 		return s.confluenceOperation(ctx, scope, manifest, method, raw)
 	case "jira.search", "jira.issue", "jira.comments":
 		return s.jiraOperation(ctx, scope, manifest, method, raw)

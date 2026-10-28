@@ -106,6 +106,7 @@ func (s *Server) confluenceOperation(ctx context.Context, scope domain.Execution
 	}
 	var args struct {
 		CQL          string `json:"cql"`
+		Query        string `json:"query"`
 		ID           string `json:"id"`
 		Format       string `json:"format"`
 		Limit        int    `json:"limit"`
@@ -124,6 +125,10 @@ func (s *Server) confluenceOperation(ctx context.Context, scope domain.Execution
 		return client.Search(ctx, args.CQL, args.Limit, args.Continuation)
 	case "confluence.read":
 		return client.Read(ctx, args.ID, args.Format, args.Continuation)
+	case "confluence.users.search":
+		return client.SearchUsers(ctx, args.Query, args.Limit, args.Continuation)
+	case "confluence.users.current":
+		return client.CurrentUser(ctx)
 	default:
 		return nil, errors.New("unknown Confluence operation")
 	}

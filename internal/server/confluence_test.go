@@ -181,3 +181,68 @@ func TestConfluenceSettingsCancelActiveRequests(t *testing.T) {
 		})
 	}
 }
+
+func TestConfluenceUserToolsResolveAuthorThroughWASI(t *testing.T) {
+	s := testServer(t)
+	authorQuery := ""
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer confluence-private-token" {
+			t.Error("missing host-injected credential")
+		}
+		switch r.URL.Path {
+		case "/confluence/rest/api/user/current":
+			fmt.Fprint(w, `{"type":"known","username":"service.account","userKey":"service-key","displayName":"Service Account"}`)
+		case "/confluence/rest/api/search":
+			cql := r.URL.Query().Get("cql")
+			if strings.HasPrefix(cql, "user.fullname") {
+				if cql != `user.fullname ~ "Brent Farris"` {
+					t.Error("incorrect name query", cql)
+				}
+				fmt.Fprint(w, `{"results":[{"user":{"username":"brent.farris","userKey":"brent-hash","displayName":"Brent Farris"}}]}`)
+			} else {
+				authorQuery = cql
+				if r.URL.Query().Get("limit") != "3" {
+					t.Error("missing three-page limit")
+				}
+				fmt.Fprint(w, `{"results":[{"content":{"id":"3","type":"page","title":"Third"}},{"content":{"id":"2","type":"page","title":"Second"}},{"content":{"id":"1","type":"page","title":"First"}}]}`)
+			}
+		default:
+			t.Error("unexpected request", r.URL)
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	configureConfluence(t, s, upstream.URL+"/confluence")
+	bot, _ := s.Bot("echo")
+	scope := domain.ExecutionScope{Bot: bot}
+	current, err := s.Plugins.Invoke(context.Background(), scope, "confluence_get_current_user", json.RawMessage(`{}`))
+	if err != nil || current.(map[string]any)["username"] != "service.account" {
+		t.Fatal(current, err)
+	}
+	users, err := s.Plugins.Invoke(context.Background(), scope, "confluence_search_users", json.RawMessage(`{"query":"Brent Farris"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	matched := users.(map[string]any)["results"].([]any)[0].(map[string]any)
+	if matched["userKey"] != "brent-hash" {
+		t.Fatal(matched)
+	}
+	cql := fmt.Sprintf(`type = page AND creator = %q ORDER BY created DESC`, matched["username"])
+	args, _ := json.Marshal(map[string]any{"cql": cql, "limit": 3})
+	pages, err := s.Plugins.Invoke(context.Background(), scope, "confluence_search", args)
+	if err != nil || len(pages.(map[string]any)["results"].([]any)) != 3 || authorQuery != `type = page AND creator = "brent.farris" ORDER BY created DESC` {
+		t.Fatal(pages, err, authorQuery)
+	}
+	for _, value := range []any{current, users, pages} {
+		data, _ := json.Marshal(value)
+		if strings.Contains(string(data), "confluence-private-token") {
+			t.Fatal("credential escaped the host")
+		}
+	}
+	scope.Bot.Plugins = map[string]bool{"confluence": false}
+	for _, tool := range []struct{ name, args string }{{"confluence_get_current_user", `{}`}, {"confluence_search_users", `{"query":"Brent"}`}} {
+		if _, err = s.Plugins.Invoke(context.Background(), scope, tool.name, json.RawMessage(tool.args)); err == nil {
+			t.Fatal("disabled bot accessed", tool.name)
+		}
+	}
+}

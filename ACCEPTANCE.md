@@ -93,6 +93,8 @@ Physical-device checks are required before claiming verified Android/iOS backgro
 
 ## Confluence plugin
 
+- Resolve a visible full/public name to Cloud account IDs or Data Center usernames/keys, preserve ambiguous candidates and hidden profile fields, and identify the configured token account separately. Verify a bot resolves Brent Farris before querying `creator` with limit 3 and creation order. User pagination must reject destination changes, content-search continuations, query/limit changes and credential rotation. Test classic/scoped Cloud routing and Data Center context paths; scoped lookup/current-user access requires `read:content-details:confluence`.
+
 - Configure Cloud classic/scoped tokens or a Data Center URL with a context path; verify tokens use the host vault and never appear in state or transcripts. Replacing/clearing tokens and changing the destination invalidate credentials/continuations as appropriate and cancel active requests.
 - Verify CQL search preserves queries, follows server cursors/offsets, and rejects pagination outside the search endpoint. Read pages, blog posts, inline/footer comments and attachment metadata through the WASI bridge, respecting global and per-bot disablement.
 - Reconstruct a long Unicode page from all Markdown/storage chunks, detect content-version changes, preserve common formatting and macro body text, and reject redirects/oversized responses. Exercise 400/401/403/404/429/5xx diagnostics and cancellation.

@@ -20,6 +20,7 @@ export function mountConfluenceSettings(root: HTMLElement, plugin: Plugin, api: 
     <div class="button-row"><button class="primary">Save token</button><button type="button" data-confluence-clear>Clear token</button><button type="button" data-confluence-test>Test connection</button></div>
     <small>Save settings first. Cloud uses your email and API token; scoped tokens also require a Cloud ID. Data Center uses a personal access token. Tokens stay in the host credential vault.</small>
   </form><p data-confluence-result aria-live="polite"></p>
+  <p class="subtle">Ask “Find the last three pages Brent Farris authored.” Bots can find people by visible full/public name and use their returned ID to search authored pages. Cloud email-to-ID lookup is unavailable. The current-user tool identifies the saved token account, which may be a service account.</p>
   <p class="subtle">Bots can search with CQL and read full pages, blog posts and comments as Markdown or storage markup. Attachments provide metadata and links. Example: “Search Confluence for type = page AND space = ENG, then read the full onboarding page.” Confluence account permissions and token read scopes apply.</p>`;
   const form = root.querySelector<HTMLFormElement>('[data-confluence-settings]')!;
   const deployment = form.elements.namedItem('deployment') as HTMLSelectElement;
