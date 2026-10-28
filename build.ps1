@@ -22,16 +22,33 @@ try {
     try {
         # npm ci removes node_modules first. Windows cannot remove native modules
         # loaded by Vite/Vitest, and a failed cleanup leaves a partial install.
+        # Stop only Node processes with modules loaded from this checkout. Echo
+        # stays running until the staged build and detached launcher are ready.
         $modulesRoot = [IO.Path]::GetFullPath((Join-Path $PWD.Path 'node_modules')).TrimEnd('\') + '\'
         $lockingProcesses = @(Get-Process -Name node -ErrorAction SilentlyContinue | ForEach-Object {
             $nodeProcess = $_
-            try { $loadedModules = @($nodeProcess.Modules) } catch { $loadedModules = @() }
+            try {
+                # Pin this process's identity even if it exits and Windows reuses its PID.
+                $null = $nodeProcess.Handle
+                $loadedModules = @($nodeProcess.Modules)
+            } catch { $loadedModules = @() }
             if ($loadedModules | Where-Object {
                 $_.FileName -and $_.FileName.StartsWith($modulesRoot, [StringComparison]::OrdinalIgnoreCase)
-            }) { $nodeProcess.Id }
+            }) { $nodeProcess }
         })
-        if ($lockingProcesses.Count) {
-            throw "Frontend dependencies are in use by Node process(es): $($lockingProcesses -join ', '). Stop this checkout's Vite/Vitest processes and rerun build.ps1. npm ci has not been started."
+        foreach ($nodeProcess in $lockingProcesses) {
+            Write-Output "Stopping Node process $($nodeProcess.Id) holding frontend dependencies in $modulesRoot"
+            try {
+                # Use the captured process object rather than looking up its PID
+                # again, and wait for Windows to release its native module locks.
+                if (-not $nodeProcess.HasExited) { Stop-Process -InputObject $nodeProcess -Force -ErrorAction Stop }
+                if (-not $nodeProcess.WaitForExit(10000)) { throw 'Process exit timed out' }
+            } catch {
+                # A watcher can exit on its own between discovery and stopping.
+                if (-not $nodeProcess.HasExited) {
+                    throw "Could not stop frontend Node process $($nodeProcess.Id): $($_.Exception.Message). npm ci has not been started."
+                }
+            }
         }
         npm ci --ignore-scripts --prefer-offline
         if ($LASTEXITCODE) { throw 'Frontend dependency installation failed. For EPERM/unlink errors, stop processes using this checkout (such as Vite or Vitest), then rerun build.ps1.' }

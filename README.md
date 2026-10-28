@@ -181,7 +181,7 @@ Requires Go 1.26+, Node.js compatible with Vite 8, and npm. Windows release acce
 .\scripts\test-development.ps1 -Coordinated # Also verify a real pinned update and recovery
 ```
 
-The Windows build reinstalls frontend dependencies with `npm ci`. Stop this checkout's Vite or Vitest processes before building: they can lock native modules on Windows. `build.ps1` reports detected locking Node process IDs before installation. If an earlier build failed with `EPERM`/`unlink`, stop the process holding the file and rerun the build to restore the dependency installation.
+The Windows build reinstalls frontend dependencies with `npm ci`. Before installation, `build.ps1` logs and stops Node processes holding native modules from this checkout's `web/node_modules`, then waits for their file locks to be released. This can stop this checkout's Vite or Vitest sessions; restart them after building if needed. Other checkouts' Node processes are left running. **Build & Relaunch** keeps Echo running while building a staged executable and replaces it after graceful shutdown. If a locking process cannot be stopped, installation does not begin and the build reports its process ID.
 
 ```sh
 sh build.sh                           # Native Linux/macOS executable
