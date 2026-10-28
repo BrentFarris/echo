@@ -14,6 +14,7 @@ import { mountHosting } from './hosting';
 import { setupPWA } from './pwa';
 import { composerMarkup, icons, autosizeComposer, wireComposerMenus, attachmentCard, previewAttachment, releaseAttachments, prefixBotMention, type DraftAttachment } from './composer';
 import { generatedMedia } from './generatedMedia';
+import { isQuestionMessage, questionCard, type QuestionSubmission } from './planQuestions';
 import { Apps, pluginAvailable } from './apps';
 import { PluginWindows, parseAppRoute } from './pluginWindows';
 import { activeMention, escapeHTML as esc, groupChats } from './helpers';
@@ -310,6 +311,9 @@ function renderModels() {
 const messageMarkup = new Map<string, { message: Message; element: HTMLElement; grouped: boolean; final: boolean; output?: string }>();
 const renderers = new Renderers(pluginEnabled, () => renderMessages(false, true));
 const disclosureState = new Map<string, boolean>();
+// Pending question cards keep their in-progress form state across repaints;
+// the completed card is rebuilt from the result instead.
+const questionCards = new Map<string, HTMLElement>();
 let renderedChatId = '';
 const selectedBotThreads = new Map<string, string>();
 const threadScroll = new Map<string, { top: number; following: boolean }>();
@@ -372,6 +376,9 @@ function statusBadge(status?: string) { const label = statusLabel(status); retur
 function reasoningMarkup(m: Message) { return `<details class="reasoning" data-disclosure="${esc(m.id)}:reasoning"><summary>Thinking</summary><pre>${esc(m.reasoning)}</pre></details>`; }
 function restoreDisclosures(root: HTMLElement) { for (const details of root.querySelectorAll<HTMLDetailsElement>('details[data-disclosure]')) { const open = disclosureState.get(details.dataset.disclosure!); if (open !== undefined) details.open = open; } }
 function rememberDisclosures(root: HTMLElement) { for (const details of root.querySelectorAll<HTMLDetailsElement>('details[data-disclosure]')) disclosureState.set(details.dataset.disclosure!, details.open); }
+async function answerQuestions(m: Message, payload: QuestionSubmission) {
+  await api(`/chats/${encodeURIComponent(m.chatId)}/questions/${encodeURIComponent(m.id)}`, 'POST', payload);
+}
 function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.dataset.grouped === 'true', final = existing?.dataset.final === 'true') {
   const previous = messageMarkup.get(m.id), output = liveToolOutput.get(m.id);
   const el = existing || previous?.element || document.createElement('article');
@@ -382,6 +389,13 @@ function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.da
   rememberDisclosures(el);
   el.innerHTML = !grouped && m.role !== 'user' && m.role !== 'tool' ? `<div class="message-meta"><strong>${esc(m.author)}</strong>${statusBadge(m.status)}</div>` : '';
   if (m.role === 'tool') {
+    if (isQuestionMessage(m)) {
+      const cached = m.status === 'running' ? questionCards.get(m.id) : undefined;
+      const card = cached || questionCard(m, payload => answerQuestions(m, payload));
+      questionCards.set(m.id, card);
+      el.append(card);
+      restoreDisclosures(el); return el;
+    }
     const name = grouped ? m.author.split(' · ').slice(1).join(' · ') || m.author : m.author;
     el.innerHTML += `<details data-disclosure="${esc(m.id)}:output"><summary><span>${esc(name)}</span>${statusBadge(m.status)}</summary><pre>${esc(liveToolOutput.get(m.id) || m.content)}</pre></details>`;
     if (!grouped) { const media = generatedMedia([m]); if (media) el.append(media); }
@@ -410,14 +424,19 @@ function paintResponse(group: ResponseGroup) {
   el.innerHTML = `<div class="message-meta"><strong>${esc(group.author)}</strong>${statusBadge(group.status || group.messages.at(-1)?.status)}</div>`;
   if (group.final) {
     const work = group.messages.slice(0, -1);
-    if (work.length || group.final.reasoning) {
+    // Answered question cards sit above the final response instead of inside
+    // the collapsed work disclosure (OLD finalizeSuccessfulResponse).
+    const promoted = work.filter(m => isQuestionMessage(m) && m.status === 'completed');
+    const rest = work.filter(m => !promoted.includes(m));
+    if (rest.length || group.final.reasoning) {
       const disclosure = document.createElement('details'); disclosure.className = 'work-disclosure'; disclosure.dataset.disclosure = group.key + ':' + group.final.id + ':work';
       disclosure.innerHTML = '<summary>Show work</summary><div class="work-content"></div>';
       const body = q('.work-content', disclosure);
-      for (const m of work) body.append(paintMessage(m, undefined, true));
+      for (const m of rest) body.append(paintMessage(m, undefined, true));
       if (group.final.reasoning) body.insertAdjacentHTML('beforeend', reasoningMarkup(group.final));
       el.append(disclosure);
     }
+    for (const m of promoted) el.append(paintMessage(m, undefined, true));
     el.append(paintMessage(group.final, undefined, true, true));
   } else {
     for (const m of group.messages) el.append(paintMessage(m, undefined, true));
@@ -444,7 +463,7 @@ function renderMessages(tail = false, force = false) {
   const focusedFile = log.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.fileChange : undefined;
   const anchor = [...log.children].find(child => child.getBoundingClientRect().bottom > log.getBoundingClientRect().top) as HTMLElement | undefined;
   const anchorKey = anchor?.dataset.timelineKey || anchor?.id, anchorOffset = anchor?.offsetTop;
-  if (renderedChatId !== chatId) { disclosureState.clear(); messageMarkup.clear(); renderers.clearPending(); renderedChatId = chatId; } else rememberDisclosures(log);
+  if (renderedChatId !== chatId) { disclosureState.clear(); messageMarkup.clear(); questionCards.clear(); renderers.clearPending(); renderedChatId = chatId; } else rememberDisclosures(log);
   // Repaint on tab changes: renderer replies for an offscreen thread may have been discarded.
   if (force || switchedThread) { messageMarkup.clear(); renderers.clearPending(); }
   log.replaceChildren();
@@ -682,5 +701,3 @@ async function start() {
 }
 async function ready() { const route = parseAppRoute(location.hash); shell(); await refresh(); if (route) await pluginWindows.open(route.pluginId, route.viewId, route.botId, 'embedded'); else if (chatId && !showingApps) await selectChat(chatId); else renderMessages(); connect(); connectSwarm(); }
 void start().catch(e => notice(e, true));
-
-

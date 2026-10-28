@@ -239,6 +239,17 @@ func (s *Server) routes(mux *http.ServeMux) {
 		messages, sequence, e := s.snapshot(r.PathValue("id"))
 		respond(w, map[string]any{"messages": messages, "sequence": sequence}, e)
 	})
+	mux.HandleFunc("POST /api/v1/chats/{id}/questions/{messageId}", func(w http.ResponseWriter, r *http.Request) {
+		var a struct {
+			Answers []PlanAnswer `json:"answers"`
+			Skipped bool         `json:"skipped"`
+		}
+		if e := decode(w, r, &a); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		respond(w, true, s.resolveChatQuestions(r.PathValue("id"), r.PathValue("messageId"), a.Answers, a.Skipped))
+	})
 	mux.HandleFunc("POST /api/v1/chats/{id}/messages", func(w http.ResponseWriter, r *http.Request) {
 		var a SendRequest
 		if e := decode(w, r, &a); e != nil {

@@ -62,6 +62,8 @@ type Server struct {
 	streams           map[string]domain.Message
 	subscribers       map[chan domain.Event]bool
 	seq               atomic.Int64
+	questionsMu       sync.Mutex
+	pendingQuestions  map[string]*pendingQuestion
 	authMu            sync.Mutex
 	appDockMu         sync.Mutex
 	loginAttempts     map[string][]time.Time
@@ -123,7 +125,7 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 		return nil, e
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Server{Store: db, Dir: dir, Assets: assets, ctx: ctx, cancel: cancel, Files: &broker.Files{Private: dir}, Process: &broker.ProcessBroker{Dir: filepath.Join(dir, "runtime")}, Model: model.New(), Secrets: credentials.New(dir), dispatches: map[string]*dispatch{}, streams: map[string]domain.Message{}, subscribers: map[chan domain.Event]bool{}, loginAttempts: map[string][]time.Time{}}
+	s := &Server{Store: db, Dir: dir, Assets: assets, ctx: ctx, cancel: cancel, Files: &broker.Files{Private: dir}, Process: &broker.ProcessBroker{Dir: filepath.Join(dir, "runtime")}, Model: model.New(), Secrets: credentials.New(dir), dispatches: map[string]*dispatch{}, streams: map[string]domain.Message{}, subscribers: map[chan domain.Event]bool{}, pendingQuestions: map[string]*pendingQuestion{}, loginAttempts: map[string][]time.Time{}}
 	s.revoking = map[string]int{}
 	s.closingChats = map[string]int{}
 	s.References = broker.NewReferenceIndex(ctx, s.Files)

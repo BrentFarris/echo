@@ -38,6 +38,26 @@ func (s *Server) coreTools(bot domain.Bot) []domain.Tool {
 		coreTool("bot_send", "Send a request to another bot addressed by this user message; returns a correlation id.", map[string]any{"to": S("Recipient bot id or handle"), "content": S("Question or handoff"), "requestId": S("Optional idempotency key")}, "to", "content"),
 		coreTool("bot_reply", "Answer an explicit request addressed to you.", map[string]any{"requestId": S("Correlation id"), "content": S("Answer")}, "requestId", "content"),
 		coreTool("bot_wait", "Wait for the reply to one of your requests. Reply to incoming requests before waiting.", map[string]any{"requestId": S("Correlation id")}, "requestId"),
+		coreTool(AskUserQuestionsToolName, "Ask the user structured clarifying questions (each with up to 3 suggested options; free text is always available) when high-impact ambiguities in scope, target files, approach, constraints, or priorities cannot be resolved by reading the workspace, or to request that the user perform an action you cannot do yourself (the options then confirm completion or ask you to try another method). Answers arrive as the tool result and the user can skip. After asking, wait for the answers, incorporate them, and continue working; do not ask things you can resolve yourself from the workspace.", map[string]any{
+			"questions": map[string]any{
+				"type":        "array",
+				"description": "The clarifying questions to ask the user.",
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []any{"id", "question"},
+					"properties": map[string]any{
+						"id":       S("Short stable identifier for this question (lowercase kebab-case)."),
+						"question": S("The clarifying question, concise and self-contained."),
+						"options": map[string]any{
+							"type":        "array",
+							"description": "Optional suggested answers. Omit or leave empty for a free-text-only question.",
+							"items":       map[string]any{"type": "string"},
+						},
+					},
+				},
+			},
+		}, "questions"),
 	}
 	if bot.ID == "echo" {
 		out = append(out,
@@ -176,6 +196,8 @@ func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionSc
 		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		return d.group.Wait(waitCtx, scope.Bot.ID, text(a, "requestId"))
+	case AskUserQuestionsToolName:
+		return s.askUserQuestions(ctx, scope, raw)
 	case "bot_list":
 		return s.Bots()
 	case "bot_save":

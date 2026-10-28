@@ -86,6 +86,34 @@
 .work-content>.reasoning{margin:5px 0;color:var(--subtle)}
 .work-content>.reasoning pre{max-height:min(44vh,420px);overflow:auto;padding:8px 12px;margin:4px 0 6px;scrollbar-gutter:stable}
 
+/* Clarifying questions (OLD .chat-plan-question-item). The pending card stays
+   open with its form; the answered card collapses above the final response. */
+.question-card{margin:4px 0}
+.question-card>summary{display:list-item;cursor:pointer;padding:4px 10px;border:1px solid transparent;border-radius:6px;outline:none;user-select:none;background:color-mix(in srgb,var(--muted) 72%,transparent);color:var(--subtle);font-family:var(--font-mono);font-size:12px;line-height:1.45}
+.question-card>summary:hover,.question-card>summary:focus-visible{color:var(--text);background:var(--muted)}
+.question-card>summary:focus-visible{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 52%,transparent)}
+.question-card[open]>summary{border-color:color-mix(in srgb,var(--accent) 30%,transparent)}
+.question-card.is-awaiting>summary{border-color:color-mix(in srgb,var(--warning) 45%,transparent)}
+.question-body{padding:8px 2px 2px}
+.question-form{display:grid;gap:10px;margin:0}
+.question-field{border:1px solid var(--border);border-radius:7px;padding:8px 10px;margin:0;min-width:0}
+.question-field.is-invalid{border-color:var(--danger)}
+.question-field legend{padding:0 4px;font-size:12px;font-weight:600;color:var(--text)}
+.question-option{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12.5px;cursor:pointer}
+.question-option input{accent-color:var(--accent)}
+.question-custom{width:100%;box-sizing:border-box;margin-top:4px;padding:6px 9px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12.5px}
+.question-custom:focus-visible{outline:none;border-color:var(--accent)}
+.question-actions{display:flex;justify-content:flex-end;gap:8px}
+.question-actions button{cursor:pointer;border-radius:6px;border:1px solid var(--border);padding:5px 12px;font-size:12px;font-weight:600;background:var(--surface);color:var(--text)}
+.question-actions button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.question-actions button:disabled{opacity:.55;cursor:default}
+.question-error{margin:0;font-size:12px;color:var(--danger)}
+.question-skipped{margin:0;font-size:12px;color:var(--subtle)}
+.question-answer{display:grid;gap:1px;padding:5px 0;border-bottom:1px solid var(--border);font-size:12.5px}
+.question-answer:last-child{border-bottom:0}
+.question-answer-prompt{color:var(--subtle);font-size:11px}
+.question-answer-value{color:var(--text)}
+
 /* Run status callouts (OLD .chat-stream-status). */
 .run-error{margin:0;padding:10px 14px;border-left:3px solid var(--danger);border-radius:0 6px 6px 0;background:color-mix(in srgb,var(--danger) 8%,var(--surface));color:var(--danger);font-size:12px}
 .run-queued{margin:0;padding:2px 4px;font-size:12px}
