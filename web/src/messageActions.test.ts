@@ -13,7 +13,7 @@ beforeEach(() => {
 });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 function setup(m = message) {
-  const options = { busy: vi.fn(() => false), notice: vi.fn(), save: vi.fn().mockResolvedValue(undefined), remove: vi.fn().mockResolvedValue(undefined) };
+  const options = { busy: vi.fn(() => false), notice: vi.fn(), save: vi.fn().mockResolvedValue(undefined), remove: vi.fn().mockResolvedValue(undefined), fork: vi.fn().mockResolvedValue(undefined) };
   const ui = new MessageActionUI(options);
   const container = document.createElement('section'), body = document.createElement('article'); container.append(body); document.body.append(container);
   ui.mount(container, body, m);
@@ -21,10 +21,25 @@ function setup(m = message) {
   return { ui, options, container, body, click };
 }
 describe('message actions', () => {
-  it.each(['user', 'assistant'])('renders ordered actions for %s and leaves fork inert', role => {
+  it.each(['user', 'assistant'])('renders ordered actions and forks %s without editing or deleting', async role => {
     const { container, options, click } = setup({ ...message, role });
     expect([...container.querySelectorAll('button')].map(b => b.dataset.action)).toEqual(['copy', 'fork', 'edit', 'trash']);
     click('fork'); expect(options.save).not.toHaveBeenCalled(); expect(options.remove).not.toHaveBeenCalled(); expect(container.querySelector('form')).toBeNull();
+    expect(options.fork).toHaveBeenCalledWith({ ...message, role }, expect.any(String));
+    await vi.waitFor(() => expect(container.querySelector('[aria-busy]')).toBeNull());
+  });
+  it('prevents duplicate fork clicks and reuses the retry key after failure', async () => {
+    const { container, options, click } = setup();
+    let fail!: (error: Error) => void;
+    options.fork.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+    click('fork'); click('fork'); expect(options.fork).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+    expect(container.querySelectorAll('[aria-disabled="true"]')).toHaveLength(4);
+    fail(new Error('network failed'));
+    await vi.waitFor(() => expect(options.notice).toHaveBeenCalled());
+    click('fork'); await vi.waitFor(() => expect(container.querySelector('[aria-busy]')).toBeNull());
+    expect(options.fork.mock.calls[0]).toEqual(options.fork.mock.calls[1]);
+    click('fork'); expect(options.fork.mock.calls[2][1]).not.toBe(options.fork.mock.calls[0][1]);
   });
   it('copies raw final content and resets feedback after repeated copies', async () => {
     vi.useFakeTimers(); const { click, container } = setup();
@@ -66,7 +81,8 @@ describe('message actions', () => {
     const { ui, options, container, body, click } = setup(); click('edit'); options.busy.mockReturnValue(true);
     body.querySelector('form')!.requestSubmit(); await vi.waitFor(() => expect(options.notice).toHaveBeenCalled()); expect(options.save).not.toHaveBeenCalled();
     ui.mount(container, body, message); expect(container.querySelectorAll('[aria-disabled="true"]')).toHaveLength(4);
-    click('copy'); click('trash'); expect(clipboard).not.toHaveBeenCalled(); expect(options.remove).not.toHaveBeenCalled();
+    click('copy'); click('trash'); click('fork'); expect(clipboard).not.toHaveBeenCalled(); expect(options.remove).not.toHaveBeenCalled(); expect(options.fork).not.toHaveBeenCalled();
+    expect(options.notice).toHaveBeenLastCalledWith('Wait for the current response to finish before forking the chat.', true);
   });
   it('toggles on touch and closes on outside tap without hijacking links', () => {
     touch = true; const { container } = setup(); container.click(); expect(container.classList.contains('is-open')).toBe(true);

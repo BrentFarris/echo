@@ -328,6 +328,9 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err = checkForkWorkers(c, participants, s.Swarm.Node().ID, s.Swarm.Directory()); err != nil {
+		return nil, err
+	}
 	attachments, err := s.sendAttachments(chatID, req)
 	if err != nil {
 		return nil, err

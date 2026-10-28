@@ -222,7 +222,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
+		// Serialize saved settings with fork snapshot validation and commit.
+		s.mu.Lock()
 		e := s.Store.SetChatGeneration(r.PathValue("id"), g)
+		s.mu.Unlock()
 		respond(w, g, e)
 	})
 	mux.HandleFunc("POST /api/v1/chats/{id}/read", func(w http.ResponseWriter, r *http.Request) {

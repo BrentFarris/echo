@@ -493,9 +493,13 @@ func (s *Store) Messages(chat string) ([]domain.Message, error) {
 	}
 	for i := range out {
 		if out[i].Role == "tool" {
-			out[i].Attachments, e = s.MessageAttachments(out[i].ID)
+			var attachments []domain.Attachment
+			attachments, e = s.MessageAttachments(out[i].ID)
 			if e != nil {
 				return nil, e
+			}
+			if len(attachments) > 0 || out[i].NodeID == "" {
+				out[i].Attachments = attachments
 			}
 		}
 		rs, e := s.db.Query("SELECT content,reasoning FROM chunks WHERE message_id=? ORDER BY id", out[i].ID)

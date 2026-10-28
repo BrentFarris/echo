@@ -131,6 +131,17 @@ func (s *Server) sendAttachments(chatID string, req SendRequest) ([]domain.Attac
 }
 
 func (s *Server) messageActionRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/v1/chats/{id}/messages/{messageId}/fork", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			RequestID string `json:"requestId"`
+		}
+		if err := decode(w, r, &body); err != nil {
+			respond(w, nil, err)
+			return
+		}
+		id, err := s.forkChat(r.Context(), r.PathValue("id"), r.PathValue("messageId"), body.RequestID)
+		respond(w, map[string]string{"chatId": id}, err)
+	})
 	mux.HandleFunc("DELETE /api/v1/chats/{id}/messages/{messageId}", func(w http.ResponseWriter, r *http.Request) {
 		err := s.mutateMessage(r.PathValue("id"), r.PathValue("messageId"), nil)
 		respond(w, map[string]bool{"deleted": err == nil}, err)

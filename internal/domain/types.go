@@ -87,6 +87,7 @@ type SegmentRange struct {
 // LastReadAt records when the transcript was last opened, so the sidebar can
 // flag chats that finished work nobody has looked at yet.
 type Chat struct {
+	ForkedFrom       *ForkOrigin           `json:"forkedFrom,omitempty"`
 	OwnerNodeID      string                `json:"ownerNodeId,omitempty"`
 	Projection       bool                  `json:"projection,omitempty"`
 	GenerationByNode map[string]Generation `json:"generationByNode,omitempty"`
@@ -97,6 +98,10 @@ type Chat struct {
 	CreatedAt        time.Time             `json:"createdAt"`
 	UpdatedAt        time.Time             `json:"updatedAt"`
 	LastReadAt       *time.Time            `json:"lastReadAt,omitempty"`
+}
+type ForkOrigin struct {
+	ChatID    string `json:"chatId"`
+	MessageID string `json:"messageId"`
 }
 type Message struct {
 	NodeID            string       `json:"nodeId,omitempty"`

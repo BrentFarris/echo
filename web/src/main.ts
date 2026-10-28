@@ -356,6 +356,17 @@ async function reloadTranscript(id: string) {
 const messageActionUI = new MessageActionUI({
   busy: id => state.runs.some(run => run.chatId === id && activeRunStatuses.includes(run.status)) || (id === chatId && submitting),
   notice,
+  fork: async (message, requestId) => {
+    const navigation = chatNavigation, thread = visibleBotId || rememberedBotThread();
+    await generationSaves.get(message.chatId);
+    const result = await api<{ chatId: string }>(`/chats/${encodeURIComponent(message.chatId)}/messages/${encodeURIComponent(message.storedId || message.id)}/fork`, 'POST', { requestId });
+    const id = resourceID(splitID(message.chatId)[0], result.chatId);
+    await refresh();
+    if (chatNavigation === navigation && chatId === message.chatId && !showingApps && !showingApp) {
+      if (thread) selectedBotThreads.set(id, thread);
+      await selectChat(id);
+    } else notice('Fork created. It is available in the chat list.');
+  },
   save: async (message, content, requestId) => {
     const path = `/chats/${encodeURIComponent(message.chatId)}/messages/${encodeURIComponent(message.storedId || message.id)}`;
     await api(path + (message.role === 'user' ? '/resubmit' : ''), message.role === 'user' ? 'POST' : 'PATCH', message.role === 'user' ? { content, requestId } : { content });

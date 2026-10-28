@@ -289,6 +289,11 @@ func (s *Server) startWorker(input workerControl) error {
 		if err != nil {
 			return err
 		}
+		if c.ForkedFrom != nil {
+			if err = s.seedForkHistory(w.d.ctx, req, c, transcript); err != nil {
+				return err
+			}
+		}
 		contents := map[string]string{}
 		for _, m := range transcript {
 			if m.Role == "user" && m.RunID == "" {

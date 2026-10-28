@@ -7,8 +7,9 @@ type Options = {
   notice: (error: unknown, failure?: boolean) => void;
   save: (message: Message, content: string, requestId: string) => Promise<void>;
   remove: (message: Message) => Promise<void>;
+  fork: (message: Message, requestId: string) => Promise<void>;
 };
-type Entry = { message: Message; toolbar: HTMLDivElement; container: HTMLElement; body: HTMLElement; form?: HTMLFormElement; saving: boolean };
+type Entry = { message: Message; toolbar: HTMLDivElement; container: HTMLElement; body: HTMLElement; form?: HTMLFormElement; saving: boolean; forkRequestId?: string };
 
 export function messageActions(role: string, act: (action: string, button: HTMLButtonElement) => void) {
   const toolbar = document.createElement('div'); toolbar.className = 'message-actions';
@@ -87,10 +88,21 @@ export class MessageActionUI {
     entry.container.classList.remove('is-editing'); entry.body.classList.remove('is-editing');
   }
   private async act(entry: Entry, action: string, button: HTMLButtonElement) {
-    if (action === 'fork') return; // Reserved for the future fork feature.
-    if (this.options.busy(entry.message.chatId) || entry.saving) { this.options.notice(waitMessage, true); return; }
+    if (entry.saving) return;
+    if (this.options.busy(entry.message.chatId)) { this.options.notice(action === 'fork' ? 'Wait for the current response to finish before forking the chat.' : waitMessage, true); return; }
     try {
-      if (action === 'copy') {
+      if (action === 'fork') {
+        entry.forkRequestId ||= crypto.randomUUID(); entry.saving = true;
+        entry.toolbar.setAttribute('aria-busy', 'true');
+        button.title = 'Creating fork…'; button.setAttribute('aria-label', button.title);
+        this.mount(entry.container, entry.body, entry.message);
+        try { await this.options.fork(entry.message, entry.forkRequestId); entry.forkRequestId = undefined; }
+        finally {
+          entry.saving = false; entry.toolbar.removeAttribute('aria-busy');
+          button.title = 'Fork chat from this message'; button.setAttribute('aria-label', button.title);
+          if (entry.container.isConnected) this.mount(entry.container, entry.body, entry.message);
+        }
+      } else if (action === 'copy') {
         await navigator.clipboard.writeText(entry.message.content);
         const label = entry.message.role === 'user' ? 'Copy message' : 'Copy final response';
         window.clearTimeout(this.copyTimers.get(button));
