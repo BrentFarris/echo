@@ -58,6 +58,7 @@ func Builtins() []domain.PluginManifest {
 	}
 	ms = append(ms, sourceControlPlugins()...)
 	ms = append(ms, comfyUIPlugin())
+	ms = append(ms, confluencePlugin())
 	ms = append(ms, jiraPlugin())
 	ms = append(ms, monacoEditorPlugin())
 	for i := range ms {

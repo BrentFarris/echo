@@ -23,6 +23,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.editorRoutes(mux)
 	s.developmentRoutes(mux)
 	s.sourceControlRoutes(mux)
+	s.confluenceRoutes(mux)
 	s.jiraRoutes(mux)
 	s.attachmentRoutes(mux)
 	mux.HandleFunc("GET /api/v1/state", func(w http.ResponseWriter, r *http.Request) {
@@ -327,6 +328,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/references/reveal", s.revealDraftReference)
 	mux.HandleFunc("POST /api/v1/chats/{id}/references/reveal", s.revealMessageReference)
 	mux.HandleFunc("PATCH /api/v1/plugins/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("id") == "confluence" {
+			s.confluenceMu.Lock()
+			defer s.confluenceMu.Unlock()
+		}
 		if r.PathValue("id") == "jira" {
 			s.jiraMu.Lock()
 			defer s.jiraMu.Unlock()
@@ -353,6 +358,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 			a.Config, e = comfyUIConfig(m, a.Config, true)
 		} else if m.ID == "jira" {
 			a.Config, e = jiraSettings(m, a.Config, true)
+		} else if m.ID == "confluence" {
+			a.Config, e = confluenceSettings(m, a.Config, true)
 		} else if sourceControl(m.ID) {
 			a.Config, e = s.sourceControlConfig(m, a.Config, true)
 		} else {
@@ -379,7 +386,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 		if e == nil && m.ID == "swarm" {
 			s.Swarm.Refresh()
 		}
-		if e == nil && (m.ID == "p4" || m.ID == "jira") && oldCredential != "" && oldCredential != text(m.Config, "credential") {
+		if e == nil && m.ID == "confluence" {
+			s.cancelConfluenceLocked()
+		}
+		if e == nil && (m.ID == "p4" || m.ID == "jira" || m.ID == "confluence") && oldCredential != "" && oldCredential != text(m.Config, "credential") {
 			s.Secrets.Delete(r.Context(), oldCredential)
 		}
 		if e == nil {

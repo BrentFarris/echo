@@ -34,6 +34,8 @@ import (
 
 type Server struct {
 	jiraMu             sync.Mutex
+	confluenceMu       sync.Mutex
+	confluenceActive   map[string]context.CancelFunc
 	notificationMu     sync.Mutex
 	notificationWG     sync.WaitGroup
 	notificationClient *http.Client // Injectable transport for push delivery tests.

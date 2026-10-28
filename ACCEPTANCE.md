@@ -84,3 +84,10 @@ Physical-device checks are required before claiming verified Android/iOS backgro
 4. Verify distinct original sounds in the running app and platform-controlled sounds while suspended. Test the four independent toggles. Verify one sound/popup per event with two desktop tabs, and no popup while the corresponding bot conversation is focused.
 5. Complete a remote Swarm chat with all browser windows closed. Verify phone delivery through the entry server, reconnect recovery, and no duplicate alerts from worker projections. Answer a question before delivery and verify its queued alert is canceled.
 6. Revoke the device session and verify no subsequent delivery. Disable push on one device and verify other enabled devices continue receiving alerts. Confirm existing offline-launch and private-cache checks still pass.
+
+## Confluence plugin
+
+- Configure Cloud classic/scoped tokens or a Data Center URL with a context path; verify tokens use the host vault and never appear in state or transcripts. Replacing/clearing tokens and changing the destination invalidate credentials/continuations as appropriate and cancel active requests.
+- Verify CQL search preserves queries, follows server cursors/offsets, and rejects pagination outside the search endpoint. Read pages, blog posts, inline/footer comments and attachment metadata through the WASI bridge, respecting global and per-bot disablement.
+- Reconstruct a long Unicode page from all Markdown/storage chunks, detect content-version changes, preserve common formatting and macro body text, and reject redirects/oversized responses. Exercise 400/401/403/404/429/5xx diagnostics and cancellation.
+- Automated coverage: `go test ./internal/confluence ./internal/server -run Confluence -count=1`, `cd web; npm test -- confluenceSettings.test.ts`, and `npm run test:e2e -- confluence.spec.ts`. Browser coverage uses a temporary fake Confluence/model server to verify settings, secret save/test/clear, persistence across reload, and a complete bot search/read with body continuation. No real Confluence credentials are required.

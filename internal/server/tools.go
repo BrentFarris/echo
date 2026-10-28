@@ -299,6 +299,8 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		return nil, errors.New("plugin management belongs to Echo's Plugin Authoring plugin")
 	}
 	switch method {
+	case "confluence.search", "confluence.read":
+		return s.confluenceOperation(ctx, scope, manifest, method, raw)
 	case "jira.search", "jira.issue", "jira.comments":
 		return s.jiraOperation(ctx, scope, manifest, method, raw)
 	case "comfyui.generate", "comfyui.generate_video", "comfyui.save_image", "comfyui.save_video":
@@ -474,6 +476,10 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 	case "plugin.list":
 		return s.Plugins.List()
 	case "plugin.configure":
+		if text(a, "id") == "confluence" {
+			s.confluenceMu.Lock()
+			defer s.confluenceMu.Unlock()
+		}
 		if text(a, "id") == "jira" {
 			s.jiraMu.Lock()
 			defer s.jiraMu.Unlock()
@@ -505,6 +511,11 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 				if e != nil {
 					return nil, e
 				}
+			} else if m.ID == "confluence" {
+				cfg, e = confluenceSettings(m, cfg, false)
+				if e != nil {
+					return nil, e
+				}
 			} else if sourceControl(m.ID) {
 				cfg, e = s.sourceControlConfig(m, cfg, false)
 				if e != nil {
@@ -519,6 +530,9 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 			m.Config = cfg
 		}
 		e = s.Plugins.Save(m)
+		if e == nil && m.ID == "confluence" {
+			s.cancelConfluenceLocked()
+		}
 		if e == nil {
 			e = s.Calendar.ReconcileActivation(domain.Now())
 		}
