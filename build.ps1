@@ -7,6 +7,10 @@ $previousRequired = $env:ECHO2_REQUIRE_TOOLCHAINS
 Push-Location $PSScriptRoot
 try {
     $env:GOCACHE = Join-Path $PSScriptRoot '.cache\go-build'
+    $env:GOMODCACHE = Join-Path $PSScriptRoot '.cache\go-mod'
+    # Keep dependencies in the checkout so workspace-bound bots can test offline.
+    go mod download
+    if ($LASTEXITCODE) { throw 'Go dependency download failed' }
     $oldOS = $env:GOOS
     $oldArch = $env:GOARCH
     try {

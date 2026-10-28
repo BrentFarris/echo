@@ -405,7 +405,14 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	env = append(env, "ProgramData="+scratch, "ALLUSERSPROFILE="+scratch, "DOTNET_CLI_TELEMETRY_OPTOUT=1", "DOTNET_GENERATE_ASPNET_CERTIFICATE=false", "DOTNET_ADD_GLOBAL_TOOLS_TO_PATH=false", "MSBuildEnableWorkloadResolver=false")
 	// Native plugin callers can add only host-constructed values. Replace keys
 	// case-insensitively so Windows never chooses between duplicate entries.
+	commandEnvironment := workspaceGoCaches(r)
+	if commandEnvironment == nil {
+		commandEnvironment = map[string]string{}
+	}
 	for key, value := range r.Environment {
+		commandEnvironment[key] = value
+	}
+	for key, value := range commandEnvironment {
 		prefix := strings.ToUpper(key) + "="
 		filtered := env[:0]
 		for _, entry := range env {

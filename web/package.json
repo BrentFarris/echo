@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "check": "tsc --noEmit",
     "build": "npm run check && vite build",
-    "test": "vitest run",
+    "test": "vitest run --config vitest.config.mjs --configLoader native",
     "test:e2e": "playwright test"
   },
   "dependencies": {

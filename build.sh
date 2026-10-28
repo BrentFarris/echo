@@ -15,6 +15,8 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 export GOCACHE="$PWD/.cache/go-build"
+export GOMODCACHE="$PWD/.cache/go-mod"
+go mod download
 GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build -trimpath -o internal/plugins/guest/builtin.wasm ./internal/plugins/guest
 (cd web; npm ci --ignore-scripts --prefer-offline; npm run build; if [ "$test_suite" = 1 ]; then npm test; fi)
 if [ "$native" = 1 ]; then export ECHO2_NATIVE_TESTS=1 ECHO2_REQUIRE_TOOLCHAINS=1; fi

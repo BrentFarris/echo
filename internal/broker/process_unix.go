@@ -109,6 +109,9 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	}
 	paths = append(paths, env["PATH"])
 	env["PATH"] = strings.Join(paths, ":")
+	for key, value := range workspaceGoCaches(r) {
+		env[key] = value
+	}
 	for key, value := range r.Environment {
 		env[key] = value
 	}
