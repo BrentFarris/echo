@@ -8,14 +8,15 @@ type Options = {
   save: (message: Message, content: string, requestId: string) => Promise<void>;
   remove: (message: Message) => Promise<void>;
   fork: (message: Message, requestId: string) => Promise<void>;
+  rerun: (message: Message, requestId: string) => Promise<void>;
 };
-type Entry = { message: Message; toolbar: HTMLDivElement; container: HTMLElement; body: HTMLElement; form?: HTMLFormElement; saving: boolean; forkRequestId?: string };
+type Entry = { message: Message; toolbar: HTMLDivElement; container: HTMLElement; body: HTMLElement; form?: HTMLFormElement; saving: boolean; forkRequestId?: string; rerunRequestId?: string };
 
 export function messageActions(role: string, act: (action: string, button: HTMLButtonElement) => void) {
   const toolbar = document.createElement('div'); toolbar.className = 'message-actions';
   toolbar.setAttribute('role', 'toolbar'); toolbar.setAttribute('aria-label', 'Message actions');
-  const labels = { copy: role === 'user' ? 'Copy message' : 'Copy final response', fork: 'Fork chat from this message', edit: role === 'user' ? 'Edit message' : 'Edit response', trash: role === 'user' ? 'Delete message' : 'Delete response' };
-  for (const key of ['copy', 'fork', 'edit', 'trash'] as const) {
+  const labels = { copy: role === 'user' ? 'Copy message' : 'Copy final response', fork: 'Fork chat from this message', edit: role === 'user' ? 'Edit message' : 'Edit response', rerun: role === 'user' ? 'Rerun from message' : 'Rerun response', trash: role === 'user' ? 'Delete message' : 'Delete response' };
+  for (const key of ['copy', 'fork', 'edit', 'rerun', 'trash'] as const) {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'message-action toolbar-icon ' + key;
     button.dataset.action = key; button.innerHTML = icons[key]; button.title = labels[key]; button.setAttribute('aria-label', labels[key]);
     button.onclick = event => { event.stopPropagation(); act(key, button); };
@@ -77,6 +78,11 @@ export class MessageActionUI {
     container.dataset.messageActions = message.id; container.tabIndex = 0; container.classList.toggle('is-open', open);
     container.append(entry.toolbar);
     for (const button of entry.toolbar.querySelectorAll('button')) button.setAttribute('aria-disabled', String(this.options.busy(message.chatId) || entry.saving));
+    const rerun = entry.toolbar.querySelector<HTMLButtonElement>('[data-action="rerun"]')!;
+    rerun.disabled = !!message.rerunUnavailable;
+    if (rerun.disabled) rerun.setAttribute('aria-disabled', 'true');
+    rerun.title = rerun.disabled ? 'Cannot rerun without the original user message' : message.role === 'user' ? 'Rerun from message' : 'Rerun response';
+    rerun.setAttribute('aria-label', rerun.title);
     container.classList.toggle('is-editing', !!entry.form); body.classList.toggle('is-editing', !!entry.form);
     if (entry.form) body.append(entry.form);
   }
@@ -89,7 +95,7 @@ export class MessageActionUI {
   }
   private async act(entry: Entry, action: string, button: HTMLButtonElement) {
     if (entry.saving) return;
-    if (this.options.busy(entry.message.chatId)) { this.options.notice(action === 'fork' ? 'Wait for the current response to finish before forking the chat.' : waitMessage, true); return; }
+    if (this.options.busy(entry.message.chatId)) { this.options.notice(action === 'fork' ? 'Wait for the current response to finish before forking the chat.' : action === 'rerun' ? 'Wait for the current response to finish before rerunning messages.' : waitMessage, true); return; }
     try {
       if (action === 'fork') {
         entry.forkRequestId ||= crypto.randomUUID(); entry.saving = true;
@@ -100,6 +106,20 @@ export class MessageActionUI {
         finally {
           entry.saving = false; entry.toolbar.removeAttribute('aria-busy');
           button.title = 'Fork chat from this message'; button.setAttribute('aria-label', button.title);
+          if (entry.container.isConnected) this.mount(entry.container, entry.body, entry.message);
+        }
+      } else if (action === 'rerun') {
+        if (entry.message.rerunUnavailable) return;
+        const prompt = entry.message.role === 'assistant'
+          ? 'Rerun this response? Its preceding user message will be rerun, and this response and all later messages will be removed.'
+          : 'Rerun from this message? Its response and all later messages will be removed.';
+        if (!window.confirm(prompt)) return;
+        entry.rerunRequestId ||= crypto.randomUUID(); entry.saving = true;
+        entry.toolbar.setAttribute('aria-busy', 'true');
+        this.mount(entry.container, entry.body, entry.message);
+        try { await this.options.rerun(entry.message, entry.rerunRequestId); entry.rerunRequestId = undefined; }
+        finally {
+          entry.saving = false; entry.toolbar.removeAttribute('aria-busy');
           if (entry.container.isConnected) this.mount(entry.container, entry.body, entry.message);
         }
       } else if (action === 'copy') {

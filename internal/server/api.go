@@ -512,6 +512,7 @@ func (s *Server) managementMessage(chatID string, req SendRequest) (any, error) 
 	c.UpdatedAt = domain.Now()
 	run := domain.Run{ID: domain.ID(), DispatchID: domain.ID(), ChatID: c.ID, BotID: "echo", Status: "running", CreatedAt: domain.Now()}
 	user := domain.Message{ID: domain.ID(), ChatID: c.ID, Author: "You", Role: "user", Content: req.Content, Recipients: []string{"echo"}, Segments: []domain.Segment{{Type: "text", Text: req.Content}}, Status: "completed", CreatedAt: domain.Now()}
+	run.UserMessageID = user.ID
 	if e = s.Store.Accept(c, user, []domain.Run{run}, req.RequestID, run.DispatchID); e != nil {
 		return nil, e
 	}

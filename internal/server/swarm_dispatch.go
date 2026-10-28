@@ -92,6 +92,11 @@ func (s *Server) displayBot(node, id string) string {
 	return swarm.Key(node, id)
 }
 func (s *Server) needsSwarm(req SendRequest) bool {
+	for _, id := range req.rerunRecipients {
+		if node, _ := swarm.Split(id); node != "" {
+			return true
+		}
+	}
 	if req.OriginNodeID != "" && req.OriginNodeID != s.Swarm.Node().ID {
 		return true
 	}
@@ -187,6 +192,20 @@ func (s *Server) resolveSwarm(ctx context.Context, req SendRequest) ([]swarmPart
 		}
 	}
 	selected := []swarmParticipant{}
+	if req.rerunMessageID != "" {
+		for _, id := range req.rerunRecipients {
+			node, raw := swarm.Split(id)
+			if node == "" {
+				node = s.Swarm.Node().ID
+			}
+			p, ok := byID[swarm.Key(node, raw)]
+			if !ok {
+				return nil, nil, errors.New("an original recipient is unavailable")
+			}
+			selected = append(selected, p)
+		}
+		return selected, req.Segments, nil
+	}
 	structured := map[int]swarmParticipant{}
 	boundaries := referenceBoundaries(req.Content)
 	seen := map[string]bool{}
@@ -409,13 +428,18 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 		if p.Ref.NodeID == self && g.EndpointID == "" {
 			g = c.Generation
 		}
-		run := domain.Run{ID: domain.ID(), ChatID: chatID, DispatchID: id, BotID: key, Status: "queued", Generation: g, CreatedAt: domain.Now()}
+		run := domain.Run{ID: domain.ID(), UserMessageID: message.ID, ChatID: chatID, DispatchID: id, BotID: key, Status: "queued", Generation: g, CreatedAt: domain.Now()}
 		runs = append(runs, run)
 		host := f.Hosts[p.Ref.NodeID]
 		if host.ID == "" {
 			host = workerRequest{ID: id, Home: self, Origin: req.OriginNodeID, Token: domain.ID() + domain.ID(), Chat: c, Participants: participants, RequestID: req.RequestID, Status: "prepared", CreatedAt: domain.Now(), Permit: req.Permits[p.Ref.NodeID]}
 		}
 		run.BotID = p.Ref.ID
+		// The home owns this relationship. Keep requests compatible with workers
+		// whose strict request decoder predates userMessageId.
+		if p.Ref.NodeID != self {
+			run.UserMessageID = ""
+		}
 		host.Runs = append(host.Runs, run)
 		f.Hosts[p.Ref.NodeID] = host
 		d.active[p.key()] = true
@@ -451,6 +475,11 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 			cancel()
 			return nil, errors.New("this chat is still running; stop it or wait before sending")
 		}
+	}
+	if err = s.checkRerunSnapshot(chatID, req); err != nil {
+		s.mu.Unlock()
+		cancel()
+		return nil, err
 	}
 	if err = s.Store.AcceptWithRecord(c, message, runs, req.RequestID, id, "swarm-dispatches", id, f, req.replaceMessageID); err != nil {
 		s.mu.Unlock()
@@ -685,6 +714,7 @@ func (s *Server) failSwarmHost(f *swarmDispatch, node string, err error) {
 	}
 	for _, run := range f.Hosts[node].Runs {
 		run.ChatID = f.ChatID
+		run.UserMessageID = f.Hosts[node].Message.ID
 		run.BotID = s.displayBot(node, run.BotID)
 		run.Status = "failed"
 		run.Error = err.Error()
@@ -795,6 +825,8 @@ func (s *Server) mergeWorker(f *swarmDispatch, node string, snapshot workerSnaps
 			continue
 		}
 		run.ChatID = f.ChatID
+		// Older workers may omit the input relationship in their snapshots.
+		run.UserMessageID = f.Hosts[node].Message.ID
 		run.BotID = s.displayBot(node, run.BotID)
 		if changed("run:"+run.ID, run) {
 			runs = append(runs, run)

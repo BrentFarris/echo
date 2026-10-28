@@ -64,19 +64,54 @@ test.describe('touch', () => {
     await setup(page);
     const user = page.locator('.chat-log > .message.user').first(), actions = user.locator(':scope > .message-actions');
     await expect(actions).toHaveCSS('opacity', '0');
-    await user.locator('.message-content').tap(); await expect(actions).toHaveCSS('opacity', '1');
+    await user.locator('.message-content').tap({ position: { x: 8, y: 8 } }); await expect(actions).toHaveCSS('opacity', '1');
     const card = await user.boundingBox(), toolbar = await actions.boundingBox();
     expect(Math.abs(card!.x + card!.width - toolbar!.x - toolbar!.width)).toBeLessThan(12);
     expect(toolbar!.y - card!.y).toBeLessThan(12);
-    await user.locator('.message-content').tap(); await expect(actions).toHaveCSS('opacity', '0');
-    await user.locator('.message-content').tap(); await page.getByRole('textbox', { name: 'Message', exact: true }).tap(); await expect(actions).toHaveCSS('opacity', '0');
+    await user.locator('.message-content').tap({ position: { x: 8, y: 8 } }); await expect(actions).toHaveCSS('opacity', '0');
+    await user.locator('.message-content').tap({ position: { x: 8, y: 8 } }); await page.getByRole('textbox', { name: 'Message', exact: true }).tap(); await expect(actions).toHaveCSS('opacity', '0');
     const source = new URL(page.url()).hash;
-    await user.locator('.message-content').tap(); await user.getByRole('button', { name: 'Fork chat from this message' }).tap();
+    await user.locator('.message-content').tap({ position: { x: 8, y: 8 } }); await user.getByRole('button', { name: 'Fork chat from this message' }).tap();
     await expect.poll(() => new URL(page.url()).hash).not.toBe(source);
     await expect(page.locator('.chat-log > .message.user')).toHaveCount(1);
     await expect(page.locator('.response-group')).toHaveCount(0);
+    const copiedUser = page.locator('.chat-log > .message.user').first();
+    await copiedUser.locator('.message-content').tap({ position: { x: 8, y: 8 } });
+    page.once('dialog', dialog => dialog.accept());
+    await copiedUser.getByRole('button', { name: 'Rerun from message', exact: true }).tap();
+    await expect(page.locator('.response-group > .message-actions')).toHaveCount(1);
   });
 });
+
+for (const role of ['user', 'assistant']) {
+  test(`rerun from ${role} confirms, replaces later history and preserves the composer draft`, async ({ page, context }) => {
+    const source = await setup(page);
+    const original = await (await page.request.get(`/api/v1/chats/${source}/messages`)).json();
+    const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+    await composer.fill('Later prompt'); await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    await expect(page.locator('.response-group > .message-actions')).toHaveCount(2);
+    const target = role === 'user' ? page.locator('.chat-log > .message.user').first() : page.locator('.response-group').first();
+    const button = target.getByRole('button', { name: role === 'user' ? 'Rerun from message' : 'Rerun response', exact: true });
+    await expect(button).toHaveAttribute('aria-disabled', 'false');
+    await composer.fill('Unsent draft');
+    const observer = await context.newPage(); await observer.goto('/#' + source);
+    await button.focus(); page.once('dialog', dialog => dialog.dismiss()); await button.press('Enter');
+    await expect(page.locator('.response-group')).toHaveCount(2);
+    page.once('dialog', dialog => dialog.accept()); await button.press('Enter');
+    await expect(page.locator('.response-group')).toHaveCount(1);
+    await expect(page.locator('.chat-log')).not.toContainText('Later prompt');
+    await expect(page.locator('.chat-log > .message.user [data-action="rerun"]')).toHaveAttribute('aria-disabled', 'false');
+    await expect(composer).toContainText('Unsent draft');
+    await expect(observer.locator('.response-group')).toHaveCount(1);
+    await expect(observer.locator('.chat-log')).not.toContainText('Later prompt');
+    const updated = await (await page.request.get(`/api/v1/chats/${source}/messages`)).json();
+    expect(updated).toHaveLength(2); expect(updated[0].content).toBe(original[0].content);
+    expect(updated.some((m: any) => original.some((old: any) => old.id === m.id))).toBe(false);
+    await page.request.delete(`/api/v1/chats/${source}/messages/${updated[0].id}`);
+    await expect(page.getByRole('button', { name: 'Cannot rerun without the original user message', exact: true })).toBeDisabled();
+    await observer.close();
+  });
+}
 
 test('fork opens copied history, preserves the source draft and leaves other tabs in place', async ({ page, context }) => {
   const source = await setup(page);

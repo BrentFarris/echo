@@ -20,6 +20,9 @@ var mentions = regexp.MustCompile(`(?:^|[^A-Za-z0-9_@])@([A-Za-z][A-Za-z0-9_-]*(
 var codeBlocks = regexp.MustCompile("(?s)```.*?```|`[^`]*`")
 
 func structuredSegments(req SendRequest, bots []domain.Bot) []domain.Segment {
+	if req.rerunMessageID != "" {
+		return req.Segments
+	}
 	segments := []domain.Segment{}
 	last := 0
 	lookup := map[string]string{}
@@ -70,6 +73,17 @@ func (s *Server) recipients(req SendRequest) ([]domain.Bot, error) {
 		byName[b.Handle] = b
 		byID[b.ID] = b
 	}
+	if req.rerunMessageID != "" {
+		result := []domain.Bot{}
+		for _, id := range req.rerunRecipients {
+			b, ok := byID[id]
+			if !ok {
+				return nil, errors.New("an original recipient no longer exists")
+			}
+			result = append(result, b)
+		}
+		return result, nil
+	}
 	result := []domain.Bot{}
 	seen := map[string]bool{}
 	add := func(b domain.Bot) {
@@ -100,7 +114,7 @@ func (s *Server) recipients(req SendRequest) ([]domain.Bot, error) {
 	return result, nil
 }
 func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
-	if req.replaceMessageID != "" {
+	if req.replaceMessageID != "" || req.rerunMessageID != "" {
 		if prior := s.Store.Accepted(chatID, req.RequestID); prior != "" {
 			return acceptedDispatch(prior), nil
 		}
@@ -199,6 +213,10 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 			return nil, errors.New("this chat is still running; stop it or wait before sending")
 		}
 	}
+	if e := s.checkRerunSnapshot(chatID, req); e != nil {
+		s.mu.Unlock()
+		return nil, e
+	}
 	ctx, cancel := context.WithCancel(s.ctx)
 	localGroup := coordinator.New(ids)
 	d := &dispatch{id: domain.ID(), chatID: chatID, group: localGroup, ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: map[string]chan struct{}{}, active: map[string]bool{}, admitted: map[string]chan struct{}{}}
@@ -235,7 +253,7 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 	m.Attachments = attachments
 	runs := make([]domain.Run, len(bots))
 	for i, b := range bots {
-		runs[i] = domain.Run{ID: domain.ID(), ChatID: chatID, DispatchID: d.id, BotID: b.ID, Generation: req.Generation, Status: "queued", CreatedAt: domain.Now()}
+		runs[i] = domain.Run{ID: domain.ID(), UserMessageID: m.ID, ChatID: chatID, DispatchID: d.id, BotID: b.ID, Generation: req.Generation, Status: "queued", CreatedAt: domain.Now()}
 	}
 	if e = s.Store.Accept(c, m, runs, req.RequestID, d.id, req.replaceMessageID); e != nil {
 		return failed(e)

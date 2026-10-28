@@ -2,10 +2,32 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 
 	"github.com/brent/echo/internal/domain"
 )
+
+func (s *Store) ChatRuns(chatID string) ([]domain.Run, error) {
+	rows, err := s.db.Query("SELECT data FROM records WHERE namespace='runs' AND json_extract(data,'$.chatId')=?", chatID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	runs := []domain.Run{}
+	for rows.Next() {
+		var data []byte
+		var run domain.Run
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(data, &run); err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	return runs, rows.Err()
+}
 
 func messageInChat(tx *sql.Tx, chatID, id string) (domain.Message, int64, error) {
 	var m domain.Message

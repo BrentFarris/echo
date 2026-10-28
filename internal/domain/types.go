@@ -104,6 +104,7 @@ type ForkOrigin struct {
 	MessageID string `json:"messageId"`
 }
 type Message struct {
+	RerunUnavailable  bool         `json:"rerunUnavailable,omitempty"` // Derived when serving a transcript.
 	NodeID            string       `json:"nodeId,omitempty"`
 	ID                string       `json:"id"`
 	ChatID            string       `json:"chatId"`
@@ -142,15 +143,16 @@ type FunctionCall struct {
 	Arguments string `json:"arguments"`
 }
 type Run struct {
-	ID         string     `json:"id"`
-	ChatID     string     `json:"chatId"`
-	DispatchID string     `json:"dispatchId"`
-	BotID      string     `json:"botId"`
-	Status     string     `json:"status"`
-	Error      string     `json:"error,omitempty"`
-	Generation Generation `json:"generation"`
-	CreatedAt  time.Time  `json:"createdAt"`
-	UpdatedAt  time.Time  `json:"updatedAt"`
+	UserMessageID string     `json:"userMessageId,omitempty"`
+	ID            string     `json:"id"`
+	ChatID        string     `json:"chatId"`
+	DispatchID    string     `json:"dispatchId"`
+	BotID         string     `json:"botId"`
+	Status        string     `json:"status"`
+	Error         string     `json:"error,omitempty"`
+	Generation    Generation `json:"generation"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
 }
 type ExecutionScope struct {
 	Bot           Bot    `json:"bot"`

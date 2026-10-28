@@ -13,7 +13,7 @@ beforeEach(() => {
 });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 function setup(m = message) {
-  const options = { busy: vi.fn(() => false), notice: vi.fn(), save: vi.fn().mockResolvedValue(undefined), remove: vi.fn().mockResolvedValue(undefined), fork: vi.fn().mockResolvedValue(undefined) };
+  const options = { busy: vi.fn(() => false), notice: vi.fn(), save: vi.fn().mockResolvedValue(undefined), remove: vi.fn().mockResolvedValue(undefined), fork: vi.fn().mockResolvedValue(undefined), rerun: vi.fn().mockResolvedValue(undefined) };
   const ui = new MessageActionUI(options);
   const container = document.createElement('section'), body = document.createElement('article'); container.append(body); document.body.append(container);
   ui.mount(container, body, m);
@@ -21,9 +21,38 @@ function setup(m = message) {
   return { ui, options, container, body, click };
 }
 describe('message actions', () => {
+  it.each(['user', 'assistant'])('confirms a %s rerun and respects cancellation', async role => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const m = { ...message, role }; const { click, options, container } = setup(m);
+    click('rerun'); expect(options.rerun).not.toHaveBeenCalled();
+    expect(confirm).toHaveBeenCalledWith(role === 'assistant'
+      ? 'Rerun this response? Its preceding user message will be rerun, and this response and all later messages will be removed.'
+      : 'Rerun from this message? Its response and all later messages will be removed.');
+    confirm.mockReturnValue(true); click('rerun');
+    expect(options.rerun).toHaveBeenCalledWith(m, expect.any(String));
+    await vi.waitFor(() => expect(container.querySelector('[aria-busy]')).toBeNull());
+    expect(options.save).not.toHaveBeenCalled(); expect(options.remove).not.toHaveBeenCalled();
+  });
+  it('blocks duplicate reruns and retains the retry key after a lost response', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { click, options, container } = setup();
+    let fail!: (error: Error) => void;
+    options.rerun.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+    click('rerun'); click('rerun'); expect(options.rerun).toHaveBeenCalledTimes(1);
+    expect(container.querySelectorAll('[aria-disabled="true"]')).toHaveLength(5);
+    fail(new Error('lost response')); await vi.waitFor(() => expect(options.notice).toHaveBeenCalled());
+    click('rerun'); await vi.waitFor(() => expect(container.querySelector('[aria-busy]')).toBeNull());
+    expect(options.rerun.mock.calls[0]).toEqual(options.rerun.mock.calls[1]);
+  });
+  it('disables response reruns when the original user message is gone', () => {
+    const { click, container, options } = setup({ ...message, rerunUnavailable: true });
+    const button = container.querySelector<HTMLButtonElement>('[data-action="rerun"]')!;
+    expect(button.disabled).toBe(true); expect(button.title).toContain('original user message');
+    click('rerun'); expect(options.rerun).not.toHaveBeenCalled();
+  });
   it.each(['user', 'assistant'])('renders ordered actions and forks %s without editing or deleting', async role => {
     const { container, options, click } = setup({ ...message, role });
-    expect([...container.querySelectorAll('button')].map(b => b.dataset.action)).toEqual(['copy', 'fork', 'edit', 'trash']);
+    expect([...container.querySelectorAll('button')].map(b => b.dataset.action)).toEqual(['copy', 'fork', 'edit', 'rerun', 'trash']);
     click('fork'); expect(options.save).not.toHaveBeenCalled(); expect(options.remove).not.toHaveBeenCalled(); expect(container.querySelector('form')).toBeNull();
     expect(options.fork).toHaveBeenCalledWith({ ...message, role }, expect.any(String));
     await vi.waitFor(() => expect(container.querySelector('[aria-busy]')).toBeNull());
@@ -34,7 +63,7 @@ describe('message actions', () => {
     options.fork.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
     click('fork'); click('fork'); expect(options.fork).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
-    expect(container.querySelectorAll('[aria-disabled="true"]')).toHaveLength(4);
+    expect(container.querySelectorAll('[aria-disabled="true"]')).toHaveLength(5);
     fail(new Error('network failed'));
     await vi.waitFor(() => expect(options.notice).toHaveBeenCalled());
     click('fork'); await vi.waitFor(() => expect(container.querySelector('[aria-busy]')).toBeNull());
@@ -80,9 +109,11 @@ describe('message actions', () => {
   it('disables actions during a run, including an editor opened before the run', async () => {
     const { ui, options, container, body, click } = setup(); click('edit'); options.busy.mockReturnValue(true);
     body.querySelector('form')!.requestSubmit(); await vi.waitFor(() => expect(options.notice).toHaveBeenCalled()); expect(options.save).not.toHaveBeenCalled();
-    ui.mount(container, body, message); expect(container.querySelectorAll('[aria-disabled="true"]')).toHaveLength(4);
+    ui.mount(container, body, message); expect(container.querySelectorAll('[aria-disabled="true"]')).toHaveLength(5);
     click('copy'); click('trash'); click('fork'); expect(clipboard).not.toHaveBeenCalled(); expect(options.remove).not.toHaveBeenCalled(); expect(options.fork).not.toHaveBeenCalled();
     expect(options.notice).toHaveBeenLastCalledWith('Wait for the current response to finish before forking the chat.', true);
+    click('rerun'); expect(options.rerun).not.toHaveBeenCalled();
+    expect(options.notice).toHaveBeenLastCalledWith('Wait for the current response to finish before rerunning messages.', true);
   });
   it('toggles on touch and closes on outside tap without hijacking links', () => {
     touch = true; const { container } = setup(); container.click(); expect(container.classList.contains('is-open')).toBe(true);

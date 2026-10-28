@@ -95,8 +95,10 @@ func (s *Server) mutateMessage(chatID, id string, content *string) error {
 }
 
 func (s *Server) prepareResubmit(chatID string, req SendRequest) (SendRequest, error) {
-	if err := validateMessageContent(req.Content); err != nil {
-		return req, err
+	if req.rerunMessageID == "" {
+		if err := validateMessageContent(req.Content); err != nil {
+			return req, err
+		}
 	}
 	if req.RequestID == "" || len(req.RequestID) > 128 {
 		return req, errors.New("resubmit requires a request id of at most 128 characters")
@@ -105,6 +107,9 @@ func (s *Server) prepareResubmit(chatID string, req SendRequest) (SendRequest, e
 	defer s.mu.Unlock()
 	if err := s.messageMutationGuard(chatID); err != nil {
 		return req, err
+	}
+	if req.rerunMessageID != "" {
+		return s.prepareRerunLocked(chatID, req)
 	}
 	m, err := s.actionMessage(chatID, req.replaceMessageID)
 	if err != nil {
@@ -131,6 +136,25 @@ func (s *Server) sendAttachments(chatID string, req SendRequest) ([]domain.Attac
 }
 
 func (s *Server) messageActionRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/v1/chats/{id}/messages/{messageId}/rerun", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			RequestID string `json:"requestId"`
+		}
+		if err := decode(w, r, &body); err != nil {
+			respond(w, nil, err)
+			return
+		}
+		req := SendRequest{RequestID: body.RequestID, rerunMessageID: r.PathValue("messageId"), OriginNodeID: s.Swarm.Node().ID}
+		if caller, ok := swarm.Caller(r.Context()); ok {
+			req.OriginNodeID = caller.NodeID
+		}
+		d, err := s.send(r.PathValue("id"), req)
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		respond(w, map[string]string{"dispatchId": d.id}, nil)
+	})
 	mux.HandleFunc("POST /api/v1/chats/{id}/messages/{messageId}/fork", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			RequestID string `json:"requestId"`

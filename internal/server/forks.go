@@ -25,6 +25,7 @@ type forkSnapshot struct {
 	Messages []domain.Message
 	Runs     []domain.Run
 	Partial  map[string]bool
+	Inputs   map[string]string
 }
 
 func (s *Server) captureFork(chatID, target string) (forkSnapshot, error) {
@@ -90,6 +91,15 @@ func (s *Server) captureFork(chatID, target string) (forkSnapshot, error) {
 			snapshot.Partial[m.RunID] = true
 		}
 	}
+	runs, err := s.Store.ChatRuns(chatID)
+	if err != nil {
+		return snapshot, err
+	}
+	inputs := rerunInputs(all, runs)
+	snapshot.Inputs = map[string]string{}
+	for _, run := range snapshot.Runs {
+		snapshot.Inputs[run.ID] = inputs[run.ID].ID
+	}
 	return snapshot, nil
 }
 
@@ -110,6 +120,7 @@ func prepareFork(snapshot forkSnapshot, target, home string) store.HistoryCopy {
 	c.ForkedFrom = &domain.ForkOrigin{ChatID: snapshot.Chat.ID, MessageID: target}
 	c.Bots = map[string]string{}
 	runIDs, dispatchIDs := map[string]string{}, map[string]string{}
+	messageIDs := map[string]string{}
 	for i := range cloned.Runs {
 		r := &cloned.Runs[i]
 		old := r.ID
@@ -124,11 +135,13 @@ func prepareFork(snapshot forkSnapshot, target, home string) store.HistoryCopy {
 	}
 	for i := range cloned.Messages {
 		m := &cloned.Messages[i]
+		oldID := m.ID
 		owner, _ := swarm.Split(m.ID)
 		m.ID = domain.ID()
 		if owner != "" {
 			m.ID = swarm.Key(owner, m.ID)
 		}
+		messageIDs[oldID] = m.ID
 		m.ChatID, m.RunID = c.ID, runIDs[m.RunID]
 		if m.Status == "running" || m.Status == "waiting" || m.Status == "queued" {
 			m.Status = "interrupted"
@@ -146,6 +159,13 @@ func prepareFork(snapshot forkSnapshot, target, home string) store.HistoryCopy {
 				}
 			}
 			c.Bots[id] = name
+		}
+	}
+	for i := range cloned.Runs {
+		cloned.Runs[i].UserMessageID = messageIDs[snapshot.Inputs[snapshot.Runs[i].ID]]
+		if cloned.Runs[i].UserMessageID == "" {
+			// Retain a missing relationship instead of guessing another input.
+			cloned.Runs[i].UserMessageID = domain.ID()
 		}
 	}
 	return store.HistoryCopy{Chat: c, Messages: cloned.Messages, Runs: cloned.Runs}

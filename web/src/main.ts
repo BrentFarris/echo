@@ -358,6 +358,11 @@ async function reloadTranscript(id: string) {
 const messageActionUI = new MessageActionUI({
   busy: id => state.runs.some(run => run.chatId === id && activeRunStatuses.includes(run.status)) || (id === chatId && submitting),
   notice,
+  rerun: async (message, requestId) => {
+    await api(`/chats/${encodeURIComponent(message.chatId)}/messages/${encodeURIComponent(message.storedId || message.id)}/rerun`, 'POST', { requestId });
+    await refresh();
+    await reloadTranscript(message.chatId);
+  },
   fork: async (message, requestId) => {
     const navigation = chatNavigation, thread = visibleBotId || rememberedBotThread();
     await generationSaves.get(message.chatId);

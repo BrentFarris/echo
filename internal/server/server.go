@@ -111,6 +111,9 @@ type SendRequest struct {
 	scheduledBot           string
 	replaceMessageID       string
 	replacementAttachments []domain.Attachment
+	rerunMessageID         string
+	rerunRecipients        []string
+	rerunFingerprint       [32]byte
 }
 
 type coordination interface {
@@ -351,6 +354,17 @@ func (s *Server) snapshot(id string) ([]domain.Message, int64, error) {
 	for i, m := range ms {
 		if active, ok := s.streams[m.ID]; ok {
 			ms[i] = active
+		}
+	}
+	runs, err := s.Store.ChatRuns(id)
+	if err != nil {
+		return nil, 0, err
+	}
+	inputs := rerunInputs(ms, runs)
+	for i := range ms {
+		if ms[i].Role == "assistant" {
+			_, available := inputs[ms[i].RunID]
+			ms[i].RerunUnavailable = !available
 		}
 	}
 	return ms, s.seq.Load(), nil
