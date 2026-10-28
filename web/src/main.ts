@@ -63,6 +63,17 @@ function action(fn: () => unknown | Promise<unknown>) { return () => { Promise.r
 function busy() { return state.runs.some(r => r.chatId === chatId && ['running', 'waiting', 'queued'].includes(r.status)); }
 function currentBot(id?: string) { return state.bots.find(b => b.id === id); }
 function pluginEnabled(id: string, botId?: string) { return pluginAvailable(state.plugins.find(p => p.id === id), currentBot(botId)); }
+const activeRunStatuses = ['running', 'waiting', 'queued'];
+const finishedRunStatuses = ['completed', 'failed', 'cancelled', 'interrupted'];
+function markRead(id: string) { if (id) void api(`/chats/${id}/read`, 'POST', {}).catch(() => { /* Sidebar state recovers on the next refresh. */ }); }
+// Yellow dot: work is in progress. Green dot: the latest run finished after the
+// chat was last opened, so the outcome has not been seen yet.
+function chatDot(c: Chat) {
+  if (state.runs.some(r => r.chatId === c.id && activeRunStatuses.includes(r.status))) return '<span class="chat-dot busy" role="img" aria-label="In progress" title="In progress"></span>';
+  if (c.id === chatId || !c.lastReadAt) return '';
+  const finishedAt = state.runs.filter(r => r.chatId === c.id && finishedRunStatuses.includes(r.status)).map(r => r.updatedAt || '').sort().at(-1) || '';
+  return finishedAt > c.lastReadAt ? '<span class="chat-dot done" role="img" aria-label="Finished, not yet opened" title="Finished — not yet opened"></span>' : '';
+}
 
 function shell() {
   app.innerHTML = `<aside id="sidebar" class="sidebar"><div class="brand"><span class="brand-mark" aria-hidden="true">E</span>Echo<button class="icon sidebar-close" aria-label="Close sidebar">×</button></div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button></div><label class="machine-filter" hidden>Machine<select aria-label="Filter machines"></select></label><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="install-echo" hidden>Install Echo</button><button id="missed-button" hidden>Missed jobs</button><nav class="app-dock" aria-label="Docked apps" hidden></nav><div class="sidebar-footer-actions"><button id="apps-button">▦ Apps</button><button id="settings-button">⚙ Settings</button></div></div></aside><div class="sidebar-backdrop" aria-hidden="true"></div>
@@ -170,10 +181,10 @@ async function newChat() {
 }
 async function selectChat(id: string) {
   if (submitting) return;
-  const navigation = ++chatNavigation;
+  const navigation = ++chatNavigation, previous = chatId;
   showingApp = false; showingApps = false; renderMainView();
   closePicker(); ++referenceVersion; clearTimeout(referenceTimer); document.querySelector('.bot-details')?.dispatchEvent(new Event('dismiss'));
-  if (id !== chatId) rememberDraft(); chatId = id; history.replaceState(null, '', '#' + id); const c = state.chats.find(c => c.id === id), draft = drafts.get(id);
+  if (id !== chatId) rememberDraft(); chatId = id; if (id !== previous) markRead(previous); markRead(id); history.replaceState(null, '', '#' + id); const c = state.chats.find(c => c.id === id), draft = drafts.get(id);
   generationByNode = { ...(c?.generationByNode || {}), ...(draft?.generationByNode || {}) }; modelNode = draft?.modelNode || c?.nodeId || entryNode;
   generation = { ...(draft?.generation || c?.generation || generation) }; references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references }); renderModels(); renderRefs(); renderAttachments(); renderSidebar(); updateSendButton(); autosizeComposer(); setSidebarOpen(false, false);
   const initialBot = selectedThreadBot([]);
@@ -271,7 +282,7 @@ function renderSidebar() {
   if (filter.innerHTML !== options) { filter.innerHTML = options; filter.value = machineFilter; } filter.onchange = () => { machineFilter = filter.value; renderSidebar(); };
   const machines = (c: Chat) => [c.nodeId || entryNode, ...Object.keys(c.bots || {}).map(id => splitID(id)[0])];
   const chips = (nodes: string[]) => [...new Set(nodes)].filter(n => n !== entryNode).map(n => `<small class="machine-chip" title="${esc(n)}">${esc(machineName(n))}${instanceOnline(n) ? '' : ' · Offline'}</small>`).join('');
-  const markup = groupChats(state.chats.filter(c => !machineFilter || machines(c).includes(machineFilter))).map(group => `<section><div class="group-label">${esc(group.label)}<span class="chat-machines">${chips(group.chats.flatMap(machines))}</span></div>${group.chats.map(c => `<div class="chat-row ${!showingApps && !showingApp && c.id === chatId ? 'active' : ''}"><button class="chat-link" data-chat="${esc(c.id)}" title="${esc(c.title)}"><span class="chat-link-title">${esc(c.title)}</span><span class="chat-machines">${chips(machines(c))}</span></button><button class="icon chat-remove" data-delete="${esc(c.id)}" aria-label="Delete ${esc(c.title)}">×</button></div>`).join('')}</section>`).join('') || '<p class="empty-list">Your chats will appear here.</p>';
+  const markup = groupChats(state.chats.filter(c => !machineFilter || machines(c).includes(machineFilter))).map(group => `<section><div class="group-label">${esc(group.label)}<span class="chat-machines">${chips(group.chats.flatMap(machines))}</span></div>${group.chats.map(c => `<div class="chat-row ${!showingApps && !showingApp && c.id === chatId ? 'active' : ''}">${chatDot(c)}<button class="chat-link" data-chat="${esc(c.id)}" title="${esc(c.title)}"><span class="chat-link-title">${esc(c.title)}</span><span class="chat-machines">${chips(machines(c))}</span></button><button class="icon chat-remove" data-delete="${esc(c.id)}" aria-label="Delete ${esc(c.title)}">×</button></div>`).join('')}</section>`).join('') || '<p class="empty-list">Your chats will appear here.</p>';
   if (markup !== sidebarMarkup) { q('.chat-groups').innerHTML = markup; sidebarMarkup = markup; }
   for (const el of document.querySelectorAll<HTMLButtonElement>('[data-chat]')) el.onclick = action(() => selectChat(el.dataset.chat!));
   for (const el of document.querySelectorAll<HTMLButtonElement>('[data-delete]')) el.onclick = action(async () => { if (submitting) return; await api(`/chats/${el.dataset.delete}`, 'DELETE'); releaseAttachments(drafts.get(el.dataset.delete!)?.attachments || []); drafts.delete(el.dataset.delete!); if (chatId === el.dataset.delete) { attachments = []; references = []; q<ReferenceInput>('#composer').value = ''; renderAttachments(); renderRefs(); autosizeComposer(); } await refresh(); });

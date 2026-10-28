@@ -83,6 +83,9 @@ type SegmentRange struct {
 	Start int `json:"start"`
 	End   int `json:"end"`
 }
+
+// LastReadAt records when the transcript was last opened, so the sidebar can
+// flag chats that finished work nobody has looked at yet.
 type Chat struct {
 	OwnerNodeID      string                `json:"ownerNodeId,omitempty"`
 	Projection       bool                  `json:"projection,omitempty"`
@@ -93,6 +96,7 @@ type Chat struct {
 	Generation       Generation            `json:"generation"`
 	CreatedAt        time.Time             `json:"createdAt"`
 	UpdatedAt        time.Time             `json:"updatedAt"`
+	LastReadAt       *time.Time            `json:"lastReadAt,omitempty"`
 }
 type Message struct {
 	NodeID            string       `json:"nodeId,omitempty"`

@@ -223,6 +223,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 		e := s.Store.SetChatGeneration(r.PathValue("id"), g)
 		respond(w, g, e)
 	})
+	mux.HandleFunc("POST /api/v1/chats/{id}/read", func(w http.ResponseWriter, r *http.Request) {
+		e := s.Store.SetChatReadAt(r.PathValue("id"), domain.Now())
+		s.emit("changed", r.PathValue("id"), "", "", nil)
+		respond(w, true, e)
+	})
 	mux.HandleFunc("POST /api/v1/chats/{id}/stop", func(w http.ResponseWriter, r *http.Request) {
 		finish := s.stopChat(r.PathValue("id"))
 		defer finish()

@@ -17,3 +17,9 @@ dialog{color:var(--text);background:var(--surface);border:1px solid var(--border
 .chat-machines { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
 .chat-machines:empty { display:none; }
 .chat-machines .machine-chip { margin-inline-start:0; }
+.chat-dot { flex:0 0 auto; width:8px; height:8px; border-radius:50%; margin-inline-start:8px; }
+.chat-dot.busy { background:#9a6700; box-shadow:0 0 0 2px #9a670029; animation:chat-dot-breathe 1.7s ease-in-out infinite; }
+.chat-dot.done { background:#1a7f37; box-shadow:0 0 0 2px #1a7f3729; }
+@keyframes chat-dot-breathe { 0%,100% { opacity:1; } 50% { opacity:.45; } }
+@media(prefers-reduced-motion:reduce){ .chat-dot.busy { animation:none; } }
+@media(prefers-color-scheme:dark){ .chat-dot.busy { background:#d29922; box-shadow:0 0 0 2px #d2992229; } .chat-dot.done { background:#2ea043; box-shadow:0 0 0 2px #2ea04329; } }

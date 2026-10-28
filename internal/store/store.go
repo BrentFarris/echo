@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/brent/echo/internal/domain"
 	_ "modernc.org/sqlite"
@@ -339,6 +340,24 @@ func (s *Store) SetChatGeneration(id string, generation domain.Generation) error
 		return e
 	}
 	r, e := s.db.Exec("UPDATE chats SET data=json_set(data,'$.generation',json(?)) WHERE id=?", string(data), id)
+	if e != nil {
+		return e
+	}
+	n, _ := r.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// SetChatReadAt records when the transcript was last opened. It patches the
+// stored JSON so a concurrent title or generation update is never clobbered.
+func (s *Store) SetChatReadAt(id string, at time.Time) error {
+	stamp, e := json.Marshal(at)
+	if e != nil {
+		return e
+	}
+	r, e := s.db.Exec("UPDATE chats SET data=json_set(data,'$.lastReadAt',json(?)) WHERE id=?", string(stamp), id)
 	if e != nil {
 		return e
 	}
