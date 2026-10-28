@@ -299,6 +299,8 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		return nil, errors.New("plugin management belongs to Echo's Plugin Authoring plugin")
 	}
 	switch method {
+	case "jira.search", "jira.issue", "jira.comments":
+		return s.jiraOperation(ctx, scope, manifest, method, raw)
 	case "comfyui.generate", "comfyui.generate_video", "comfyui.save_image", "comfyui.save_video":
 		return s.comfyUI(ctx, scope, manifest, method, raw)
 	case "git.run", "fossil.run", "p4.run":
@@ -472,6 +474,10 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 	case "plugin.list":
 		return s.Plugins.List()
 	case "plugin.configure":
+		if text(a, "id") == "jira" {
+			s.jiraMu.Lock()
+			defer s.jiraMu.Unlock()
+		}
 		if text(a, "id") == "swarm" {
 			return nil, errors.New("Swarm connections and permissions are configured by the owner in Settings")
 		}
@@ -491,6 +497,11 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 			}
 			if m.ID == "comfyui" {
 				cfg, e = comfyUIConfig(m, cfg, false)
+				if e != nil {
+					return nil, e
+				}
+			} else if m.ID == "jira" {
+				cfg, e = jiraSettings(m, cfg, false)
 				if e != nil {
 					return nil, e
 				}

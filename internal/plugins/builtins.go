@@ -58,13 +58,14 @@ func Builtins() []domain.PluginManifest {
 	}
 	ms = append(ms, sourceControlPlugins()...)
 	ms = append(ms, comfyUIPlugin())
+	ms = append(ms, jiraPlugin())
 	ms = append(ms, monacoEditorPlugin())
 	for i := range ms {
 		m := &ms[i]
 		m.API = 1
 		m.Version = "1.0.0"
 		m.Builtin = true
-		m.Enabled = m.ID != "swarm"
+		m.Enabled = m.ID != "swarm" && m.ID != "jira"
 		if m.Scope == "" {
 			m.Scope = "bot"
 		}

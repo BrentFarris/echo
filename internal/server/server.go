@@ -33,6 +33,7 @@ import (
 )
 
 type Server struct {
+	jiraMu             sync.Mutex
 	notificationMu     sync.Mutex
 	notificationWG     sync.WaitGroup
 	notificationClient *http.Client // Injectable transport for push delivery tests.
