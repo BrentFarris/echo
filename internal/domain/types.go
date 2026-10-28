@@ -26,6 +26,14 @@ type Bot struct {
 	Plugins            map[string]bool `json:"plugins"`
 	Revision           int64           `json:"revision"`
 }
+
+// PluginEnabled is the bot's saved selection, independent of global availability.
+// Only Echo automatically accepts plugins added after the bot was created.
+func (b Bot) PluginEnabled(id string) bool {
+	enabled, exists := b.Plugins[id]
+	return enabled || !exists && b.ID == "echo"
+}
+
 type Generation struct {
 	EndpointID  string  `json:"endpointId"`
 	Model       string  `json:"model"`

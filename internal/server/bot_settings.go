@@ -11,16 +11,13 @@ func sameBotScope(a, b domain.Bot) bool {
 	if a.ID != b.ID || a.Handle != b.Handle || a.Name != b.Name || a.Prompt != b.Prompt || !slices.Equal(a.Roots, b.Roots) {
 		return false
 	}
-	// An omitted plugin override and an explicit true both mean enabled.
-	for id, enabled := range a.Plugins {
-		other, exists := b.Plugins[id]
-		if !enabled != (exists && !other) {
+	for id := range a.Plugins {
+		if a.PluginEnabled(id) != b.PluginEnabled(id) {
 			return false
 		}
 	}
-	for id, enabled := range b.Plugins {
-		other, exists := a.Plugins[id]
-		if !enabled != (exists && !other) {
+	for id := range b.Plugins {
+		if a.PluginEnabled(id) != b.PluginEnabled(id) {
 			return false
 		}
 	}

@@ -22,7 +22,7 @@ export function threadMessages(messages: Message[], botId?: string, runs: Run[] 
 }
 
 export type ResponseGroup = { key: string; messages: Message[]; author: string; status?: string; final?: Message };
-export type ConversationItem = { kind: 'message'; message: Message } | { kind: 'response'; group: ResponseGroup };
+export type ConversationItem = { kind: 'message'; message: Message } | { kind: 'response'; group: ResponseGroup } | { kind: 'run-error'; run: Run };
 
 // A bot can resume the same run after a handoff. Only its latest successful
 // final reply folds the work; interrupted and still-running work stays visible.
@@ -49,5 +49,16 @@ export function conversationItems(messages: Message[], runs: Run[]): Conversatio
     const last = group.messages.at(-1)!;
     if ((!group.status || group.status === 'completed') && last.role === 'assistant' && last.status === 'completed' && !last.toolCalls?.length && last.content.trim()) group.final = last;
   }
-  return result;
+  // Errors belong to the last response for their run, or to its prompt if the
+  // run stopped before producing a message (for example, while queued).
+  const after = new Map<ConversationItem, ConversationItem[]>();
+  for (const run of runs) {
+    if (!run.error || !['failed', 'cancelled', 'interrupted'].includes(run.status)) continue;
+    const anchor = result.findLast(item => item.kind === 'response' && item.group.messages.some(message => message.runId === run.id))
+      || result.find(item => item.kind === 'message' && item.message.id === run.userMessageId);
+    if (!anchor) continue;
+    const errors = after.get(anchor) || [];
+    errors.push({ kind: 'run-error', run }); after.set(anchor, errors);
+  }
+  return result.flatMap(item => [item, ...(after.get(item) || [])]);
 }

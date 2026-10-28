@@ -1,9 +1,14 @@
 import type { Bot, Plugin } from './types';
 import { entryNode, localID, machineName, ownerEcho, sameMachine } from './instances';
 
+// New bots receive defaults once; existing named bots require a saved selection.
+export function botPluginSelected(bot: Bot | undefined, id: string): boolean {
+  return !bot || (bot.plugins[id] ?? (localID(bot.id) === 'echo'));
+}
+
 export function pluginAvailable(plugin: Plugin | undefined, bot: Bot | undefined): boolean {
   return !!plugin && !!bot && sameMachine(bot, plugin.nodeId || entryNode) && plugin.enabled && !plugin.pending &&
-    (plugin.scope !== 'echo' || localID(bot.id) === 'echo') && (plugin.scope === 'app' || bot.plugins[plugin.id] !== false);
+    (plugin.scope !== 'echo' || localID(bot.id) === 'echo') && (plugin.scope === 'app' || botPluginSelected(bot, plugin.id));
 }
 
 export function appStatus(plugin: Plugin, echo: Bot | undefined): string {

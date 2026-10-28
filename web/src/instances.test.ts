@@ -1,11 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { InstanceClient, combineState, ownedMessage, ownedState, resourceAPI, resourceID, route, attachmentURL } from './instances';
+import { InstanceClient, combineState, ownedEvent, ownedMessage, ownedState, resourceAPI, resourceID, route, attachmentURL } from './instances';
 import type { Message, State } from './types';
 
 const a = 'a'.repeat(32), b = 'b'.repeat(32);
 const empty = (): State => ({ bots: [], chats: [], endpoints: [], plugins: [], appDock: [], schedules: [], occurrences: [], runs: [] });
 beforeEach(() => { vi.restoreAllMocks(); combineState(empty(), { node: { nodeId: a, name: 'desktop', epoch: '1', version: 1 }, enabled: true, peers: [], instances: [{ node: { nodeId: b, name: 'linux', epoch: '2', version: 1 }, online: true, state: empty() }] }); });
 describe('instance ownership', () => {
+  it('keeps run errors linked to their prompt in both remote snapshots and live events', () => {
+    const run = { id: 'run', chatId: 'chat', botId: 'echo', userMessageId: 'prompt', status: 'cancelled', error: 'context canceled' };
+    const expected = { id: `${b}:run`, chatId: `${b}:chat`, botId: `${b}:echo`, userMessageId: `${b}:prompt` };
+    expect(ownedState(b, { ...empty(), runs: [run] }).runs[0]).toMatchObject(expected);
+    expect(ownedEvent(b, { sequence: 1, type: 'run', payload: run }).payload).toMatchObject(expected);
+  });
   it('retains the exact stored message ID when routing mutations to the chat home', () => {
     const message = ownedMessage(a, { id: `${b}:reply`, chatId: 'home', nodeId: b } as Message);
     expect(message.storedId).toBe(`${b}:reply`);

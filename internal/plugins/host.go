@@ -151,8 +151,7 @@ func (h *Host) Enabled(bot domain.Bot, id string) bool {
 	if m.Scope == "app" {
 		return true
 	}
-	v, ok := bot.Plugins[id]
-	return !ok || v
+	return bot.PluginEnabled(id)
 }
 func (h *Host) Tools(bot domain.Bot) []domain.Tool {
 	ms, _ := h.List()

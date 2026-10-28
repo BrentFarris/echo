@@ -1,10 +1,36 @@
 import { afterEach, expect, test, vi } from 'vitest';
-import { Apps, appIcon, appStatus, dockedApps, pluginAvailable, registeredApps } from './apps';
+import { Apps, appIcon, appStatus, botPluginSelected, dockedApps, pluginAvailable, registeredApps } from './apps';
 import type { Bot, Plugin } from './types';
 
 const echo: Bot = { id: 'echo', name: 'Echo', handle: 'echo', prompt: '', roots: [], plugins: {}, enableMultitasking: false, revision: 1 };
 const plugin = (id: string, extra: Partial<Plugin> = {}): Plugin => ({ id, name: id, enabled: true, pending: false, scope: 'bot', builtin: false, capabilities: [], config: {}, settings: { properties: {} }, app: { viewId: 'main' }, ...extra });
 afterEach(() => document.body.replaceChildren());
+
+test('new bots select defaults, while existing named bots require saved opt-in', () => {
+  const worker = { ...echo, id: 'worker' };
+  expect(botPluginSelected(undefined, 'calculator')).toBe(true);
+  expect(botPluginSelected(echo, 'calculator')).toBe(true);
+  expect(botPluginSelected(worker, 'calculator')).toBe(false);
+  expect(pluginAvailable(plugin('calculator'), worker)).toBe(false);
+  expect(pluginAvailable(plugin('calculator'), { ...worker, plugins: { calculator: true } })).toBe(true);
+  expect(pluginAvailable(plugin('calculator'), { ...worker, plugins: { calculator: false } })).toBe(false);
+  expect(pluginAvailable(plugin('calculator', { scope: 'app' }), worker)).toBe(true);
+  expect(pluginAvailable(plugin('calculator', { enabled: false }), { ...worker, plugins: { calculator: true } })).toBe(false);
+  expect(pluginAvailable(plugin('calculator', { pending: true }), { ...worker, plugins: { calculator: true } })).toBe(false);
+});
+
+test('machine-qualified Echo keeps automatic access and honors explicit overrides', () => {
+  const node = 'b'.repeat(32), id = `${node}:calculator`;
+  const remote = plugin(id, { nodeId: node });
+  const remoteEcho = { ...echo, id: `${node}:echo`, nodeId: node };
+  const remoteWorker = { ...remoteEcho, id: `${node}:worker` };
+  expect(pluginAvailable(remote, remoteEcho)).toBe(true);
+  expect(pluginAvailable(remote, { ...remoteEcho, plugins: { [id]: false } })).toBe(false);
+  expect(pluginAvailable(remote, remoteWorker)).toBe(false);
+  expect(pluginAvailable(remote, { ...remoteWorker, plugins: { [id]: true } })).toBe(true);
+  expect(pluginAvailable(remote, echo)).toBe(false);
+  expect(pluginAvailable({ ...remote, scope: 'echo' }, { ...remoteWorker, plugins: { [id]: true } })).toBe(false);
+});
 
 test('only explicit registrations appear, sorted by name, while unavailable pins remain stored', () => {
   const apps = [plugin('z'), plugin('b', { enabled: false }), plugin('pending', { pending: true }), plugin('a'), plugin('view-only', { app: undefined, views: [{ id: 'main', kind: 'floating', title: '', html: '' }] })];

@@ -28,6 +28,60 @@ test.beforeEach(async ({ page }) => {
   const chat = await (await created).json(); await expect(page).toHaveURL(new RegExp(`#${chat.id}$`));
 });
 
+test('new plugins require existing named bots to opt in while Echo keeps automatic access', async ({ page }) => {
+  const suffix = Date.now().toString(36), beforeID = `perbot-before-${suffix}`, afterID = `perbot-after-${suffix}`;
+  const beforeName = `Before Bot ${suffix}`, afterName = `After Bot ${suffix}`;
+  await install(page, manifest(beforeID, beforeName));
+  const created = await page.request.post('/api/v1/bots', { data: { handle: 'existing-worker', name: 'Existing Worker', plugins: { shell: false } } });
+  expect(created.ok()).toBe(true);
+  const worker = await created.json();
+  expect(worker.plugins[beforeID]).toBe(true);
+  await install(page, manifest(afterID, afterName));
+  const view = `/api/v1/plugins/${afterID}/views/main?botId=${worker.id}`;
+  expect((await page.request.get(view)).ok()).toBe(false);
+  expect((await page.request.get(`/api/v1/plugins/${afterID}/views/main?botId=echo`)).ok()).toBe(true);
+
+  async function editWorker() {
+    await page.getByRole('button', { name: '⚙ Settings', exact: true }).click();
+    await page.locator('.list-card').filter({ has: page.locator('strong', { hasText: /^Existing Worker$/ }) }).getByRole('button', { name: 'Edit', exact: true }).click();
+    return page.getByRole('dialog').last();
+  }
+  await page.reload();
+  let editor = await editWorker();
+  await expect(editor.getByRole('checkbox', { name: beforeName, exact: true })).toBeChecked();
+  await expect(editor.getByRole('checkbox', { name: afterName, exact: true })).not.toBeChecked();
+  await expect(editor.getByRole('checkbox', { name: 'Shell', exact: true })).not.toBeChecked();
+  await editor.getByRole('button', { name: 'Save bot', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(1);
+  expect((await page.request.get(view)).ok()).toBe(false);
+  await page.locator('#settings').getByRole('button', { name: 'Close', exact: true }).click();
+  await page.reload();
+  editor = await editWorker();
+  await expect(editor.getByRole('checkbox', { name: afterName, exact: true })).not.toBeChecked();
+  await editor.getByRole('checkbox', { name: afterName, exact: true }).check();
+  await editor.getByRole('button', { name: 'Save bot', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(1);
+  expect((await page.request.get(view)).ok()).toBe(true);
+
+  const before = (await state(page)).plugins.find((p: any) => p.id === beforeID);
+  expect((await page.request.patch(`/api/v1/plugins/${beforeID}`, { data: { enabled: false, config: before.config } })).ok()).toBe(true);
+  await page.locator('#settings').getByRole('button', { name: 'Close', exact: true }).click();
+  await page.reload();
+  await page.getByRole('button', { name: '⚙ Settings', exact: true }).click();
+  await page.getByRole('button', { name: '＋ Add bot', exact: true }).click();
+  editor = page.getByRole('dialog').last();
+  await expect(editor.getByRole('checkbox', { name: afterName, exact: true })).toBeChecked();
+  await expect(editor.getByRole('checkbox', { name: `${beforeName} (disabled globally)`, exact: true })).toBeChecked();
+  await editor.getByLabel('Handle', { exact: true }).fill('fresh-worker');
+  await editor.getByRole('checkbox', { name: 'Shell', exact: true }).uncheck();
+  await editor.getByRole('button', { name: 'Save bot', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(1);
+  const fresh = (await state(page)).bots.find((b: any) => b.handle === 'fresh-worker');
+  expect(fresh.plugins[beforeID]).toBe(true);
+  expect(fresh.plugins[afterID]).toBe(true);
+  expect(fresh.plugins.shell).toBe(false);
+});
+
 test('generated Calculator launches from Apps and shares its dock across browsers without sharing windows', async ({ page, browser }) => {
   await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Create a draggable calculator plugin');
   await page.getByRole('button', { name: 'Send message' }).click();

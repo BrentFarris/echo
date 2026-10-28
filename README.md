@@ -93,6 +93,8 @@ Add a compatible cloud endpoint in **Settings → Cloud Models**, then select th
 
 Installed model providers appear in the connection editor's Provider field. The `provider` authoring template delegates to the streaming client; other protocols can use bounded, endpoint-confined host requests without receiving credentials. The `renderer` template formats assistant replies inside an isolated frame. Both extension points support per-bot toggles.
 
+Named bots receive the installed plugin defaults when created. Plugins added later stay off for those bots until selected in **Settings → Bots → Edit → Plugins**. Upgrades preserve selections for previously installed plugins. Echo automatically receives new plugins and generated apps unless explicitly disabled for Echo; app-scoped plugins use their global settings.
+
 ## Work through chat
 
 Chats have no turn limit, and bots can ask clarifying questions as often as needed. Model/tool rounds and bot-to-bot questions and handoffs have no count limit. Use Stop to end active work.

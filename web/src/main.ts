@@ -20,7 +20,7 @@ import { parseChatRoute } from './notificationRoutes';
 import { composerMarkup, icons, autosizeComposer, wireComposerMenus, attachmentCard, previewAttachment, releaseAttachments, prefixBotMention, type DraftAttachment } from './composer';
 import { generatedMedia } from './generatedMedia';
 import { isQuestionMessage, questionCard, type QuestionSubmission } from './planQuestions';
-import { Apps, pluginAvailable } from './apps';
+import { Apps, botPluginSelected, pluginAvailable } from './apps';
 import { PluginWindows, parseAppRoute } from './pluginWindows';
 import { activeMention, escapeHTML as esc, groupChats } from './helpers';
 import type { Attachment, Bot, Chat, Endpoint, Generation, Message, Plugin, Schedule, Segment, State } from './types';
@@ -555,9 +555,15 @@ function renderMessages(tail = false, force = false) {
   if (!messages.length) log.innerHTML = `<div class="welcome"><p>Ask Echo to inspect, plan, or build.</p>${!state.endpoints.length ? '<button id="setup-model">Connect a local model</button>' : ''}</div>`;
   const visibleMessages = threadMessages(messages, visibleBotId, state.runs);
   messageActionUI.prune(new Set(visibleMessages.map(message => message.id)));
-  for (const item of conversationItems(visibleMessages, state.runs)) log.append(item.kind === 'response' ? paintResponse(item.group) : paintMessage(item.message));
+  const visibleRuns = state.runs.filter(r => r.chatId === chatId && (!visibleBotId || r.botId === visibleBotId));
+  for (const item of conversationItems(visibleMessages, visibleRuns)) {
+    if (item.kind === 'run-error') {
+      const div = document.createElement('div'); div.className = 'run-error'; div.dataset.timelineKey = 'run-error:' + item.run.id;
+      div.textContent = `${currentBot(item.run.botId)?.name || 'Bot'}: ${item.run.error}`; log.append(div);
+    } else log.append(item.kind === 'response' ? paintResponse(item.group) : paintMessage(item.message));
+  }
   if (messages.length && !visibleMessages.length) log.innerHTML = '<p class="empty-list">No messages in this bot’s thread yet.</p>';
-  renderRunErrors(); document.querySelector<HTMLButtonElement>('#setup-model')?.addEventListener('click', () => settings('models'));
+  renderQueuedRuns(); document.querySelector<HTMLButtonElement>('#setup-model')?.addEventListener('click', () => settings('models'));
   if (focused) [...log.querySelectorAll<HTMLDetailsElement>('details[data-disclosure]')].find(d => d.dataset.disclosure === focused)?.querySelector('summary')?.focus({ preventScroll: true });
   if (focusedFile) [...log.querySelectorAll<HTMLButtonElement>('.file-change')].find(button => button.dataset.fileChange === focusedFile)?.focus({ preventScroll: true });
   if (editing?.isConnected && editSelection) { editing.focus({ preventScroll: true }); editing.setSelectionRange(editSelection[0], editSelection[1]); }
@@ -575,12 +581,10 @@ function renderMessages(tail = false, force = false) {
   }
   chatScroll.contentChanged();
 }
-function renderRunErrors() {
-  for (const old of document.querySelectorAll('.run-error, .run-queued')) old.remove();
+function renderQueuedRuns() {
   const log = document.querySelector('.chat-log'); if (!log) return;
   const runs = state.runs.filter(r => r.chatId === chatId && (!visibleBotId || r.botId === visibleBotId));
   for (const run of runs.filter(r => r.status === 'queued')) { const div = document.createElement('div'); div.className = 'run-queued subtle'; div.setAttribute('role', 'status'); div.innerHTML = `${esc(currentBot(run.botId)?.name || 'Bot')} ${statusBadge('queued')}`; log.append(div); }
-  for (const run of runs.filter(r => r.error)) { const div = document.createElement('div'); div.className = 'run-error'; div.textContent = `${currentBot(run.botId)?.name || 'Bot'}: ${run.error}`; log.append(div); }
 }
 async function recoverInstance(node: string, current: () => boolean) {
   await refresh();
@@ -718,7 +722,7 @@ function botSettings(root: HTMLElement) { const bots = state.bots.filter(b => sa
 }
 function editBot(bot?: Bot) {
   const node = bot?.nodeId || settingsNode || entryNode; const api = <T = any>(path: string, method = 'GET', body?: unknown) => resourceAPI<T>(path, method, body, node); const plugins = state.plugins.filter(p => sameMachine(p, node));
-  const el = dialog(bot ? 'Edit bot' : 'Create a bot', `<form class="form"><label>Handle<input name="handle" required pattern="[A-Za-z][A-Za-z0-9_-]*" value="${esc(bot?.handle.split('.').pop())}" ${localID(bot?.id) === 'echo' ? 'readonly' : ''}></label><label>Name<input name="name" value="${esc(bot?.name)}"></label><label>System prompt<textarea name="prompt">${esc(bot?.prompt)}</textarea></label><label>Folders, one absolute path per line<textarea name="roots" placeholder="C:\\Users\\you\\project">${esc(bot?.roots?.join('\n'))}</textarea><small>Leave empty for unrestricted host access. Assigned folders apply to file tools and shell commands.</small></label><label class="check"><input name="enableMultitasking" type="checkbox" ${bot?.enableMultitasking ? 'checked' : ''}>Enable Multitasking</label><small>Allow this bot to work in multiple chats simultaneously. When disabled, requests wait their turn.</small><h3>Plugins</h3>${plugins.filter(p => p.scope === 'bot' || localID(p.id) === 'workspaces' || localID(bot?.id) === 'echo' && p.scope === 'echo').map(p => `<label class="check"><input name="plugin:${esc(p.id)}" type="checkbox" ${bot?.plugins[p.id] !== false ? 'checked' : ''}>${esc(p.name)}${!p.enabled ? ' (disabled globally)' : ''}</label>`).join('')}<button class="primary">Save bot</button></form>`);
+  const el = dialog(bot ? 'Edit bot' : 'Create a bot', `<form class="form"><label>Handle<input name="handle" required pattern="[A-Za-z][A-Za-z0-9_-]*" value="${esc(bot?.handle.split('.').pop())}" ${localID(bot?.id) === 'echo' ? 'readonly' : ''}></label><label>Name<input name="name" value="${esc(bot?.name)}"></label><label>System prompt<textarea name="prompt">${esc(bot?.prompt)}</textarea></label><label>Folders, one absolute path per line<textarea name="roots" placeholder="C:\\Users\\you\\project">${esc(bot?.roots?.join('\n'))}</textarea><small>Leave empty for unrestricted host access. Assigned folders apply to file tools and shell commands.</small></label><label class="check"><input name="enableMultitasking" type="checkbox" ${bot?.enableMultitasking ? 'checked' : ''}>Enable Multitasking</label><small>Allow this bot to work in multiple chats simultaneously. When disabled, requests wait their turn.</small><h3>Plugins</h3>${plugins.filter(p => p.scope === 'bot' || localID(p.id) === 'workspaces' || localID(bot?.id) === 'echo' && p.scope === 'echo').map(p => `<label class="check"><input name="plugin:${esc(p.id)}" type="checkbox" ${botPluginSelected(bot, p.id) ? 'checked' : ''}>${esc(p.name)}${!p.enabled ? ' (disabled globally)' : ''}</label>`).join('')}<button class="primary">Save bot</button></form>`);
   q<HTMLFormElement>('form', el).onsubmit = e => { e.preventDefault(); action(async () => { const f = new FormData(q('form', el) as HTMLFormElement), overrides: Record<string, boolean> = {}; for (const input of el.querySelectorAll<HTMLInputElement>('[name^="plugin:"]')) overrides[input.name.slice(7)] = input.checked; await api('/bots', 'POST', { id: bot?.id || '', handle: f.get('handle'), name: f.get('name'), prompt: f.get('prompt'), roots: String(f.get('roots')).split('\n').map(v => v.trim()).filter(Boolean), plugins: overrides, enableMultitasking: f.has('enableMultitasking'), revision: bot?.revision || 0 }); el.close(); await refresh(); settings('bots', node); })(); };
 }
 function modelSettings(root: HTMLElement, cloud: boolean) {

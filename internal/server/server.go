@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -554,9 +555,13 @@ func (s *Server) normalizeBot(b domain.Bot) (domain.Bot, error) {
 	if e != nil {
 		return b, e
 	}
+	var existing *domain.Bot
 	for _, other := range bots {
 		if other.ID != b.ID && other.Handle == b.Handle {
 			return b, errors.New("bot handle already exists")
+		}
+		if other.ID == b.ID {
+			existing = &other
 		}
 	}
 	b.Roots, e = broker.CanonicalRoots(b.Roots)
@@ -571,8 +576,25 @@ func (s *Server) normalizeBot(b domain.Bot) (domain.Bot, error) {
 	if b.ID == "echo" {
 		b.Handle = "echo"
 	}
+	b.Plugins = maps.Clone(b.Plugins)
+	if existing != nil && b.Plugins == nil {
+		b.Plugins = maps.Clone(existing.Plugins)
+	}
 	if b.Plugins == nil {
 		b.Plugins = map[string]bool{}
+	}
+	if existing == nil && b.ID != "echo" {
+		installed, err := s.Plugins.List()
+		if err != nil {
+			return b, err
+		}
+		for _, plugin := range installed {
+			if plugin.Scope == "bot" || plugin.Scope == "" {
+				if _, selected := b.Plugins[plugin.ID]; !selected {
+					b.Plugins[plugin.ID] = true
+				}
+			}
+		}
 	}
 	return b, nil
 }

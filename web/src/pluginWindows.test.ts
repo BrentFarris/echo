@@ -54,7 +54,7 @@ test('disablement during an in-flight fetch cannot create a stale window', async
 
 test('each bot gets its own window and only that bot loses it on disablement', async () => {
   windows = new PluginWindows(vi.fn().mockResolvedValue(view));
-  const other = { ...echo, id: 'other' }; windows.sync([plugin], [echo, other]);
+  const other = { ...echo, id: 'other', plugins: { calculator: true } }; windows.sync([plugin], [echo, other]);
   await windows.open('calculator', 'main'); await windows.open('calculator', 'main', 'other');
   expect(document.querySelectorAll('.floating-plugin')).toHaveLength(2);
   windows.sync([plugin], [echo, { ...other, plugins: { calculator: false } }]);

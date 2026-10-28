@@ -70,3 +70,29 @@ test('reconstructs completed history without a surviving run record and separate
   expect(groups).toHaveLength(2); expect(groups[0].key).not.toBe(groups[1].key);
   expect(groups.map(g => g.final?.id)).toEqual(['first', 'second']);
 });
+
+test.each(['failed', 'cancelled', 'interrupted'])('%s errors stay beside their response when the conversation continues', status => {
+  const stopped = { ...run(status), error: 'context canceled' };
+  const messages = [message('partial', { status, content: 'Partial result' }), message('continue', { runId: undefined, role: 'user', content: 'Continue' }), message('next', { runId: 'next-run', status: 'running' })];
+  const items = conversationItems(messages, [stopped, run('running', 'next-run')]);
+  expect(items.map(item => item.kind)).toEqual(['response', 'run-error', 'message', 'response']);
+  expect(items[1]).toEqual({ kind: 'run-error', run: stopped });
+});
+
+test('a run stopped before its first response keeps its error after the originating prompt', () => {
+  const stopped = { ...run('cancelled'), userMessageId: 'prompt', error: 'context canceled' };
+  const messages = [message('prompt', { runId: undefined, role: 'user' }), message('continue', { runId: undefined, role: 'user' }), message('next', { runId: 'next-run' })];
+  const items = conversationItems(messages, [run('completed', 'next-run'), stopped]);
+  expect(items.map(item => item.kind)).toEqual(['message', 'run-error', 'message', 'response']);
+  expect(items[1]).toEqual({ kind: 'run-error', run: stopped });
+});
+
+test('a run split across user turns shows its error once after its last response', () => {
+  const messages = [message('partial'), message('prompt', { runId: undefined, role: 'user' }), message('last')];
+  const items = conversationItems(messages, [{ ...run('failed'), error: 'Model unavailable' }]);
+  expect(items.map(item => item.kind)).toEqual(['response', 'message', 'response', 'run-error']);
+});
+
+test.each(['queued', 'waiting', 'running', 'completed'])('%s runs do not display stale errors', status => {
+  expect(conversationItems([message('reply')], [{ ...run(status), error: 'Old failure' }]).map(item => item.kind)).toEqual(['response']);
+});

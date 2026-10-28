@@ -67,7 +67,7 @@ export function ownedState(node: string, value: State): State {
     endpoints: (value.endpoints || []).map(e => ({ ...e, id: key(e.id), nodeId: node })),
     schedules: (value.schedules || []).map(s => ({ ...s, id: key(s.id), botId: key(s.botId), nodeId: node, generation: ownedGeneration(node, s.generation) })),
     occurrences: (value.occurrences || []).map(o => ({ ...o, id: key(o.id), scheduleId: key(o.scheduleId), botId: key(o.botId), nodeId: node })),
-    runs: (value.runs || []).map(r => ({ ...r, id: key(r.id), chatId: key(r.chatId), botId: key(r.botId) })), appDock: (value.appDock || []).map(key) };
+    runs: (value.runs || []).map(r => ({ ...r, id: key(r.id), chatId: key(r.chatId), botId: key(r.botId), userMessageId: r.userMessageId && key(r.userMessageId) })), appDock: (value.appDock || []).map(key) };
 }
 export function combineState(local: State, swarm: SwarmState): State {
   entryNode = swarm.node.nodeId;
@@ -86,7 +86,7 @@ export function ownedEvent(node: string, e: EchoEvent): EchoEvent {
   const key = (id: string) => resourceID(node, id);
   let payload = e.payload as any;
   if (e.type === 'message') payload = ownedMessage(node, payload);
-  else if (e.type === 'run') payload = { ...payload, id: key(payload.id), chatId: key(payload.chatId), botId: key(payload.botId) };
+  else if (e.type === 'run') payload = { ...payload, id: key(payload.id), chatId: key(payload.chatId), botId: key(payload.botId), userMessageId: payload.userMessageId && key(payload.userMessageId) };
   else if (e.type !== 'notification' && payload?.id) payload = { ...payload, id: key(payload.id) };
   return { ...e, chatId: e.chatId && key(e.chatId), botId: e.botId && key(e.botId), runId: e.runId && key(e.runId), payload };
 }

@@ -18,10 +18,10 @@ func (s *Store) migrate() error {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 4 {
+	if version > 5 {
 		return errors.New("this profile was created by a newer Echo; update Echo before opening it")
 	}
-	if version >= 4 {
+	if version >= 5 {
 		return nil
 	}
 	tx, err := s.db.Begin()
@@ -43,7 +43,12 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
-	if err = migrateNotifications(tx); err != nil {
+	if version < 4 {
+		if err = migrateNotifications(tx); err != nil {
+			return err
+		}
+	}
+	if err = migrateBotPlugins(tx); err != nil {
 		return err
 	}
 	return tx.Commit()
