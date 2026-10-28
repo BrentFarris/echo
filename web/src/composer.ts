@@ -1,6 +1,6 @@
 import { escapeHTML as esc } from './helpers';
 import type { ReferenceInput } from './referenceEditor';
-import type { Attachment } from './types';
+import type { Attachment, Bot, Segment } from './types';
 
 const svg = (body: string) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 export const icons = {
@@ -45,6 +45,24 @@ export function formatBytes(bytes: number) {
   return bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 export type DraftAttachment = { file: File; url: string; uploaded?: Attachment };
+
+// Only replace the prefix we inserted; user-authored mentions remain recipients.
+export function prefixBotMention(input: ReferenceInput, bot: Bot, automatic?: Segment): Segment | undefined {
+  const draft = input.snapshot(), leading = draft.references.find(ref => ref.type === 'bot' && ref.range?.start === 0);
+  const owned = !!automatic && !!leading && leading.botId === automatic.botId && leading.text === automatic.text;
+  const text = '@' + bot.handle;
+  if (leading?.botId === bot.id && leading.text === text) return owned ? automatic : undefined;
+  const end = owned ? leading.range!.end + Number(draft.text[leading.range!.end] === ' ') : 0;
+  const startSelection = input.selectionStart, endSelection = input.selectionEnd;
+  const alreadyPrefixed = draft.references.some(ref => ref.range?.start === end && ref.botId === bot.id && ref.text === text);
+  const prefix = alreadyPrefixed ? '' : text + ' ';
+  const ref: Segment | undefined = alreadyPrefixed ? undefined : { type: 'bot', botId: bot.id, text };
+  input.replace(prefix, 0, end, ref);
+  const shift = (position: number) => Math.max(prefix.length, position + prefix.length - end);
+  input.setSelectionRange(shift(startSelection), shift(endSelection));
+  return ref;
+}
+
 export function releaseAttachments(attachments: DraftAttachment[]) { attachments.forEach(a => URL.revokeObjectURL(a.url)); }
 export function attachmentCard(name: string, size: number, type: string, url: string, remove = false) {
   const preview = type.startsWith('image/') ? `<img src="${esc(url)}" alt="">` : type.startsWith('video/') ? icons.video : icons.file;

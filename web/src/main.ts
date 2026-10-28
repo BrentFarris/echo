@@ -12,7 +12,7 @@ import { endpointForm, endpointValues } from './modelSettings';
 import { mountDevelopment } from './development';
 import { mountHosting } from './hosting';
 import { setupPWA } from './pwa';
-import { composerMarkup, icons, autosizeComposer, wireComposerMenus, attachmentCard, previewAttachment, releaseAttachments, type DraftAttachment } from './composer';
+import { composerMarkup, icons, autosizeComposer, wireComposerMenus, attachmentCard, previewAttachment, releaseAttachments, prefixBotMention, type DraftAttachment } from './composer';
 import { generatedMedia } from './generatedMedia';
 import { Apps, pluginAvailable } from './apps';
 import { PluginWindows, parseAppRoute } from './pluginWindows';
@@ -43,6 +43,7 @@ let sidebarMarkup = '';
 let attachments: DraftAttachment[] = [], submitting = false;
 const stoppingChats = new Set<string>();
 const drafts = new Map<string, { text: string; references: Segment[]; generation: Generation; generationByNode: Record<string, Generation>; modelNode: string; attachments: DraftAttachment[] }>();
+const automaticMentions = new Map<string, Segment>();
 let pluginWindows: PluginWindows;
 let apps: Apps;
 let chatScroll: ChatScrollFollower;
@@ -88,6 +89,8 @@ function shell() {
   q('#manage-models').onclick = () => { q<HTMLDetailsElement>('.model-settings').open = false; settings('models'); };
   const composer = q<ReferenceInput>('#composer'); composer.bots = () => state.bots; composer.oninput = e => {
     ++referenceVersion; references = composer.snapshot().references; autosizeComposer(); rememberDraft(); updateSendButton(); clearTimeout(referenceTimer);
+    const automatic = automaticMentions.get(chatId);
+    if (automatic && !references.some(ref => ref.range?.start === 0 && ref.botId === automatic.botId && ref.text === automatic.text)) automaticMentions.delete(chatId);
     if ((e as InputEvent).isComposing) { closePicker(); return; }
     void showPicker(); referenceTimer = window.setTimeout(() => action(validateReferences)(), 180);
   };
@@ -173,12 +176,16 @@ async function selectChat(id: string) {
   if (id !== chatId) rememberDraft(); chatId = id; history.replaceState(null, '', '#' + id); const c = state.chats.find(c => c.id === id), draft = drafts.get(id);
   generationByNode = { ...(c?.generationByNode || {}), ...(draft?.generationByNode || {}) }; modelNode = draft?.modelNode || c?.nodeId || entryNode;
   generation = { ...(draft?.generation || c?.generation || generation) }; references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references }); renderModels(); renderRefs(); renderAttachments(); renderSidebar(); updateSendButton(); autosizeComposer(); setSidebarOpen(false, false);
+  const initialBot = selectedThreadBot([]);
+  if (initialBot) addressThread(initialBot);
   // Focus before the network request so a slow remote transcript cannot steal
   // focus or replace the selection after the user has started editing.
-  q<ReferenceInput>('#composer').focus();
+  const composer = q<ReferenceInput>('#composer'); composer.focus(); composer.setSelectionRange(composer.value.length);
   const loaded = id ? await api<Message[]>(`/chats/${id}/messages`) : [];
   if (navigation !== chatNavigation || chatId !== id) return;
   messages = loaded; renderMessages(true);
+  const loadedBot = selectedThreadBot(messages);
+  if (!initialBot || loadedBot?.id !== initialBot.id) addressThread(loadedBot);
 }
 async function send() {
   if (busy() || submitting) return; const draft = trimmedDraft(q<ReferenceInput>('#composer').snapshot()), content = draft.text; if (!content && !attachments.length) return;
@@ -195,14 +202,15 @@ async function send() {
     const segments = draft.references;
     await generationSaves.get(chatId);
     await api(`/chats/${chatId}/messages`, 'POST', { content, segments, attachments: attachments.map(a => a.uploaded!.id), generation: generationByNode[splitID(chatId)[0]] || state.chats.find(c => c.id === chatId)?.generation || generation, generationByNode: { ...generationByNode, [modelNode || entryNode]: generation }, requestId: crypto.randomUUID() });
-    q<ReferenceInput>('#composer').value = ''; references = []; releaseAttachments(attachments); attachments = []; drafts.delete(chatId); renderRefs(); renderAttachments(); autosizeComposer(); closePicker(); await refresh(); messages = await api(`/chats/${chatId}/messages`);
+    q<ReferenceInput>('#composer').value = ''; references = []; automaticMentions.delete(chatId); releaseAttachments(attachments); attachments = []; drafts.delete(chatId); renderRefs(); renderAttachments(); autosizeComposer(); closePicker(); await refresh(); messages = await api(`/chats/${chatId}/messages`);
     const recipients = [...messages].reverse().find(m => m.role === 'user' && !m.runId)?.recipients;
     if (recipients?.length && !recipients.includes(selectedBotThreads.get(chatId) || '')) {
       selectedBotThreads.set(chatId, recipients[0]);
       try { sessionStorage.setItem('echo:bot-thread:' + chatId, recipients[0]); } catch { /* In-memory selection remains available. */ }
     }
     renderMessages(true);
-  } finally { submitting = false; q<ReferenceInput>('#composer').disabled = false; updateSendButton(); q<ReferenceInput>('#composer').focus(); }
+    addressThread(selectedThreadBot(messages));
+  } finally { submitting = false; const composer = q<ReferenceInput>('#composer'); composer.disabled = false; updateSendButton(); composer.focus(); composer.setSelectionRange(composer.value.length); }
 }
 async function stop() {
   const id = chatId;
@@ -295,17 +303,33 @@ let renderedChatId = '';
 const selectedBotThreads = new Map<string, string>();
 const threadScroll = new Map<string, { top: number; following: boolean }>();
 let renderedThreadKey = '', visibleBotId: string | undefined;
+function rememberedBotThread() {
+  let selected = selectedBotThreads.get(chatId);
+  if (!selected) { try { selected = sessionStorage.getItem('echo:bot-thread:' + chatId) || undefined; } catch { /* Use the first thread. */ } }
+  return selected;
+}
+function selectedThreadBot(transcript: Message[]) {
+  const threads = conversationThreads(state.chats.find(chat => chat.id === chatId), transcript, state.runs.filter(run => run.chatId === chatId), state.bots);
+  return currentBot(threads.find(thread => thread.id === rememberedBotThread())?.id || threads[0]?.id);
+}
+function addressThread(bot: Bot | undefined) {
+  if (!bot) return;
+  const automatic = prefixBotMention(q<ReferenceInput>('#composer'), bot, automaticMentions.get(chatId));
+  if (automatic) automaticMentions.set(chatId, automatic); else automaticMentions.delete(chatId);
+  rememberDraft();
+}
 function selectBotThread(id: string) {
+  if (submitting) return;
   selectedBotThreads.set(chatId, id);
   try { sessionStorage.setItem('echo:bot-thread:' + chatId, id); } catch { /* Storage may be unavailable. */ }
   renderMessages();
+  addressThread(currentBot(id));
   const tab = [...q('.bot-tabs').querySelectorAll<HTMLElement>('[role="tab"]')].find(tab => tab.dataset.botThread === id);
   tab?.focus({ preventScroll: true }); tab?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 function renderBotTabs() {
   const threads = conversationThreads(state.chats.find(chat => chat.id === chatId), messages, state.runs.filter(run => run.chatId === chatId), state.bots);
-  let selected = selectedBotThreads.get(chatId);
-  if (!selected) { try { selected = sessionStorage.getItem('echo:bot-thread:' + chatId) || undefined; } catch { /* Use the first thread. */ } }
+  const selected = rememberedBotThread();
   visibleBotId = threads.length > 1 ? threads.find(thread => thread.id === selected)?.id || threads[0].id : undefined;
   if (visibleBotId) selectedBotThreads.set(chatId, visibleBotId);
   const tabs = q('.bot-tabs'), panel = q('#bot-thread-panel');

@@ -143,3 +143,46 @@ test('group tabs isolate queued and live bot threads and remember the selection 
   await page.getByRole('tab', { name: 'Echo Stopped', exact: true }).click();
   await expect(page.locator('.message.assistant')).toHaveCount(0);
 });
+
+test('chat navigation and bot tabs address follow-ups to the selected bot', async ({ page }) => {
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  const value = () => composer.evaluate((el: any) => el.value as string);
+  await expect.poll(value).toBe('');
+  await page.request.post('/api/v1/bots', { data: { handle: 'partner', name: 'Partner', roots: [], plugins: {} } });
+  await page.reload();
+  const single = new URL(page.url()).hash.slice(1);
+  await send(page, '@partner hello');
+  await expect(page.getByRole('button', { name: 'Stop response' })).toBeHidden();
+  await expect.poll(value).toBe('@partner ');
+  await newChat(page);
+  await expect.poll(value).toBe('');
+  await page.locator(`[data-chat="${single}"]`).click();
+  await expect.poll(value).toBe('@partner ');
+  await expect(composer.locator('.bot-reference')).toHaveText('@partner');
+  await expect(composer).toBeFocused();
+  await composer.pressSequentially('follow up');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Stop response' })).toBeHidden();
+  const transcript = await (await page.request.get(`/api/v1/chats/${single}/messages`)).json();
+  const lastUser = transcript.filter((message: any) => message.role === 'user').at(-1);
+  expect(lastUser.content).toBe('@partner follow up');
+  expect(lastUser.recipients).toHaveLength(1);
+  expect(lastUser.segments.find((segment: any) => segment.type === 'bot')?.text).toBe('@partner');
+
+  const group = await newChat(page);
+  await send(page, '@echo @partner hello');
+  await expect(page.getByRole('button', { name: 'Stop response' })).toBeHidden();
+  await page.getByRole('tab', { name: 'Partner', exact: true }).click();
+  await expect.poll(value).toBe('@partner ');
+  await composer.click(); await composer.press('Control+End'); await composer.pressSequentially('Keep this draft');
+  await page.getByRole('tab', { name: 'Echo', exact: true }).click();
+  await expect.poll(value).toBe('@echo Keep this draft');
+  await page.getByRole('tab', { name: 'Echo', exact: true }).press('ArrowRight');
+  await expect.poll(value).toBe('@partner Keep this draft');
+  await newChat(page);
+  await page.locator(`[data-chat="${group}"]`).click();
+  await expect.poll(value).toBe('@partner Keep this draft');
+  await page.reload();
+  await expect.poll(value).toBe('@partner ');
+  await expect(page.getByRole('tab', { name: 'Partner', exact: true })).toHaveAttribute('aria-selected', 'true');
+});

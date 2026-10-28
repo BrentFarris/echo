@@ -129,7 +129,7 @@ test('Apps navigation preserves drafts, attachments, selected thread, and an ong
   await expect.poll(async () => (await state(page)).runs.some((run: any) => run.chatId === chatId && run.status === 'completed')).toBe(true);
   await expect(page).toHaveURL(/#app\/embedded-draft\/main\/echo$/);
   await page.locator(`[data-chat="${chatId}"]`).click();
-  await expect(input).toHaveText('Keep this draft'); await expect(page.locator('.attachment-drafts')).toContainText('notes.txt');
+  await expect(input).toHaveText('@apps-beta Keep this draft'); await expect(page.locator('.attachment-drafts')).toContainText('notes.txt');
   await expect(page.locator('.message.assistant')).toContainText('A stream that survives a browser reload.');
   await expect(page.locator('.bot-tabs [aria-selected="true"]')).toHaveAttribute('data-bot-thread', selectedThread!);
   await page.locator('#apps-button').click(); await page.locator('#new-chat').click(); await expect(input).toBeVisible();
