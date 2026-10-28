@@ -280,6 +280,29 @@ func (s *Server) startWorker(input workerControl) error {
 				return err
 			}
 		}
+		// The home transcript is authoritative after message edits/resubmits.
+		// Reconcile only existing local history, retaining local scope validation.
+		ctx, cancel := context.WithTimeout(w.d.ctx, 30*time.Second)
+		var transcript []domain.Message
+		err := s.Swarm.JSON(ctx, req.Home, "GET", "/api/v1/chats/"+url.PathEscape(req.Chat.ID)+"/messages", nil, &transcript)
+		cancel()
+		if err != nil {
+			return err
+		}
+		contents := map[string]string{}
+		for _, m := range transcript {
+			if m.Role == "user" && m.RunID == "" {
+				contents[m.ID] = m.Content
+				continue
+			}
+			node, id := swarm.Split(m.ID)
+			if node == s.Swarm.Node().ID {
+				contents[id] = m.Content
+			}
+		}
+		if err = s.Store.ReconcileProjection(c.ID, contents); err != nil {
+			return err
+		}
 		for i := range message.Attachments {
 			a := &message.Attachments[i]
 			ctx, cancel := context.WithTimeout(w.d.ctx, 30*time.Second)

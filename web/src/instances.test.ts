@@ -6,6 +6,12 @@ const a = 'a'.repeat(32), b = 'b'.repeat(32);
 const empty = (): State => ({ bots: [], chats: [], endpoints: [], plugins: [], appDock: [], schedules: [], occurrences: [], runs: [] });
 beforeEach(() => { vi.restoreAllMocks(); combineState(empty(), { node: { nodeId: a, name: 'desktop', epoch: '1', version: 1 }, enabled: true, peers: [], instances: [{ node: { nodeId: b, name: 'linux', epoch: '2', version: 1 }, online: true, state: empty() }] }); });
 describe('instance ownership', () => {
+  it('retains the exact stored message ID when routing mutations to the chat home', () => {
+    const message = ownedMessage(a, { id: `${b}:reply`, chatId: 'home', nodeId: b } as Message);
+    expect(message.storedId).toBe(`${b}:reply`);
+    expect(route(`/chats/${message.chatId}/messages/${encodeURIComponent(message.storedId!)}`)).toMatchObject({ path: `/chats/home/messages/${b}%3Areply` });
+    expect(ownedMessage(b, { id: 'reply', chatId: 'remote' } as Message).storedId).toBe('reply');
+  });
   it('preserves local IDs and isolates clients across machine selection', () => {
     const linux = new InstanceClient(b), local = new InstanceClient(a);
     expect(resourceID(a, 'echo')).toBe('echo'); expect(resourceID(b, 'echo')).toBe(`${b}:echo`);

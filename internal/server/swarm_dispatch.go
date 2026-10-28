@@ -328,7 +328,7 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 	if err != nil {
 		return nil, err
 	}
-	attachments, err := s.resolveAttachments(chatID, req.Attachments)
+	attachments, err := s.sendAttachments(chatID, req)
 	if err != nil {
 		return nil, err
 	}
@@ -427,6 +427,11 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 		}
 	}
 	s.mu.Lock()
+	if prior := s.Store.Accepted(chatID, req.RequestID); prior != "" {
+		s.mu.Unlock()
+		cancel()
+		return acceptedDispatch(prior), nil
+	}
 	if s.closingChats[chatID] > 0 {
 		s.mu.Unlock()
 		cancel()
@@ -444,12 +449,15 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 			return nil, errors.New("this chat is still running; stop it or wait before sending")
 		}
 	}
-	if err = s.Store.AcceptWithRecord(c, message, runs, req.RequestID, id, "swarm-dispatches", id, f); err != nil {
+	if err = s.Store.AcceptWithRecord(c, message, runs, req.RequestID, id, "swarm-dispatches", id, f, req.replaceMessageID); err != nil {
 		s.mu.Unlock()
 		cancel()
 		return nil, err
 	}
 	s.dispatches[id] = d
+	if req.replaceMessageID != "" {
+		s.emitLocked("changed", chatID, "", "", map[string]bool{"messagesChanged": true})
+	}
 	s.emitLocked("message", chatID, "", "", message)
 	for _, run := range runs {
 		s.emitLocked("run", chatID, run.ID, run.BotID, run)

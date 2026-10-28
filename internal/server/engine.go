@@ -100,6 +100,16 @@ func (s *Server) recipients(req SendRequest) ([]domain.Bot, error) {
 	return result, nil
 }
 func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
+	if req.replaceMessageID != "" {
+		if prior := s.Store.Accepted(chatID, req.RequestID); prior != "" {
+			return acceptedDispatch(prior), nil
+		}
+		var err error
+		req, err = s.prepareResubmit(chatID, req)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if req.scheduledBot == "" && s.needsSwarm(req) {
 		return s.sendSwarm(chatID, req)
 	}
@@ -128,7 +138,7 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 	if e != nil {
 		return nil, e
 	}
-	attachments, e := s.resolveAttachments(chatID, req.Attachments)
+	attachments, e := s.sendAttachments(chatID, req)
 	if e != nil {
 		return nil, e
 	}
@@ -164,6 +174,10 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 		return nil, e
 	}
 	s.mu.Lock()
+	if prior := s.Store.Accepted(chatID, req.RequestID); prior != "" {
+		s.mu.Unlock()
+		return acceptedDispatch(prior), nil
+	}
 	if s.closingChats[chatID] > 0 {
 		s.mu.Unlock()
 		return nil, errors.New("chat is stopping or being deleted")
@@ -223,8 +237,11 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 	for i, b := range bots {
 		runs[i] = domain.Run{ID: domain.ID(), ChatID: chatID, DispatchID: d.id, BotID: b.ID, Generation: req.Generation, Status: "queued", CreatedAt: domain.Now()}
 	}
-	if e = s.Store.Accept(c, m, runs, req.RequestID, d.id); e != nil {
+	if e = s.Store.Accept(c, m, runs, req.RequestID, d.id, req.replaceMessageID); e != nil {
 		return failed(e)
+	}
+	if req.replaceMessageID != "" {
+		s.emitLocked("changed", chatID, "", "", map[string]bool{"messagesChanged": true})
 	}
 	s.emitLocked("message", chatID, "", "", m)
 	for _, run := range runs {

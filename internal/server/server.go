@@ -97,15 +97,17 @@ type dispatch struct {
 	timer      *time.Timer // Protected by Server.mu; starts at first admission.
 }
 type SendRequest struct {
-	GenerationByNode map[string]domain.Generation `json:"generationByNode,omitempty"`
-	OriginNodeID     string                       `json:"originNodeId,omitempty"`
-	Permits          map[string]string            `json:"permits,omitempty"`
-	Content          string                       `json:"content"`
-	Segments         []domain.Segment             `json:"segments"`
-	Generation       domain.Generation            `json:"generation"`
-	RequestID        string                       `json:"requestId"`
-	Attachments      []string                     `json:"attachments"`
-	scheduledBot     string
+	GenerationByNode       map[string]domain.Generation `json:"generationByNode,omitempty"`
+	OriginNodeID           string                       `json:"originNodeId,omitempty"`
+	Permits                map[string]string            `json:"permits,omitempty"`
+	Content                string                       `json:"content"`
+	Segments               []domain.Segment             `json:"segments"`
+	Generation             domain.Generation            `json:"generation"`
+	RequestID              string                       `json:"requestId"`
+	Attachments            []string                     `json:"attachments"`
+	scheduledBot           string
+	replaceMessageID       string
+	replacementAttachments []domain.Attachment
 }
 
 type coordination interface {

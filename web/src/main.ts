@@ -6,6 +6,7 @@ import { referenceIcons, referenceFromElement, renderMessageReferences, showBotD
 import { Renderers } from './renderers';
 import { conversationItems, conversationThreads, threadMessages, type ResponseGroup } from './conversation';
 import { fileChangesFooter } from './fileChanges';
+import { MessageActionUI } from './messageActions';
 import { createChatScrollFollower, type ChatScrollFollower } from './chatScroll';
 import { ReferenceSearch, validateInstanceReferences } from './referenceSearch';
 import { endpointForm, endpointValues } from './modelSettings';
@@ -346,6 +347,30 @@ function renderModels() {
 }
 
 const messageMarkup = new Map<string, { message: Message; element: HTMLElement; grouped: boolean; final: boolean; output?: string }>();
+async function reloadTranscript(id: string) {
+  if (id !== chatId) return;
+  const navigation = chatNavigation;
+  const loaded = await api<Message[]>(`/chats/${encodeURIComponent(id)}/messages`);
+  if (id === chatId && navigation === chatNavigation) { messages = loaded; renderMessages(); }
+}
+const messageActionUI = new MessageActionUI({
+  busy: id => state.runs.some(run => run.chatId === id && activeRunStatuses.includes(run.status)) || (id === chatId && submitting),
+  notice,
+  save: async (message, content, requestId) => {
+    const path = `/chats/${encodeURIComponent(message.chatId)}/messages/${encodeURIComponent(message.storedId || message.id)}`;
+    await api(path + (message.role === 'user' ? '/resubmit' : ''), message.role === 'user' ? 'POST' : 'PATCH', message.role === 'user' ? { content, requestId } : { content });
+    await refresh();
+    await reloadTranscript(message.chatId);
+  },
+  remove: async message => {
+    await api(`/chats/${encodeURIComponent(message.chatId)}/messages/${encodeURIComponent(message.storedId || message.id)}`, 'DELETE');
+    await refresh();
+    await reloadTranscript(message.chatId);
+  },
+});
+function mountMessageActions(el: HTMLElement, message: Message, grouped: boolean) {
+  if (!grouped && ['user', 'assistant'].includes(message.role) && finishedRunStatuses.includes(message.status)) messageActionUI.mount(el, el, message);
+}
 const renderers = new Renderers(pluginEnabled, () => renderMessages(false, true));
 const disclosureState = new Map<string, boolean>();
 // Pending question cards keep their in-progress form state across repaints;
@@ -419,7 +444,7 @@ async function answerQuestions(m: Message, payload: QuestionSubmission) {
 function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.dataset.grouped === 'true', final = existing?.dataset.final === 'true') {
   const previous = messageMarkup.get(m.id), output = liveToolOutput.get(m.id);
   const el = existing || previous?.element || document.createElement('article');
-  if (previous?.element === el && previous.grouped === grouped && previous.final === final && previous.output === output && (['content', 'segments', 'reasoning', 'status', 'author', 'role', 'toolCalls', 'attachments'] as const).every(key => previous.message[key] === m[key])) return el;
+  if (previous?.element === el && previous.grouped === grouped && previous.final === final && previous.output === output && (['content', 'segments', 'reasoning', 'status', 'author', 'role', 'toolCalls', 'attachments'] as const).every(key => previous.message[key] === m[key])) { mountMessageActions(el, m, grouped); return el; }
   messageMarkup.set(m.id, { message: { ...m }, element: el, grouped, final, output });
   el.id = 'message-' + m.id; el.className = 'message ' + m.role;
   el.dataset.grouped = String(grouped); el.dataset.final = String(final); el.setAttribute('aria-label', m.author);
@@ -454,6 +479,7 @@ function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.da
   restoreDisclosures(el);
   if (m.content && m.role === 'user') renderMessageReferences(q('.message-content', el), m, state.bots);
   if (m.content) renderers.paint(m);
+  mountMessageActions(el, m, grouped);
   return el;
 }
 function paintResponse(group: ResponseGroup) {
@@ -474,7 +500,9 @@ function paintResponse(group: ResponseGroup) {
       el.append(disclosure);
     }
     for (const m of promoted) el.append(paintMessage(m, undefined, true));
-    el.append(paintMessage(group.final, undefined, true, true));
+    const final = paintMessage(group.final, undefined, true, true);
+    el.append(final);
+    messageActionUI.mount(el, final, group.final);
   } else {
     for (const m of group.messages) el.append(paintMessage(m, undefined, true));
   }
@@ -495,6 +523,8 @@ function renderMessages(tail = false, force = false) {
   const threadKey = JSON.stringify([chatId, visibleBotId]), switchedThread = threadKey !== renderedThreadKey;
   renderedThreadKey = threadKey;
   const previousTop = log.scrollTop;
+  const editing = document.activeElement instanceof HTMLTextAreaElement && log.contains(document.activeElement) && document.activeElement.closest('.message-edit-form') ? document.activeElement : undefined;
+  const editSelection = editing ? [editing.selectionStart, editing.selectionEnd] : undefined;
   chatScroll.contentChanged();
   const focused = log.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLDetailsElement>('details[data-disclosure]')?.dataset.disclosure : undefined;
   const focusedFile = log.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.fileChange : undefined;
@@ -506,11 +536,13 @@ function renderMessages(tail = false, force = false) {
   log.replaceChildren();
   if (!messages.length) log.innerHTML = `<div class="welcome"><p>Ask Echo to inspect, plan, or build.</p>${!state.endpoints.length ? '<button id="setup-model">Connect a local model</button>' : ''}</div>`;
   const visibleMessages = threadMessages(messages, visibleBotId, state.runs);
+  messageActionUI.prune(new Set(visibleMessages.map(message => message.id)));
   for (const item of conversationItems(visibleMessages, state.runs)) log.append(item.kind === 'response' ? paintResponse(item.group) : paintMessage(item.message));
   if (messages.length && !visibleMessages.length) log.innerHTML = '<p class="empty-list">No messages in this bot’s thread yet.</p>';
   renderRunErrors(); document.querySelector<HTMLButtonElement>('#setup-model')?.addEventListener('click', () => settings('models'));
   if (focused) [...log.querySelectorAll<HTMLDetailsElement>('details[data-disclosure]')].find(d => d.dataset.disclosure === focused)?.querySelector('summary')?.focus({ preventScroll: true });
   if (focusedFile) [...log.querySelectorAll<HTMLButtonElement>('.file-change')].find(button => button.dataset.fileChange === focusedFile)?.focus({ preventScroll: true });
+  if (editing?.isConnected && editSelection) { editing.focus({ preventScroll: true }); editing.setSelectionRange(editSelection[0], editSelection[1]); }
   if (switchedThread) {
     const saved = threadScroll.get(threadKey);
     log.scrollTop = saved?.top ?? log.scrollHeight;
@@ -571,7 +603,7 @@ function receive(e: any) {
       else if (m) { m.content += e.payload.content || ''; m.reasoning = (m.reasoning || '') + (e.payload.reasoning || ''); }
       if (m) { const old = document.getElementById('message-' + m.id); if (old && e.type === 'delta') { chatScroll.contentChanged(); paintMessage(m, old); } else if (e.type !== 'delta') renderMessages(); }
     }
-    if (e.type === 'changed') queueRefresh();
+    if (e.type === 'changed') { if (e.payload?.messagesChanged) action(() => reloadTranscript(e.chatId))(); queueRefresh(); }
 }
 function connectSwarm() {
   const ws = new InstanceClient().events('/swarm/events');

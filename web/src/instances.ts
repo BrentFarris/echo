@@ -54,7 +54,7 @@ export function ownedGeneration(node: string, generation: Generation): Generatio
 }
 export function ownedMessage(node: string, message: Message): Message {
   const key = (id: string) => resourceID(node, id);
-  return { ...message, id: key(message.id), chatId: key(message.chatId), runId: message.runId && key(message.runId), botId: message.botId && key(message.botId),
+  return { ...message, storedId: message.id, id: key(message.id), chatId: key(message.chatId), runId: message.runId && key(message.runId), botId: message.botId && key(message.botId),
     recipients: message.recipients?.map(key), nodeId: message.nodeId || node,
     segments: message.segments?.map(s => ({ ...s, botId: s.botId && resourceID(s.nodeId || node, s.botId), nodeId: s.nodeId || node, allowedBots: s.allowedBots?.map(key) })),
     attachments: message.attachments?.map(a => ({ ...a, nodeId: a.nodeId || node, chatId: key(a.chatId) })) };

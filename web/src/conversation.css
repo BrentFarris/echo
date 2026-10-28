@@ -1,4 +1,14 @@
 /* Chat stream — look and feel ported from OLD/web/css/app.css. */
+.message-actions{position:absolute;top:6px;right:6px;z-index:2;display:flex;gap:2px;padding:3px;border:1px solid var(--border);border-radius:8px;background:color-mix(in srgb,var(--surface) 94%,transparent);backdrop-filter:blur(8px);opacity:0;pointer-events:none;transform:translateY(-3px);transition:opacity 120ms,transform 120ms}
+[data-message-actions]:hover>.message-actions,[data-message-actions]:focus-within>.message-actions,[data-message-actions].is-open>.message-actions{opacity:1;pointer-events:auto;transform:none}
+.message-actions .message-action{width:28px;height:28px;padding:5px;border:1px solid transparent;border-radius:5px;background:transparent;color:var(--subtle)}
+.message-action svg{width:16px;height:16px}.message-action:hover,.message-action:focus-visible{border-color:var(--border);background:var(--muted);color:var(--text)}
+.message-action.is-copied{color:var(--success)}.message-action.trash:hover{color:var(--danger)}.message-action[aria-disabled=true]{opacity:.4;cursor:default}
+.is-editing>.message-actions{display:none}.message.is-editing>.message-content{display:none!important}
+.message-edit-form{display:grid;gap:8px;min-width:0}.message-edit-textarea{box-sizing:border-box;width:100%;min-height:130px;max-height:60vh;resize:vertical;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font:inherit;line-height:1.5}
+.message-edit-textarea:focus-visible{outline:2px solid var(--accent);outline-offset:1px}.message-edit-help{margin:0;color:var(--subtle);font-size:11px}.message-edit-actions{display:flex;justify-content:flex-end;gap:8px}.message-edit-actions button{padding:5px 12px}
+@media(hover:none),(pointer:coarse){[data-message-actions]:hover>.message-actions,[data-message-actions]:focus-within>.message-actions{opacity:0;pointer-events:none;transform:translateY(-3px)}[data-message-actions].is-open>.message-actions,[data-message-actions]>.message-actions:focus-within{opacity:1;pointer-events:auto;transform:none}.message-actions .message-action{width:36px;height:36px}}
+@media(prefers-reduced-motion:reduce){.message-actions{transition:none}}
 :root{--success:#1a7f37;--warning:#9a6700;--font-mono:Consolas,"Cascadia Code","SFMono-Regular",monospace}
 @media(prefers-color-scheme:dark){:root{--success:#2ea043;--warning:#d29922}}
 .chat-header{height:40px;padding:0 14px}

@@ -16,6 +16,7 @@ import (
 )
 
 func (s *Server) routes(mux *http.ServeMux) {
+	s.messageActionRoutes(mux)
 	s.notificationRoutes(mux)
 	s.swarmRoutes(mux)
 	s.appRoutes(mux)

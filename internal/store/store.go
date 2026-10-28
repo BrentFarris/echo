@@ -77,17 +77,22 @@ func (s *Store) Accepted(chatID, requestID string) string {
 
 // Accept commits the user message, chat metadata, run boundaries and retry key
 // together. A caller never observes an accepted message with no durable run.
-func (s *Store) Accept(c domain.Chat, m domain.Message, runs []domain.Run, requestID, dispatchID string) error {
-	return s.AcceptWithRecord(c, m, runs, requestID, dispatchID, "", "", nil)
+func (s *Store) Accept(c domain.Chat, m domain.Message, runs []domain.Run, requestID, dispatchID string, replaceMessage ...string) error {
+	return s.AcceptWithRecord(c, m, runs, requestID, dispatchID, "", "", nil, replaceMessage...)
 }
 
 // AcceptWithRecord journals federation state in the same acceptance transaction.
-func (s *Store) AcceptWithRecord(c domain.Chat, m domain.Message, runs []domain.Run, requestID, dispatchID, namespace, recordID string, record any) error {
+func (s *Store) AcceptWithRecord(c domain.Chat, m domain.Message, runs []domain.Run, requestID, dispatchID, namespace, recordID string, record any, replaceMessage ...string) error {
 	tx, e := s.db.Begin()
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback()
+	if len(replaceMessage) > 0 && replaceMessage[0] != "" {
+		if e = truncateForResubmit(tx, c.ID, replaceMessage[0], m.Attachments); e != nil {
+			return e
+		}
+	}
 	chat, e := json.Marshal(c)
 	if e != nil {
 		return e
