@@ -559,7 +559,7 @@ function settings(section = 'bots', node = settingsNode || entryNode) {
   const el = dialog(`Settings · ${machineName(node)}`, '<div class="settings-layout"><nav class="settings-nav" aria-label="Settings sections"></nav><div class="settings-content"></div></div>'); el.id = 'settings';
   const nav = q('.settings-nav', el), content = q('.settings-content', el);
   const entries = [{ id: 'bots', name: 'Bots' }, { id: 'models', name: 'Local Models' }, { id: 'cloud-models', name: 'Cloud Models' }, ...ownerPlugins.map(p => ({ id: localID(p.id), name: p.name }))];
-  const picker = document.createElement('select'); picker.setAttribute('aria-label', 'Settings machine'); picker.innerHTML = [...instances.keys()].map(id => `<option value="${id}">${esc(machineName(id))}</option>`).join(''); picker.value = node; picker.onchange = () => settings(section, picker.value); q('.dialog-heading', el).append(picker);
+  const picker = document.createElement('select'); picker.setAttribute('aria-label', 'Settings machine'); picker.innerHTML = [...instances.keys()].map(id => `<option value="${id}">${esc(machineName(id))}</option>`).join(''); picker.value = node; picker.onchange = () => settings(section, picker.value); q('.dialog-heading button', el).before(picker);
   nav.innerHTML = `<div class="settings-nav-main">${entries.map(e => `<button data-section="${esc(e.id)}" class="${section === e.id ? 'active' : ''}">${esc(e.name)}</button>`).join('')}</div><hr><button data-section="development" class="${section === 'development' ? 'active' : ''}">Development</button>`;
   for (const button of nav.querySelectorAll<HTMLButtonElement>('button')) button.onclick = () => settings(button.dataset.section);
   if (section === 'bots') botSettings(content);
