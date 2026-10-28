@@ -81,6 +81,50 @@ test('chat releases sticky scrolling immediately and resumes only at the tail', 
   }
 });
 
+test('streaming thinking keeps clicks and its reading position intact', async ({ page }) => {
+  let socket: WebSocketRoute | undefined;
+  await page.routeWebSocket('**/api/v1/events', ws => { socket = ws; ws.connectToServer(); });
+  await setup(page);
+  await page.reload();
+  await expect(page.locator('#connection')).toHaveText('');
+  await expect.poll(() => !!socket).toBe(true);
+  const chatId = new URL(page.url()).hash.slice(1), id = 'thinking-stream';
+  const emit = (type: string, payload: object) => socket!.send(JSON.stringify({ type, chatId, payload: { id, ...payload } }));
+  emit('message', { chatId, role: 'assistant', author: 'Echo', content: '', reasoning: '', status: 'running', createdAt: new Date().toISOString() });
+  await expect(page.locator('[id="message-thinking-stream"]')).toBeVisible();
+  emit('delta', { reasoning: Array.from({ length: 100 }, (_, i) => `Thinking line ${i}`).join('\n') });
+  const thinking = page.locator('.reasoning'), summary = thinking.locator('summary'), text = thinking.locator('pre');
+  await expect(summary).toBeVisible();
+
+  // A token arriving between pointer down and up must not replace the click target.
+  await summary.hover();
+  await page.mouse.down();
+  emit('delta', { reasoning: '\nThinking during click' });
+  await expect(text).toContainText('Thinking during click');
+  await page.mouse.up();
+  await expect(thinking).toHaveAttribute('open', '');
+  await expect(summary).toBeFocused();
+  const original = await text.elementHandle();
+  await text.hover();
+  await page.mouse.wheel(0, 200);
+  await expect.poll(() => text.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+  const top = await text.evaluate(el => el.scrollTop);
+  for (let i = 0; i < 5; i++) {
+    emit('delta', { reasoning: `\nThinking update ${i}`, content: i === 0 ? 'The answer starts here.' : '' });
+    await expect(text).toContainText(`Thinking update ${i}`);
+    expect(await text.evaluate((el, node) => el === node, original)).toBe(true);
+    expect(await text.evaluate(el => el.scrollTop)).toBe(top);
+    await expect(thinking).toHaveAttribute('open', '');
+  }
+  await expect(page.locator('.message-content')).toHaveText('The answer starts here.');
+  await summary.press('Enter');
+  emit('delta', { reasoning: '\nThinking while closed' });
+  await expect(text).toContainText('Thinking while closed');
+  await expect(thinking).not.toHaveAttribute('open', '');
+  await summary.press('Enter');
+  await expect(thinking).toHaveAttribute('open', '');
+});
+
 test('cloud connections can be added and selected without enable switches', async ({ page }) => {
   await setup(page);
   let endpointId = '';

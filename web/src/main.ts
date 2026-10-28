@@ -459,11 +459,51 @@ function rememberDisclosures(root: HTMLElement) { for (const details of root.que
 async function answerQuestions(m: Message, payload: QuestionSubmission) {
   await api(`/chats/${encodeURIComponent(m.chatId)}/questions/${encodeURIComponent(m.id)}`, 'POST', payload);
 }
+function updateStreamedText(el: HTMLElement, text: string) {
+  const node = el.firstChild;
+  if (node instanceof Text && node === el.lastChild && text.startsWith(node.data)) {
+    if (text.length > node.length) node.appendData(text.slice(node.length));
+  } else if (el.textContent !== text) el.textContent = text;
+}
+function paintStreamedMessage(el: HTMLElement, m: Message, previous: Message, final: boolean, output?: string) {
+  // Keep the native details, summary and scroll container mounted. Replacing
+  // them between pointer down/up loses clicks and resets scroll on every token.
+  if (m.role === 'tool') {
+    updateStreamedText(q('details > pre', el), output || m.content);
+    return;
+  }
+  let reasoning = el.querySelector<HTMLElement>(':scope > .reasoning');
+  if (m.reasoning && !final) {
+    if (!reasoning) {
+      const template = document.createElement('template'); template.innerHTML = reasoningMarkup(m);
+      reasoning = template.content.firstElementChild as HTMLElement;
+      el.insertBefore(reasoning, el.querySelector(':scope > details, :scope > .message-content, :scope > .message-attachments, :scope > .message-actions'));
+      restoreDisclosures(el);
+    } else updateStreamedText(q('pre', reasoning), m.reasoning);
+  } else reasoning?.remove();
+  let body = el.querySelector<HTMLElement>(':scope > .message-content');
+  if (m.content || !m.reasoning && !m.toolCalls?.length && m.status === 'running') {
+    if (!body) {
+      body = document.createElement('div'); body.className = 'message-content'; body.id = 'body-' + m.id;
+      el.insertBefore(body, el.querySelector(':scope > .message-attachments, :scope > .message-actions'));
+    }
+    if (m.content !== previous.content) {
+      body.classList.remove('markdown'); updateStreamedText(body, m.content);
+      if (m.content) renderers.paint(m);
+    }
+  } else body?.remove();
+}
 function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.dataset.grouped === 'true', final = existing?.dataset.final === 'true') {
   const previous = messageMarkup.get(m.id), output = liveToolOutput.get(m.id);
   const el = existing || previous?.element || document.createElement('article');
   if (previous?.element === el && previous.grouped === grouped && previous.final === final && previous.output === output && (['content', 'segments', 'reasoning', 'status', 'author', 'role', 'toolCalls', 'attachments'] as const).every(key => previous.message[key] === m[key])) { mountMessageActions(el, m, grouped); return el; }
   messageMarkup.set(m.id, { message: { ...m }, element: el, grouped, final, output });
+  if (previous?.element === el && previous.grouped === grouped && previous.final === final
+    && (m.role === 'assistant' || m.role === 'tool' && !isQuestionMessage(m) && previous.message.content === m.content)
+    && (['segments', 'status', 'author', 'role', 'toolCalls', 'attachments'] as const).every(key => previous.message[key] === m[key])) {
+    paintStreamedMessage(el, m, previous.message, final, output);
+    mountMessageActions(el, m, grouped); return el;
+  }
   el.id = 'message-' + m.id; el.className = 'message ' + m.role;
   el.dataset.grouped = String(grouped); el.dataset.final = String(final); el.setAttribute('aria-label', m.author);
   rememberDisclosures(el);
