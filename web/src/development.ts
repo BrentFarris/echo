@@ -2,6 +2,7 @@ import { InstanceClient, entryNode } from './instances';
 import { escapeHTML as esc } from './helpers';
 import './development.css';
 import { mountRollouts } from './developmentRollouts';
+import { setDevelopmentUpdate, refreshDevelopmentUpdates } from './developmentUpdates';
 
 type API = <T = any>(path: string, method?: string, body?: unknown) => Promise<T>;
 export interface DevelopmentOperation {
@@ -9,6 +10,7 @@ export interface DevelopmentOperation {
   stage: string; error?: string; logPath: string; logTail: string; checkoutUpdated: boolean;
 }
 interface DevelopmentState {
+  autoCheckUpdates: boolean; updateAvailable: boolean;
   repositoryPath: string; suggestedPath: string; repositoryValid: boolean; repositoryError?: string;
   branch: string; upstream: string; updateError?: string; instanceId: string;
   comparison?: { state: string; ahead: number; behind: number };
@@ -41,8 +43,12 @@ export async function mountDevelopment(target: HTMLElement, api: API, client = n
   await controller.mount(target, api);
 }
 function createDevelopment(client: InstanceClient, changed: () => Promise<void>) {
-const replaced = async () => { if (!client.nodeId || client.nodeId === entryNode) window.location.reload(); else { stopped = false; current = await client.json('/development'); showMessage('Remote Echo reconnected.'); await changed(); } };
+const replaced = async () => { if (!client.nodeId || client.nodeId === entryNode) window.location.reload(); else { stopped = false; acceptState(await client.json('/development')); showMessage('Remote Echo reconnected.'); await changed(); } };
 let current: DevelopmentState | undefined;
+function acceptState(state: DevelopmentState) {
+  current = state;
+  setDevelopmentUpdate(client.nodeId, !!state.updateAvailable);
+}
 let root: HTMLElement | undefined;
 let monitoring: string | undefined;
 let localBusy = false;
@@ -62,6 +68,8 @@ function update() {
   const dirty = input.value.trim() !== current.repositoryPath;
   const busy = isBusy();
   input.disabled = busy;
+  const automatic = root.querySelector<HTMLInputElement>('[name=autoCheckUpdates]')!;
+  automatic.disabled = busy; if (!localBusy) automatic.checked = !!current.autoCheckUpdates;
   root.querySelector<HTMLButtonElement>('[data-save]')!.disabled = busy;
   for (const button of root.querySelectorAll<HTMLButtonElement>('[data-development-action]')) {
     const action = button.dataset.developmentAction!;
@@ -93,7 +101,7 @@ async function monitor(api: API, operation: DevelopmentOperation, instance: stri
       if (current) current.operation = op;
       update();
       if (op.status === 'failed' || op.status === 'succeeded') {
-        current = await api<DevelopmentState>('/development');
+        acceptState(await api<DevelopmentState>('/development'));
         update(); return;
       }
       if (op.status === 'stopping') {
@@ -133,11 +141,13 @@ async function mount(target: HTMLElement, api: API) {
   try {
     const state = await api<DevelopmentState>('/development');
     if (!target.isConnected) return;
-    current = state;
+    acceptState(state);
     if (!monitoring) { message = ''; messageError = false; }
     target.innerHTML = `<section class="development-settings"><h3>Development</h3>
       <form class="form"><label>Echo Git repository path<input name="repositoryPath" type="text" spellcheck="false" value="${esc(state.repositoryPath || state.suggestedPath)}" placeholder="C:\\path\\to\\echo"></label>
       <p class="subtle">Enter a path on the computer running Echo, including when using a remote browser.</p><button data-save class="primary">Save repository path</button></form>
+      <label class="check development-automatic"><input name="autoCheckUpdates" type="checkbox" ${state.autoCheckUpdates ? 'checked' : ''}> Automatically search for updates</label>
+      <p class="subtle">Check at launch and every hour on this machine. Requires a saved repository path. Available updates are marked with a colored dot.</p>
       <p class="subtle" data-repository-status></p><p class="subtle" data-tracking></p>
       <div data-rollout-controls></div><p data-comparison></p>
       <div class="button-row"><button data-development-action="build-relaunch">Build &amp; Relaunch</button><button data-development-action="relaunch">Relaunch</button><button class="danger" data-development-action="terminate">Terminate Echo</button></div>
@@ -148,8 +158,16 @@ async function mount(target: HTMLElement, api: API) {
       event.preventDefault();
       const repositoryPath = target.querySelector<HTMLInputElement>('[name=repositoryPath]')!.value.trim();
       localBusy = true; showMessage('Saving repository path…');
-      void api<DevelopmentState>('/development', 'PUT', { repositoryPath }).then(state => {
-        current = state; target.querySelector<HTMLInputElement>('[name=repositoryPath]')!.value = state.repositoryPath; showMessage('Repository path saved.');
+      void api<DevelopmentState>('/development', 'PUT', { repositoryPath, autoCheckUpdates: !!current?.autoCheckUpdates }).then(state => {
+        acceptState(state); target.querySelector<HTMLInputElement>('[name=repositoryPath]')!.value = state.repositoryPath; showMessage('Repository path saved.');
+      }).catch(error => showMessage(error.message, true)).finally(() => { localBusy = false; update(); });
+    };
+    target.querySelector<HTMLInputElement>('[name=autoCheckUpdates]')!.onchange = event => {
+      const autoCheckUpdates = (event.target as HTMLInputElement).checked;
+      localBusy = true; showMessage('Saving automatic update checks…');
+      void api<DevelopmentState>('/development', 'PUT', { repositoryPath: current!.repositoryPath, autoCheckUpdates }).then(state => {
+        acceptState(state); showMessage(autoCheckUpdates ? 'Automatic update checks enabled.' : 'Automatic update checks disabled.');
+        void refreshDevelopmentUpdates();
       }).catch(error => showMessage(error.message, true)).finally(() => { localBusy = false; update(); });
     };
     const confirmations: Record<string, string> = {
@@ -169,7 +187,7 @@ async function mount(target: HTMLElement, api: API) {
       }).catch(error => showMessage(error.message, true)).finally(() => { localBusy = false; update(); });
     };
     update();
-    rolloutControls = await mountRollouts(target.querySelector<HTMLElement>('[data-rollout-controls]')!, client, busy => { rolloutBusy = busy; update(); }, async () => { current = await api<DevelopmentState>('/development'); await changed(); update(); });
+    rolloutControls = await mountRollouts(target.querySelector<HTMLElement>('[data-rollout-controls]')!, client, busy => { rolloutBusy = busy; update(); }, async () => { acceptState(await api<DevelopmentState>('/development')); await changed(); update(); });
     update();
     if (state.operation && ['running', 'restarting', 'stopping'].includes(state.operation.status)) void monitor(api, state.operation, state.instanceId);
   } catch (error) { target.innerHTML = `<p role="alert" class="error">${esc(error instanceof Error ? error.message : String(error))}</p>`; }

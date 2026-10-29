@@ -24,7 +24,8 @@ const tailLimit = 16 * 1024
 var ErrBusy = errors.New("a development operation is already in progress")
 
 type Config struct {
-	RepositoryPath string `json:"repositoryPath"`
+	RepositoryPath   string `json:"repositoryPath"`
+	AutoCheckUpdates bool   `json:"autoCheckUpdates"`
 }
 
 type Operation struct {
@@ -40,6 +41,7 @@ type Operation struct {
 
 type Snapshot struct {
 	Config
+	UpdateAvailable bool        `json:"updateAvailable"`
 	SuggestedPath   string      `json:"suggestedPath"`
 	RepositoryValid bool        `json:"repositoryValid"`
 	RepositoryError string      `json:"repositoryError,omitempty"`
@@ -69,6 +71,8 @@ type Manager struct {
 	executable      string
 	arguments       []string
 	workingDir      string
+	autoWake        chan struct{}
+	autoStarted     bool
 	closed          bool
 	updates         updateStore
 	update          *Update
@@ -82,7 +86,7 @@ func New(parent context.Context, dir string, config Config, stop func()) *Manage
 	ctx, cancel := context.WithCancel(parent)
 	executable, _ := os.Executable()
 	workingDir, _ := os.Getwd()
-	return &Manager{ctx: ctx, cancel: cancel, dir: dir, config: config, stop: stop,
+	return &Manager{ctx: ctx, cancel: cancel, dir: dir, config: config, stop: stop, autoWake: make(chan struct{}, 1),
 		instanceID: domain.ID(), revision: buildinfo.Current(), run: runCommand, launch: prepareAndLaunch,
 		executable: executable, workingDir: workingDir, arguments: append([]string(nil), os.Args[1:]...)}
 }
@@ -121,8 +125,17 @@ func (m *Manager) Save(ctx context.Context, config Config, persist func(Config) 
 	if err := persist(config); err != nil {
 		return err
 	}
+	previous := m.config
 	m.config = config
-	m.comparison = nil
+	if previous.RepositoryPath != config.RepositoryPath {
+		m.comparison = nil
+	}
+	if previous != config {
+		select {
+		case m.autoWake <- struct{}{}:
+		default:
+		}
+	}
 	return nil
 }
 
@@ -161,6 +174,7 @@ func (m *Manager) Snapshot(ctx context.Context) Snapshot {
 	if s.Comparison != nil && (s.Comparison.Branch != branch || s.Comparison.Upstream != upstream.Name) {
 		s.Comparison = nil
 	}
+	s.UpdateAvailable = s.RepositoryValid && s.UpdateError == "" && comparisonAvailable(s.Comparison, s.Revision)
 	return s
 }
 
@@ -181,6 +195,10 @@ func (m *Manager) Start(action string) (Operation, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.startLocked(action)
+}
+
+func (m *Manager) startLocked(action string) (Operation, error) {
 	if m.closed {
 		return Operation{}, errors.New("Echo is shutting down")
 	}
@@ -201,7 +219,7 @@ func (m *Manager) Start(action string) (Operation, error) {
 		return Operation{}, err
 	}
 	m.op = &Operation{ID: id, Action: action, Status: "running", Stage: "Preparing", LogPath: logPath}
-	if action == "check-updates" || action == "update-relaunch" {
+	if action == "update-relaunch" {
 		m.comparison = nil
 	}
 	result := *m.op

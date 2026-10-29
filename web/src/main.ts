@@ -12,6 +12,7 @@ import { createChatScrollFollower, type ChatScrollFollower } from './chatScroll'
 import { ReferenceSearch, validateInstanceReferences } from './referenceSearch';
 import { endpointForm, endpointValues } from './modelSettings';
 import { mountDevelopment } from './development';
+import { developmentUpdateNode, refreshDevelopmentUpdates, renderDevelopmentUpdates, startDevelopmentUpdates } from './developmentUpdates';
 import { mountHosting } from './hosting';
 import { mountJiraSettings } from './jiraSettings';
 import { mountConfluenceSettings } from './confluenceSettings';
@@ -91,7 +92,7 @@ function chatDot(c: Chat) {
 }
 
 function shell() {
-  app.innerHTML = `<aside id="sidebar" class="sidebar"><div class="brand"><span class="brand-mark" aria-hidden="true">E</span>Echo<button class="icon sidebar-close" aria-label="Close sidebar">×</button></div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button></div><label class="machine-filter" hidden>Machine<select aria-label="Filter machines"></select></label><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="install-echo" hidden>Install Echo</button><button id="missed-button" hidden>Missed jobs</button><nav class="app-dock" aria-label="Docked apps" hidden></nav><div class="sidebar-footer-actions"><button id="apps-button">▦ Apps</button><button id="settings-button">⚙ Settings</button></div></div></aside><div class="sidebar-backdrop" aria-hidden="true"></div>
+  app.innerHTML = `<aside id="sidebar" class="sidebar"><div class="brand"><span class="brand-mark" aria-hidden="true">E</span>Echo<button class="icon sidebar-close" aria-label="Close sidebar">×</button></div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button></div><label class="machine-filter" hidden>Machine<select aria-label="Filter machines"></select></label><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="install-echo" hidden>Install Echo</button><button id="missed-button" hidden>Missed jobs</button><nav class="app-dock" aria-label="Docked apps" hidden></nav><div class="sidebar-footer-actions"><button id="apps-button">▦ Apps</button><button id="settings-button" data-update-notice="*">⚙ Settings</button></div></div></aside><div class="sidebar-backdrop" aria-hidden="true"></div>
   <main class="main"><header class="chat-header"><button class="icon mobile-menu" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">☰</button><strong id="chat-title">Echo</strong><span id="connection" class="subtle">Connecting…</span></header><div class="chat-view"><div class="bot-tabs-shell" hidden><button type="button" class="bot-tabs-scroll previous" aria-label="Scroll tabs left" title="Scroll tabs left">${icons.chevron}</button><div class="bot-tabs" role="tablist" aria-label="Bot threads"></div><button type="button" class="bot-tabs-scroll next" aria-label="Scroll tabs right" title="Scroll tabs right">${icons.chevron}</button></div><div id="bot-thread-panel" class="conversation-panel"><div class="chat-log" role="log" aria-label="Conversation"></div></div>
   ${composerMarkup}</div><section class="apps-view" aria-labelledby="apps-heading" hidden><h1 id="apps-heading" tabindex="-1">Apps</h1><p class="subtle">Open your plugin apps or dock them for quick access.</p><div id="apps-catalog"></div></section><section class="embedded-app-view" hidden aria-label="App"></section></main>`;
   q('.chat-log').tabIndex = 0;
@@ -103,7 +104,7 @@ function shell() {
     settings: (plugin, botDisabled) => { if (botDisabled) editBot(currentBot(resourceID(plugin.nodeId || entryNode, 'echo'))); else settings(localID(plugin.id), plugin.nodeId); },
     error: error => notice(error, true),
   });
-  q('#new-chat').onclick = action(newChat); q('#apps-button').onclick = showApps; q('#settings-button').onclick = () => settings(); q('#missed-button').onclick = showMissed;
+  q('#new-chat').onclick = action(newChat); q('#apps-button').onclick = showApps; q('#settings-button').onclick = () => settings('bots', developmentUpdateNode(settingsNode || entryNode)); q('#missed-button').onclick = showMissed;
   renderMainView();
   addEventListener('hashchange', () => { if (location.hash === '#apps') { pendingNotificationHash = null; showApps(); } else if (parseAppRoute(location.hash)) { pendingNotificationHash = null; const r = parseAppRoute(location.hash)!; action(() => pluginWindows.open(r.pluginId, r.viewId, r.botId, 'embedded'))(); } else if (parseChatRoute(location.hash).messageId) { pendingNotificationHash = location.hash; action(() => openNotification(location.hash))(); } else { pendingNotificationHash = null; action(() => selectChat(parseChatRoute(location.hash).chatId))(); } });
   pwa.mount(q<HTMLButtonElement>('#install-echo'));
@@ -305,7 +306,7 @@ function renderAttachments() {
 async function refresh() {
   if (refreshing) return refreshing;
   const rendering = () => JSON.stringify([state.plugins.filter(p => p.renderers?.length).map(p => [p.id, p.enabled, p.pending, p.digest]), state.bots.map(b => b.plugins)]), beforeRendering = rendering();
-  refreshing = (async () => { const [local, swarm] = await Promise.all([api<State>('/state'), api<SwarmState>('/swarm/state')]); state = combineState(local, swarm); chatId = resourceID(...splitID(chatId)); settingsNode ||= entryNode; modelNode ||= entryNode; if (!pendingNotificationHash && !state.chats.some(c => c.id === chatId)) {
+  refreshing = (async () => { const [local, swarm] = await Promise.all([api<State>('/state'), api<SwarmState>('/swarm/state')]); state = combineState(local, swarm); void refreshDevelopmentUpdates(false); chatId = resourceID(...splitID(chatId)); settingsNode ||= entryNode; modelNode ||= entryNode; if (!pendingNotificationHash && !state.chats.some(c => c.id === chatId)) {
       if (chatId) { releaseAttachments(drafts.get(chatId)?.attachments || attachments); drafts.delete(chatId); }
       chatId = state.chats[0]?.id || ''; if (!showingApps && !showingApp) history.replaceState(null, '', chatId ? '#' + chatId : location.pathname);
       const draft = drafts.get(chatId);
@@ -758,7 +759,8 @@ function settings(section = 'bots', node = settingsNode || entryNode) {
   const nav = q('.settings-nav', el), content = q('.settings-content', el);
   const entries = [{ id: 'bots', name: 'Bots' }, { id: 'models', name: 'Local Models' }, { id: 'cloud-models', name: 'Cloud Models' }, { id: 'notifications', name: 'Notifications' }, ...ownerPlugins.map(p => ({ id: localID(p.id), name: p.name }))];
   const picker = document.createElement('select'); picker.setAttribute('aria-label', 'Settings machine'); picker.innerHTML = [...instances.keys()].map(id => `<option value="${id}">${esc(machineName(id))}</option>`).join(''); picker.value = node; picker.onchange = () => settings(section, picker.value); q('.dialog-heading button', el).before(picker);
-  nav.innerHTML = `<div class="settings-nav-main">${entries.map(e => `<button data-section="${esc(e.id)}" class="${section === e.id ? 'active' : ''}">${esc(e.name)}</button>`).join('')}</div><hr><button data-section="development" class="${section === 'development' ? 'active' : ''}">Development</button>`;
+  nav.innerHTML = `<div class="settings-nav-main">${entries.map(e => `<button data-section="${esc(e.id)}" class="${section === e.id ? 'active' : ''}">${esc(e.name)}</button>`).join('')}</div><hr><button data-section="development" data-update-notice="*" class="${section === 'development' ? 'active' : ''}">Development</button>`;
+  renderDevelopmentUpdates();
   for (const button of nav.querySelectorAll<HTMLButtonElement>('button')) button.onclick = () => settings(button.dataset.section);
   if (section === 'bots') botSettings(content);
   else if (section === 'notifications') void notifications.mount(content);
@@ -846,5 +848,5 @@ async function start() {
   catch { app.innerHTML = '<form class="login form"><div class="brand">Echo</div><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="primary">Sign in</button></form>'; q<HTMLFormElement>('form').onsubmit = e => { e.preventDefault(); action(async () => { const f = new FormData(q('form') as HTMLFormElement); await api('/session', 'POST', { password: f.get('password') }); await ready(); })(); }; return; }
   await ready();
 }
-async function ready() { const route = parseAppRoute(location.hash); shell(); await refresh(); if (pendingNotificationHash) await openNotification(pendingNotificationHash); else if (route) await pluginWindows.open(route.pluginId, route.viewId, route.botId, 'embedded'); else if (chatId && !showingApps) await selectChat(chatId); else renderMessages(); connect(); connectSwarm(); void notifications.start(); }
+async function ready() { const route = parseAppRoute(location.hash); shell(); await refresh(); if (pendingNotificationHash) await openNotification(pendingNotificationHash); else if (route) await pluginWindows.open(route.pluginId, route.viewId, route.botId, 'embedded'); else if (chatId && !showingApps) await selectChat(chatId); else renderMessages(); connect(); connectSwarm(); startDevelopmentUpdates(); void notifications.start(); }
 void start().catch(e => notice(e, true));

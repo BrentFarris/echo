@@ -33,7 +33,7 @@ func TestDevelopmentRemoteAuthenticationAndPersistence(t *testing.T) {
 		handler.ServeHTTP(w, r)
 		return w
 	}
-	for _, path := range []string{"/api/v1/development", "/api/v1/health", "/api/v1/development/operations/unknown"} {
+	for _, path := range []string{"/api/v1/development", "/api/v1/development/update-status", "/api/v1/health", "/api/v1/development/operations/unknown"} {
 		if w := request("GET", path, "", nil, ""); w.Code != 401 {
 			t.Fatalf("unauthenticated %s: %d", path, w.Code)
 		}
@@ -46,6 +46,19 @@ func TestDevelopmentRemoteAuthenticationAndPersistence(t *testing.T) {
 		t.Fatal(login.Body.String())
 	}
 	cookie := login.Result().Cookies()[0]
+	w := request("PUT", "/api/v1/development", `{"repositoryPath":"","autoCheckUpdates":true}`, cookie, "")
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var preference development.Config
+	if err := s.Store.Get("settings", "development", &preference); err != nil || !preference.AutoCheckUpdates {
+		t.Fatal(preference, err)
+	}
+	w = request("GET", "/api/v1/development/update-status", "", cookie, "")
+	var notice development.UpdateNotice
+	if err := json.Unmarshal(w.Body.Bytes(), &notice); err != nil || !notice.AutoCheckUpdates || notice.UpdateAvailable {
+		t.Fatal(w.Body.String(), err)
+	}
 	if w := request("POST", "/api/v1/development/terminate", "{}", cookie, "http://foreign.example"); w.Code != 403 {
 		t.Fatal(w.Code)
 	}
@@ -57,7 +70,7 @@ func TestDevelopmentRemoteAuthenticationAndPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := json.Marshal(development.Config{RepositoryPath: root})
-	w := request("PUT", "/api/v1/development", string(data), cookie, "")
+	w = request("PUT", "/api/v1/development", string(data), cookie, "")
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}

@@ -5,3 +5,7 @@
 .development-settings pre{max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:11px}
 .development-settings details{margin-top:16px}
 .development-settings summary{cursor:pointer}
+
+.development-automatic{display:flex;align-items:center;gap:8px;margin-top:18px}
+.update-dot{display:inline-block;flex:0 0 auto;width:8px;height:8px;margin-inline-start:8px;border-radius:50%;vertical-align:middle;background:#1a7f37;box-shadow:0 0 0 2px #1a7f3729}
+@media(prefers-color-scheme:dark){.update-dot{background:#3fb950;box-shadow:0 0 0 2px #3fb95029}}

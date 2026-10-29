@@ -1,5 +1,8 @@
 import { test, expect, type Page } from '@playwright/test';
 
+// These tests route API responses; service workers can bypass page routing.
+test.use({ serviceWorkers: 'block' });
+
 async function fixture(page: Page) {
   await page.goto('/');
   await page.request.post('/api/v1/session', { data: {} });
@@ -13,6 +16,7 @@ async function fixture(page: Page) {
   await page.route('**/api/v1/development**', async route => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/api/v1/development') { await route.fulfill({ json: state }); return; }
+    if (path === '/api/v1/development/update-status') { await route.fulfill({ json: { updateAvailable: false } }); return; }
     if (route.request().method() === 'POST') {
       const body = route.request().postDataJSON(); calls.push({ path, body });
       if (path.endsWith('/check')) rollout = { id: 'rollout-1', sourceNodeId: source, scope: body.scope, target, state: 'checked', cancelRequested: false, members: [

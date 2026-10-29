@@ -202,6 +202,7 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 	}
 	s.initEditor()
 	s.startNotifications()
+	s.Development.StartAutomaticChecks()
 	go func() {
 		t := time.NewTicker(5 * time.Minute)
 		defer t.Stop()

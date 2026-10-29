@@ -17,6 +17,9 @@ func (s *Server) developmentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		respond(w, map[string]string{"instanceId": s.Development.InstanceID(), "revision": s.Development.Revision()}, nil)
 	})
+	mux.HandleFunc("GET /api/v1/development/update-status", func(w http.ResponseWriter, r *http.Request) {
+		respond(w, s.Development.UpdateNotice(), nil)
+	})
 	mux.HandleFunc("GET /api/v1/development", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()

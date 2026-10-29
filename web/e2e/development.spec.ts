@@ -1,4 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
+
+// These tests route API responses; service workers can bypass page routing.
+test.use({ serviceWorkers: 'block' });
 import { resolve } from 'node:path';
 
 async function openDevelopment(page: Page) {
@@ -71,7 +74,7 @@ async function mockDevelopment(page: Page, transientOutage = false) {
         } else state.operation.status = action === 'terminate' ? 'stopping' : 'restarting';
       }
       await route.fulfill({ json: state.operation });
-    } else await route.fulfill({ json: state });
+    } else { if (route.request().method() === 'PUT') Object.assign(state, route.request().postDataJSON()); await route.fulfill({ json: state }); }
   });
   return { state, calls };
 }
@@ -127,4 +130,30 @@ test('build monitoring recovers from a transient connection failure', async ({ p
   await page.getByRole('button', { name: 'Build & Relaunch', exact: true }).click();
   await expect(page.locator('[data-development-status]')).toHaveText('Frontend build failed');
   await expect(page.getByRole('button', { name: 'Relaunch', exact: true })).toBeEnabled();
+});
+
+test('automatic update preference persists and dots guide to Update & Relaunch', async ({ page }) => {
+  const { state } = await mockDevelopment(page);
+  state.autoCheckUpdates = false;
+  state.updateAvailable = true;
+  await openDevelopment(page);
+  const preference = page.getByLabel('Automatically search for updates', { exact: true });
+  await expect(preference).not.toBeChecked();
+  await expect(page.locator('#settings-button .update-dot')).toBeVisible();
+  await expect(page.locator('[data-section=development] .update-dot')).toBeVisible();
+  await expect(page.locator('[data-rollout-check] .update-dot')).toBeVisible();
+  await preference.check();
+  await expect(page.locator('[data-development-status]')).toHaveText('Automatic update checks enabled.');
+  expect(state.autoCheckUpdates).toBe(true);
+  await page.reload();
+  await page.getByRole('button', { name: '⚙ Settings', exact: true }).click();
+  await page.locator('.settings-nav [data-section=development]').click();
+  await expect(preference).toBeChecked();
+  await page.getByRole('button', { name: 'Check for Updates', exact: true }).click();
+  await expect(page.locator('[data-rollout-start] .update-dot')).toBeVisible();
+  await expect(page.locator('[data-rollout-check] .update-dot')).toHaveCount(0);
+  await page.screenshot({ path: test.info().outputPath('automatic-update-guidance.png') });
+  await preference.uncheck();
+  await expect(page.locator('[data-development-status]')).toHaveText('Automatic update checks disabled.');
+  expect(state.autoCheckUpdates).toBe(false);
 });

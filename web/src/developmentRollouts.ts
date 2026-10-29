@@ -1,5 +1,6 @@
 import { InstanceClient, entryNode } from './instances';
 import { escapeHTML as esc } from './helpers';
+import { refreshDevelopmentUpdates, renderDevelopmentUpdates } from './developmentUpdates';
 
 export interface RolloutMember {
   nodeId: string; name: string; status: string; error?: string;
@@ -23,7 +24,7 @@ export async function mountRollouts(root: HTMLElement, source: InstanceClient, b
   let busy = false, message = '', unavailable = '', entryEpoch = '', poll = false;
   let refreshDone = '';
   root.innerHTML = `<label>Update scope<select data-update-scope><option value="swarm">Connected swarm</option><option value="machine">This machine only</option></select></label>
-    <div class="button-row"><button data-rollout-check>Check for Updates</button><button data-rollout-start hidden>Update &amp; Relaunch</button></div>
+    <div class="button-row"><button data-rollout-check data-update-notice="${esc(source.nodeId || entryNode)}">Check for Updates</button><button data-rollout-start data-update-notice="${esc(source.nodeId || entryNode)}" hidden>Update &amp; Relaunch</button></div>
     <p role="status" aria-live="polite" data-rollout-status></p><div data-rollout-members></div>
     <div class="button-row"><button data-rollout-retry hidden>Retry unsuccessful machines</button><button data-rollout-cancel hidden>Cancel pending updates</button></div>`;
   const q = <T extends HTMLElement>(selector: string) => root.querySelector<T>(selector)!;
@@ -37,6 +38,9 @@ export async function mountRollouts(root: HTMLElement, source: InstanceClient, b
     q<HTMLButtonElement>('[data-rollout-check]').disabled = busy || !!running || !!unavailable;
     q<HTMLButtonElement>('[data-rollout-start]').hidden = !canUpdate(current);
     q<HTMLButtonElement>('[data-rollout-start]').disabled = busy || !!unavailable;
+    q('[data-rollout-check]').dataset.updateSuppressed = String(!!canUpdate(current));
+    q('[data-rollout-start]').dataset.updateFallback = String(!!canUpdate(current));
+    renderDevelopmentUpdates();
     q<HTMLButtonElement>('[data-rollout-retry]').hidden = !current || !['partial', 'cancelled'].includes(current.state);
     q<HTMLButtonElement>('[data-rollout-retry]').disabled = busy;
     q<HTMLButtonElement>('[data-rollout-cancel]').hidden = !running;
@@ -69,7 +73,7 @@ export async function mountRollouts(root: HTMLElement, source: InstanceClient, b
     busy = true; message = 'Working…'; render();
     try { current = await run(); message = ''; }
     catch (error) { message = error instanceof Error ? error.message : String(error); }
-    finally { busy = false; render(); void monitor(); }
+    finally { busy = false; render(); void refreshDevelopmentUpdates(); void monitor(); }
   };
   q<HTMLSelectElement>('[data-update-scope]').onchange = event => { scope = (event.target as HTMLSelectElement).value as typeof scope; current = undefined; message = ''; render(); };
   q('[data-rollout-check]').onclick = () => void action(() => entry.json('/development/rollouts/check', 'POST', { sourceNodeId: source.nodeId || entryNode, scope }));

@@ -140,6 +140,9 @@ func (m *Manager) UpdateTarget(ctx context.Context) (string, error) {
 		return "", err
 	}
 	c, err := m.compare(ctx, m.config.RepositoryPath, io.Discard)
+	if err == nil {
+		m.comparison = &c
+	}
 	return c.RemoteCommit, err
 }
 
