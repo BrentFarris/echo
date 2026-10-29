@@ -1,3 +1,6 @@
+import { InlineChatController, type InlineChatTarget } from './inlineChat';
+import { closeInlineChat, inlineChatKey } from './inlineChatSession';
+import { InlineGeneration, type InlineModelContext } from './inlineGeneration';
 import { watchFiles } from "./events";
 import type { Bot } from "../types";
 import type { CodeSidebar } from "./navigation";
@@ -168,7 +171,9 @@ export class CodeView {
   private lastNavigationLocation: CodeNavigationLocation | null = null;
   private restoredTabIdAliases = new Map<string, string>();
 
-  constructor(private readonly root: HTMLElement, private bot: Bot) { this.workspace = bot; }
+  private inlineChat: InlineChatController | null = null;
+  private readonly inlineGeneration: InlineGeneration;
+  constructor(private readonly root: HTMLElement, private bot: Bot, modelContext: InlineModelContext = {}) { this.workspace = bot; this.inlineGeneration = new InlineGeneration(bot.id, modelContext); }
   private active = false;
   private dialogAbort = new AbortController();
   private overlays = new Set<HTMLElement>();
@@ -188,7 +193,7 @@ export class CodeView {
     this.overlays.clear(); closeContextMenu();
     if (!this.abort.signal.aborted) this.dialogAbort = new AbortController();
   }
-  setVisible(value: boolean) { this.active = value && !this.abort.signal.aborted; if (this.active && this.editor) { this.subscribeFilesystem(); this.editor.layout();  void this.pollOpenTabs(); } else { this.dismissOverlays(); this.watchStop?.(); this.watchStop = undefined; if (this.navigationReady) void this.persistNow(); this.finishMruCycle(); } }
+  setVisible(value: boolean) { this.active = value && !this.abort.signal.aborted; if (this.active && this.editor) { this.subscribeFilesystem(); this.editor.layout();  void this.pollOpenTabs(); } else { this.inlineChat?.hideSettings(); this.dismissOverlays(); this.watchStop?.(); this.watchStop = undefined; if (this.navigationReady) void this.persistNow(); this.finishMruCycle(); } }
   private rootsGeneration = 0;
   async openEntry(ref: FileRef, kind: 'file' | 'directory'): Promise<void> {
     if (this.abort.signal.aborted) return;
@@ -655,6 +660,13 @@ export class CodeView {
         alternativeDeclarationCommand: "editor.action.referenceSearch.trigger",
       },
     });
+    this.inlineChat = new InlineChatController(this.editor, {
+      workspaceId: this.bot.id, generation: this.inlineGeneration,
+      target: () => this.inlineChatTarget(),
+      keepOpen: () => { const tab = this.activeTab(); if (tab) { tab.keepOpen = true; this.renderTabs(); this.schedulePersist(); } },
+      activateReference: ref => this.openEntry(ref, 'file'),
+    });
+    this.editor.addAction({ id: 'echo.inlineChat', label: 'Inline Chat', precondition: '!editorReadonly', keybindingContext: 'editorTextFocus', contextMenuGroupId: '1_modification', contextMenuOrder: 1, keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyI], run: () => this.openInlineChat() });
     this.editor.onDidChangeCursorPosition(() => { this.renderStatus(); this.observeNavigationLocation(true); });
     this.editor.onDidScrollChange(() => { this.observeNavigationLocation(false); this.schedulePersist(); });
     this.editorOpener = monaco.editor.registerEditorOpener({
@@ -663,6 +675,12 @@ export class CodeView {
     this.mediaTheme.addEventListener("change", () => monaco.editor.setTheme(this.mediaTheme.matches ? "vs-dark" : "vs"), { signal: this.abort.signal });
 
   }
+
+  private inlineChatTarget(): InlineChatTarget | null {
+    const tab = this.activeTab();
+    return tab?.kind === 'file' && !tab.readOnly && this.markdownMode(tab) !== 'preview' ? tab : null;
+  }
+  private openInlineChat(): void { if (this.inlineChatTarget()) this.inlineChat?.open(); }
 
   private initializeTree(): void {
     this.treeScroller = this.root.querySelector<HTMLElement>("[data-code-tree]")!;
@@ -1506,6 +1524,7 @@ export class CodeView {
   }
 
   private renderTabs(): void {
+    this.inlineChat?.refresh();
     const list = this.root.querySelector<HTMLElement>("[data-tabs-list]");
     if (!list) return;
     list.innerHTML = this.tabs.map((tab) => `
@@ -1656,6 +1675,7 @@ export class CodeView {
   }
 
   private updateEditorSurface(): void {
+    this.inlineChat?.refresh();
     const placeholder = this.root.querySelector<HTMLElement>("[data-editor-placeholder]");
     const host = this.root.querySelector<HTMLElement>("[data-monaco-host]");
     const mediaHost = this.root.querySelector<HTMLElement>("[data-media-preview-host]");
@@ -1734,6 +1754,7 @@ export class CodeView {
   }
 
   private disposeTab(tab: OpenTab): void {
+    closeInlineChat(inlineChatKey(this.bot.id, tab.id));
     if (tab.id === this.activeTabId) this.markdownPreview?.show(null);
     tab.changeDisposable.dispose();
     this.releaseModel(tab.model);
@@ -2477,6 +2498,7 @@ export class CodeView {
 
   private registerCommands(): void {
     this.commands = [
+      { id: "editor.inlineChat", label: "Inline Chat", keybinding: "Ctrl+I", run: () => this.openInlineChat() },
       ...(this.bookmarks ? [
         { id: "bookmarks.toggle", label: "Bookmarks: Toggle", keybinding: "Ctrl+K, K", run: () => this.toggleBookmark() },
         { id: "bookmarks.open", label: "View: Bookmarks", run: () => this.setSidebar("bookmarks") },
@@ -3110,7 +3132,13 @@ export class CodeView {
   }
 
   private handleGlobalKeyboard(event: KeyboardEvent): void {
+    if (event.target instanceof Element && event.target.closest(".generation-popup")) return;
     if (!this.active || !this.root.closest(".plugin-content")?.parentElement?.contains(document.activeElement)) return;
+    const inInlineChat = event.target instanceof Element && Boolean(event.target.closest('.inline-chat-zone'));
+    if (inInlineChat && event.key === 'Escape') return;
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && !event.isComposing && event.key.toLowerCase() === 'i' && (inInlineChat || this.editor?.hasTextFocus())) {
+      event.preventDefault(); event.stopPropagation(); this.openInlineChat(); return;
+    }
     if (document.querySelector(".code-modal-overlay, .code-picker-overlay")) return;
     // Monaco owns navigation and cancellation while its quick input is focused.
     if (event.target instanceof Element && event.target.closest(".quick-input-widget")) return;
@@ -3543,6 +3571,7 @@ export class CodeView {
   }
 
   dispose(): void {
+    this.inlineChat?.dispose(); this.inlineChat = null;
     this.disposeBookmarks();
     this.closeIndentationPopover?.();
     if (this.editorFontSizeSaveTimer) {

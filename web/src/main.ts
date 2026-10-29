@@ -1,3 +1,4 @@
+import { GenerationSettings, endpointGeneration } from './generationSettings';
 import { InstanceClient, resourceAPI, resourceURL, resourceID, localID, splitID, entryNode, instances, machineName, sameMachine, combineState, ownedEvent, ownedGeneration, instanceOnline, attachmentURL, type SwarmState } from './instances';
 import { mountSwarm } from './swarmSettings';
 import { InstanceEvents } from './instanceEvents';
@@ -66,10 +67,9 @@ let pluginWindows: PluginWindows;
 let apps: Apps;
 let chatScroll: ChatScrollFollower;
 const liveToolOutput = new Map<string, string>();
-const discoveredModels = new Map<string, string[]>();
+let chatGenerationSettings: GenerationSettings;
 const generationSaves = new Map<string, Promise<unknown>>();
 const q = <T extends HTMLElement = HTMLElement>(selector: string, root: ParentNode = document) => root.querySelector<T>(selector)!;
-const thinking = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 async function api<T = any>(path: string, method = 'GET', body?: unknown): Promise<T> {
   return resourceAPI<T>(path, method, body);
@@ -94,12 +94,13 @@ function chatDot(c: Chat) {
 }
 
 function shell() {
+  chatGenerationSettings?.dispose();
   app.innerHTML = `<aside id="sidebar" class="sidebar"><div class="brand"><div class="brand-identity"></div><button class="icon sidebar-close" aria-label="Close sidebar">×</button></div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button></div><label class="machine-filter" hidden>Machine<select aria-label="Filter machines"></select></label><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="install-echo" hidden>Install Echo</button><button id="missed-button" hidden>Missed jobs</button><nav class="app-dock" aria-label="Docked apps" hidden></nav><div class="sidebar-footer-actions"><button id="apps-button">▦ Apps</button><button id="settings-button" data-update-notice="*">⚙ Settings</button></div></div></aside><div class="sidebar-backdrop" aria-hidden="true"></div>
   <main class="main"><header class="chat-header"><button class="icon mobile-menu" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">☰</button><strong id="chat-title">Echo</strong><span id="connection" class="subtle">Connecting…</span></header><div class="chat-view"><div class="bot-tabs-shell" hidden><button type="button" class="bot-tabs-scroll previous" aria-label="Scroll tabs left" title="Scroll tabs left">${icons.chevron}</button><div class="bot-tabs" role="tablist" aria-label="Bot threads"></div><button type="button" class="bot-tabs-scroll next" aria-label="Scroll tabs right" title="Scroll tabs right">${icons.chevron}</button></div><div id="bot-thread-panel" class="conversation-panel"><div class="chat-log" role="log" aria-label="Conversation"></div></div>
   ${composerMarkup}</div><section class="apps-view" aria-labelledby="apps-heading" hidden><h1 id="apps-heading" tabindex="-1">Apps</h1><p class="subtle">Open your plugin apps or dock them for quick access.</p><div id="apps-catalog"></div></section><section class="embedded-app-view" hidden aria-label="App"></section></main>`;
   q('.chat-log').tabIndex = 0;
   chatScroll = createChatScrollFollower(q('.chat-log'));
-  pluginWindows = new PluginWindows(api, { embeddedHost: q('.embedded-app-view'), navigate: route => { if (route) { rememberDraft(); showingApp = true; showingApps = false; history.replaceState(null, '', route); renderMainView(); renderSidebar(); } else { void selectChat(chatId); } }, configureBot: id => editBot(currentBot(id)) });
+  pluginWindows = new PluginWindows(api, { embeddedHost: q('.embedded-app-view'), navigate: route => { if (route) { rememberDraft(); showingApp = true; showingApps = false; history.replaceState(null, '', route); renderMainView(); renderSidebar(); } else { void selectChat(chatId); } }, configureBot: id => editBot(currentBot(id)), generationFor: node => structuredClone(node === modelNode ? generation : generationByNode[node] || endpointGeneration(state.endpoints.find(e => sameMachine(e, node)))), openModelSettings: node => settings('models', node, false) });
   apps = new Apps(q('#apps-catalog'), q('.app-dock'), {
     open: async plugin => { setSidebarOpen(false, false); await openPlugin(plugin.id, plugin.app!.viewId); },
     dock: async (id, docked) => { await api<string[]>(`/plugins/${encodeURIComponent(id)}/app/dock`, 'PUT', { docked }); await refresh(); },
@@ -115,7 +116,13 @@ function shell() {
   app.onkeydown = e => { if (e.key === 'Escape' && q('.sidebar').classList.contains('open')) { e.preventDefault(); setSidebarOpen(false); } };
   q<HTMLFormElement>('.composer').onsubmit = e => { e.preventDefault(); action(async () => { if (busy()) await stop(); else await send(); })(); };
   wireComposerMenus(addFiles);
-  q('#manage-models').onclick = () => { q<HTMLDetailsElement>('.model-settings').open = false; settings('models'); };
+  chatGenerationSettings = new GenerationSettings(q<HTMLDetailsElement>('[data-generation-settings]'), {
+    state: () => ({ generation, node: modelNode || entryNode, endpoints: state.endpoints.filter(e => sameMachine(e, modelNode || entryNode)), machines: [...instances.keys()].map(id => ({ id, name: machineName(id) })) }),
+    change: (next, commit) => { generation = next; renderModels(); rememberDraft(); if (commit) void saveGeneration(); },
+    selectMachine: node => { generationByNode[modelNode] = { ...generation }; modelNode = node; generation = ownedGeneration(node, generationByNode[node] || endpointGeneration(state.endpoints.find(e => sameMachine(e, node)))); renderModels(); rememberDraft(); },
+    manage: () => settings('models', modelNode || entryNode),
+    discover: async endpoint => (await api<{ data: { id: string }[] }>(`/endpoints/${endpoint.id}/models`)).data?.map(m => m.id) || [],
+  });
   const composer = q<ReferenceInput>('#composer'); composer.bots = () => state.bots; composer.oninput = e => {
     ++referenceVersion; references = composer.snapshot().references; autosizeComposer(); rememberDraft(); updateSendButton(); clearTimeout(referenceTimer);
     const automatic = automaticMentions.get(chatId);
@@ -159,10 +166,6 @@ function shell() {
   };
   new ResizeObserver(updateBotTabOverflow).observe(q('.bot-tabs'));
   composer.onkeyup = e => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) showPicker(); };
-  q<HTMLInputElement>('#model').oninput = () => { generation.model = q<HTMLInputElement>('#model').value; q('#model-name').textContent = generation.model; rememberDraft(); };
-  q<HTMLInputElement>('#thinking').oninput = () => { generation.thinking = thinking[Number(q<HTMLInputElement>('#thinking').value)]; q('#thinking-label').textContent = thinkingLabel(); rememberDraft(); };
-  q<HTMLInputElement>('#temperature').oninput = () => { generation.temperature = Number(q<HTMLInputElement>('#temperature').value); q('#temperature-label').textContent = generation.temperature.toFixed(2); rememberDraft(); };
-  for (const selector of ['#model', '#thinking', '#temperature']) q<HTMLInputElement>(selector).onchange = saveGeneration;
   document.addEventListener('click', e => { if (!(e.target as HTMLElement).closest('.picker, #composer')) closePicker(); });
 }
 function setSidebarOpen(open: boolean, restoreFocus = true) {
@@ -336,22 +339,10 @@ function renderSidebar() {
   const count = state.occurrences.filter(j => j.status === 'missed').length; q('#missed-button').hidden = !count; q('#missed-button').textContent = `Missed jobs (${count})`;
 }
 function chooseEndpoint(endpoint: Endpoint) { if (modelNode) generationByNode[modelNode] = { ...generation }; modelNode = endpoint.nodeId || splitID(endpoint.id)[0]; generation = { endpointId: endpoint.id, model: endpoint.model, temperature: endpoint.temperature ?? .6, thinking: '' }; renderModels(); rememberDraft(); saveGeneration(); }
-function thinkingLabel() { const value = generation.thinking || state.endpoints.find(e => e.id === generation.endpointId)?.reasoningEffort; return value ? (generation.thinking ? '' : 'Default · ') + value[0].toUpperCase() + value.slice(1) : 'Default'; }
 function renderModels() {
   const endpoints = state.endpoints.filter(e => sameMachine(e, modelNode || entryNode));
-  let selector = document.querySelector<HTMLSelectElement>('#model-machine');
-  if (!selector) { const label = document.createElement('label'); label.textContent = 'Machine '; selector = document.createElement('select'); selector.id = 'model-machine'; selector.setAttribute('aria-label', 'Model machine'); label.append(selector); q('#endpoint-options').before(label); }
-  const nodeOptions = [...instances.keys()].map(id => `<option value="${id}">${esc(machineName(id))}</option>`).join(''); if (selector.innerHTML !== nodeOptions) selector.innerHTML = nodeOptions; selector.value = modelNode;
-  selector.onchange = () => { generationByNode[modelNode] = { ...generation }; modelNode = selector!.value; const endpoint = state.endpoints.find(e => sameMachine(e, modelNode)); generation = ownedGeneration(modelNode, generationByNode[modelNode] || { endpointId: endpoint?.id || '', model: endpoint?.model || '', thinking: '', temperature: endpoint?.temperature ?? .6 }); renderModels(); rememberDraft(); };
-  if (!generation.endpointId && endpoints[0]) { generation.endpointId = endpoints[0].id; generation.model = endpoints[0].model; generation.temperature = endpoints[0].temperature ?? .6; }
-  const list = q('#endpoint-options'), markup = endpoints.map(e => `<button type="button" role="option" aria-selected="${e.id === generation.endpointId}" data-endpoint="${esc(e.id)}" title="${esc(e.name)} — ${esc(e.model)}">${esc(e.name)} <span>— ${esc(e.model)}</span></button>`).join('') || '<p class="subtle">Add a model connection in Settings.</p>';
-  if (list.innerHTML !== markup) { list.innerHTML = markup; for (const button of list.querySelectorAll<HTMLButtonElement>('[data-endpoint]')) button.onclick = () => { chooseEndpoint(state.endpoints.find(e => e.id === button.dataset.endpoint)!); q<HTMLButtonElement>(`[data-endpoint="${CSS.escape(button.dataset.endpoint!)}"]`).focus(); }; }
-  if (document.activeElement !== q('#model')) q<HTMLInputElement>('#model').value = generation.model;
-  q<HTMLInputElement>('#thinking').value = String(Math.max(0, thinking.indexOf(generation.thinking))); q('#thinking-label').textContent = thinkingLabel(); q<HTMLInputElement>('#temperature').value = String(generation.temperature); q('#temperature-label').textContent = generation.temperature.toFixed(2); q('#model-name').textContent = state.endpoints.find(e => e.id === generation.endpointId)?.name || generation.model || 'Choose a model';
-  let options = document.querySelector<HTMLDataListElement>('#model-options'); if (!options) { options = document.createElement('datalist'); options.id = 'model-options'; q('#model').after(options); q<HTMLInputElement>('#model').setAttribute('list', 'model-options'); }
-  const endpoint = state.endpoints.find(e => e.id === generation.endpointId), key = endpoint ? endpoint.id + ':' + endpoint.url : '';
-  options.innerHTML = (discoveredModels.get(key) || []).map(model => `<option value="${esc(model)}"></option>`).join('');
-  if (endpoint && !discoveredModels.has(key)) { discoveredModels.set(key, []); api<{ data: { id: string }[] }>(`/endpoints/${endpoint.id}/models`).then(result => { discoveredModels.set(key, (result.data || []).map(m => m.id)); if (generation.endpointId === endpoint.id) renderModels(); }).catch(() => { /* Manual model identifiers remain available when discovery is unsupported. */ }); }
+  if (!generation.endpointId && endpoints[0]) generation = endpointGeneration(endpoints[0]);
+  chatGenerationSettings?.render();
 }
 
 const messageMarkup = new Map<string, { message: Message; element: HTMLElement; grouped: boolean; final: boolean; output?: string }>();
@@ -764,19 +755,19 @@ function chooseSuggestion(index: number) {
 function renderRefs() { q<ReferenceInput>('#composer').updateReferences(references); }
 
 function dialog(title: string, body: string) { const el = document.createElement('dialog'); el.innerHTML = `<div class="dialog-heading"><h2>${esc(title)}</h2><button class="icon" aria-label="Close">×</button></div>${body}`; document.body.append(el); q('.dialog-heading button', el).onclick = () => el.close(); el.addEventListener('close', () => el.remove()); el.showModal(); return el; }
-function settings(section = 'bots', node = settingsNode || entryNode) {
+function settings(section = 'bots', node = settingsNode || entryNode, selectModel = true) {
   settingsNode = node; section = localID(section); const ownerPlugins = state.plugins.filter(p => sameMachine(p, node)); const boundAPI = <T = any>(path: string, method = 'GET', body?: unknown) => resourceAPI<T>(path, method, body, node);
   const previous = document.querySelector<HTMLDialogElement>('#settings'); if (previous) { previous.close(); previous.remove(); }
   const el = dialog(`Settings · ${machineName(node)}`, '<div class="settings-layout"><nav class="settings-nav" aria-label="Settings sections"></nav><div class="settings-content"></div></div>'); el.id = 'settings';
   const nav = q('.settings-nav', el), content = q('.settings-content', el);
   const entries = [{ id: 'bots', name: 'Bots' }, { id: 'models', name: 'Local Models' }, { id: 'cloud-models', name: 'Cloud Models' }, { id: 'notifications', name: 'Notifications' }, ...ownerPlugins.map(p => ({ id: localID(p.id), name: p.name }))];
-  const picker = document.createElement('select'); picker.setAttribute('aria-label', 'Settings machine'); picker.innerHTML = [...instances.keys()].map(id => `<option value="${id}">${esc(machineName(id))}</option>`).join(''); picker.value = node; picker.onchange = () => settings(section, picker.value); q('.dialog-heading button', el).before(picker);
+  const picker = document.createElement('select'); picker.setAttribute('aria-label', 'Settings machine'); picker.innerHTML = [...instances.keys()].map(id => `<option value="${id}">${esc(machineName(id))}</option>`).join(''); picker.value = node; picker.onchange = () => settings(section, picker.value, selectModel); q('.dialog-heading button', el).before(picker);
   nav.innerHTML = `<div class="settings-nav-main">${entries.map(e => `<button data-section="${esc(e.id)}" class="${section === e.id ? 'active' : ''}">${esc(e.name)}</button>`).join('')}</div><hr><button data-section="development" data-update-notice="*" class="${section === 'development' ? 'active' : ''}">Development</button>`;
   renderDevelopmentUpdates();
-  for (const button of nav.querySelectorAll<HTMLButtonElement>('button')) button.onclick = () => settings(button.dataset.section);
+  for (const button of nav.querySelectorAll<HTMLButtonElement>('button')) button.onclick = () => settings(button.dataset.section, node, selectModel);
   if (section === 'bots') botSettings(content);
   else if (section === 'notifications') void notifications.mount(content);
-  else if (section === 'models' || section === 'cloud-models') modelSettings(content, section === 'cloud-models');
+  else if (section === 'models' || section === 'cloud-models') modelSettings(content, section === 'cloud-models', selectModel);
   else if (section === 'development') void mountDevelopment(content, boundAPI, new InstanceClient(node), refresh);
   else pluginSettings(content, ownerPlugins.find(p => localID(p.id) === section)!);
 }
@@ -791,14 +782,14 @@ function editBot(bot?: Bot) {
   const el = dialog(bot ? 'Edit bot' : 'Create a bot', `<form class="form"><label>Handle<input name="handle" required pattern="[A-Za-z][A-Za-z0-9_-]*" value="${esc(bot?.handle.split('.').pop())}" ${localID(bot?.id) === 'echo' ? 'readonly' : ''}></label><label>Name<input name="name" value="${esc(bot?.name)}"></label><label>System prompt<textarea name="prompt">${esc(bot?.prompt)}</textarea></label><label>Folders, one absolute path per line<textarea name="roots" placeholder="C:\\Users\\you\\project">${esc(bot?.roots?.join('\n'))}</textarea><small>Leave empty for unrestricted host access. Assigned folders apply to file tools and shell commands.</small></label><label class="check"><input name="enableMultitasking" type="checkbox" ${bot?.enableMultitasking ? 'checked' : ''}>Enable Multitasking</label><small>Allow this bot to work in multiple chats simultaneously. When disabled, requests wait their turn.</small><h3>Plugins</h3>${plugins.filter(p => p.scope === 'bot' || localID(p.id) === 'workspaces' || localID(bot?.id) === 'echo' && p.scope === 'echo').map(p => `<label class="check"><input name="plugin:${esc(p.id)}" type="checkbox" ${botPluginSelected(bot, p.id) ? 'checked' : ''}>${esc(p.name)}${!p.enabled ? ' (disabled globally)' : ''}</label>`).join('')}<button class="primary">Save bot</button></form>`);
   q<HTMLFormElement>('form', el).onsubmit = e => { e.preventDefault(); action(async () => { const f = new FormData(q('form', el) as HTMLFormElement), overrides: Record<string, boolean> = {}; for (const input of el.querySelectorAll<HTMLInputElement>('[name^="plugin:"]')) overrides[input.name.slice(7)] = input.checked; await api('/bots', 'POST', { id: bot?.id || '', handle: f.get('handle'), name: f.get('name'), prompt: f.get('prompt'), roots: String(f.get('roots')).split('\n').map(v => v.trim()).filter(Boolean), plugins: overrides, enableMultitasking: f.has('enableMultitasking'), revision: bot?.revision || 0 }); el.close(); await refresh(); settings('bots', node); })(); };
 }
-function modelSettings(root: HTMLElement, cloud: boolean) {
+function modelSettings(root: HTMLElement, cloud: boolean, selectModel = true) {
   root.innerHTML = `${cloud ? `<p class="subtle">Connect a compatible cloud model service, then select it for the chat.</p>` : '<p class="subtle">Connect an existing Ollama, LM Studio, llama.cpp, or compatible server.</p>'}<button class="primary" id="add-model">＋ Add connection</button>${state.endpoints.filter(e => sameMachine(e, settingsNode) && e.cloud === cloud).map(e => `<div class="list-card"><div class="grow"><strong>${esc(e.name)}</strong><p class="subtle">${esc(e.model)}<br>${esc(e.url)}</p></div><button data-model="${esc(e.id)}">Edit</button><button data-discover="${esc(e.id)}">Models</button><button class="danger" data-remove="${esc(e.id)}">×</button></div>`).join('')}`;
-  q('#add-model', root).onclick = () => editModel(undefined, cloud);
-  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-model]')) button.onclick = () => editModel(state.endpoints.find(e => e.id === button.dataset.model), cloud);
+  q('#add-model', root).onclick = () => editModel(undefined, cloud, selectModel);
+  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-model]')) button.onclick = () => editModel(state.endpoints.find(e => e.id === button.dataset.model), cloud, selectModel);
   for (const button of root.querySelectorAll<HTMLButtonElement>('[data-discover]')) button.onclick = action(async () => { const models = await api(`/endpoints/${button.dataset.discover}/models`); dialog('Available models', `<pre>${esc(JSON.stringify(models, null, 2))}</pre>`); });
-  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-remove]')) button.onclick = action(async () => { await api(`/endpoints/${button.dataset.remove}`, 'DELETE'); await refresh(); modelSettings(root, cloud); });
+  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-remove]')) button.onclick = action(async () => { await api(`/endpoints/${button.dataset.remove}`, 'DELETE'); await refresh(); modelSettings(root, cloud, selectModel); });
 }
-function editModel(endpoint?: Endpoint, cloud = false) {
+function editModel(endpoint?: Endpoint, cloud = false, selectModel = true) {
   const node = endpoint?.nodeId || settingsNode; const api = <T = any>(path: string, method = 'GET', body?: unknown) => resourceAPI<T>(path, method, body, node);
   const el = dialog(endpoint ? 'Edit Endpoint' : 'Add Endpoint', endpointForm(endpoint, cloud)); el.classList.add('endpoint-editor');
   const effort = q<HTMLSelectElement>('[name=reasoningEffort]', el), budget = q<HTMLInputElement>('[name=thinkingTokenBudget]', el);
@@ -806,7 +797,7 @@ function editModel(endpoint?: Endpoint, cloud = false) {
   q<HTMLInputElement>('[name=compressionThreshold]', el).oninput = event => { q('.compression-setting output', el).textContent = (event.target as HTMLInputElement).value + '%'; };
   const provider = document.createElement('label'); provider.innerHTML = `Provider<select name="provider"><option value="">Compatible HTTP</option>${state.plugins.filter(p => sameMachine(p, node) && !p.builtin && p.enabled && !p.pending).flatMap(p => (p.providers || []).map(name => `<option value="${esc(name)}">${esc(p.name)} · ${esc(name)}</option>`)).join('')}</select>`;
   q('form', el).prepend(provider); q<HTMLSelectElement>('select', provider).value = endpoint?.provider || '';
-  q<HTMLFormElement>('form', el).onsubmit = e => { e.preventDefault(); action(async () => { const form = q<HTMLFormElement>('form', el), key = q<HTMLInputElement>('[name=key]', el).value; const value = await api<Endpoint>('/endpoints', 'POST', { endpoint: { id: endpoint?.id || '', cloud, ...endpointValues(form) }, ...(key ? { apiKey: key } : {}) }); el.close(); await refresh(); chooseEndpoint({ ...value, id: resourceID(node, value.id), nodeId: node }); settings(cloud ? 'cloud-models' : 'models'); })(); };
+  q<HTMLFormElement>('form', el).onsubmit = e => { e.preventDefault(); action(async () => { const form = q<HTMLFormElement>('form', el), key = q<HTMLInputElement>('[name=key]', el).value; const value = await api<Endpoint>('/endpoints', 'POST', { endpoint: { id: endpoint?.id || '', cloud, ...endpointValues(form) }, ...(key ? { apiKey: key } : {}) }); el.close(); await refresh(); if (selectModel) chooseEndpoint({ ...value, id: resourceID(node, value.id), nodeId: node }); settings(cloud ? 'cloud-models' : 'models', node, selectModel); })(); };
 }
 function pluginSettings(root: HTMLElement, plugin: Plugin) {
   if (!plugin) return;

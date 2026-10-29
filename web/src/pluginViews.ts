@@ -1,16 +1,16 @@
 import { pluginAvailable } from './apps';
 import { builtinApp } from './builtinApps';
 import { escapeHTML as esc } from './helpers';
-import type { Bot, Plugin } from './types';
+import type { Bot, Plugin, Generation } from './types';
 import { InstanceClient, entryNode, resourceID, resourceAPI, sameMachine, localID, splitID, machineName } from './instances';
 
 export type AppAPI = <T = unknown>(path: string, method?: string, body?: unknown) => Promise<T>;
 export type NativeFileTarget = { botId: string; ref: { rootId: string; path: string }; kind: 'file' | 'directory' };
 export type NativeApp = { update(bots: Bot[], plugin: Plugin): void; visible(value: boolean): void; beforeClose(): Promise<boolean>; dispose(): void; openFile?(target: NativeFileTarget): Promise<void> };
-export type NativeAppContext = { api: AppAPI; client?: InstanceClient; bots: Bot[]; plugin: Plugin; botId: string; configureBot(id: string): void };
+export type NativeAppContext = { api: AppAPI; client?: InstanceClient; bots: Bot[]; plugin: Plugin; botId: string; configureBot(id: string): void; generationFor?(node: string): Generation; openModelSettings?(node: string): void };
 type View = { id: string; title: string; html: string; kind: string; digest: string };
 type Mode = 'floating' | 'embedded';
-type Options = { embeddedHost?: HTMLElement; navigate?(route: string | null): void; configureBot?(id: string): void };
+type Options = { embeddedHost?: HTMLElement; navigate?(route: string | null): void; configureBot?(id: string): void; generationFor?(node: string): Generation; openModelSettings?(node: string): void };
 type AppWindow = { key: string; element: HTMLElement; frame?: HTMLIFrameElement; native?: NativeApp; pluginId: string; viewId: string; botId: string; digest: string; mode: Mode; close(force?: boolean): Promise<void>; layout(): void };
 
 const popOutIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M14 3h7v7M21 3 11 13"/><path d="M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/></svg>';
@@ -190,7 +190,7 @@ export class PluginWindows {
       if (load) {
         const module = await load();
         const node = plugin?.nodeId || entryNode;
-        if (!closed) win.native = await module.mount(content, { api: (path, method, body) => resourceAPI(path, method, body, node), client: new InstanceClient(node), bots: this.bots.filter(b => sameMachine(b, node)), plugin: plugin!, botId: contextBot, configureBot: id => this.options.configureBot?.(id) });
+        if (!closed) win.native = await module.mount(content, { api: (path, method, body) => resourceAPI(path, method, body, node), client: new InstanceClient(node), bots: this.bots.filter(b => sameMachine(b, node)), plugin: plugin!, botId: contextBot, configureBot: id => this.options.configureBot?.(id), generationFor: node => this.options.generationFor?.(node) || { endpointId: "", model: "", thinking: "", temperature: .6 }, openModelSettings: node => this.options.openModelSettings?.(node) });
         if (closed) win.native?.dispose();
       } else {
         const frame = document.createElement('iframe'); frame.title = view.title; frame.sandbox.add('allow-scripts'); win.frame = frame;

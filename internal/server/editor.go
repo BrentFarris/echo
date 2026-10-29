@@ -49,6 +49,7 @@ func (s *Server) editorBroadcast(botID string, event any) {
 	}
 }
 func (s *Server) editorRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/v1/plugins/monaco-editor/bots/{botId}/inline-chat", s.editorGuard(s.handleInlineChat))
 	routes := map[string]http.HandlerFunc{
 		"GET roots": s.handleFSRoots, "GET entries": s.handleFSEntries, "GET file": s.handleFSReadFile,
 		"PUT file": s.handleFSSaveFile, "POST entries": s.handleFSCreateEntry, "PATCH entry": s.handleFSRenameEntry,

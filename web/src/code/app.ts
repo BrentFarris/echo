@@ -36,7 +36,7 @@ export async function mount(root: HTMLElement, context: NativeAppContext): Promi
     let session = sessions.get(id);
     if (!session) {
       const element = document.createElement('div'); element.className = 'editor-bot-session'; element.dataset.botId = id; root.append(element);
-      const view = new CodeView(element, bot);
+      const view = new CodeView(element, bot, context);
       session = { element, view, bot, ready: view.start() }; sessions.set(id, session);
     }
     session.element.hidden = !visible;

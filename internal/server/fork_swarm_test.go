@@ -105,6 +105,14 @@ func TestForkSwarmSeedsHistoryAndIndependentMedia(t *testing.T) {
 			t.Fatal(err)
 		}
 		waitDispatch(t, d)
+		// Home completion can precede remote worker cleanup. Wait for this
+		// dispatch's worker before asserting that history started no extra work.
+		b.mu.Lock()
+		worker := b.dispatches["worker:"+workerKey(a.Swarm.Node().ID, d.id)]
+		b.mu.Unlock()
+		if worker != nil {
+			waitDispatch(t, worker)
+		}
 		if d.err != nil {
 			t.Fatal(d.err)
 		}
@@ -177,7 +185,13 @@ func TestForkSwarmSeedsHistoryAndIndependentMedia(t *testing.T) {
 	if strings.Count(history, "included prompt") != 1 {
 		t.Fatal("history seeded twice", history)
 	}
-	if len(a.dispatches) != 0 || len(b.dispatches) != 0 {
+	a.mu.Lock()
+	homeActive := len(a.dispatches)
+	a.mu.Unlock()
+	b.mu.Lock()
+	workerActive := len(b.dispatches)
+	b.mu.Unlock()
+	if homeActive != 0 || workerActive != 0 {
 		t.Fatal("historical work restarted")
 	}
 }

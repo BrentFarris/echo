@@ -1,3 +1,4 @@
+import { generationSettingsMarkup } from './generationSettings';
 import { escapeHTML as esc } from './helpers';
 import type { ReferenceInput } from './referenceEditor';
 import type { Attachment, Bot, Segment } from './types';
@@ -32,15 +33,7 @@ export const composerMarkup = `<form class="composer">
         <button type="button" role="menuitem" data-attach="file">${icons.file}<span>File</span></button>
       </div>
     </details>
-    <details class="model-settings composer-menu"><summary aria-haspopup="dialog"><span id="model-name">Choose a model</span>${icons.chevron}</summary>
-      <div class="model-popup popover" role="dialog" aria-label="Model Settings">
-        <div class="popover-heading">Model</div><div id="endpoint-options" role="listbox" aria-label="Model connection"></div>
-        <label class="custom-model">Model identifier<input id="model" placeholder="Model identifier"></label>
-        <label class="slider-setting"><span class="range-label">Thinking <output id="thinking-label">Default</output></span><input aria-label="Thinking" id="thinking" type="range" min="0" max="7" value="0"></label>
-        <label class="slider-setting"><span class="range-label">Temperature <output id="temperature-label">0.60</output></span><input aria-label="Temperature" id="temperature" type="range" min="0" max="2" step="0.01" value="0.6"></label>
-        <button type="button" id="manage-models" class="popover-footer">Manage models in Settings</button>
-      </div>
-    </details>
+    ${generationSettingsMarkup()}
     <span class="spacer"></span>
     <button id="send" type="submit" class="send-button" aria-label="Send message" title="Send message">${icons.send}</button>
   </div>
@@ -93,7 +86,7 @@ export function autosizeComposer() {
 }
 
 export function wireComposerMenus(onFiles: (files: File[]) => void) {
-  const menus = [...document.querySelectorAll<HTMLDetailsElement>('.composer-menu')];
+  const menus = [...document.querySelectorAll<HTMLDetailsElement>('.composer-menu:not([data-generation-settings])')];
   const close = () => menus.forEach(m => { m.open = false; });
   menus.forEach(menu => {
     menu.addEventListener('toggle', () => {
@@ -111,8 +104,8 @@ export function wireComposerMenus(onFiles: (files: File[]) => void) {
       items[next].focus();
     });
   });
-  document.addEventListener('pointerdown', e => { if (!(e.target as HTMLElement).closest('.composer-menu')) close(); });
-  document.addEventListener('focusin', e => { if (!(e.target as HTMLElement).closest('.composer-menu')) close(); });
+  document.addEventListener('pointerdown', e => { if (!(e.target as HTMLElement).closest('.composer-menu, .generation-popup')) close(); });
+  document.addEventListener('focusin', e => { if (!(e.target as HTMLElement).closest('.composer-menu, .generation-popup')) close(); });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-attach]')) button.onclick = () => {
     close(); const input = document.createElement('input'); input.type = 'file'; input.multiple = true;
     input.accept = button.dataset.attach === 'image' ? 'image/png,image/jpeg,image/gif,image/webp' : button.dataset.attach === 'video' ? 'video/mp4,video/webm,video/quicktime,.mov' : '';
