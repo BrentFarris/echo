@@ -32,7 +32,7 @@ export const composerMarkup = `<form class="composer">
         <button type="button" role="menuitem" data-attach="file">${icons.file}<span>File</span></button>
       </div>
     </details>
-    <details class="model-settings composer-menu"><summary aria-haspopup="dialog">Model Settings ${icons.chevron}</summary>
+    <details class="model-settings composer-menu"><summary aria-haspopup="dialog"><span id="model-name">Choose a model</span>${icons.chevron}</summary>
       <div class="model-popup popover" role="dialog" aria-label="Model Settings">
         <div class="popover-heading">Model</div><div id="endpoint-options" role="listbox" aria-label="Model connection"></div>
         <label class="custom-model">Model identifier<input id="model" placeholder="Model identifier"></label>
@@ -41,7 +41,7 @@ export const composerMarkup = `<form class="composer">
         <button type="button" id="manage-models" class="popover-footer">Manage models in Settings</button>
       </div>
     </details>
-    <span id="model-name" class="subtle"></span><span class="spacer"></span>
+    <span class="spacer"></span>
     <button id="send" type="submit" class="send-button" aria-label="Send message" title="Send message">${icons.send}</button>
   </div>
 </form>`;
