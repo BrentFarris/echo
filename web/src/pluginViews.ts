@@ -5,7 +5,8 @@ import type { Bot, Plugin } from './types';
 import { InstanceClient, entryNode, resourceID, resourceAPI, sameMachine, localID, splitID, machineName } from './instances';
 
 export type AppAPI = <T = unknown>(path: string, method?: string, body?: unknown) => Promise<T>;
-export type NativeApp = { update(bots: Bot[], plugin: Plugin): void; visible(value: boolean): void; beforeClose(): Promise<boolean>; dispose(): void };
+export type NativeFileTarget = { botId: string; ref: { rootId: string; path: string }; kind: 'file' | 'directory' };
+export type NativeApp = { update(bots: Bot[], plugin: Plugin): void; visible(value: boolean): void; beforeClose(): Promise<boolean>; dispose(): void; openFile?(target: NativeFileTarget): Promise<void> };
 export type NativeAppContext = { api: AppAPI; client?: InstanceClient; bots: Bot[]; plugin: Plugin; botId: string; configureBot(id: string): void };
 type View = { id: string; title: string; html: string; kind: string; digest: string };
 type Mode = 'floating' | 'embedded';
@@ -73,6 +74,13 @@ export class PluginWindows {
       this.present(win, presentation || win.mode); this.raise(win, true);
     })().finally(() => this.pending.delete(key));
     this.pending.set(key, request); return request;
+  }
+
+  async openFile(pluginId: string, viewId: string, target: NativeFileTarget): Promise<void> {
+    await this.open(pluginId, viewId, target.botId);
+    const win = [...this.windows.values()].find(win => win.pluginId === pluginId && win.viewId === viewId && win.native?.openFile);
+    if (!win?.native?.openFile) throw new Error('This app cannot open files in the built-in editor.');
+    await win.native.openFile(target);
   }
 
   private present(win: AppWindow, mode: Mode) {

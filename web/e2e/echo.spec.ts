@@ -427,11 +427,12 @@ test('keyboard references edit an authorized file and deleting a bot keeps autho
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('completed replies list net file changes outside Show work and reveal from the keyboard', async ({ page }) => {
+test('completed replies open changed files in the editor and fall back when it is disabled', async ({ page }) => {
   const root = await mkdtemp(join(tmpdir(), 'echo-changes-'));
   try {
     await writeFile(join(root, 'edited.txt'), 'before'); await writeFile(join(root, 'deleted.txt'), 'before');
     await setup(page);
+    await page.request.patch('/api/v1/plugins/monaco-editor', { data: { enabled: true, config: {} } });
     await page.request.post('/api/v1/bots', { data: { handle: 'kaiju', name: 'Kaiju', prompt: '', roots: [root], plugins: {} } });
     await page.reload();
     await send(page, `@kaiju prepare the file change report.\nChange report folder: ${root}`);
@@ -446,6 +447,30 @@ test('completed replies list net file changes outside Show work and reveal from 
     const id = new URL(page.url()).hash.slice(1);
     const messages = await (await page.request.get(`/api/v1/chats/${id}/messages`)).json();
     expect(messages.flatMap((m: any) => m.fileChanges || [])).toHaveLength(4);
+    await page.reload(); await expect(footer.locator('button')).toHaveCount(3);
+    const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+    await composer.fill('Unsent draft');
+    const created = footer.getByRole('button', { name: /Open in code editor.*created.txt/ });
+    await created.focus(); await page.keyboard.press('Enter');
+    const editor = page.locator('.editor-bot-session:not([hidden])');
+    const editorTab = (name: string) => editor.getByRole('tab', { name: new RegExp(name.replace('.', '\\.')) });
+    await expect(editorTab('created.txt')).toBeVisible();
+    await expect(page.getByLabel('Editor bot').locator('option:checked')).toContainText('Kaiju');
+    await expect(editor.locator('.monaco-editor .view-lines').first()).toContainText(await readFile(join(root, 'created.txt'), 'utf8'));
+    // Opening another result reuses the app and preserves a dirty buffer.
+    await editor.locator('[data-monaco-host] .view-lines').click({ position: { x: 100, y: 10 } });
+    await page.keyboard.press('Control+End'); await page.keyboard.type(' retained editor draft');
+    await page.locator(`[data-chat="${id}"]`).click(); await expect(composer).toContainText('Unsent draft');
+    await footer.getByRole('button', { name: /Open in code editor.*edited.txt/ }).click();
+    await expect(editorTab('edited.txt')).toBeVisible();
+    await expect(page.locator('.monaco-app')).toHaveCount(1);
+    await editorTab('created.txt').click();
+    await expect(editor.locator('.monaco-editor .view-lines').first()).toContainText('retained editor draft');
+    await page.locator(`[data-chat="${id}"]`).click();
+    await footer.getByRole('button', { name: /containing folder in code editor.*deleted.txt/ }).click();
+    await expect(editor.locator('.code-tree-row.is-selected')).toContainText(root.split(/[\\/]/).at(-1)!);
+    await page.locator(`[data-chat="${id}"]`).click();
+    await page.request.patch('/api/v1/plugins/monaco-editor', { data: { enabled: false, config: {} } });
     await page.reload(); await expect(footer.locator('button')).toHaveCount(3);
     const requests: any[] = [];
     await page.route('**/api/v1/chats/*/files/reveal', async route => { requests.push(route.request().postDataJSON()); await route.fulfill({ json: { path: root, select: false } }); });
@@ -466,7 +491,10 @@ test('completed replies list net file changes outside Show work and reveal from 
     await page.screenshot({ path: 'test-results/echo-files-changed-mobile.png', fullPage: true });
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.screenshot({ path: 'test-results/echo-files-changed-desktop.png', fullPage: true });
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally {
+    await page.request.patch('/api/v1/plugins/monaco-editor', { data: { enabled: true, config: {} } });
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('stream reconnect, stop, and deletion leave no running dispatch or transcript', async ({ page }) => {

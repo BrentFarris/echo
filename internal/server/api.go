@@ -242,6 +242,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("GET /api/v1/chats/{id}/messages", func(w http.ResponseWriter, r *http.Request) { v, e := s.messages(r.PathValue("id")); respond(w, v, e) })
 	mux.HandleFunc("POST /api/v1/chats/{id}/files/reveal", s.revealChangedFile)
+	mux.HandleFunc("POST /api/v1/chats/{id}/files/open", s.openChangedFile)
 	mux.HandleFunc("GET /api/v1/chats/{id}/snapshot", func(w http.ResponseWriter, r *http.Request) {
 		messages, sequence, e := s.snapshot(r.PathValue("id"))
 		respond(w, map[string]any{"messages": messages, "sequence": sequence}, e)

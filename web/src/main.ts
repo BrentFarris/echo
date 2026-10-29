@@ -22,7 +22,8 @@ import { composerMarkup, icons, autosizeComposer, wireComposerMenus, attachmentC
 import { generatedMedia } from './generatedMedia';
 import { isQuestionMessage, questionCard, type QuestionSubmission } from './planQuestions';
 import { Apps, botPluginSelected, pluginAvailable } from './apps';
-import { PluginWindows, parseAppRoute } from './pluginWindows';
+import { builtinApp } from './builtinApps';
+import { PluginWindows, parseAppRoute, type NativeFileTarget } from './pluginWindows';
 import { activeMention, escapeHTML as esc, groupChats } from './helpers';
 import type { Attachment, Bot, Chat, Endpoint, Generation, Message, Plugin, Schedule, Segment, State } from './types';
 import './style.css';
@@ -566,12 +567,17 @@ function paintResponse(group: ResponseGroup) {
     for (const m of group.messages) el.append(paintMessage(m, undefined, true));
   }
   const media = generatedMedia(group.messages); if (media) el.append(media);
+  const node = splitID(group.messages[0].chatId)[0], editorID = resourceID(node, 'monaco-editor');
+  const editorEnabled = pluginEnabled(editorID, group.messages[0].botId) && !!builtinApp(state.plugins.find(p => p.id === editorID), 'main');
   const files = fileChangesFooter(group, async file => {
     try {
-      const result = await api<{ select: boolean }>(`/chats/${encodeURIComponent(group.messages[0].chatId)}/files/reveal`, 'POST', { messageId: file.messageId, path: file.path });
-      if (!result.select) notice('Opened the containing folder in File Explorer.');
+      const result = await api<{ select: boolean; editor?: NativeFileTarget }>(`/chats/${encodeURIComponent(group.messages[0].chatId)}/files/${editorEnabled ? 'open' : 'reveal'}`, 'POST', { messageId: file.messageId, path: file.path });
+      if (result.editor) {
+        await refresh();
+        await pluginWindows.openFile(editorID, 'main', { ...result.editor, botId: resourceID(node, result.editor.botId) });
+      } else if (!result.select) notice('Opened the containing folder in File Explorer.');
     } catch (error) { notice(error, true); }
-  });
+  }, editorEnabled);
   if (files) el.append(files);
   restoreDisclosures(el); return el;
 }

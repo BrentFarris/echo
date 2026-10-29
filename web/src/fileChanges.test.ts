@@ -34,3 +34,12 @@ test('footer waits for completion, also shows stopped effects, and safely render
   }
   expect(revealed).toHaveLength(4);
 });
+
+test('file actions describe the editor destination when enabled and the native fallback otherwise', () => {
+  const group = { key: 'group', author: 'Kaiju', status: 'completed', messages: [message('tool', [change('created.txt', undefined, 'a'), change('deleted.txt', 'a', undefined)])] };
+  for (const enabled of [true, false]) {
+    const buttons = fileChangesFooter(group, async () => {}, enabled)!.querySelectorAll('button');
+    expect(buttons[0].getAttribute('aria-label')).toContain(enabled ? 'Open in code editor:' : 'Show in File Explorer:');
+    expect(buttons[1].getAttribute('aria-label')).toContain(enabled ? 'Show containing folder in code editor:' : 'Show containing folder in File Explorer:');
+  }
+});

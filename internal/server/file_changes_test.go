@@ -12,8 +12,88 @@ import (
 
 	"github.com/brent/echo/internal/broker"
 	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/editorfs"
 	"github.com/brent/echo/internal/model"
 )
+
+func TestChangedFilesOpenInEditorOrRevealWhenDisabled(t *testing.T) {
+	s := testServer(t)
+	root := t.TempDir()
+	path := filepath.Join(root, "changed.txt")
+	if err := os.WriteFile(path, []byte("changed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bot, err := s.saveBot(domain.Bot{Handle: "editor-changes", Name: "Editor Changes", Roots: []string{t.TempDir(), root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := chat(t, s, domain.Generation{})
+	message := domain.Message{ID: "change", ChatID: c.ID, BotID: bot.ID, Role: "tool", Status: "completed", FileChanges: []domain.FileChange{{Path: path, Operation: "created"}}}
+	if err := s.Store.AddMessage(message); err != nil {
+		t.Fatal(err)
+	}
+	var revealed []broker.RevealTarget
+	s.revealFile = func(target broker.RevealTarget) error { revealed = append(revealed, target); return nil }
+	open := func(chatID, file string) *httptest.ResponseRecorder {
+		return scmAPI(t, s, "POST", "/chats/"+chatID+"/files/open", map[string]any{"messageId": message.ID, "path": file})
+	}
+	roots, err := s.EditorFS.Roots(bot.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEditor := func(response *httptest.ResponseRecorder, relative, kind string) {
+		t.Helper()
+		var result struct {
+			Editor struct {
+				BotID string           `json:"botId"`
+				Ref   editorfs.FileRef `json:"ref"`
+				Kind  string           `json:"kind"`
+			} `json:"editor"`
+		}
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil || result.Editor.BotID != bot.ID || result.Editor.Ref != (editorfs.FileRef{RootID: roots[1].ID, Path: relative}) || result.Editor.Kind != kind || len(revealed) != 0 {
+			t.Fatalf("unexpected editor target: %d %s; revealed: %+v", response.Code, response.Body.String(), revealed)
+		}
+	}
+	assertEditor(open(c.ID, path), "changed.txt", "file")
+	if response := open(c.ID, filepath.Join(root, "unrecorded.txt")); response.Code == http.StatusOK {
+		t.Fatal("opened an unrecorded path")
+	}
+	other := chat(t, s, domain.Generation{})
+	if response := open(other.ID, path); response.Code == http.StatusOK {
+		t.Fatal("opened a cross-chat path")
+	}
+	// The editor works for authenticated remote browsers without opening host UI.
+	setRemotePassword(t, s)
+	owner := remoteLogin(t, s)
+	body, _ := json.Marshal(map[string]any{"messageId": message.ID, "path": path})
+	assertEditor(remoteRequest(s, "POST", "/chats/"+c.ID+"/files/open", string(body), owner), "changed.txt", "file")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	assertEditor(open(c.ID, path), "", "directory")
+	plugin, _ := s.Plugins.Get("monaco-editor")
+	plugin.Enabled = false
+	if err := s.Plugins.Save(plugin); err != nil {
+		t.Fatal(err)
+	}
+	if response := open(c.ID, path); response.Code != http.StatusOK || len(revealed) != 1 || revealed[0].Select || !strings.EqualFold(revealed[0].Path, root) {
+		t.Fatalf("disabled-editor fallback: %d %s; %+v", response.Code, response.Body.String(), revealed)
+	}
+	if response := remoteRequest(s, "POST", "/chats/"+c.ID+"/files/open", string(body), owner); response.Code != http.StatusForbidden || len(revealed) != 1 {
+		t.Fatal("remote browser opened host UI with the editor disabled")
+	}
+	plugin.Enabled = true
+	if err := s.Plugins.Save(plugin); err != nil {
+		t.Fatal(err)
+	}
+	bot.Roots = []string{t.TempDir()}
+	if _, err := s.saveBot(bot); err != nil {
+		t.Fatal(err)
+	}
+	if response := open(c.ID, path); response.Code == http.StatusOK {
+		t.Fatal("ignored workspace revocation")
+	}
+}
 
 func TestToolFileChangesPersistAndRevealOnlyRecordedScopedPaths(t *testing.T) {
 	s := testServer(t)

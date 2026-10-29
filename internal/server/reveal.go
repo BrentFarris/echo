@@ -4,16 +4,22 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"path/filepath"
 
 	"github.com/brent/echo/internal/broker"
 	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/editorfs"
 )
 
 func (s *Server) revealChangedFile(w http.ResponseWriter, r *http.Request) {
 	if !localRevealRequest(w, r) {
 		return
 	}
-	s.revealRecordedChange(w, r)
+	s.openRecordedChange(w, r, false)
+}
+
+func (s *Server) openChangedFile(w http.ResponseWriter, r *http.Request) {
+	s.openRecordedChange(w, r, true)
 }
 
 func localRevealRequest(w http.ResponseWriter, r *http.Request) bool {
@@ -28,7 +34,7 @@ func localRevealRequest(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func (s *Server) revealRecordedChange(w http.ResponseWriter, r *http.Request) {
+func (s *Server) openRecordedChange(w http.ResponseWriter, r *http.Request, preferEditor bool) {
 	var request struct {
 		MessageID string `json:"messageId"`
 		Path      string `json:"path"`
@@ -57,6 +63,18 @@ func (s *Server) revealRecordedChange(w http.ResponseWriter, r *http.Request) {
 			}
 			target, err := s.Files.RevealTarget(bot, change.Path)
 			if err == nil {
+				if preferEditor && s.Plugins.Enabled(bot, "monaco-editor") {
+					ref, err := s.changedFileEditorRef(bot.ID, target.Path)
+					kind := "directory"
+					if target.Select {
+						kind = "file"
+					}
+					respond(w, map[string]any{"editor": map[string]any{"botId": bot.ID, "ref": ref, "kind": kind}}, err)
+					return
+				}
+				if !localRevealRequest(w, r) {
+					return
+				}
 				reveal := s.revealFile
 				if reveal == nil {
 					reveal = broker.RevealInFileBrowser
@@ -68,6 +86,33 @@ func (s *Server) revealRecordedChange(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	respond(w, nil, errors.New("this file is not a recorded change in this chat"))
+}
+
+// Convert only a revalidated recorded change into the editor's root-relative
+// reference. Editor reads still enforce their own current filesystem boundary.
+func (s *Server) changedFileEditorRef(botID, path string) (editorfs.FileRef, error) {
+	roots, err := s.EditorFS.Roots(botID)
+	if err != nil {
+		return editorfs.FileRef{}, err
+	}
+	for _, root := range roots {
+		if root.BlockedReason != "" || !broker.Within(root.HostPath, path) {
+			continue
+		}
+		relative, err := filepath.Rel(root.HostPath, path)
+		if err != nil {
+			continue
+		}
+		if relative == "." {
+			relative = ""
+		}
+		ref := editorfs.FileRef{RootID: root.ID, Path: filepath.ToSlash(relative)}
+		if _, err := s.EditorFS.ResolveExistingHostPath(botID, ref, true); err != nil {
+			return editorfs.FileRef{}, err
+		}
+		return ref, nil
+	}
+	return editorfs.FileRef{}, errors.New("this file is outside the editor's folders; configure this bot's folders to open it in the editor")
 }
 
 func (s *Server) revealReference(w http.ResponseWriter, path string, bots []domain.Bot) {

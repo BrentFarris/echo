@@ -190,6 +190,18 @@ export class CodeView {
   }
   setVisible(value: boolean) { this.active = value && !this.abort.signal.aborted; if (this.active && this.editor) { this.subscribeFilesystem(); this.editor.layout();  void this.pollOpenTabs(); } else { this.dismissOverlays(); this.watchStop?.(); this.watchStop = undefined; if (this.navigationReady) void this.persistNow(); this.finishMruCycle(); } }
   private rootsGeneration = 0;
+  async openEntry(ref: FileRef, kind: 'file' | 'directory'): Promise<void> {
+    if (this.abort.signal.aborted) return;
+    if (kind === 'file') {
+      await this.recordCodeNavigation(() => this.openFile(ref, true));
+    } else {
+      this.setSidebar('explorer');
+      this.expanded.add(refKey(ref));
+      await this.expandTo(ref);
+      this.setMobileExplorer(true);
+    }
+  }
+
   async updateBot(bot: Bot) {
     if (this.abort.signal.aborted) return;
     const generation = ++this.rootsGeneration;

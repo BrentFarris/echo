@@ -50,6 +50,11 @@ export async function mount(root: HTMLElement, context: NativeAppContext): Promi
   settings.onclick = () => sessions.get(selected)?.view.showSettings();
   renderBots(); await choose(selected);
   return {
+    async openFile(target) {
+      await choose(target.botId);
+      if (disposed || selected !== target.botId) return;
+      await sessions.get(selected)?.view.openEntry(target.ref, target.kind);
+    },
     update(nextBots: Bot[], plugin: Plugin) {
       bots = nextBots; renderBots();
       const changed = preferences !== JSON.stringify(plugin.config); preferences = JSON.stringify(plugin.config);
