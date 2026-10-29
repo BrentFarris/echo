@@ -144,6 +144,64 @@ test('group tabs isolate queued and live bot threads and remember the selection 
   await expect(page.locator('.message.assistant')).toHaveCount(0);
 });
 
+test('thread identity follows bots across chats, tabs, renames and reloads', async ({ page }) => {
+  const identity = page.locator('.brand-identity'), name = identity.locator('.brand-name');
+  const color = (id: string) => identity.locator(`[data-bot-avatar="${id}"]`).evaluate(el => getComputedStyle(el).backgroundColor);
+  await expect(name).toHaveText('Echo');
+  const echoColor = await color('echo');
+  const bots = [];
+  for (const [handle, name] of [['partner', 'Partner'], ['third', 'Third'], ['fourth', 'Fourth']]) {
+    const response = await page.request.post('/api/v1/bots', { data: { handle, name, roots: [], plugins: {} } });
+    expect(response.ok()).toBe(true);
+    bots.push(await response.json());
+  }
+  const partner = bots[0];
+  await page.reload();
+  const single = new URL(page.url()).hash.slice(1);
+  await send(page, '@partner hello');
+  await expect(page.getByRole('button', { name: 'Stop response' })).toBeHidden();
+  await expect(name).toHaveText('Partner');
+  const partnerColor = await color(partner.id);
+  expect(partnerColor).not.toBe(echoColor);
+  await newChat(page);
+  await expect(name).toHaveText('Echo');
+  await send(page, '@echo @partner @third @fourth hello');
+  await expect(page.getByRole('button', { name: 'Stop response' })).toBeHidden();
+  await expect(name).toHaveText('Echo');
+  await expect(identity.locator('.bot-avatar-overflow')).toHaveText('+1');
+  await page.getByRole('tab', { name: 'Partner', exact: true }).click();
+  await expect(name).toHaveText('Partner');
+  await expect(identity.locator('.brand-peers')).toHaveText('with Echo, Third, Fourth');
+  expect(await color(partner.id)).toBe(partnerColor);
+  expect(await page.getByRole('tab', { name: 'Partner', exact: true }).locator('.bot-avatar').evaluate(el => getComputedStyle(el).backgroundColor)).toBe(partnerColor);
+  await page.reload();
+  await expect(name).toHaveText('Partner');
+  expect(await color(partner.id)).toBe(partnerColor);
+  const renamed = await page.request.post('/api/v1/bots', { data: { ...partner, name: 'Co Builder' } });
+  expect(renamed.ok()).toBe(true);
+  await expect(name).toHaveText('Co Builder');
+  expect(await color(partner.id)).toBe(partnerColor);
+  await page.screenshot({ path: 'test-results/bot-identity-desktop.png', fullPage: true });
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.screenshot({ path: 'test-results/bot-identity-dark.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: 'Toggle sidebar', exact: true }).click();
+  await expect(name).toBeVisible();
+  await page.screenshot({ path: 'test-results/bot-identity-mobile.png', fullPage: true });
+  await page.getByRole('button', { name: 'Close sidebar', exact: true }).click();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.getByRole('button', { name: '▦ Apps', exact: true }).click();
+  await expect(name).toHaveText('Echo');
+  await page.locator(`[data-chat="${single}"]`).click();
+  await expect(name).toHaveText('Co Builder');
+  expect(await color(partner.id)).toBe(partnerColor);
+  await expect(identity.locator('.brand-peers')).toHaveCount(0);
+  await page.request.delete(`/api/v1/bots/${partner.id}`);
+  await page.reload();
+  await expect(name).toHaveText('Partner');
+  expect(await color(partner.id)).toBe(partnerColor);
+});
+
 test('chat navigation and bot tabs address follow-ups to the selected bot', async ({ page }) => {
   const composer = page.getByRole('textbox', { name: 'Message', exact: true });
   const value = () => composer.evaluate((el: any) => el.value as string);

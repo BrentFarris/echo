@@ -6,6 +6,7 @@ import { referenceIcons, referenceFromElement, renderMessageReferences, showBotD
 import { Renderers } from './renderers';
 import { updateStreamedText } from './messageContent';
 import { conversationItems, conversationThreads, threadMessages, type ResponseGroup } from './conversation';
+import { botAvatarMarkup, threadIdentityMarkup } from './botIdentity';
 import { fileChangesFooter } from './fileChanges';
 import { MessageActionUI } from './messageActions';
 import { createChatScrollFollower, type ChatScrollFollower } from './chatScroll';
@@ -31,6 +32,7 @@ import './style.css';
 import './composer.css';
 import './references.css';
 import './conversation.css';
+import './botIdentity.css';
 import './apps.css';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
@@ -92,7 +94,7 @@ function chatDot(c: Chat) {
 }
 
 function shell() {
-  app.innerHTML = `<aside id="sidebar" class="sidebar"><div class="brand"><span class="brand-mark" aria-hidden="true">E</span>Echo<button class="icon sidebar-close" aria-label="Close sidebar">×</button></div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button></div><label class="machine-filter" hidden>Machine<select aria-label="Filter machines"></select></label><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="install-echo" hidden>Install Echo</button><button id="missed-button" hidden>Missed jobs</button><nav class="app-dock" aria-label="Docked apps" hidden></nav><div class="sidebar-footer-actions"><button id="apps-button">▦ Apps</button><button id="settings-button" data-update-notice="*">⚙ Settings</button></div></div></aside><div class="sidebar-backdrop" aria-hidden="true"></div>
+  app.innerHTML = `<aside id="sidebar" class="sidebar"><div class="brand"><div class="brand-identity"></div><button class="icon sidebar-close" aria-label="Close sidebar">×</button></div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button></div><label class="machine-filter" hidden>Machine<select aria-label="Filter machines"></select></label><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="install-echo" hidden>Install Echo</button><button id="missed-button" hidden>Missed jobs</button><nav class="app-dock" aria-label="Docked apps" hidden></nav><div class="sidebar-footer-actions"><button id="apps-button">▦ Apps</button><button id="settings-button" data-update-notice="*">⚙ Settings</button></div></div></aside><div class="sidebar-backdrop" aria-hidden="true"></div>
   <main class="main"><header class="chat-header"><button class="icon mobile-menu" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">☰</button><strong id="chat-title">Echo</strong><span id="connection" class="subtle">Connecting…</span></header><div class="chat-view"><div class="bot-tabs-shell" hidden><button type="button" class="bot-tabs-scroll previous" aria-label="Scroll tabs left" title="Scroll tabs left">${icons.chevron}</button><div class="bot-tabs" role="tablist" aria-label="Bot threads"></div><button type="button" class="bot-tabs-scroll next" aria-label="Scroll tabs right" title="Scroll tabs right">${icons.chevron}</button></div><div id="bot-thread-panel" class="conversation-panel"><div class="chat-log" role="log" aria-label="Conversation"></div></div>
   ${composerMarkup}</div><section class="apps-view" aria-labelledby="apps-heading" hidden><h1 id="apps-heading" tabindex="-1">Apps</h1><p class="subtle">Open your plugin apps or dock them for quick access.</p><div id="apps-catalog"></div></section><section class="embedded-app-view" hidden aria-label="App"></section></main>`;
   q('.chat-log').tabIndex = 0;
@@ -320,6 +322,7 @@ async function refresh() {
 }
 function queueRefresh() { clearTimeout(refreshTimer); refreshTimer = window.setTimeout(() => action(refresh)(), 150); }
 function renderSidebar() {
+  renderThreadIdentity();
   q('#chat-title').textContent = showingApp ? 'App' : showingApps ? 'Apps' : state.chats.find(c => c.id === chatId)?.title || 'Echo';
   const filter = q<HTMLSelectElement>('.machine-filter select'); q('.machine-filter').hidden = instances.size < 2;
   const options = '<option value="">All machines</option>' + [...instances.keys()].map(id => `<option value="${id}">${esc(machineName(id))}${instanceOnline(id) ? '' : ' · Offline'}</option>`).join('');
@@ -410,6 +413,14 @@ function selectedThreadBot(transcript: Message[]) {
   const threads = conversationThreads(state.chats.find(chat => chat.id === chatId), transcript, state.runs.filter(run => run.chatId === chatId), state.bots);
   return currentBot(threads.find(thread => thread.id === rememberedBotThread())?.id || threads[0]?.id);
 }
+function renderThreadIdentity() {
+  const chat = state.chats.find(chat => chat.id === chatId);
+  const threads = showingApps || showingApp ? [] : conversationThreads(chat, messages.filter(message => message.chatId === chatId), state.runs.filter(run => run.chatId === chatId), state.bots);
+  const echoId = resourceID(showingApps || showingApp ? entryNode : chat?.nodeId || splitID(chatId)[0], 'echo');
+  const markup = threadIdentityMarkup(threads.length ? threads : [currentBot(echoId) || { id: echoId, name: 'Echo' }], rememberedBotThread());
+  const identity = q('.brand-identity');
+  if (identity.innerHTML !== markup) identity.innerHTML = markup;
+}
 function addressThread(bot: Bot | undefined) {
   if (!bot) return;
   const automatic = prefixBotMention(q<ReferenceInput>('#composer'), bot, automaticMentions.get(chatId));
@@ -430,12 +441,13 @@ function renderBotTabs() {
   const selected = rememberedBotThread();
   visibleBotId = threads.length > 1 ? threads.find(thread => thread.id === selected)?.id || threads[0].id : undefined;
   if (visibleBotId) selectedBotThreads.set(chatId, visibleBotId);
+  renderThreadIdentity();
   const tabs = q('.bot-tabs'), panel = q('#bot-thread-panel');
   q('.bot-tabs-shell').hidden = !visibleBotId;
   const markup = visibleBotId ? threads.map(thread => {
     const status = statusLabel(thread.status), label = thread.name + (status ? ' ' + status : '');
     const working = ['running', 'waiting', 'queued'].includes(thread.status || '');
-    return `<button type="button" role="tab" id="bot-tab-${esc(thread.id)}" data-bot-thread="${esc(thread.id)}" aria-controls="bot-thread-panel" aria-label="${esc(label)}" title="${esc(label)}" aria-selected="${thread.id === visibleBotId}" tabindex="${thread.id === visibleBotId ? 0 : -1}">${working ? '<span class="bot-tab-busy-dot" aria-hidden="true"></span>' : ''}<span class="bot-tab-label">${esc(thread.name)}</span>${splitID(thread.id)[0] !== entryNode ? `<small class="machine-chip">${esc(machineName(splitID(thread.id)[0]))}</small>` : ''}</button>`;
+    return `<button type="button" role="tab" id="bot-tab-${esc(thread.id)}" data-bot-thread="${esc(thread.id)}" aria-controls="bot-thread-panel" aria-label="${esc(label)}" title="${esc(label)}" aria-selected="${thread.id === visibleBotId}" tabindex="${thread.id === visibleBotId ? 0 : -1}">${botAvatarMarkup(thread)}${working ? '<span class="bot-tab-busy-dot" aria-hidden="true"></span>' : ''}<span class="bot-tab-label">${esc(thread.name)}</span>${splitID(thread.id)[0] !== entryNode ? `<small class="machine-chip">${esc(machineName(splitID(thread.id)[0]))}</small>` : ''}</button>`;
   }).join('') : '';
   if (tabs.innerHTML !== markup) {
     const focused = tabs.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.botThread : undefined;
