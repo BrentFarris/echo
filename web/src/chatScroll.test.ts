@@ -274,6 +274,22 @@ describe("chat scroll following", () => {
     expect(follower.isFollowing()).toBe(true);
   });
 
+  it("End resumes following before a delayed native scroll event and new content growth", () => {
+    const log = document.createElement("div");
+    const metrics = setScrollMetrics(log, { position: 400 });
+    const follower = create(log);
+
+    key(log, "End");
+    expect(follower.isFollowing()).toBe(true);
+    metrics.height = 1200;
+    // The key's scroll event arrives after the transcript has already grown.
+    log.dispatchEvent(new Event("scroll"));
+    follower.contentChanged();
+    flushFrames();
+    expect(metrics.position).toBe(1000);
+    expect(follower.isFollowing()).toBe(true);
+  });
+
   it("cancels on an upward touch gesture", () => {
     const log = document.createElement("div");
     const metrics = setScrollMetrics(log, { position: 800 });

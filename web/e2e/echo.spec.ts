@@ -81,6 +81,56 @@ test('chat releases sticky scrolling immediately and resumes only at the tail', 
   }
 });
 
+test('streamed answers retain formatted blocks through deltas and completion', async ({ page }) => {
+  let socket: WebSocketRoute | undefined;
+  await page.routeWebSocket('**/api/v1/events', ws => { socket = ws; ws.connectToServer(); });
+  await setup(page); await page.reload();
+  await expect(page.locator('#connection')).toHaveText('');
+  await expect.poll(() => !!socket).toBe(true);
+  const chatId = new URL(page.url()).hash.slice(1), id = 'formatted-stream';
+  let content = '# Stable heading\n\n```text\n' + 'A long line of code. '.repeat(100) + '\n```\n\n' + Array.from({ length: 60 }, (_, i) => `Paragraph ${i}.`).join('\n\n');
+  const emit = (type: string, payload: object) => socket!.send(JSON.stringify({ type, chatId, payload: { id, ...payload } }));
+  const fullMessage = (status: string) => emit('message', { chatId, botId: 'echo', runId: 'formatted-run', role: 'assistant', author: 'Echo', content, status, createdAt: new Date().toISOString() });
+  fullMessage('running');
+  const body = page.locator('[id="body-formatted-stream"]'), log = page.locator('.chat-log');
+  await expect(body.locator('h1')).toHaveText('Stable heading');
+  const original = await body.elementHandle(), heading = await body.locator('h1').elementHandle(), code = await body.locator('pre').elementHandle();
+  await body.evaluate(el => {
+    const state = window as typeof window & { formattingFlashed?: boolean; formattingObserver?: MutationObserver };
+    state.formattingFlashed = false;
+    state.formattingObserver = new MutationObserver(() => {
+      if (!el.classList.contains('markdown') || !el.querySelector('h1')) state.formattingFlashed = true;
+    });
+    state.formattingObserver.observe(el, { attributes: true, childList: true, subtree: true });
+    el.querySelector('pre')!.scrollLeft = 120;
+  });
+  expect(await body.locator('pre').evaluate(el => el.scrollLeft)).toBe(120);
+  await expect.poll(() => log.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThanOrEqual(2);
+  const tailDelta = '\n\nTail **update**.'; content += tailDelta; emit('delta', { content: tailDelta });
+  await expect(body.locator('strong').last()).toHaveText('update');
+  await expect.poll(() => log.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThanOrEqual(2);
+  await log.hover(); await page.mouse.wheel(0, -120);
+  await expect.poll(() => log.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeGreaterThan(30);
+  const reading = await log.evaluate(el => el.scrollTop);
+  for (let i = 0; i < 5; i++) {
+    const delta = `\n\nStreamed **paragraph ${i}**.`; content += delta; emit('delta', { content: delta });
+    await expect(body.locator('strong').last()).toHaveText(`paragraph ${i}`);
+    expect(await body.locator('h1').evaluate((el, node) => el === node, heading)).toBe(true);
+    expect(await body.locator('pre').evaluate((el, node) => el === node, code)).toBe(true);
+    expect(await body.locator('pre').evaluate(el => el.scrollLeft)).toBe(120);
+    expect(Math.abs(await log.evaluate(el => el.scrollTop) - reading)).toBeLessThanOrEqual(2);
+  }
+  fullMessage('completed');
+  await expect(page.locator('[id="message-formatted-stream"]')).toHaveAttribute('data-final', 'true');
+  expect(await body.evaluate((el, node) => el === node, original)).toBe(true);
+  expect(await body.locator('pre').evaluate(el => el.scrollLeft)).toBe(120);
+  expect(Math.abs(await log.evaluate(el => el.scrollTop) - reading)).toBeLessThanOrEqual(2);
+  expect(await page.evaluate(() => {
+    const state = window as typeof window & { formattingFlashed?: boolean; formattingObserver?: MutationObserver };
+    state.formattingObserver?.disconnect(); return state.formattingFlashed;
+  })).toBe(false);
+});
+
 test('streaming thinking keeps clicks and its reading position intact', async ({ page }) => {
   let socket: WebSocketRoute | undefined;
   await page.routeWebSocket('**/api/v1/events', ws => { socket = ws; ws.connectToServer(); });

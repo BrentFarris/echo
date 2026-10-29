@@ -118,6 +118,10 @@ export function createChatScrollFollower(element: HTMLElement): ChatScrollFollow
       && event.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])'))) return;
     if (isUpwardScrollKey(event)) {
       stopFollowing();
+    } else if (event.key === 'End') {
+      // End explicitly requests the tail. Re-engage before the browser's
+      // asynchronous scroll event, which can arrive after another delta grows it.
+      forceFollow();
     } else if (isDownwardScrollKey(event) && isAtBottom(element)) {
       following = true;
     }

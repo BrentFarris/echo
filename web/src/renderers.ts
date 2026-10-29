@@ -1,13 +1,16 @@
-import DOMPurify from 'dompurify';
 import type { Message, Plugin } from './types';
 import { localID } from './instances';
+import { patchRenderedContent, updateStreamedText } from './messageContent';
 
 type Renderer = { key: string; pluginId: string; nonce: string; frame: HTMLIFrameElement; ready: boolean };
+type RenderRequest = { content: HTMLElement; text: string; renderer: Renderer };
 export class Renderers {
   private frames = new Map<string, Renderer>();
-  private pending = new Map<string, { messageId: string; renderer: Renderer }>();
+  private pending = new Map<string, RenderRequest & { messageId: string }>();
   private latest = new Map<string, string>();
-  constructor(private enabled: (id: string, bot?: string) => boolean, private changed: () => void) {
+  private queued = new Map<string, RenderRequest>();
+  private frame = 0;
+  constructor(private enabled: (id: string, bot?: string) => boolean, private changed: () => void, private contentChanging: () => void = () => {}) {
     addEventListener('message', event => {
       const renderer = [...this.frames.values()].find(r => r.frame.contentWindow === event.source);
       if (!renderer || !event.data) return;
@@ -21,11 +24,10 @@ export class Renderers {
       const pending = this.pending.get(data.id);
       if (!pending || pending.renderer !== renderer || this.latest.get(pending.messageId) !== data.id) return;
       this.pending.delete(data.id); this.latest.delete(pending.messageId);
-      const content = document.getElementById('body-' + pending.messageId);
-      if (!content) return;
-      content.innerHTML = DOMPurify.sanitize(data.html, { FORBID_TAGS: ['img', 'iframe', 'form', 'input', 'button', 'style', 'svg', 'math', 'audio', 'video'], FORBID_ATTR: ['style', 'id', 'name'] });
-      content.classList.add('markdown');
-      for (const link of content.querySelectorAll('a')) { link.target = '_blank'; link.rel = 'noopener noreferrer'; }
+      const content = pending.content;
+      if (!content.isConnected || document.getElementById('body-' + pending.messageId) !== content) return;
+      this.contentChanging();
+      patchRenderedContent(content, data.html);
     });
   }
   sync(plugins: Plugin[]) {
@@ -47,13 +49,32 @@ export class Renderers {
     for (const [key, renderer] of this.frames) if (!wanted.has(key)) { renderer.frame.remove(); this.frames.delete(key); }
     this.clearPending();
   }
-  clearPending() { this.pending.clear(); this.latest.clear(); }
-  paint(message: Message) {
+  clearPending() {
+    if (this.frame) cancelAnimationFrame(this.frame);
+    this.frame = 0; this.queued.clear(); this.pending.clear(); this.latest.clear();
+  }
+  paint(message: Message, content: HTMLElement) {
     const previous = this.latest.get(message.id); if (previous) this.pending.delete(previous); this.latest.delete(message.id);
+    this.queued.delete(message.id);
     if (message.role !== 'assistant') return;
     const eligible = [...this.frames.values()].filter(r => this.enabled(r.pluginId, message.botId)).sort((a, b) => Number(localID(a.pluginId) === 'markdown') - Number(localID(b.pluginId) === 'markdown') || a.key.localeCompare(b.key));
-    const renderer = eligible[0]; if (!renderer?.ready) return;
-    const id = crypto.randomUUID(); this.latest.set(message.id, id); this.pending.set(id, { messageId: message.id, renderer });
-    renderer.frame.contentWindow!.postMessage({ type: 'render', nonce: renderer.nonce, id, text: message.content }, '*');
+    const renderer = eligible[0];
+    if (!renderer?.ready) {
+      content.classList.remove('markdown'); updateStreamedText(content, message.content); return;
+    }
+    // Keep first output readable even if a renderer is slow or never replies.
+    if (!content.classList.contains('markdown')) updateStreamedText(content, message.content);
+    // Leave the last formatted output visible while the next render is pending.
+    // Multiple deltas in one display frame only need one renderer request.
+    this.queued.set(message.id, { content, text: message.content, renderer });
+    if (this.frame) return;
+    this.frame = requestAnimationFrame(() => {
+      this.frame = 0;
+      for (const [messageId, request] of this.queued) {
+        const id = crypto.randomUUID(); this.latest.set(messageId, id); this.pending.set(id, { ...request, messageId });
+        request.renderer.frame.contentWindow!.postMessage({ type: 'render', nonce: request.renderer.nonce, id, text: request.text }, '*');
+      }
+      this.queued.clear();
+    });
   }
 }

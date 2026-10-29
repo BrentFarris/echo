@@ -4,6 +4,7 @@ import { InstanceEvents } from './instanceEvents';
 import { ReferenceInput, trimmedDraft } from './referenceEditor';
 import { referenceIcons, referenceFromElement, renderMessageReferences, showBotDetails } from './references';
 import { Renderers } from './renderers';
+import { updateStreamedText } from './messageContent';
 import { conversationItems, conversationThreads, threadMessages, type ResponseGroup } from './conversation';
 import { fileChangesFooter } from './fileChanges';
 import { MessageActionUI } from './messageActions';
@@ -389,7 +390,7 @@ const messageActionUI = new MessageActionUI({
 function mountMessageActions(el: HTMLElement, message: Message, grouped: boolean) {
   if (!grouped && ['user', 'assistant'].includes(message.role) && finishedRunStatuses.includes(message.status)) messageActionUI.mount(el, el, message);
 }
-const renderers = new Renderers(pluginEnabled, () => renderMessages(false, true));
+const renderers = new Renderers(pluginEnabled, () => renderMessages(false, true), () => chatScroll.contentChanged());
 const disclosureState = new Map<string, boolean>();
 // Pending question cards keep their in-progress form state across repaints;
 // the completed card is rebuilt from the result instead.
@@ -459,12 +460,6 @@ function rememberDisclosures(root: HTMLElement) { for (const details of root.que
 async function answerQuestions(m: Message, payload: QuestionSubmission) {
   await api(`/chats/${encodeURIComponent(m.chatId)}/questions/${encodeURIComponent(m.id)}`, 'POST', payload);
 }
-function updateStreamedText(el: HTMLElement, text: string) {
-  const node = el.firstChild;
-  if (node instanceof Text && node === el.lastChild && text.startsWith(node.data)) {
-    if (text.length > node.length) node.appendData(text.slice(node.length));
-  } else if (el.textContent !== text) el.textContent = text;
-}
 function paintStreamedMessage(el: HTMLElement, m: Message, previous: Message, final: boolean, output?: string) {
   // Keep the native details, summary and scroll container mounted. Replacing
   // them between pointer down/up loses clicks and resets scroll on every token.
@@ -488,8 +483,7 @@ function paintStreamedMessage(el: HTMLElement, m: Message, previous: Message, fi
       el.insertBefore(body, el.querySelector(':scope > .message-attachments, :scope > .message-actions'));
     }
     if (m.content !== previous.content) {
-      body.classList.remove('markdown'); updateStreamedText(body, m.content);
-      if (m.content) renderers.paint(m);
+      renderers.paint(m, body);
     }
   } else body?.remove();
 }
@@ -507,6 +501,8 @@ function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.da
   el.id = 'message-' + m.id; el.className = 'message ' + m.role;
   el.dataset.grouped = String(grouped); el.dataset.final = String(final); el.setAttribute('aria-label', m.author);
   rememberDisclosures(el);
+  // Status/group changes must not flash an already formatted answer as source.
+  const previousBody = m.role === 'assistant' ? el.querySelector<HTMLElement>(':scope > .message-content') : null;
   el.innerHTML = !grouped && m.role !== 'user' && m.role !== 'tool' ? `<div class="message-meta"><strong>${esc(m.author)}</strong>${statusBadge(m.status)}</div>` : '';
   if (m.role === 'tool') {
     if (isQuestionMessage(m)) {
@@ -524,7 +520,12 @@ function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.da
   if (m.role === 'user' && grouped) el.innerHTML += `<div class="handoff-label">${esc(m.author)}</div>`;
   if (m.reasoning && !final) el.innerHTML += reasoningMarkup(m);
   if (m.toolCalls?.length) el.innerHTML += `<details data-disclosure="${esc(m.id)}:calls"><summary>Tool calls (${m.toolCalls.length})</summary><pre>${esc(JSON.stringify(m.toolCalls, null, 2))}</pre></details>`;
-  if (m.content || !m.reasoning && !m.toolCalls?.length && m.status === 'running') el.innerHTML += `<div class="message-content" id="body-${esc(m.id)}">${esc(m.content)}</div>`;
+  if (m.content || !m.reasoning && !m.toolCalls?.length && m.status === 'running') {
+    const body = previousBody || document.createElement('div');
+    body.classList.add('message-content'); body.id = 'body-' + m.id;
+    if (m.role !== 'assistant') updateStreamedText(body, m.content);
+    el.append(body);
+  }
   if (m.attachments?.length) {
     const root = document.createElement('div'); root.className = 'message-attachments';
     for (const attachment of m.attachments) {
@@ -536,7 +537,7 @@ function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.da
   }
   restoreDisclosures(el);
   if (m.content && m.role === 'user') renderMessageReferences(q('.message-content', el), m, state.bots);
-  if (m.content) renderers.paint(m);
+  if (m.content) renderers.paint(m, q('.message-content', el));
   mountMessageActions(el, m, grouped);
   return el;
 }
@@ -581,6 +582,9 @@ function renderMessages(tail = false, force = false) {
   const threadKey = JSON.stringify([chatId, visibleBotId]), switchedThread = threadKey !== renderedThreadKey;
   renderedThreadKey = threadKey;
   const previousTop = log.scrollTop;
+  const contentScroll = [...log.querySelectorAll<HTMLElement>('.message-content pre, .message-content table')]
+    .filter(element => element.scrollTop || element.scrollLeft)
+    .map(element => ({ element, top: element.scrollTop, left: element.scrollLeft }));
   const editing = document.activeElement instanceof HTMLTextAreaElement && log.contains(document.activeElement) && document.activeElement.closest('.message-edit-form') ? document.activeElement : undefined;
   const editSelection = editing ? [editing.selectionStart, editing.selectionEnd] : undefined;
   chatScroll.contentChanged();
@@ -604,6 +608,8 @@ function renderMessages(tail = false, force = false) {
   }
   if (messages.length && !visibleMessages.length) log.innerHTML = '<p class="empty-list">No messages in this bot’s thread yet.</p>';
   renderQueuedRuns(); document.querySelector<HTMLButtonElement>('#setup-model')?.addEventListener('click', () => settings('models'));
+  // Browsers reset nested scroll offsets when a retained answer is remounted.
+  for (const { element, top, left } of contentScroll) if (element.isConnected) { element.scrollTop = top; element.scrollLeft = left; }
   if (focused) [...log.querySelectorAll<HTMLDetailsElement>('details[data-disclosure]')].find(d => d.dataset.disclosure === focused)?.querySelector('summary')?.focus({ preventScroll: true });
   if (focusedFile) [...log.querySelectorAll<HTMLButtonElement>('.file-change')].find(button => button.dataset.fileChange === focusedFile)?.focus({ preventScroll: true });
   if (editing?.isConnected && editSelection) { editing.focus({ preventScroll: true }); editing.setSelectionRange(editSelection[0], editSelection[1]); }
