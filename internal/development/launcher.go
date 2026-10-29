@@ -68,6 +68,8 @@ func buildPowerShellLauncher(spec launchSpec) string {
 		"  if (-not $previousProcess.WaitForExit($waitSeconds * 1000)) { throw 'Graceful shutdown timed out; the existing process was left running.' }\r\n" +
 		"  if ($stagedBinary -ne $binaryPath) { Move-Item -LiteralPath $stagedBinary -Destination $binaryPath -Force }\r\n" +
 		"  Write-Log \"Launching Echo from $binaryPath\"\r\n" +
+		// Every development restart keeps the existing UI, including remote updates.
+		"  $env:ECHO_NO_OPEN = '1'\r\n" +
 		"  $launch = @{ FilePath = $binaryPath; WorkingDirectory = $workingDirectory; WindowStyle = 'Hidden'; RedirectStandardOutput = ($logFile + '.stdout'); RedirectStandardError = ($logFile + '.stderr') }\r\n" +
 		"  if ($launchArguments) { $launch.ArgumentList = $launchArguments }\r\n" +
 		"  Start-Process @launch\r\n" +
@@ -106,7 +108,7 @@ func buildShellLauncher(spec launchSpec) string {
 		"if [ \"$staged_binary\" != \"$binary_path\" ]; then mv -f \"$staged_binary\" \"$binary_path\" || { log 'RELAUNCH FAILED: could not replace binary.'; exit 1; }; fi\n" +
 		"cd \"$working_directory\" || { log 'RELAUNCH FAILED: working directory is unavailable.'; exit 1; }\n" +
 		"log \"Launching Echo from $binary_path\"\n" +
-		"nohup \"$binary_path\"" + launchArguments + " >> \"$log_file\" 2>&1 &\n" +
+		"ECHO_NO_OPEN=1 nohup \"$binary_path\"" + launchArguments + " >> \"$log_file\" 2>&1 &\n" +
 		"log 'Echo relaunch command completed.'\n"
 }
 

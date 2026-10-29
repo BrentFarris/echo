@@ -350,7 +350,7 @@ func TestBuildStagesBeforeLaunchAndCleansFailedPreparation(t *testing.T) {
 
 func TestWindowsLauncherQuotesAndWaits(t *testing.T) {
 	script := buildPowerShellLauncher(launchSpec{ProcessID: 42, StagedPath: `C:\a'b\staged.exe`, BinaryPath: `C:\a'b\echo.exe`, Arguments: []string{"-data", `C:\space dir\`, `a"b`}, WaitSeconds: 60})
-	for _, want := range []string{"C:\\a''b", "WaitForExit", "WindowStyle = 'Hidden'", "RedirectStandardError", "Set-Content -LiteralPath"} {
+	for _, want := range []string{"C:\\a''b", "WaitForExit", "WindowStyle = 'Hidden'", "RedirectStandardError", "Set-Content -LiteralPath", "$env:ECHO_NO_OPEN = '1'"} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("missing %q", want)
 		}
@@ -360,5 +360,12 @@ func TestWindowsLauncherQuotesAndWaits(t *testing.T) {
 	}
 	if got := quoteWindowsArgument(`C:\space dir\`); got != `"C:\space dir\\"` {
 		t.Fatal(got)
+	}
+}
+
+func TestUnixLauncherSuppressesWindowOpening(t *testing.T) {
+	script := buildShellLauncher(launchSpec{BinaryPath: "/tmp/echo", Arguments: []string{"-no-open=false"}})
+	if !strings.Contains(script, "ECHO_NO_OPEN=1 nohup") {
+		t.Fatal("development relaunch must suppress opening a window even when startup arguments allow it")
 	}
 }

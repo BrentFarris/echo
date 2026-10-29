@@ -23,7 +23,7 @@ func TestNativeUnixLauncherWaitsAndReplaces(t *testing.T) {
 	if err := os.WriteFile(binary, []byte("old"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(staged, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > received\n"), 0700); err != nil {
+	if err := os.WriteFile(staged, []byte("#!/bin/sh\nprintf '%s\\n' \"$ECHO_NO_OPEN\" \"$@\" > received\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	spec := launchSpec{ProcessID: previous.Process.Pid, BinaryPath: binary, StagedPath: staged, WorkingDir: dir, Arguments: []string{"space path", "literal'quote", "$(no-execution)"}, LogPath: filepath.Join(dir, "launcher.log"), WaitSeconds: 10}
@@ -41,8 +41,8 @@ func TestNativeUnixLauncherWaitsAndReplaces(t *testing.T) {
 	for time.Now().Before(deadline) {
 		b, err := os.ReadFile(filepath.Join(dir, "received"))
 		if err == nil {
-			if string(b) != strings.Join(spec.Arguments, "\n")+"\n" {
-				t.Fatalf("arguments changed: %q", b)
+			if string(b) != "1\n"+strings.Join(spec.Arguments, "\n")+"\n" {
+				t.Fatalf("window suppression or arguments changed: %q", b)
 			}
 			return
 		}

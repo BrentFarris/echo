@@ -6,7 +6,7 @@ Open **Apps → Monaco Editor** for the built-in code editor. Choose a bot above
 
 ## Run on Windows
 
-Run `echo.exe`, then open **http://localhost:3740**. The app is named Echo; data continues to use `%LOCALAPPDATA%\Echo2` and its existing database and credential identifiers. Additive, versioned storage migrations preserve existing bots, chats, model settings and credentials. Stop the console with Ctrl+C to flush active streams and terminate child processes. Only one server may open a data directory.
+Run `echo.exe`. Echo opens the installed desktop app when available, falling back to **http://localhost:3740** in your browser. This happens only on the initial launch; Development reloads, rebuilds and updates keep the existing window. Use `-no-open` or `ECHO_NO_OPEN=1` for headless startup. The app is named Echo; data continues to use `%LOCALAPPDATA%\Echo2` and its existing database and credential identifiers. Additive, versioned storage migrations preserve existing bots, chats, model settings and credentials. Stop the console with Ctrl+C to flush active streams and terminate child processes. Only one server may open a data directory.
 
 ```powershell
 .\echo.exe

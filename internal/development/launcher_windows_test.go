@@ -12,6 +12,59 @@ import (
 	"time"
 )
 
+func TestWindowsRelaunchSuppressesWindowInReplacement(t *testing.T) {
+	t.Setenv("ECHO_LAUNCHER_ENVIRONMENT_TEST", "1")
+	// The initial process allows window opening. Only the relaunch script sets suppression.
+	t.Setenv("ECHO_NO_OPEN", "0")
+	dir := t.TempDir()
+	powerShell, err := findPowerShell()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := exec.Command(powerShell, "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30")
+	previous.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
+	if err := previous.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = previous.Process.Kill(); _ = previous.Wait() })
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := launchSpec{ProcessID: previous.Process.Pid, BinaryPath: binary, StagedPath: binary,
+		WorkingDir: dir, Arguments: []string{"-test.run=^TestRelaunchEnvironmentProcess$"},
+		LogPath: filepath.Join(dir, "relaunch.log"), WaitSeconds: 10}
+	if err := prepareAndLaunch(spec, dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := previous.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = previous.Wait()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if value, err := os.ReadFile(filepath.Join(dir, "replacement-env")); err == nil {
+			if string(value) != "1" {
+				t.Fatalf("replacement ECHO_NO_OPEN = %q", value)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	contents, _ := os.ReadFile(spec.LogPath)
+	t.Fatalf("replacement did not report its environment: %s", contents)
+}
+
+func TestRelaunchEnvironmentProcess(t *testing.T) {
+	if os.Getenv("ECHO_LAUNCHER_ENVIRONMENT_TEST") != "1" {
+		return
+	}
+	if err := os.WriteFile("replacement-env", []byte(os.Getenv("ECHO_NO_OPEN")), 0600); err != nil {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
 func TestLaunchDetachedWaitsForReadiness(t *testing.T) {
 	dir := t.TempDir()
 	readyPath := filepath.Join(dir, "rebuild-relaunch.ready")

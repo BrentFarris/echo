@@ -22,7 +22,7 @@ case "$(uname -s)" in
 Description=Echo personal assistant
 After=network-online.target
 [Service]
-ExecStart="$binary" -data "$profile" -port $port
+ExecStart="$binary" -no-open -data "$profile" -port $port
 Restart=on-failure
 TimeoutStopSec=30
 KillMode=mixed
@@ -39,7 +39,7 @@ EOF
   cat > "$directory/com.echo.assistant.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>Label</key><string>com.echo.assistant</string><key>ProgramArguments</key><array><string>$binary</string><string>-data</string><string>$profile</string><string>-port</string><string>$port</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>StandardOutPath</key><string>$profile/service.log</string><key>StandardErrorPath</key><string>$profile/service.log</string></dict></plist>
+<plist version="1.0"><dict><key>Label</key><string>com.echo.assistant</string><key>ProgramArguments</key><array><string>$binary</string><string>-no-open</string><string>-data</string><string>$profile</string><string>-port</string><string>$port</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>StandardOutPath</key><string>$profile/service.log</string><key>StandardErrorPath</key><string>$profile/service.log</string></dict></plist>
 EOF
   launchctl bootstrap "gui/$(id -u)" "$directory/com.echo.assistant.plist"
   printf '%s\n' 'Installed com.echo.assistant LaunchAgent for this user.'

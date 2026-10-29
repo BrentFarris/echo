@@ -26,7 +26,7 @@ $quotedExecutable = $Executable.Replace("'", "''")
 $quotedDirectory = $DataDirectory.Replace("'", "''")
 $source = @'
 $ErrorActionPreference = 'Stop'
-$process = Start-Process -FilePath '__EXECUTABLE__' -ArgumentList '-data "__PROFILE__" -port __PORT__' -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput '__PROFILE__\service.stdout.log' -RedirectStandardError '__PROFILE__\service.stderr.log'
+$process = Start-Process -FilePath '__EXECUTABLE__' -ArgumentList '-no-open -data "__PROFILE__" -port __PORT__' -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput '__PROFILE__\service.stdout.log' -RedirectStandardError '__PROFILE__\service.stderr.log'
 exit $process.ExitCode
 '@
 $source = $source.Replace('__EXECUTABLE__', $quotedExecutable).Replace('__PROFILE__', $quotedDirectory).Replace('__PORT__', [string]$Port)

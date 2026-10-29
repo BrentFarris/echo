@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"embed"
 	"flag"
 	"io/fs"
@@ -14,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/brent/echo/internal/launch"
 	"github.com/brent/echo/internal/server"
 )
 
@@ -27,6 +29,7 @@ func main() {
 	port := flag.Int("port", 3740, "HTTP port")
 	data := flag.String("data", "", "Echo data directory (defaults to the existing user profile)")
 	web := flag.String("web", "", "serve frontend assets from this directory")
+	noOpen := flag.Bool("no-open", false, "do not open the Echo app or browser on startup")
 	flag.Parse()
 	if *data == "" {
 		base := os.Getenv("LOCALAPPDATA")
@@ -56,20 +59,35 @@ func main() {
 		log.Fatal(e)
 	}
 	httpServer := &http.Server{Addr: addr, Handler: app.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second}
+	if cert != "" {
+		certificate, err := tls.LoadX509KeyPair(cert, key)
+		if err != nil {
+			log.Fatal(err)
+		}
+		httpServer.TLSConfig = &tls.Config{Certificates: []tls.Certificate{certificate}}
+	}
+	// Bind before opening the UI so a failed startup never opens another server.
+	listener, e := net.Listen("tcp", addr)
+	if e != nil {
+		log.Fatal(e)
+	}
 	done := make(chan error, 1)
 	go func() {
 		if cert != "" {
-			done <- httpServer.ListenAndServeTLS(cert, key)
+			done <- httpServer.ServeTLS(listener, "", "")
 		} else {
-			done <- httpServer.ListenAndServe()
+			done <- httpServer.Serve(listener)
 		}
 	}()
 	scheme := "http"
 	if cert != "" {
 		scheme = "https"
 	}
-	_, actualPort, _ := net.SplitHostPort(addr)
+	_, actualPort, _ := net.SplitHostPort(listener.Addr().String())
 	log.Printf("Echo: %s://localhost:%s (data: %s)", scheme, actualPort, *data)
+	if !*noOpen {
+		go launch.Open(scheme + "://localhost:" + actualPort + "/")
+	}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	select {

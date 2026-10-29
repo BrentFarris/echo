@@ -59,7 +59,7 @@ try {
     $listener.Stop()
     $base = "http://127.0.0.1:$port"
     $session = [Microsoft.PowerShell.Commands.WebRequestSession]::new()
-    $process = Start-Process -FilePath (Join-Path $runtimeDir 'echo.exe') -ArgumentList "-port $port -data `"$profile`"" -WorkingDirectory $runtimeDir -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $sandboxRoot 'initial.stdout') -RedirectStandardError (Join-Path $sandboxRoot 'initial.stderr')
+    $process = Start-Process -FilePath (Join-Path $runtimeDir 'echo.exe') -ArgumentList "-no-open -port $port -data `"$profile`"" -WorkingDirectory $runtimeDir -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $sandboxRoot 'initial.stdout') -RedirectStandardError (Join-Path $sandboxRoot 'initial.stderr')
     $deadline = (Get-Date).AddSeconds(30)
     do {
         try { $null = Invoke-RestMethod "$base/api/v1/session" -Method Post -Body '{}' -ContentType 'application/json' -WebSession $session -TimeoutSec 2; break } catch { Start-Sleep -Milliseconds 200 }
