@@ -839,7 +839,29 @@ function botSettings(root: HTMLElement) { const bots = state.bots.filter(b => sa
 }
 function editBot(bot?: Bot) {
   const node = bot?.nodeId || settingsNode || entryNode; const api = <T = any>(path: string, method = 'GET', body?: unknown) => resourceAPI<T>(path, method, body, node); const plugins = state.plugins.filter(p => sameMachine(p, node));
-  const el = dialog(bot ? 'Edit bot' : 'Create a bot', `<form class="form"><label>Handle<input name="handle" required pattern="[A-Za-z][A-Za-z0-9_-]*" value="${esc(bot?.handle.split('.').pop())}" ${localID(bot?.id) === 'echo' ? 'readonly' : ''}></label><label>Name<input name="name" value="${esc(bot?.name)}"></label><label>System prompt<textarea name="prompt">${esc(bot?.prompt)}</textarea></label><label>Folders, one absolute path per line<textarea name="roots" placeholder="C:\\Users\\you\\project">${esc(bot?.roots?.join('\n'))}</textarea><small>Leave empty for unrestricted host access. Assigned folders apply to file tools and shell commands.</small></label><label class="check"><input name="enableMultitasking" type="checkbox" ${bot?.enableMultitasking ? 'checked' : ''}>Enable Multitasking</label><small>Allow this bot to work in multiple chats simultaneously. When disabled, requests wait their turn.</small><h3>Plugins</h3>${plugins.filter(p => p.scope === 'bot' || localID(p.id) === 'workspaces' || localID(bot?.id) === 'echo' && p.scope === 'echo').map(p => `<label class="check"><input name="plugin:${esc(p.id)}" type="checkbox" ${botPluginSelected(bot, p.id) ? 'checked' : ''}>${esc(p.name)}${!p.enabled ? ' (disabled globally)' : ''}</label>`).join('')}<button class="primary">Save bot</button></form>`);
+  const descriptions: Record<string, string> = {
+    calendar: 'Create, update, and delete scheduled tasks for this bot.',
+    comfyui: 'Generate and edit images, videos, and animated GIFs using the configured ComfyUI server.',
+    confluence: 'Search Confluence and read pages, blog posts, and comments.',
+    fossil: 'Inspect changes, commit, branch, and sync Fossil repositories using the installed Fossil CLI.',
+    git: 'Inspect changes, commit, manage branches, and fetch, pull, or push Git repositories using the installed Git CLI.',
+    jira: 'Search Jira issues and read their fields, links, and comments.',
+    markdown: 'Display formatted Markdown in this bot\'s messages.',
+    p4: 'Inspect, sync, edit, and submit files and changelists using the installed Perforce CLI.',
+    searxng: 'Search the web using the configured SearXNG search engine.',
+    shell: 'Run shell commands on this machine within this bot\'s assigned folders, or with unrestricted host access when no folders are assigned.',
+    'web-get': 'Read web pages and other content from HTTP or HTTPS URLs.',
+    workspaces: 'Let Echo assign or change folder restrictions for bots. Existing restrictions remain enforced when this plugin is disabled.',
+    'plugin-authoring': 'Let Echo create, install, configure, and manage plugins.',
+  };
+  const multitaskingDescription = 'Allow this bot to work in multiple chats simultaneously. When disabled, requests wait their turn.';
+  const checkbox = (name: string, label: string, description: string, checked: boolean) => `<label class="check" title="${esc(description)}"><input name="${esc(name)}" type="checkbox" title="${esc(description)}" ${checked ? 'checked' : ''}>${esc(label)}</label>`;
+  const pluginCheckboxes = plugins.filter(p => p.scope === 'bot' || localID(p.id) === 'workspaces' || localID(bot?.id) === 'echo' && p.scope === 'echo').map(p => {
+    const description = descriptions[localID(p.id)] || `Allow this bot to use ${p.name} tools and features.`;
+    const status = p.enabled ? '' : ` Disabled globally; enable it in Settings → ${p.name} to use it.`;
+    return checkbox(`plugin:${p.id}`, p.name, description + status, botPluginSelected(bot, p.id));
+  }).join('');
+  const el = dialog(bot ? 'Edit bot' : 'Create a bot', `<form class="form"><label>Handle<input name="handle" required pattern="[A-Za-z][A-Za-z0-9_-]*" value="${esc(bot?.handle.split('.').pop())}" ${localID(bot?.id) === 'echo' ? 'readonly' : ''}></label><label>Name<input name="name" value="${esc(bot?.name)}"></label><label>System prompt<textarea name="prompt">${esc(bot?.prompt)}</textarea></label><label>Folders, one absolute path per line<textarea name="roots" placeholder="C:\\Users\\you\\project">${esc(bot?.roots?.join('\n'))}</textarea><small>Leave empty for unrestricted host access. Assigned folders apply to file tools and shell commands.</small></label>${checkbox('enableMultitasking', 'Enable Multitasking', multitaskingDescription, !!bot?.enableMultitasking)}<small>${esc(multitaskingDescription)}</small><h3>Plugins</h3>${pluginCheckboxes}<button class="primary">Save bot</button></form>`);
   q<HTMLFormElement>('form', el).onsubmit = e => { e.preventDefault(); action(async () => { const f = new FormData(q('form', el) as HTMLFormElement), overrides: Record<string, boolean> = {}; for (const input of el.querySelectorAll<HTMLInputElement>('[name^="plugin:"]')) overrides[input.name.slice(7)] = input.checked; await api('/bots', 'POST', { id: bot?.id || '', handle: f.get('handle'), name: f.get('name'), prompt: f.get('prompt'), roots: String(f.get('roots')).split('\n').map(v => v.trim()).filter(Boolean), plugins: overrides, enableMultitasking: f.has('enableMultitasking'), revision: bot?.revision || 0 }); el.close(); await refresh(); settings('bots', node); })(); };
 }
 function modelSettings(root: HTMLElement, cloud: boolean, selectModel = true) {
