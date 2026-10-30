@@ -256,10 +256,26 @@ func (s *Server) executeSCM(ctx context.Context, botID string, request scmexec.R
 	result, err := s.Process.Run(ctx, broker.ProcessRequest{SandboxSession: "source-control:" + id, OutputFileArgument: captureArgument, BotID: bot.ID, Roots: roots, Executable: binary, Args: args, Directory: request.WorkingDirectory, Input: string(request.Input), Environment: env, Toolchains: toolchains, Internet: boolean(config, "internet"), PrivateNetwork: boolean(config, "privateNetwork"), SeparateOutput: true, OutputLimit: request.OutputLimit, TimeoutSeconds: 300}, nil)
 	filter := &secretFilter{secret: secret}
 	out = scmexec.Result{Stdout: []byte(result.Stdout), Stderr: []byte(filter.redact(result.Stderr)), ExitCode: int(result.ExitCode), StdoutTruncated: result.Truncated}
+	if out.ExitCode != 0 && id == "git" {
+		out.Stderr = []byte(gitNetworkFailureDiagnostic(config, string(out.Stderr)))
+	}
 	if err != nil {
 		return out, errors.New(filter.redact(err.Error()))
 	}
 	return out, nil
+}
+
+func gitNetworkFailureDiagnostic(config map[string]any, message string) string {
+	if boolean(config, "internet") || boolean(config, "privateNetwork") {
+		return message
+	}
+	lower := strings.ToLower(message)
+	for _, failure := range []string{"could not resolve host", "could not resolve proxy", "could not resolve hostname", "failed to connect", "couldn't connect to server", "network is unreachable"} {
+		if strings.Contains(lower, failure) {
+			return "Git network access is disabled. Open Settings → Git and enable Internet access for GitHub or other public remotes, or private-network access for a LAN server. Then retry the operation.\n\n" + message
+		}
+	}
+	return message
 }
 
 func p4CredentialKey(server, user string) string {
