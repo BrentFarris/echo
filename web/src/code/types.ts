@@ -1,3 +1,4 @@
+export type Registration = {pending?: boolean; diagnostic?: string; operationId?: string};
 export type FileRef = { rootId: string; path: string };
 
 
@@ -10,6 +11,7 @@ export type WorkspaceRoot = {
 };
 
 export type FsEntry = {
+  registration?: Registration;
   ref: FileRef;
   name: string;
   hostPath: string;
@@ -22,6 +24,7 @@ export type FsEntry = {
 };
 
 export type FileSnapshot = {
+  registration?: Registration;
   ref: FileRef;
   hostPath: string;
   content: string;
@@ -34,6 +37,7 @@ export type FileSnapshot = {
 };
 
 export type TrashItem = {
+  registration?: Registration;
   id: string;
   workspaceId: string;
   ref: FileRef;
@@ -111,6 +115,7 @@ export type TextReplaceTarget = {
 };
 
 export type TextReplaceUpdate = {
+  registration?: Registration;
   ref: FileRef;
   revision: string;
   size: number;
@@ -131,7 +136,8 @@ export type MarkdownViewState = {
 };
 
 export type PersistedTab = MarkdownViewState & {
-  kind?: "file" | "media";
+  kind?: "file" | "media" | "diff";
+  diff?: {repository: import("./sourceControlTypes").SourceControlRepository; target: import("./sourceControlTypes").SourceControlDiffRequest; originalContent?: string};
   id: string;
   ref: FileRef | null;
   title: string;

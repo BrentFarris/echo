@@ -112,3 +112,29 @@ Physical-device checks are required before claiming verified Android/iOS backgro
 Run `go test ./internal/server -run 'TestInline' -count=1`, `go test ./...`, `npm test`, and `npm run build` (npm commands in `web`). Rebuild `cmd/browser-fixture` and `cmd/mock-model`, then run `npm run test:e2e -- inline-chat.spec.ts editor.spec.ts echo.spec.ts swarm.spec.ts`. The Go and browser fixtures need permission to use local loopback sockets.
 
 Inline tests cover selected-bot instructions and folder scope, model/thinking/temperature forwarding, read-only enforcement, candidate reads, atomic edits, Unicode/CRLF, authentication, provider permissions, queue cancellation, multitasking, revocation and shutdown. Browser coverage exercises references, successive previews, rejection, acceptance, undo, explicit saving, stale regeneration, untitled files, per-bot preferences, tab/window lifetime, stopping, reload cleanup, remote ownership, popup keyboard access and viewport positioning. The tests save light/dark review and model-popup screenshots for visual review.
+
+
+## Monaco Source Control acceptance
+
+The automated source-control fixtures use disposable repositories and never stage, revert, or commit the developer checkout. Run:
+
+- `go test ./internal/sourcecontrol/... ./internal/gitservice ./internal/scmexec ./internal/broker ./internal/editorfs ./internal/server`
+- With `ECHO2_NATIVE_TESTS=1`, `go test ./internal/server -run '^(TestEditorSourceControlNative|TestNativePerforceDepot)' -count=1 -v`.
+- From `web`, `npm test`, `npm run check`, and `npm run build`.
+- Build the existing `browser-fixture` and `mock-model` executables, then run `npx playwright test e2e/source-control.spec.ts` from `web`.
+
+Native Git acceptance exercises nested discovery, filenames with spaces, index/working baselines, isolated hunk staging, stale-token rejection, unstaging, required revert confirmation, index-preserving revert, and path escape rejection. Native Fossil acceptance checks missing versus untracked sections and native add/remove registration. Pure hunk tests cover encoding/line-ending boundaries. The P4 command fixture checks first-discovery tracking, checkout failure stopping writes, checkout ordering, pending registration surviving restart, and remembered disablement. Native P4 tests require `p4` and `p4d`; their absence is an explicit skip, not successful native P4 acceptance.
+
+The browser scenario verifies Shift range selection, Ctrl toggle selection, selected-row versus unselected-row actions, section unstaging, commit-draft retention, split diffs, synchronized horizontal movement with unequal line widths, undoable buffer-only revert, saved disk content, and diff tab recovery. Provider errors remain visible in the sidebar. Repository history and Fossil protected snapshot controls must be absent; native stash review remains available independently.
+
+The named-bot browser fixture holds discovery pending to verify the header/loading state appears immediately and repeated clicks share one request. Frontend regressions cover discovery errors/cancellation and immediate provider-group updates after staging/unstaging. On Windows, `ECHO2_NATIVE_TESTS=1 go test ./internal/broker -run TestNativeSCMSandboxSessionScopeAndCleanup -count=1 -v` verifies sandbox reuse, isolation after root changes, cancellation before cleanup, and removal of inherited grants.
+
+Windows startup recovery coverage (`ECHO2_NATIVE_TESTS=1 go test ./internal/broker -run TestNativeRecovery -count=1 -v`) checks batching multiple interrupted identities into one traversal, case-insensitive path deduplication, inherited grant removal, unrelated grant and file preservation, partial-failure journal retention, and successful retry. These tests use disposable folders and AppContainer profiles.
+
+Fossil native acceptance configures only the checkout as the bot root, with a differently named repository database in its parent. It exercises discovery, missing/untracked status, add/remove, Fossil UI, and a commit writing the sibling database. `TestFossilRepositoryAccessScope` verifies absolute/relative checkout references, unchanged file-tool boundaries, rejection of other database paths, and revoked checkout access.
+
+`ECHO2_NATIVE_TESTS=1 go test ./internal/server -run TestNativeFossilDiffCommandCost -count=1 -v` measures diff loading in a disposable 4,000-file checkout with a sibling database and no status cache. It asserts that each ordinary working diff runs only `finfo`, returns the baseline and latest working content, and offers buffer-only hunk revert. Timings are logged rather than asserted to avoid machine-speed-dependent failures.
+
+`TestNativeGitDiffCommandCost` similarly measures working/staged Git diffs and asserts one index metadata read per diff, with at most five commands for an ordinary working diff and seven for a staged diff. Native checks cover index versus HEAD baselines, filtered CRLF/BOM content without a final newline, renamed-file baselines, and binary/oversized fallbacks. Run alongside `TestEditorSourceControlNativeGit` for hunk staging and stale-token rejection.
+
+Before release, exercise native P4 with a disposable server/client for per-folder connections, multi-client ambiguity, changelist retention, reconcile previews, backup/Trash recovery, and connection changes. Also exercise remote-instance reconnects and native network operations against fixture remotes. The Fossil UI link is a read-only native view; it does not expose administrative writes.

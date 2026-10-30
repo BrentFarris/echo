@@ -27,8 +27,12 @@ import (
 	"github.com/brent/echo/internal/development"
 	"github.com/brent/echo/internal/domain"
 	"github.com/brent/echo/internal/editorfs"
+	"github.com/brent/echo/internal/gitservice"
 	"github.com/brent/echo/internal/model"
 	"github.com/brent/echo/internal/plugins"
+	"github.com/brent/echo/internal/sourcecontrol"
+	"github.com/brent/echo/internal/sourcecontrol/fossil"
+	"github.com/brent/echo/internal/sourcecontrol/p4"
 	"github.com/brent/echo/internal/store"
 	"github.com/brent/echo/internal/swarm"
 	"github.com/brent/echo/internal/terminal"
@@ -36,6 +40,10 @@ import (
 )
 
 type Server struct {
+	Fossil          *fossil.Provider
+	SourceControl   *sourcecontrol.Service
+	Git             *gitservice.Service
+	P4              *p4.Provider
 	Terminal        *terminal.Service
 	terminalMu      sync.Mutex
 	terminalClients map[string]map[chan terminal.Event]bool
@@ -53,6 +61,7 @@ type Server struct {
 	swarmCache        map[string]swarmCachedState
 	swarmRefresh      chan struct{}
 	closeOnce         sync.Once
+	ready             atomic.Bool // Publishes fully initialized services to early Swarm requests.
 	swarmMu           sync.Mutex
 	swarmWG           sync.WaitGroup
 	swarmWorkers      map[string]*swarmWorker
@@ -211,6 +220,7 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 		return nil, e
 	}
 	s.initEditor()
+	s.initSourceControl()
 	s.initTerminal()
 	s.startNotifications()
 	s.Development.StartAutomaticChecks()
@@ -226,6 +236,7 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 			}
 		}
 	}()
+	s.ready.Store(true)
 	return s, nil
 }
 func (s *Server) Close() {
@@ -233,6 +244,7 @@ func (s *Server) Close() {
 }
 
 func (s *Server) close() {
+	s.ready.Store(false)
 	s.cancel()
 	if s.Terminal != nil {
 		_ = s.Terminal.Shutdown(context.Background())
@@ -256,6 +268,12 @@ func (s *Server) close() {
 	}
 	if s.Swarm != nil {
 		s.Swarm.Close()
+	}
+	if s.SourceControl != nil {
+		s.SourceControl.Close()
+	}
+	if s.Process != nil {
+		_ = s.Process.CloseSessions("")
 	}
 	if s.EditorWatch != nil {
 		s.EditorWatch.Close()
@@ -343,6 +361,12 @@ func (s *Server) stopChat(id string) func() {
 	return func() { s.mu.Lock(); s.closingChats[id]--; s.mu.Unlock() }
 }
 func (s *Server) stopBot(id string) func() {
+	if s.SourceControl != nil {
+		s.SourceControl.StopWorkspaceProcesses(id)
+	}
+	if s.Process != nil {
+		_ = s.Process.CloseSessions(id)
+	}
 	s.mu.Lock()
 	s.revoking[id]++
 	ds := []*dispatch{}

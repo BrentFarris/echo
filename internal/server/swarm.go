@@ -94,6 +94,16 @@ func (s *Server) swarmPassword(ctx context.Context, password, address string) er
 // The peer receives a target-local API, never a proxy with this host's other
 // peer credentials. In particular /state is local and /swarm/state is blocked.
 func (s *Server) serveSwarmOwner(w http.ResponseWriter, r *http.Request) {
+	// Swarm reconnects while New is still recovering state. Gate requests
+	// before constructing routes or reading any partially initialized service.
+	if !s.ready.Load() {
+		w.Header().Set("Retry-After", "1")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Echo is starting up or shutting down; retry shortly"})
+		return
+	}
 	caller, ok := swarm.Caller(r.Context())
 	if !ok {
 		http.Error(w, "Swarm principal required", 401)

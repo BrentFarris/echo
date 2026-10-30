@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"slices"
+	"time"
 
 	"github.com/brent/echo/internal/domain"
 )
@@ -72,8 +74,17 @@ func (s *Server) updateBot(b domain.Bot, scope *domain.ExecutionScope) (domain.B
 	finish := s.stopBot(b.ID)
 	defer finish()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	b, err = s.saveBotLocked(b)
 	s.revoking[b.ID]--
+	s.mu.Unlock()
+	if err == nil && s.SourceControl != nil {
+		s.EditorFS.Invalidate(b.ID)
+		s.EditorWatch.Refresh(b.ID)
+		ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+		defer cancel()
+		// Each provider resets even when another provider is unavailable.
+		_ = s.SourceControl.ResetWorkspace(ctx, b.ID)
+		s.editorBroadcast(b.ID, map[string]any{"type": "source_control_resync_required", "botId": b.ID})
+	}
 	return b, err
 }

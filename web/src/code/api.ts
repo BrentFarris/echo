@@ -1,3 +1,4 @@
+import { toast } from './ui';
 import { InstanceClient, route, entryNode } from '../instances';
 type Options = { nodeId?: string; method?: string; body?: unknown; query?: Record<string, string>; signal?: AbortSignal; keepalive?: boolean };
 
@@ -23,5 +24,11 @@ export async function api(path: string, options: Options = {}): Promise<any> {
     body: options.body === undefined ? undefined : JSON.stringify(options.body) });
   const payload = await response.json();
   if (!response.ok) throw Object.assign(new Error(payload.error || `HTTP ${response.status}`), { status: response.status, payload });
+  if (options.method && options.method !== 'GET') {
+    const values = [payload, payload?.file, payload?.entry, ...(payload?.updated || []), ...(payload?.items || [])];
+    const diagnostics = new Set<string>();
+    for (const value of values) if(value?.registration?.pending) diagnostics.add(value.registration.diagnostic || 'File changed; P4 registration is pending. Retry from Source Control.');
+    for (const diagnostic of diagnostics) toast(diagnostic, {sticky:true});
+  }
   return payload;
 }

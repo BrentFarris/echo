@@ -26,7 +26,12 @@ func (s *Server) editorBot(id string) (domain.Bot, error) {
 func (s *Server) initEditor() {
 	s.editorClients = map[string]map[chan any]bool{}
 	s.EditorFS = editorfs.New(s.editorBot, s.Dir)
-	s.EditorWatch = editorfs.NewWatchManager(s.EditorFS, func(event editorfs.WatchEvent) { s.editorBroadcast(event.BotID, event) })
+	s.EditorWatch = editorfs.NewWatchManager(s.EditorFS, func(event editorfs.WatchEvent) {
+		s.editorBroadcast(event.BotID, event)
+		if s.SourceControl != nil {
+			go s.SourceControl.HandleFileEvent(event)
+		}
+	})
 }
 func (s *Server) editorBroadcast(botID string, event any) {
 	s.editorMu.Lock()
@@ -49,6 +54,7 @@ func (s *Server) editorBroadcast(botID string, event any) {
 	}
 }
 func (s *Server) editorRoutes(mux *http.ServeMux) {
+	s.sourceControlEditorRoutes(mux)
 	mux.HandleFunc("POST /api/v1/plugins/monaco-editor/bots/{botId}/inline-chat", s.editorGuard(s.handleInlineChat))
 	routes := map[string]http.HandlerFunc{
 		"GET roots": s.handleFSRoots, "GET entries": s.handleFSEntries, "GET file": s.handleFSReadFile,
@@ -133,15 +139,30 @@ func (s *Server) editorEvents(w http.ResponseWriter, r *http.Request) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		scmSubscribed := false
+		defer func() {
+			if scmSubscribed {
+				s.SourceControl.Unsubscribe(id)
+			}
+		}()
 		conn.SetReadLimit(64 << 10)
 		for {
 			var msg struct {
-				Refs []editorfs.FileRef `json:"refs"`
+				Refs          []editorfs.FileRef `json:"refs"`
+				SourceControl bool               `json:"sourceControl"`
 			}
 			if conn.ReadJSON(&msg) != nil {
 				return
 			}
 			s.EditorWatch.AddReferences(id, msg.Refs)
+			if s.SourceControl != nil && msg.SourceControl != scmSubscribed {
+				if msg.SourceControl {
+					scmSubscribed = s.SourceControl.Subscribe(r.Context(), id) == nil
+				} else {
+					s.SourceControl.Unsubscribe(id)
+					scmSubscribed = false
+				}
+			}
 		}
 	}()
 	ticker := time.NewTicker(time.Second)

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/brent/echo/internal/mutation"
 	"io"
 	"os"
 	"path"
@@ -110,7 +111,8 @@ func (s *Service) SaveContext(ctx context.Context, botID string, request SaveReq
 	write := func(path string, data []byte, mode os.FileMode) error {
 		return s.write(botID, path, data, mode, request.CreateOnly)
 	}
-	writeErr := s.mutateContext(ctx, Operation{BotID: botID, Path: resolved, Validate: func() error {
+	var registration mutation.Result
+	writeErr := s.mutateContext(ctx, Operation{BotID: botID, Path: resolved, Registration: &registration, Origin: "editor", Validate: func() error {
 		if statErr == nil {
 			current, err := s.readFile(botID, resolved)
 			if err != nil {
@@ -140,6 +142,7 @@ func (s *Service) SaveContext(ctx context.Context, botID string, request SaveReq
 	}
 	s.index.ApplyChanges(botID, []Change{{Op: op, Ref: request.Ref}})
 	snapshot, err := s.Read(botID, request.Ref)
+	snapshot.Registration = registration
 	return snapshot, err
 }
 
@@ -291,7 +294,8 @@ func (s *Service) moveEntry(ctx context.Context, botID string, ref, destinationP
 	} else if !os.IsNotExist(statErr) {
 		return Entry{}, statErr
 	}
-	moveErr := s.mutateContext(ctx, Operation{BotID: botID, Path: source, Destination: destination, Validate: func() error {
+	var registration mutation.Result
+	moveErr := s.mutateContext(ctx, Operation{BotID: botID, Path: source, Destination: destination, Kind: "move", Origin: "explorer", Registration: &registration, Validate: func() error {
 		current, err := s.lstat(botID, source)
 		if err != nil {
 			return err
@@ -314,6 +318,7 @@ func (s *Service) moveEntry(ctx context.Context, botID string, ref, destinationP
 		{Op: "create", Ref: newRef},
 	})
 	entry, err := s.entryFor(botID, newRef)
+	entry.Registration = registration
 	return entry, err
 }
 

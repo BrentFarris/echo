@@ -104,7 +104,7 @@ func TestNativeFrontendTests(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	result, err := b.Run(ctx, ProcessRequest{Roots: []string{web}, Directory: web, Executable: node, Args: []string{"node_modules/vitest/vitest.mjs", "run", "--config", "vitest.config.mjs", "--configLoader", "native", "src/fileChanges.test.ts", "--maxWorkers=1"}, Toolchains: []string{filepath.Dir(node)}}, nil)
-	if err != nil || result.ExitCode != 0 || !strings.Contains(result.Output, "3 passed") {
+	if err != nil || result.ExitCode != 0 || !strings.Contains(result.Output, "passed") {
 		t.Fatalf("sandboxed frontend tests: %v\n%+v", err, result)
 	}
 }

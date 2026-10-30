@@ -119,6 +119,7 @@ export function promptDialog(options: {
   label: string;
   initial?: string;
   placeholder?: string;
+  type?: "text" | "password";
   confirmLabel?: string;
   required?: boolean;
 }): Promise<string | null> {
@@ -129,7 +130,7 @@ export function promptDialog(options: {
     overlay.innerHTML = `
       <form class="code-modal code-prompt-modal" role="dialog" aria-modal="true">
         <h2>${escapeHTML(options.title)}</h2>
-        <label>${escapeHTML(options.label)}<input name="value" value="${escapeHTML(options.initial || "")}" placeholder="${escapeHTML(options.placeholder || "")}" ${options.required === false ? "" : "required"}></label>
+        <label>${escapeHTML(options.label)}<input name="value" type="${options.type || "text"}" autocomplete="off" value="${escapeHTML(options.initial || "")}" placeholder="${escapeHTML(options.placeholder || "")}" ${options.required === false ? "" : "required"}></label>
         <p class="code-modal-error" data-prompt-error></p>
         <div class="code-modal-actions">
           <button type="button" data-cancel>Cancel</button>

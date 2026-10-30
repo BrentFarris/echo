@@ -13,12 +13,14 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf16"
 	"unsafe"
@@ -31,6 +33,10 @@ var createProfile = userenv.NewProc("CreateAppContainerProfile")
 var deriveProfile = userenv.NewProc("DeriveAppContainerSidFromAppContainerName")
 var deleteProfile = userenv.NewProc("DeleteAppContainerProfile")
 var freeSID = windows.NewLazySystemDLL("advapi32.dll").NewProc("FreeSid")
+
+// ACL updates are read/modify/write operations. Concurrent VCS readers may
+// share runtime/workspace paths, and must not erase one another's grants.
+var processAccessMu sync.Mutex
 
 type securityCapabilities struct {
 	SID          *windows.SID
@@ -52,6 +58,8 @@ func profile(name string) (*windows.SID, error) {
 	return sid, nil
 }
 func changeAccess(path string, sid *windows.SID, remove bool, readOnly bool) error {
+	processAccessMu.Lock()
+	defer processAccessMu.Unlock()
 	sd, e := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if e != nil {
 		return e
@@ -102,19 +110,10 @@ func changeAccess(path string, sid *windows.SID, remove bool, readOnly bool) err
 	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, merged, nil)
 }
 func (b *ProcessBroker) cleanup(j aclJournal) error {
-	sid, e := windows.StringToSid(j.SID)
-	if e != nil {
-		return e
-	}
-	var failures []string
-	for _, path := range j.Paths {
-		if e = changeAccess(path, sid, true, false); e != nil && !os.IsNotExist(e) {
-			failures = append(failures, path+": "+e.Error())
-		}
-	}
-	if len(failures) > 0 {
-		return fmt.Errorf("sandbox ACL cleanup pending: %s", strings.Join(failures, "; "))
-	}
+	return b.cleanupJournals([]aclJournal{j}, revokeAccessBatch)
+}
+
+func (b *ProcessBroker) removeProfileJournal(j aclJournal) error {
 	p, _ := windows.UTF16PtrFromString(j.Name)
 	hr, _, _ := deleteProfile.Call(uintptr(unsafe.Pointer(p)))
 	if hr != 0 && uint32(hr) != 0x80070002 {
@@ -194,6 +193,7 @@ func (b *ProcessBroker) Recover() error {
 	if e != nil {
 		return e
 	}
+	var journals []aclJournal
 	for _, path := range files {
 		data, e := os.ReadFile(path)
 		if e != nil {
@@ -203,11 +203,20 @@ func (b *ProcessBroker) Recover() error {
 		if e = json.Unmarshal(data, &j); e != nil {
 			return e
 		}
-		if e = b.cleanup(j); e != nil {
-			return e
-		}
+		journals = append(journals, j)
 	}
-	return nil
+	if len(journals) == 0 {
+		return nil
+	}
+	log.Printf("Recovering native sandbox permissions from %d interrupted command records", len(journals))
+	e = b.cleanupJournals(journals, func(path string, sids []*windows.SID) error {
+		log.Printf("Recovering %d sandbox grants on %s", len(sids), path)
+		return revokeAccessBatch(path, sids)
+	})
+	if e == nil {
+		log.Print("Native sandbox permission recovery complete")
+	}
+	return e
 }
 
 func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(string)) (result ProcessResult, err error) {
@@ -239,47 +248,86 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	var sid *windows.SID
 	toolAliases := map[string]string{}
 	if len(r.Roots) > 0 {
-		sid, err = profile(name)
-		if err != nil {
-			return result, err
-		}
-		defer freeSID.Call(uintptr(unsafe.Pointer(sid)))
-		j := aclJournal{Name: name, SID: sid.String()}
-		defer func() {
-			if e := b.cleanup(j); e != nil && err == nil {
-				err = e
-			}
-		}()
-		for _, p := range append(append(append([]string{}, r.Roots...), scratch), r.Toolchains...) {
-			j.Paths = append(j.Paths, p)
-			if err = b.journal(j); err != nil {
+		if r.SandboxSession != "" {
+			var session *processSession
+			var release func()
+			session, release, err = b.acquireProcessSession(ctx, r)
+			if err != nil {
 				return result, err
 			}
-			readOnly := false
-			for _, t := range r.Toolchains {
-				if p == t {
-					readOnly = true
-				}
+			defer release()
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(ctx)
+			defer cancel()
+			stop := context.AfterFunc(session.ctx, cancel)
+			defer stop()
+			sid, err = windows.StringToSid(session.journal.SID)
+			if err != nil {
+				return result, err
 			}
-			if err = changeAccess(p, sid, false, readOnly); err != nil {
-				if !readOnly || err != windows.ERROR_ACCESS_DENIED {
-					return result, fmt.Errorf("grant AppContainer access to %s: %w", p, err)
+			toolAliases = session.aliases
+			program = sessionExecutable(program, toolAliases)
+			if err = os.MkdirAll(filepath.Join(scratch, "Packages", session.journal.Name, "AC", "Temp"), 0700); err != nil {
+				return result, err
+			}
+			journal := session.journal
+			journal.Paths = append(append([]string{}, journal.Paths...), scratch)
+			if err = b.journal(journal); err != nil {
+				return result, err
+			}
+			defer func() {
+				if e := os.RemoveAll(scratch); e != nil {
+					err = errors.Join(err, e)
+					return
 				}
-				mirror, e := b.mirrorToolchain(ctx, p)
-				if e != nil {
-					return result, e
+				err = errors.Join(err, b.journal(session.journal))
+			}()
+			if err = changeAccess(scratch, sid, false, false); err != nil {
+				return result, err
+			}
+		} else {
+			sid, err = profile(name)
+			if err != nil {
+				return result, err
+			}
+			defer freeSID.Call(uintptr(unsafe.Pointer(sid)))
+			j := aclJournal{Name: name, SID: sid.String()}
+			defer func() {
+				if e := b.cleanup(j); e != nil && err == nil {
+					err = e
 				}
-				j.Paths = append(j.Paths, mirror)
+			}()
+			for _, p := range append(append(append([]string{}, r.Roots...), scratch), r.Toolchains...) {
+				j.Paths = append(j.Paths, p)
 				if err = b.journal(j); err != nil {
 					return result, err
 				}
-				if err = changeAccess(mirror, sid, false, true); err != nil {
-					return result, err
+				readOnly := false
+				for _, t := range r.Toolchains {
+					if p == t {
+						readOnly = true
+					}
 				}
-				toolAliases[p] = mirror
-				if Within(p, program) {
-					rel, _ := filepath.Rel(p, program)
-					program = filepath.Join(mirror, rel)
+				if err = changeAccess(p, sid, false, readOnly); err != nil {
+					if !readOnly || err != windows.ERROR_ACCESS_DENIED {
+						return result, fmt.Errorf("grant AppContainer access to %s: %w", p, err)
+					}
+					mirror, e := b.mirrorToolchain(ctx, p)
+					if e != nil {
+						return result, e
+					}
+					j.Paths = append(j.Paths, mirror)
+					if err = b.journal(j); err != nil {
+						return result, err
+					}
+					if err = changeAccess(mirror, sid, false, true); err != nil {
+						return result, err
+					}
+					toolAliases[p] = mirror
+					if Within(p, program) {
+						rel, _ := filepath.Rel(p, program)
+						program = filepath.Join(mirror, rel)
+					}
 				}
 			}
 		}
@@ -319,6 +367,12 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	}
 	defer read.Close()
 	defer write.Close()
+	errorRead, errorWrite, err := os.Pipe()
+	if err != nil {
+		return result, err
+	}
+	defer errorRead.Close()
+	defer errorWrite.Close()
 	nul, err := os.Open(os.DevNull)
 	if err != nil {
 		return result, err
@@ -336,7 +390,7 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 		}
 		defer nul.Close()
 	}
-	handles := []windows.Handle{windows.Handle(write.Fd()), windows.Handle(nul.Fd())}
+	handles := []windows.Handle{windows.Handle(write.Fd()), windows.Handle(nul.Fd()), windows.Handle(errorWrite.Fd())}
 	for _, h := range handles {
 		if err = windows.SetHandleInformation(h, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
 			return result, err
@@ -345,7 +399,7 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	if err = attrs.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&handles[0]), uintptr(len(handles))*unsafe.Sizeof(handles[0])); err != nil {
 		return result, err
 	}
-	si := windows.StartupInfoEx{StartupInfo: windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfoEx{})), Flags: windows.STARTF_USESTDHANDLES, StdInput: handles[1], StdOutput: handles[0], StdErr: handles[0]}, ProcThreadAttributeList: attrs.List()}
+	si := windows.StartupInfoEx{StartupInfo: windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfoEx{})), Flags: windows.STARTF_USESTDHANDLES, StdInput: handles[1], StdOutput: handles[0], StdErr: handles[2]}, ProcThreadAttributeList: attrs.List()}
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return result, err
@@ -357,7 +411,7 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 		return result, err
 	}
 
-	arguments := r.Args
+	arguments := captureArguments(r, scratch)
 	if r.Executable == "" {
 		r.Command = "New-PSDrive -Name EchoWorkspace -PSProvider FileSystem -Root '" + strings.ReplaceAll(r.Directory, "'", "''") + "' -Scope Global | Out-Null; Set-Location EchoWorkspace:; " + r.Command
 		u := utf16.Encode([]rune("$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; " + r.Command))
@@ -443,35 +497,11 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 		return result, err
 	}
 	write.Close()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		buf := make([]byte, 4096)
-		for {
-			n, e := read.Read(buf)
-			if n > 0 {
-				s := string(buf[:n])
-				if len(result.Output) < 1<<20 {
-					left := (1 << 20) - len(result.Output)
-					if len(s) > left {
-						s = s[:left]
-						result.Truncated = true
-					}
-					result.Output += s
-					if emit != nil {
-						emit(s)
-					}
-				} else {
-					result.Truncated = true
-				}
-			}
-			if e != nil {
-				if e != io.EOF {
-				}
-				return
-			}
-		}
-	}()
+	errorWrite.Close()
+	output := newProcessOutput(r, emit)
+	done, errorDone := make(chan struct{}), make(chan struct{})
+	go func() { defer close(done); _, _ = io.Copy(processStream{output: output}, read) }()
+	go func() { defer close(errorDone); _, _ = io.Copy(processStream{output: output, stderr: true}, errorRead) }()
 	processDone := make(chan struct{})
 	go func() { windows.WaitForSingleObject(pi.Process, windows.INFINITE); close(processDone) }()
 	select {
@@ -485,7 +515,8 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 		err = errors.Join(ctx.Err(), err)
 	case <-processDone:
 	}
-	windows.GetExitCodeProcess(pi.Process, &result.ExitCode)
+	var exitCode uint32
+	windows.GetExitCodeProcess(pi.Process, &exitCode)
 	// Terminate background descendants before awaiting their inherited pipe handles.
 	if e := windows.TerminateJobObject(job, 0); e != nil {
 		err = errors.Join(err, fmt.Errorf("terminate command descendants: %w", e))
@@ -493,6 +524,17 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	if e := drainProcessOutput(read, done, 2*time.Second); e != nil {
 		result.Truncated = true
 		err = errors.Join(err, e)
+	}
+	if e := drainProcessOutput(errorRead, errorDone, 2*time.Second); e != nil {
+		err = errors.Join(err, e)
+	}
+	result = output.snapshot()
+	result.ExitCode = exitCode
+	if err != nil {
+		result.Truncated = true
+	}
+	if err == nil && result.ExitCode == 0 {
+		err = captureFileResult(r, scratch, &result)
 	}
 	return result, err
 }

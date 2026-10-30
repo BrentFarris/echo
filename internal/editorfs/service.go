@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"github.com/brent/echo/internal/broker"
 	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/mutation"
 	"os"
 	"path"
 	"path/filepath"
@@ -97,27 +98,29 @@ type Root struct {
 }
 
 type Entry struct {
-	Ref           FileRef `json:"ref"`
-	Name          string  `json:"name"`
-	HostPath      string  `json:"hostPath"`
-	Kind          string  `json:"kind"`
-	IsSymlink     bool    `json:"isSymlink"`
-	ReadOnly      bool    `json:"readOnly,omitempty"`
-	BlockedReason string  `json:"blockedReason,omitempty"`
-	Size          int64   `json:"size,omitempty"`
-	ModifiedAt    string  `json:"modifiedAt"`
+	Registration  mutation.Result `json:"registration,omitempty"`
+	Ref           FileRef         `json:"ref"`
+	Name          string          `json:"name"`
+	HostPath      string          `json:"hostPath"`
+	Kind          string          `json:"kind"`
+	IsSymlink     bool            `json:"isSymlink"`
+	ReadOnly      bool            `json:"readOnly,omitempty"`
+	BlockedReason string          `json:"blockedReason,omitempty"`
+	Size          int64           `json:"size,omitempty"`
+	ModifiedAt    string          `json:"modifiedAt"`
 }
 
 type FileSnapshot struct {
-	Ref        FileRef `json:"ref"`
-	HostPath   string  `json:"hostPath"`
-	Content    string  `json:"content"`
-	Revision   string  `json:"revision"`
-	Size       int64   `json:"size"`
-	ModifiedAt string  `json:"modifiedAt"`
-	Encoding   string  `json:"encoding"`
-	EOL        string  `json:"eol"`
-	HasBOM     bool    `json:"hasBom"`
+	Registration mutation.Result `json:"registration,omitempty"`
+	Ref          FileRef         `json:"ref"`
+	HostPath     string          `json:"hostPath"`
+	Content      string          `json:"content"`
+	Revision     string          `json:"revision"`
+	Size         int64           `json:"size"`
+	ModifiedAt   string          `json:"modifiedAt"`
+	Encoding     string          `json:"encoding"`
+	EOL          string          `json:"eol"`
+	HasBOM       bool            `json:"hasBom"`
 }
 
 type SaveRequest struct {
@@ -149,12 +152,15 @@ type referencedPathLock struct {
 
 // Service owns editor filesystem operations and per-path write locks.
 type Service struct {
-	lookup   func(string) (domain.Bot, error)
-	private  string
-	dataPath string
-	locksMu  sync.Mutex
-	locks    map[string]*referencedPathLock
-	index    *Index
+	coordinator           mutation.Coordinator
+	metadataMu            sync.RWMutex
+	sourceControlMetadata map[string]map[string]map[string]bool
+	lookup                func(string) (domain.Bot, error)
+	private               string
+	dataPath              string
+	locksMu               sync.Mutex
+	locks                 map[string]*referencedPathLock
+	index                 *Index
 }
 
 func New(lookup func(string) (domain.Bot, error), private string) *Service {
@@ -164,6 +170,8 @@ func New(lookup func(string) (domain.Bot, error), private string) *Service {
 }
 
 type Operation struct {
+	Kind, Origin, RecoveryID string
+	Registration             *mutation.Result
 	BotID, Path, Destination string
 	Validate                 func() error
 }
@@ -188,6 +196,20 @@ func (s *Service) mutateContext(ctx context.Context, op Operation, apply func() 
 			return err
 		}
 	}
+	if s.coordinator != nil {
+		kind := op.Kind
+		if kind == "" {
+			kind = "edit"
+			if _, err := s.stat(op.BotID, op.Path); os.IsNotExist(err) {
+				kind = "create"
+			}
+		}
+		result, err := s.coordinator.Run(ctx, mutation.Operation{WorkspaceID: op.BotID, Kind: kind, Path: op.Path, Destination: op.Destination, Origin: op.Origin, RecoveryID: op.RecoveryID, Validate: op.Validate}, apply)
+		if op.Registration != nil {
+			*op.Registration = result
+		}
+		return err
+	}
 	return apply()
 }
 
@@ -202,11 +224,82 @@ func (s *Service) RefreshWorkspace(botID string) {
 	s.index.Invalidate(botID)
 }
 
-func (s *Service) isProtectedMetadata(_ string, ref FileRef) bool {
-	return IsProtectedWorkspaceMetadataPath(ref.Path)
+func (s *Service) SetSourceControlMetadata(workspaceID, providerID string, refs []FileRef) {
+	entries := make(map[string]bool, len(refs))
+	for _, ref := range refs {
+		if strings.TrimSpace(ref.RootID) == "" || strings.TrimSpace(ref.Path) == "" {
+			continue
+		}
+		entries[sourceControlMetadataKey(ref)] = true
+	}
+	s.metadataMu.Lock()
+	if s.sourceControlMetadata == nil {
+		s.sourceControlMetadata = make(map[string]map[string]map[string]bool)
+	}
+	providers := s.sourceControlMetadata[workspaceID]
+	if providers == nil {
+		providers = make(map[string]map[string]bool)
+		s.sourceControlMetadata[workspaceID] = providers
+	}
+	providers[providerID] = entries
+	s.metadataMu.Unlock()
+	s.index.Invalidate(workspaceID)
 }
-func (s *Service) wouldAffectProtectedMetadata(botID string, ref FileRef) bool {
-	return s.isProtectedMetadata(botID, ref)
+
+func (s *Service) RemoveSourceControlMetadata(workspaceID, providerID string) {
+	s.metadataMu.Lock()
+	if providers := s.sourceControlMetadata[workspaceID]; providers != nil {
+		delete(providers, providerID)
+		if len(providers) == 0 {
+			delete(s.sourceControlMetadata, workspaceID)
+		}
+	}
+	s.metadataMu.Unlock()
+	s.index.Invalidate(workspaceID)
+}
+
+func (s *Service) isProtectedMetadata(workspaceID string, ref FileRef) bool {
+	if IsProtectedWorkspaceMetadataPath(ref.Path) {
+		return true
+	}
+	key := sourceControlMetadataKey(ref)
+	s.metadataMu.RLock()
+	defer s.metadataMu.RUnlock()
+	for _, entries := range s.sourceControlMetadata[workspaceID] {
+		if entries[key] {
+			return true
+		}
+	}
+	return false
+}
+
+// wouldAffectProtectedMetadata also matches an ancestor of provider-owned
+// metadata. Directory rename, move, and trash operations must not be able to
+// carry a hidden checkout database along indirectly.
+func (s *Service) wouldAffectProtectedMetadata(workspaceID string, ref FileRef) bool {
+	if s.isProtectedMetadata(workspaceID, ref) {
+		return true
+	}
+	key := sourceControlMetadataKey(ref)
+	prefix := key + "/"
+	s.metadataMu.RLock()
+	defer s.metadataMu.RUnlock()
+	for _, entries := range s.sourceControlMetadata[workspaceID] {
+		for protected := range entries {
+			if strings.HasPrefix(protected, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sourceControlMetadataKey(ref FileRef) string {
+	value := path.Clean(strings.TrimSpace(strings.ReplaceAll(ref.Path, "\\", "/")))
+	if runtime.GOOS == "windows" {
+		value = strings.ToLower(value)
+	}
+	return ref.RootID + "\x00" + value
 }
 
 func (s *Service) Roots(botID string) ([]Root, error) {

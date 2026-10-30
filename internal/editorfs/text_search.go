@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/brent/echo/internal/mutation"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -82,13 +83,14 @@ type TextReplaceRequest struct {
 }
 
 type TextReplaceUpdate struct {
-	Ref        FileRef `json:"ref"`
-	Revision   string  `json:"revision"`
-	Size       int64   `json:"size"`
-	ModifiedAt string  `json:"modifiedAt"`
-	EOL        string  `json:"eol"`
-	HasBOM     bool    `json:"hasBom"`
-	Content    string  `json:"content,omitempty"`
+	Registration mutation.Result `json:"registration,omitempty"`
+	Ref          FileRef         `json:"ref"`
+	Revision     string          `json:"revision"`
+	Size         int64           `json:"size"`
+	ModifiedAt   string          `json:"modifiedAt"`
+	EOL          string          `json:"eol"`
+	HasBOM       bool            `json:"hasBom"`
+	Content      string          `json:"content,omitempty"`
 }
 
 type TextReplaceResponse struct {
@@ -274,7 +276,8 @@ func (s *Service) ReplaceText(ctx context.Context, botID string, request TextRep
 			}
 			return response, err
 		}
-		writeErr := s.mutateContext(ctx, Operation{BotID: botID, Path: item.path, Validate: func() error {
+		var registration mutation.Result
+		writeErr := s.mutateContext(ctx, Operation{BotID: botID, Path: item.path, Kind: "edit", Origin: "find-replace", Registration: &registration, Validate: func() error {
 			data, err := s.readFile(botID, item.path)
 			if err != nil {
 				return err
@@ -297,7 +300,7 @@ func (s *Service) ReplaceText(ctx context.Context, botID string, request TextRep
 			return response, &PartialReplaceError{Cause: fmt.Errorf("replace file: %w", writeErr), Response: response}
 		}
 		info, _ := s.stat(botID, item.path)
-		update := TextReplaceUpdate{
+		update := TextReplaceUpdate{Registration: registration,
 			Ref: item.target.Ref, Revision: contentRevision(item.data), Size: int64(len(item.data)),
 			ModifiedAt: time.Now().UTC().Format(time.RFC3339Nano), EOL: detectEOL([]byte(item.content)), HasBOM: item.hasBOM,
 		}

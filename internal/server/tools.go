@@ -237,6 +237,9 @@ func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionSc
 			return nil, e
 		}
 		e = s.Store.Delete("bots", b.ID)
+		if e == nil && s.SourceControl != nil {
+			s.SourceControl.RemoveWorkspace(b.ID)
+		}
 		s.emit("changed", "", "", "", nil)
 		return "bot deleted", e
 	case "model_list":

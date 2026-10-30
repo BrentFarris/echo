@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/brent/echo/internal/mutation"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,13 +17,14 @@ import (
 )
 
 type TrashItem struct {
-	ID        string    `json:"id"`
-	BotID     string    `json:"botId"`
-	Ref       FileRef   `json:"ref"`
-	Name      string    `json:"name"`
-	Kind      string    `json:"kind"`
-	HostPath  string    `json:"hostPath"`
-	DeletedAt time.Time `json:"deletedAt"`
+	Registration mutation.Result `json:"registration,omitempty"`
+	ID           string          `json:"id"`
+	BotID        string          `json:"botId"`
+	Ref          FileRef         `json:"ref"`
+	Name         string          `json:"name"`
+	Kind         string          `json:"kind"`
+	HostPath     string          `json:"hostPath"`
+	DeletedAt    time.Time       `json:"deletedAt"`
 }
 
 type trashMetadata struct {
@@ -77,7 +79,7 @@ func (s *Service) TrashContext(ctx context.Context, botID string, ref FileRef) (
 	if err := atomicWrite(filepath.Join(directory, "meta.json"), metadata, 0o600); err != nil {
 		return TrashItem{}, fmt.Errorf("write trash metadata: %w", err)
 	}
-	mutationErr := s.mutateContext(ctx, Operation{BotID: botID, Path: source}, func() error {
+	mutationErr := s.mutateContext(ctx, Operation{BotID: botID, Path: source, Kind: "delete", Origin: "trash", RecoveryID: id, Registration: &item.Registration}, func() error {
 		sourceRoot, name, err := s.access(botID, source)
 		if err != nil {
 			return err
@@ -160,7 +162,8 @@ func (s *Service) RestoreContext(ctx context.Context, botID, id string) (Entry, 
 	if _, err := os.Lstat(payload); err != nil {
 		return Entry{}, &Error{Code: "trash_not_found", Message: "trash payload is missing", Cause: err}
 	}
-	mutationErr := s.mutateContext(ctx, Operation{BotID: botID, Path: destination}, func() error {
+	var registration mutation.Result
+	mutationErr := s.mutateContext(ctx, Operation{BotID: botID, Path: destination, Kind: "restore", Origin: "trash", RecoveryID: id, Registration: &registration}, func() error {
 		targetRoot, name, err := s.access(botID, destination)
 		if err != nil {
 			return err
@@ -185,6 +188,7 @@ func (s *Service) RestoreContext(ctx context.Context, botID, id string) (Entry, 
 	_ = os.RemoveAll(itemDirectory)
 	s.index.ApplyChanges(botID, []Change{{Op: "create", Ref: metadata.Ref}})
 	entry, err := s.entryFor(botID, metadata.Ref)
+	entry.Registration = registration
 	return entry, err
 }
 

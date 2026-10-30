@@ -1,3 +1,10 @@
+import { SourceControlView } from './sourceControlView';
+import { loadDiff as loadSourceControlDiff, runAction as runSourceControlAction } from './sourceControlApi';
+import type { SourceControlRepository, SourceControlDiffRequest, SourceControlDiffScope, SourceControlDiffDocument, SourceControlHunkAction, SourceControlActionRequest } from './sourceControlTypes';
+import { DiffHunkGutter } from './diffHunkGutter';
+import { replacementEdit, revertBlockText, type DiffBlock } from './diffHunks';
+import { SharedDiffScroll } from './sharedDiffScroll';
+import './sourceControl.css';
 import { InlineChatController, type InlineChatTarget } from './inlineChat';
 import { closeInlineChat, inlineChatKey } from './inlineChatSession';
 import { InlineGeneration, type InlineModelContext } from './inlineGeneration';
@@ -56,7 +63,7 @@ import { attachVideoVolumeControl } from "./mediaVolume";
 type Workspace = Bot;
 
 type OpenTab = MarkdownViewState & {
-  kind: "file" | "media";
+  kind: "file" | "media" | "diff";
   id: string;
   ref: FileRef | null;
   title: string;
@@ -76,6 +83,22 @@ type OpenTab = MarkdownViewState & {
 	readOnly?: boolean;
 	transient?: boolean;
   media?: { kind: PreviewKind; url: string };
+  diff?: {
+    document?: SourceControlDiffDocument;
+    target?: SourceControlDiffRequest;
+    refreshing?: boolean;
+    refreshGeneration?: number;
+    repository: SourceControlRepository;
+    scope: SourceControlDiffScope;
+    groupId?: string;
+    reviewRef?: string;
+    fileRef?: FileRef;
+    oldPath?: string;
+    originalModel: MonacoEditor.ITextModel;
+    viewState: MonacoEditor.IDiffEditorViewState | null;
+    editable: boolean;
+    unavailableReason?: string;
+  };
 };
 
 type Command = { id: string; label: string; keybinding?: string; run(): unknown | Promise<unknown> };
@@ -128,6 +151,12 @@ export class CodeView {
   private mruCycle: MruCycleState | null = null;
   private mruSwitcherOverlay: HTMLElement | null = null;
   private untitledCounter = 1;
+  private sourceControlView: SourceControlView | null = null;
+  private diffEditor!: MonacoEditor.IStandaloneDiffEditor;
+  private diffHunkGutter: DiffHunkGutter | null = null;
+  private diffScroll: SharedDiffScroll | null = null;
+  private diffBusyRepositories = new Set<string>();
+  private diffRefreshTimers = new Map<string, number>();
   private editor!: MonacoEditor.IStandaloneCodeEditor;
   private markdownPreview: MarkdownPreview | null = null;
   private searchView: SearchView | null = null;
@@ -243,7 +272,7 @@ export class CodeView {
       this.indentation = indentationDefaults(settings); this.editorLineEndingsOnSave = lineEndingsOnSave(settings);
       this.editorRulers = columnGuideRulers(settings); this.editorFontSize = this.clampEditorFontSize(settings.editorFontSize || 13.5);
       this.codeNavigation = new CodeNavigationHistory(this.bot.id, {local:true});
-      this.initializeEditor(); this.initializeTree(); this.initializeOutline(); this.installEvents();
+      this.initializeEditor(); this.initializeDiffEditor(); this.initializeTree(); this.initializeOutline(); this.installEvents();
       this.initializeSearchView(); this.initializeBookmarks(); this.registerCommands();
       await this.restoreWorkspace();
       if (this.abort.signal.aborted) return;
@@ -261,7 +290,7 @@ export class CodeView {
     const explorerActive = this.activeSidebar === "explorer";
     this.root.innerHTML = `
       <div class="code-app-shell" aria-busy="true" style="--explorer-width:${this.explorerWidth}px">
-        <nav class="code-left-nav" aria-label="Editor tools"><button data-code-sidebar="explorer" title="Explorer"><span class="codicon codicon-files"></span></button><button data-code-sidebar="search" title="Search"><span class="codicon codicon-search"></span></button><button data-code-sidebar="bookmarks" title="Bookmarks"><span class="codicon codicon-bookmark"></span></button></nav>
+        <nav class="code-left-nav" aria-label="Editor tools"><button data-code-sidebar="explorer" title="Explorer"><span class="codicon codicon-files"></span></button><button data-code-sidebar="search" title="Search"><span class="codicon codicon-search"></span></button><button data-code-sidebar="bookmarks" title="Bookmarks"><span class="codicon codicon-bookmark"></span></button><button class="code-git-activity" data-code-sidebar="source-control" title="Source Control" aria-label="Source Control"><span class="codicon codicon-source-control"></span><b data-source-control-badge hidden></b></button></nav>
         <section class="code-workbench">
           <div class="code-sidebar-backdrop" data-mobile-sidebar-backdrop aria-hidden="true"></div>
           <div class="code-sidebar">
@@ -283,7 +312,7 @@ export class CodeView {
             <section aria-label="Outline" data-code-outline></section>
           </aside>
           <aside class="code-search-view" aria-label="Search" data-sidebar-view="search"${this.activeSidebar === "search" ? "" : " hidden"}></aside>
-          <aside class="code-bookmarks-view" aria-label="Bookmarks" data-sidebar-view="bookmarks"${this.activeSidebar === "bookmarks" ? "" : " hidden"}></aside>
+          <aside class="code-git-view" aria-label="Source Control" data-sidebar-view="source-control" hidden></aside><aside class="code-bookmarks-view" aria-label="Bookmarks" data-sidebar-view="bookmarks"${this.activeSidebar === "bookmarks" ? "" : " hidden"}></aside>
           </div>
           <div class="code-explorer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Explorer" tabindex="0"></div>
           <main class="code-editor-column">
@@ -309,7 +338,7 @@ export class CodeView {
                     <div class="code-markdown-resizer" data-markdown-resizer role="separator" aria-label="Resize Markdown source" aria-orientation="vertical" aria-valuemin="20" aria-valuemax="80" aria-valuenow="50" tabindex="0" hidden></div>
                     <section class="code-markdown-preview" data-markdown-preview aria-label="Markdown preview" tabindex="0" hidden></section>
                   </div>
-                  <div class="code-media-preview" data-media-preview-host hidden></div>
+                  <div class="code-diff-surface" data-diff-surface hidden><div class="code-diff-toolbar" data-diff-toolbar><span data-diff-label></span><button data-diff-action="previous" title="Previous Change" aria-label="Previous Change"><span class="codicon codicon-arrow-up"></span></button><button data-diff-action="next" title="Next Change" aria-label="Next Change"><span class="codicon codicon-arrow-down"></span></button><button data-diff-action="layout" title="Toggle Inline Diff" aria-label="Toggle Inline Diff"><span class="codicon codicon-layout"></span></button></div><div class="code-monaco-diff-host" data-monaco-diff-host></div><div class="code-diff-unavailable" data-diff-unavailable hidden></div><div class="code-diff-scroll" data-diff-scroll tabindex="0" aria-label="Scroll both diff panes horizontally"><div></div></div></div><div class="code-media-preview" data-media-preview-host hidden></div>
                 </section>
                 <footer class="code-statusbar" data-statusbar>
                   <div><button type="button" class="code-mobile-explorer" data-mobile-explorer aria-label="Toggle Sidebar" aria-expanded="false"><span class="codicon codicon-${this.sidebarIcon(this.activeSidebar)}"></span></button></div>
@@ -406,6 +435,7 @@ export class CodeView {
 
   private setSidebar(view: CodeSidebar, updateRoute = true): void {
     if (view === "bookmarks" && !this.bookmarks) view = "explorer";
+    if (view === "source-control") this.initializeSourceControl();
     this.activeSidebar = view;
     this.root.querySelectorAll<HTMLElement>("[data-sidebar-view]").forEach((element) => { element.hidden = element.dataset.sidebarView !== view; });
     this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach((button) => {
@@ -428,6 +458,7 @@ export class CodeView {
   }
 
   private sidebarIcon(view: CodeSidebar): string {
+    if (view === "source-control") return "source-control";
     if (view === "bookmarks") return "bookmark";
     if (view === "search") return "search";
     return "files";
@@ -1123,7 +1154,7 @@ export class CodeView {
       await this.openMedia(ref, keepOpen, focusEditor);
       return false;
     }
-    const existing = this.tabs.find((tab) => tab.ref && refKey(tab.ref) === refKey(ref));
+    const existing = this.tabs.find((tab) => tab.kind === "file" && tab.ref && refKey(tab.ref) === refKey(ref));
     if (existing) {
       if (keepOpen) existing.keepOpen = true;
       if (activate) this.activateTab(existing.id, focusEditor, true, selectionVersion === this.treeSelectionVersion);
@@ -1137,7 +1168,7 @@ export class CodeView {
       // A double-click emits both click and dblclick handlers. Their reads can
       // overlap, so check again after I/O before creating a second tab for the
       // same file. The Keep Open request wins regardless of completion order.
-      const concurrentlyOpened = this.tabs.find((tab) => tab.ref && refKey(tab.ref) === refKey(ref));
+      const concurrentlyOpened = this.tabs.find((tab) => tab.kind === "file" && tab.ref && refKey(tab.ref) === refKey(ref));
       if (concurrentlyOpened) {
         if (keepOpen) concurrentlyOpened.keepOpen = true;
         if (activate) this.activateTab(concurrentlyOpened.id, focusEditor, true, selectionVersion === this.treeSelectionVersion);
@@ -1375,17 +1406,303 @@ export class CodeView {
 
   }
 
+  private async openSourceControlDiff(
+    repository: SourceControlRepository,
+    target: SourceControlDiffRequest,
+    keepOpen: boolean,
+  ): Promise<void> {
+    if (!this.workspace) return;
+    const scope = sourceControlTabScope(target);
+    const reviewRef = target.kind === "revision" || target.kind === "stash" ? target.ref : undefined;
+    const identity = `${repository.id}:${target.kind}:${target.groupId || ""}:${reviewRef || ""}:${target.path}`;
+    const existing = this.tabs.find((tab) => tab.kind === "diff" && tab.id === identity);
+    if (existing) {
+      if (keepOpen) existing.keepOpen = true;
+      this.activateTab(existing.id);
+      this.renderTabs();
+      return;
+    }
+    try {
+      const document = await loadSourceControlDiff(this.workspace.id, repository.id, {
+        ...target, scope,
+      });
+      if (this.abort.signal.aborted) return;
+      // Click and double-click may load the same diff concurrently. Reuse the
+      // tab created by the first response before allocating any shared models.
+      const opened = this.tabs.find((candidate) => candidate.kind === "diff" && candidate.id === identity);
+      if (opened) {
+        if (keepOpen) opened.keepOpen = true;
+        this.activateTab(opened.id);
+        this.renderTabs();
+        return;
+      }
+      const language = languageForPath(document.path);
+      const originalURI = monaco.Uri.from({
+        scheme: "echo-source-control", authority: repository.id,
+        path: `/${encodeURIComponent(scope)}/${encodeURIComponent(reviewRef || String(document.revision))}/${(document.oldPath || document.path).split("/").map(encodeURIComponent).join("/")}`,
+      });
+      const originalModel = monaco.editor.getModel(originalURI) || this.createEditorModel(document.original.content || "", language, originalURI);
+      this.retainModel(originalModel);
+      originalModel.setEOL(document.original.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+
+      const shared = document.editable && document.ref
+        ? this.tabs.find((candidate) => {
+          const ref = this.worktreeRef(candidate);
+          return ref && candidate.diff?.editable !== false && refKey(ref) === refKey(document.ref!);
+        })
+        : undefined;
+      let modifiedModel: MonacoEditor.ITextModel;
+      if (shared) {
+        modifiedModel = shared.model;
+      } else {
+        const modifiedURI = document.editable && document.ref ? this.modelURI(document.ref) : monaco.Uri.from({
+          scheme: "echo-source-control", authority: repository.id,
+          path: `/${encodeURIComponent(scope)}/${encodeURIComponent(reviewRef || String(document.revision))}/${document.path.split("/").map(encodeURIComponent).join("/")}`,
+          query: randomUUID(),
+        });
+        const reusable = monaco.editor.getModel(modifiedURI);
+        modifiedModel = reusable || this.createEditorModel(document.modified.content || "", language, modifiedURI);
+        if (!reusable) modifiedModel.setEOL(document.modified.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+      }
+      this.retainModel(modifiedModel);
+      const qualifier = sourceControlScopeLabel(scope, repository, reviewRef);
+      const tab: OpenTab = {
+        kind: "diff", id: identity, ref: document.editable ? document.ref || null : null, readOnly: !document.editable, title: `${document.path.split("/").pop() || document.path} (${qualifier})`,
+        hostPath: document.path, keepOpen, pinned: false, dirty: shared?.dirty || false, deleted: !document.modified.exists,
+        conflict: shared?.conflict || false, revision: shared?.revision || document.modifiedRevision || "",
+        hasBom: shared?.hasBom ?? Boolean(document.modified.hasBom), eol: shared?.eol || document.modified.eol,
+        model: modifiedModel, viewState: null, changeDisposable: { dispose() {} }, applying: false,
+        diff: {
+          document, target: { ...target, scope },
+          repository, scope, groupId: target.groupId, reviewRef, fileRef: document.ref, oldPath: document.oldPath,
+          originalModel, viewState: null, editable: document.editable && document.kind === "text",
+          unavailableReason: document.kind === "text" ? undefined : document.unavailableReason || `This ${repository.providerLabel} object cannot be shown as text.`,
+        },
+      };
+      tab.changeDisposable = modifiedModel.onDidChangeContent(() => {
+        if (tab.applying || !tab.diff?.editable) return;
+        this.markModelDirty(modifiedModel);
+      });
+      if (!keepOpen) {
+        const previewIndex = this.tabs.findIndex((candidate) => !candidate.keepOpen && !candidate.dirty);
+        if (previewIndex >= 0) {
+          this.disposeTab(this.tabs[previewIndex]);
+          this.tabs.splice(previewIndex, 1, tab);
+        } else this.tabs.push(tab);
+      } else this.tabs.push(tab);
+      this.activateTab(tab.id);
+      this.renderTabs();
+      this.schedulePersist();
+
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.openUnavailableSourceControlDiff(identity, repository, target, scope, reviewRef, keepOpen, message);
+      toast(message, { sticky: true });
+    }
+  }
+
+  private async runDiffHunk(action: SourceControlHunkAction, block: DiffBlock): Promise<void> {
+    const tab = this.activeTab();
+    const diff = tab?.diff;
+    const document = diff?.document;
+    if (!this.workspace || !tab || !diff || !document?.hunkToken || !document.hunkActions?.includes(action)
+      || diff.refreshing || this.diffBusyRepositories.has(diff.repository.id)) return;
+    if (action === "revert_hunk") {
+      if (!diff.editable) return;
+      const before = tab.model.getValue();
+      const after = revertBlockText(diff.originalModel.getValue(), before, block, tab.model.getEOL());
+      if (before === after) return;
+      const edit = replacementEdit(before, after);
+      const start = tab.model.getPositionAt(edit.start), end = tab.model.getPositionAt(edit.end);
+      const editor = this.diffEditor.getModifiedEditor();
+      editor.pushUndoStop();
+      editor.executeEdits("echo.revertChange", [{ range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column), text: edit.text }]);
+      editor.pushUndoStop();
+      editor.focus();
+      return;
+    }
+    if (tab.dirty && (action === "stage_hunk" || action === "protect_hunk")) return;
+    const repositoryId = diff.repository.id;
+    this.diffBusyRepositories.add(repositoryId);
+    this.diffHunkGutter?.refresh();
+    try {
+      await runSourceControlAction(this.workspace.id, repositoryId, {
+        requestId: randomUUID(), action, expectedRevision: document.revision,
+        hunk: { ...block, token: document.hunkToken, target: document.target || diff.target! },
+      });
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), { sticky: true });
+    } finally {
+      await this.refreshSourceControlDiffs(repositoryId);
+      await this.sourceControlView?.refreshStatus(repositoryId);
+      this.diffBusyRepositories.delete(repositoryId);
+      this.diffHunkGutter?.refresh();
+    }
+  }
+
+  private scheduleSourceControlDiffRefresh(repositoryId: string): void {
+    if (this.abort.signal.aborted) return;
+    for (const tab of this.tabs) {
+      if (tab.diff?.repository.id === repositoryId && tab.diff.target?.kind === "change") tab.diff.refreshing = true;
+    }
+    this.diffHunkGutter?.refresh();
+    const pending = this.diffRefreshTimers.get(repositoryId);
+    if (pending) clearTimeout(pending);
+    this.diffRefreshTimers.set(repositoryId, window.setTimeout(() => {
+      this.diffRefreshTimers.delete(repositoryId);
+      void this.refreshSourceControlDiffs(repositoryId);
+    }, 80));
+  }
+
+  private async refreshSourceControlDiffs(repositoryId: string): Promise<void> {
+    if (!this.workspace || this.abort.signal.aborted) return;
+    const pending = this.diffRefreshTimers.get(repositoryId);
+    if (pending) { clearTimeout(pending); this.diffRefreshTimers.delete(repositoryId); }
+    const workspaceId = this.workspace.id;
+    await Promise.all(this.tabs.filter((tab) => tab.diff?.repository.id === repositoryId && tab.diff.target?.kind === "change").map(async (tab) => {
+      const diff = tab.diff!;
+      const generation = diff.refreshGeneration = (diff.refreshGeneration || 0) + 1;
+      diff.refreshing = true;
+      try {
+        const document = await loadSourceControlDiff(workspaceId, repositoryId, diff.target!, this.abort.signal);
+        if (this.abort.signal.aborted || !this.tabs.includes(tab) || diff.refreshGeneration !== generation) return;
+        const view = tab.id === this.activeTabId ? this.diffEditor.saveViewState() : null;
+        diff.document = document;
+        diff.editable = document.editable && document.kind === "text";
+        diff.unavailableReason = document.kind === "text" ? undefined : document.unavailableReason || "This diff cannot be displayed as text.";
+        const eolContent = (content: string, eol: string) => content.replace(/\r\n/g, "\n").replace(/\n/g, eol === "crlf" ? "\r\n" : "\n");
+        const original = eolContent(document.original.content, document.original.eol);
+        if (diff.originalModel.getValue() !== original) diff.originalModel.setValue(original);
+        diff.originalModel.setEOL(document.original.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+        const shared = this.tabs.filter((candidate) => candidate.model === tab.model);
+        if (!shared.some((candidate) => candidate.dirty)) {
+          shared.forEach((candidate) => { candidate.applying = true; });
+          try {
+            const modified = eolContent(document.modified.content, document.modified.eol);
+            if (tab.model.getValue() !== modified) tab.model.setValue(modified);
+            tab.model.setEOL(document.modified.eol === "crlf" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+            shared.forEach((candidate) => {
+              candidate.revision = document.modifiedRevision || candidate.revision;
+              candidate.deleted = !document.modified.exists;
+              candidate.hasBom = Boolean(document.modified.hasBom);
+              candidate.eol = document.modified.eol;
+              candidate.conflict = false;
+            });
+          } finally { shared.forEach((candidate) => { candidate.applying = false; }); }
+        }
+        if (view && tab.id === this.activeTabId) {
+          this.diffEditor.updateOptions({ readOnly: !diff.editable });
+          this.diffEditor.restoreViewState(view);
+        }
+      } catch (error) {
+        if (!this.abort.signal.aborted && diff.refreshGeneration === generation) {
+          if (diff.document) diff.document = { ...diff.document, hunkActions: [], hunkToken: undefined };
+          toast(error instanceof Error ? error.message : String(error));
+        }
+      } finally {
+        if (diff.refreshGeneration === generation) diff.refreshing = false;
+      }
+    }));
+    if (!this.abort.signal.aborted) { this.renderTabs(); this.updateEditorSurface(); this.diffHunkGutter?.refresh(); }
+  }
+
+  private openUnavailableSourceControlDiff(
+    identity: string,
+    repository: SourceControlRepository,
+    target: SourceControlDiffRequest,
+    scope: SourceControlDiffScope,
+    reviewRef: string | undefined,
+    keepOpen: boolean,
+    reason: string,
+  ): void {
+    const language = languageForPath(target.path);
+    const originalModel = this.createEditorModel("", language, monaco.Uri.from({ scheme: "echo-source-control-missing", authority: repository.id, path: `/${randomUUID()}/original` }));
+    const modifiedModel = this.createEditorModel("", language, monaco.Uri.from({ scheme: "echo-source-control-missing", authority: repository.id, path: `/${randomUUID()}/modified` }));
+    this.retainModel(originalModel);
+    this.retainModel(modifiedModel);
+    const tab: OpenTab = {
+      kind: "diff", id: identity, ref: null, readOnly: true, title: `${target.path.split("/").pop() || target.path} (${sourceControlScopeLabel(scope, repository, reviewRef)})`,
+      hostPath: target.path, keepOpen, pinned: false, dirty: false, deleted: false, conflict: false, revision: "",
+      hasBom: false, eol: "lf", model: modifiedModel, viewState: null, applying: false,
+      changeDisposable: { dispose() {} },
+      diff: {
+        repository, scope, groupId: target.groupId, reviewRef, fileRef: target.fileRef, oldPath: target.oldPath,
+        originalModel, viewState: null, editable: false,
+        unavailableReason: `${reason} The ${repository.providerLabel} revision may no longer be available; refresh Source Control and reopen this diff.`,
+      },
+    };
+    if (!keepOpen) {
+      const previewIndex = this.tabs.findIndex((candidate) => !candidate.keepOpen && !candidate.dirty);
+      if (previewIndex >= 0) {
+        this.disposeTab(this.tabs[previewIndex]);
+        this.tabs.splice(previewIndex, 1, tab);
+      } else this.tabs.push(tab);
+    } else this.tabs.push(tab);
+    this.activateTab(tab.id);
+    this.renderTabs();
+    this.schedulePersist();
+  }
+
+
+  private initializeSourceControl(): void {
+    if (this.sourceControlView) { void this.sourceControlView.start(); return; }
+    const host = this.root.querySelector<HTMLElement>('[data-sidebar-view="source-control"]')!;
+    this.sourceControlView = new SourceControlView(host,this.bot.id,this.abort.signal,{
+      roots:()=>this.roots,
+      openFile:async(ref,keep)=>{await this.openFile(ref,keep);},
+      openDiff:(repository,target,keep)=>this.recordCodeNavigation(()=>this.openSourceControlDiff(repository,target,keep)),
+      updateBadge:count=>{ const badge=this.root.querySelector<HTMLElement>('[data-source-control-badge]')!; badge.textContent=String(count);badge.hidden=count===0; },
+      statusChanged:id=>this.scheduleSourceControlDiffRefresh(id),
+      operationChanged:(id,busy)=>{if(busy)this.diffBusyRepositories.add(id);else{this.diffBusyRepositories.delete(id);this.scheduleSourceControlDiffRefresh(id)};this.diffHunkGutter?.refresh();},
+      beforeAction:(repository,request)=>this.prepareSourceControlAction(repository,request),
+    });
+    void this.sourceControlView.start();
+  }
+
+  private async prepareSourceControlAction(repository:SourceControlRepository, request:SourceControlActionRequest):Promise<boolean> {
+    const affectsWorking = /discard|revert|checkout|merge|rebase|stash|update|pull|sync/.test(request.action);
+    if (!affectsWorking) return true;
+    const dirty = this.tabs.filter(tab=>tab.dirty && this.worktreeRef(tab) && repository.scopes.some(scope=>scope.rootId===this.worktreeRef(tab)!.rootId));
+    if (!dirty.length) return true;
+    const choice=await this.choiceDialog({title:'Save unsaved changes first?',message:`${dirty.length} open buffers in this repository have unsaved edits. Save them before ${request.action.replaceAll('_',' ')}.`,choices:[{id:'cancel',label:'Cancel'},{id:'save',label:'Save and Continue',primary:true}]});
+    if(choice!=='save')return false;
+    for(const tab of dirty)if(!(await this.saveTab(tab)))return false;
+    return true;
+  }
+
+  private initializeDiffEditor():void {
+    this.diffEditor=monaco.editor.createDiffEditor(this.root.querySelector<HTMLElement>('[data-monaco-diff-host]')!,{
+      theme:this.mediaTheme.matches?'vs-dark':'vs',automaticLayout:true,fontFamily:'Cascadia Code, Consolas, monospace',
+      fontSize:this.editorFontSize,rulers:this.editorRulers,renderSideBySide:true,useInlineViewWhenSpaceIsLimited:false,
+      originalEditable:false,renderMarginRevertIcon:false,renderGutterMenu:false,ignoreTrimWhitespace:false,
+      diffAlgorithm:'advanced',minimap:{enabled:false},scrollbar:{horizontal:'hidden',horizontalScrollbarSize:0},
+    });
+    this.diffHunkGutter=new DiffHunkGutter(this.diffEditor,()=>{
+      const tab=this.activeTab();return {actions:tab?.diff?.document?.hunkActions || [],dirty:Boolean(tab?.dirty),busy:Boolean(tab?.diff?.refreshing || (tab?.diff && this.diffBusyRepositories.has(tab.diff.repository.id)))};
+    },(action,block)=>void this.runDiffHunk(action,block));
+    this.diffScroll=new SharedDiffScroll(this.diffEditor,this.root.querySelector<HTMLElement>('[data-diff-scroll]')!);
+    let split=true;
+    this.root.querySelectorAll<HTMLButtonElement>('[data-diff-action]').forEach(button=>button.addEventListener('click',()=>{
+      if(button.dataset.diffAction==='layout'){split=!split;this.diffEditor.updateOptions({renderSideBySide:split});button.setAttribute('aria-pressed',String(!split));this.diffScroll?.refresh();}
+      else this.diffEditor.goToDiff(button.dataset.diffAction==='previous'?'previous':'next');
+    },{signal:this.abort.signal}));
+    this.diffEditor.getModifiedEditor().onDidChangeCursorPosition(()=>{this.renderStatus();this.observeNavigationLocation(true);});
+    this.diffEditor.getModifiedEditor().onDidScrollChange(()=>this.schedulePersist());
+  }
+
   private worktreeRef(tab: OpenTab): FileRef | null {
-    return tab.ref;
+    return tab.kind === "diff" ? tab.diff?.editable ? tab.diff.fileRef || null : null : tab.ref;
   }
 
   private markModelDirty(model: MonacoEditor.ITextModel): void {
+    if (this.tabs.some(tab=>tab.model === model && tab.applying)) return;
     for (const tab of this.tabs) {
       if (tab.model !== model) continue;
       tab.dirty = true;
       tab.keepOpen = true;
       tab.eol = model.getEOL() === "\r\n" ? "crlf" : "lf";
     }
+    this.diffHunkGutter?.refresh();
     this.renderTabs();
     this.renderStatus();
     this.schedulePersist();
@@ -1410,11 +1727,17 @@ export class CodeView {
       return;
     }
     if (active && active.id !== next.id) {
-      if (this.markdownMode(active) !== "preview") active.viewState = this.editor.saveViewState();
+      if (active.diff) active.diff.viewState = this.diffEditor.saveViewState();
+      else if (this.markdownMode(active) !== "preview") active.viewState = this.editor.saveViewState();
     }
     this.activeTabId = id;
     this.syncActiveTabState();
-    if (next.kind === "media") {
+    if (next.kind === "diff" && next.diff) {
+      this.editor.setModel(null);
+      this.diffEditor.setModel({original:next.diff.originalModel,modified:next.model});
+      this.diffEditor.updateOptions({readOnly:!next.diff.editable});
+      if (next.diff.viewState) this.diffEditor.restoreViewState(next.diff.viewState);
+    } else if (next.kind === "media") {
       this.editor.setModel(null);
       this.renderMediaPreview(next);
     } else {
@@ -1545,6 +1868,7 @@ export class CodeView {
   }
 
   private tabIcon(tab: OpenTab): string {
+    if (tab.kind === "diff") return "diff";
     if (tab.kind !== "media") return "file-code";
     if (tab.media?.kind === "video") return "play-circle";
     if (tab.media?.kind === "audio") return "music";
@@ -1690,7 +2014,7 @@ export class CodeView {
     const previewDocument = isMarkdownTab(tab) && mode !== "source" ? { model: tab.model, ref: tab.ref, state: tab } : null;
     if (!previewDocument) this.markdownPreview?.show(null);
     if (fileSurface) {
-      fileSurface.hidden = !hasTab || isMedia;
+      fileSurface.hidden = !hasTab || isMedia || tab?.kind === "diff";
       const ratio = restoreMarkdownViewState(tab).markdownSplitRatio;
       fileSurface.style.gridTemplateColumns = mode === "split" ? `minmax(0, ${ratio}fr) 4px minmax(0, ${1 - ratio}fr)` : "minmax(0, 1fr)";
       if (divider) {
@@ -1704,6 +2028,15 @@ export class CodeView {
       modes.querySelectorAll<HTMLButtonElement>("[data-markdown-mode]").forEach(button => {
         button.setAttribute("aria-pressed", String(button.dataset.markdownMode === mode));
       });
+    }
+    const diffSurface = this.root.querySelector<HTMLElement>('[data-diff-surface]');
+    if (diffSurface) diffSurface.hidden = tab?.kind !== 'diff';
+    if (tab?.diff) {
+      const unavailable = this.root.querySelector<HTMLElement>('[data-diff-unavailable]')!;
+      unavailable.hidden = !tab.diff.unavailableReason; unavailable.textContent=tab.diff.unavailableReason || '';
+      this.root.querySelector<HTMLElement>('[data-monaco-diff-host]')!.hidden=Boolean(tab.diff.unavailableReason);
+      this.root.querySelector<HTMLElement>('[data-diff-label]')!.textContent=`${tab.diff.document?.original.label || 'Previous'} → ${tab.diff.document?.modified.label || 'Current'}`;
+      this.diffEditor.layout(); this.diffHunkGutter?.refresh(); this.diffScroll?.refresh();
     }
     if (placeholder) placeholder.hidden = hasTab;
     if (host) host.hidden = !hasTab || isMedia || mode === "preview";
@@ -1754,8 +2087,11 @@ export class CodeView {
   }
 
   private disposeTab(tab: OpenTab): void {
+    if (tab.diff && this.diffEditor.getModel()?.original === tab.diff.originalModel) this.diffEditor.setModel(null);
+    if (this.editor.getModel() === tab.model) this.editor.setModel(null);
     closeInlineChat(inlineChatKey(this.bot.id, tab.id));
     if (tab.id === this.activeTabId) this.markdownPreview?.show(null);
+    if (tab.diff) this.releaseModel(tab.diff.originalModel);
     tab.changeDisposable.dispose();
     this.releaseModel(tab.model);
   }
@@ -1857,7 +2193,7 @@ export class CodeView {
       try {
         const parentPath = tab.ref.path.includes("/") ? tab.ref.path.slice(0, tab.ref.path.lastIndexOf("/")) : "";
         const result = await editorAPI.createEntry(this.workspace.id, {
-          parent: { rootId: tab.ref.rootId, path: parentPath }, name: tab.title, kind: "file",
+          parent: { rootId: tab.ref.rootId, path: parentPath }, name: tab.ref.path.split("/").pop()!, kind: "file",
           content: this.contentForSave(tab), hasBom: tab.hasBom,
         });
         if (result.file) this.applySavedSnapshot(tab, result.file);
@@ -1895,6 +2231,7 @@ export class CodeView {
       candidate.dirty = candidate.model.getValue() !== snapshot.content;
       candidate.conflict = false;
       candidate.deleted = false;
+      if(candidate.diff)this.scheduleSourceControlDiffRefresh(candidate.diff.repository.id);
       candidate.keepOpen = true;
     }
     this.renderTabs();
@@ -2142,33 +2479,49 @@ export class CodeView {
   }
 
   private rewriteOpenRefs(previous: FileRef, next: FileRef, previousHost: string, nextHost: string): void {
+    const replacements = new Map<MonacoEditor.ITextModel, MonacoEditor.ITextModel>();
+    const active = this.activeTab();
+    const fileView = this.editor.saveViewState();
+    const diffView = this.diffEditor.saveViewState();
     for (const tab of this.tabs) {
       if (!tab.ref || !isRefWithin(tab.ref, previous)) continue;
       const suffix = tab.ref.path.slice(previous.path.length).replace(/^\//, "");
       const nextRef = { rootId: next.rootId, path: suffix ? `${next.path}/${suffix}` : next.path };
-      const content = tab.model.getValue();
-      const eol = tab.model.getEndOfLineSequence();
-      const language = languageForPath(nextRef.path);
-      const viewState = tab.id === this.activeTabId && this.markdownMode(tab) !== "preview" ? this.editor.saveViewState() : tab.viewState;
-      tab.changeDisposable.dispose();
-      this.releaseModel(tab.model);
-      tab.ref = nextRef;
-      tab.title = nextRef.path.split("/").pop() || nextRef.path;
-      tab.hostPath = tab.hostPath.startsWith(previousHost) ? nextHost + tab.hostPath.slice(previousHost.length) : nextHost;
-      tab.model = this.createEditorModel(content, language, this.modelURI(nextRef, tab.hostPath));
-      tab.model.setEOL(eol);
-      this.retainModel(tab.model);
-      tab.changeDisposable = tab.model.onDidChangeContent(() => {
-        if (tab.applying) return;
-        this.markModelDirty(tab.model);
-      });
-      tab.viewState = viewState;
-      if (tab.id === this.activeTabId) {
-        this.editor.setModel(tab.model);
-        this.updateEditorSurface();
-        if (viewState) this.editor.restoreViewState(viewState);
+      const oldModel = tab.model;
+      let model = replacements.get(oldModel);
+      if (!model) {
+        const uri = this.modelURI(nextRef);
+        model = monaco.editor.getModel(uri) || this.createEditorModel(oldModel.getValue(), languageForPath(nextRef.path), uri);
+        model.setEOL(oldModel.getEndOfLineSequence());
+        replacements.set(oldModel, model);
       }
+      if (this.editor.getModel() === oldModel) this.editor.setModel(null);
+      if (this.diffEditor.getModel()?.modified === oldModel) this.diffEditor.setModel(null);
+      tab.changeDisposable.dispose();
+      this.releaseModel(oldModel);
+      tab.ref = nextRef;
+      tab.model = model;
+      this.retainModel(model);
+      const name = nextRef.path.split("/").pop() || nextRef.path;
+      tab.title = tab.diff ? `${name} (${sourceControlScopeLabel(tab.diff.scope, tab.diff.repository, tab.diff.reviewRef)})` : name;
+      if (tab.diff) {
+        const diff = tab.diff;
+        diff.fileRef = nextRef;
+        const scope = diff.repository.scopes.find(scope => scope.rootId === nextRef.rootId);
+        const rootPrefix = diff.repository.rootRef?.rootId === nextRef.rootId ? diff.repository.rootRef.path : '';
+        const repoPath = rootPrefix ? nextRef.path.slice(rootPrefix.length + 1) : [scope?.repoPrefix,nextRef.path].filter(Boolean).join('/');
+        diff.target = {...diff.target,kind:'change',path:repoPath,oldPath:diff.target?.oldPath || diff.target?.path};
+        if(diff.document) diff.document = {...diff.document,hunkActions:[],hunkToken:undefined};
+        tab.hostPath=repoPath;
+        this.scheduleSourceControlDiffRefresh(diff.repository.id);
+      } else tab.hostPath = tab.hostPath.startsWith(previousHost) ? nextHost + tab.hostPath.slice(previousHost.length) : nextHost;
+      tab.changeDisposable = model.onDidChangeContent(() => this.markModelDirty(model!));
     }
+    if (active) {
+      if (active.diff) { this.diffEditor.setModel({original:active.diff.originalModel,modified:active.model}); if(diffView)this.diffEditor.restoreViewState(diffView); }
+      else {this.editor.setModel(active.model);if(fileView)this.editor.restoreViewState(fileView);}
+    }
+    this.updateEditorSurface();
     this.renderTabs();
   }
 
@@ -2501,6 +2854,7 @@ export class CodeView {
       { id: "editor.inlineChat", label: "Inline Chat", keybinding: "Ctrl+I", run: () => this.openInlineChat() },
       ...(this.bookmarks ? [
         { id: "bookmarks.toggle", label: "Bookmarks: Toggle", keybinding: "Ctrl+K, K", run: () => this.toggleBookmark() },
+        { id: "source-control.open", label: "View: Source Control", run: () => this.setSidebar("source-control") },
         { id: "bookmarks.open", label: "View: Bookmarks", run: () => this.setSidebar("bookmarks") },
       ] : []),
       { id: "file.save", label: "File: Save", keybinding: "Ctrl+S", run: () => this.saveTab() },
@@ -2559,7 +2913,7 @@ export class CodeView {
 
   private activeCodeEditor(): MonacoEditor.ICodeEditor | null {
     const tab = this.activeTab();
-    return this.editor || null;
+    return tab?.kind === "diff" ? (this.diffEditor.getOriginalEditor().hasTextFocus() ? this.diffEditor.getOriginalEditor() : this.diffEditor.getModifiedEditor()) : this.editor || null;
   }
 
   private showGoToLine(): void {
@@ -3353,7 +3707,7 @@ export class CodeView {
       this.activateTab(active.id);
       const persisted = saved.tabs.find((tab) => (this.restoredTabIdAliases.get(tab.id) || tab.id) === active.id);
       if (active.kind !== "media") {
-        const restoredEditor = this.editor;
+        const restoredEditor = active.diff ? this.diffEditor.getModifiedEditor() : this.editor;
         if (persisted?.cursor) restoredEditor.setPosition(persisted.cursor);
         if (typeof persisted?.scrollTop === "number") restoredEditor.setScrollTop(persisted.scrollTop);
       }
@@ -3363,6 +3717,26 @@ export class CodeView {
 
   private async restoreTab(persisted: PersistedTab): Promise<void> {
     if (!this.workspace) return;
+    if(persisted.kind==='diff' && persisted.diff){
+      await this.openSourceControlDiff(persisted.diff.repository,persisted.diff.target,true);
+      const tab=this.activeTab();
+      if(tab?.diff){
+        this.restoredTabIdAliases.set(persisted.id,tab.id);Object.assign(tab,restoreTabOpenState(persisted));
+        if(persisted.dirty && persisted.content!==undefined){
+          tab.applying=true;tab.model.setValue(persisted.content);tab.applying=false;tab.dirty=true;tab.revision=persisted.revision;tab.hasBom=persisted.hasBom;
+          if(!tab.diff.document){
+            tab.ref=persisted.ref;tab.readOnly=false;tab.diff.editable=true;tab.diff.fileRef=persisted.ref || undefined;
+            tab.diff.originalModel.setValue(persisted.diff.originalContent || '');tab.diff.unavailableReason=undefined;
+            this.diffEditor.updateOptions({readOnly:false});
+            toast('Recovered unsaved diff edits. The repository baseline is unavailable; refresh Source Control before staging.',{sticky:true});
+          }
+        }
+        if(persisted.cursor)this.diffEditor.getModifiedEditor().setPosition(persisted.cursor);
+        if(persisted.scrollTop!==undefined)this.diffEditor.getModifiedEditor().setScrollTop(persisted.scrollTop);
+        tab.diff.viewState=this.diffEditor.saveViewState();
+      }
+      return;
+    }
     try {
       if (persisted.kind === "media") {
         const ref = persisted.ref;
@@ -3442,9 +3816,10 @@ export class CodeView {
     this.markdownPreview?.captureScroll();
     const tabs: PersistedTab[] = this.tabs.filter((tab) => !tab.transient).map((tab) => {
       const position = tab.id === this.activeTabId && this.markdownMode(tab) !== "preview"
-        ? (this.editor.getPosition()) || undefined
+        ? (this.activeCodeEditor()?.getPosition()) || undefined
         : tab.viewState?.cursorState[0]?.position;
       return {
+        ...(tab.diff ? {diff:{repository:tab.diff.repository,target:tab.diff.target || {kind:"change",path:tab.hostPath,groupId:tab.diff.groupId},originalContent:tab.diff.originalModel.getValue()}} : {}),
         kind: tab.kind, id: tab.id, ref: tab.ref, title: tab.title, hostPath: tab.hostPath, pinned: tab.keepOpen, closeProtected: tab.pinned,
         preview: !tab.keepOpen, dirty: tab.dirty, deleted: tab.deleted, revision: tab.revision,
         hasBom: tab.hasBom, eol: tab.model.getEOL() === "\r\n" ? "crlf" : "lf",
@@ -3452,7 +3827,7 @@ export class CodeView {
         ...(tab.dirty || (tab.kind === "file" && !tab.ref) ? { content: tab.model.getValue() } : {}),
         cursor: position ? { lineNumber: position.lineNumber, column: position.column } : undefined,
         scrollTop: tab.id === this.activeTabId && this.markdownMode(tab) !== "preview"
-          ? (this.editor.getScrollTop())
+          ? (this.activeCodeEditor()?.getScrollTop())
           : tab.viewState?.viewState.scrollTop,
       };
     });
@@ -3474,7 +3849,7 @@ export class CodeView {
     }
   }
 
-  private subscribeFilesystem(): void { if (!this.active || this.watchStop) return; this.watchStop = watchFiles(this.bot.id, () => { if (!this.abort.signal.aborted) void this.pollOpenTabs(); }, () => [...this.nodes.values()].filter(n => this.expanded.has(n.key)).map(n => n.ref).concat(this.tabs.flatMap(t => t.ref ? [t.ref] : []))); }
+  private subscribeFilesystem(): void { if (!this.active || this.watchStop) return; this.watchStop = watchFiles(this.bot.id, () => { if (!this.abort.signal.aborted) void this.pollOpenTabs(); }, () => [...this.nodes.values()].filter(n => this.expanded.has(n.key)).map(n => n.ref).concat(this.tabs.flatMap(t => t.ref ? [t.ref] : [])), () => this.activeSidebar === "source-control"); }
   private watchStop?: () => void;
 
   private async applyFilesystemChanges(changes: FilesystemChange[]): Promise<void> {
@@ -3527,7 +3902,7 @@ export class CodeView {
       if (this.abort.signal.aborted || tab.model.isDisposed() || tab.dirty) return;
       tab.deleted = false;
       if (snapshot.revision !== tab.revision) {
-        const activeEditor = this.editor;
+        const activeEditor = tab.diff ? this.diffEditor.getModifiedEditor() : this.editor;
         const viewState = tab.id === this.activeTabId
           ? activeEditor.saveViewState()
           : tab.viewState;
@@ -3602,6 +3977,8 @@ export class CodeView {
     for (const tab of this.tabs) this.disposeTab(tab);
     this.tabs = [];
     this.navigationModels.dispose();
+    this.diffScroll?.dispose(); this.diffHunkGutter?.dispose(); this.diffEditor?.dispose();
+    for (const timer of this.diffRefreshTimers.values()) clearTimeout(timer);
     this.editor?.dispose();
   }
 }
@@ -3615,4 +3992,20 @@ function parseQuickOpenQuery(value: string): { query: string; line?: number } {
 
 function isMarkdownTab(tab: OpenTab | undefined): tab is OpenTab & { ref: FileRef } {
   return tab?.kind === "file" && Boolean(tab.ref && isMarkdownPath(tab.ref.path));
+}
+
+function sourceControlTabScope(target: SourceControlDiffRequest): SourceControlDiffScope {
+  if (target.kind === "revision" || target.kind === "revisions") return "commit";
+  if (target.kind === "stash") return "stash";
+  if (target.scope === "included" || target.scope === "working") return target.scope;
+  if (target.scope === "staged") return "included";
+  if (target.scope === "unstaged") return "working";
+  return target.groupId === "staged" || target.groupId === "included" || target.groupId === "protected" ? "included" : "working";
+}
+
+function sourceControlScopeLabel(scope: SourceControlDiffScope, repository: SourceControlRepository, reviewRef?: string): string {
+  if (scope === "working" || scope === "unstaged" || scope === "conflict") return "Working Tree";
+  if (scope === "included" || scope === "staged") return repository.providerId === "fossil" ? "Protected" : "Index";
+  if (scope === "stash") return "Stash";
+  return (reviewRef || "Commit").slice(0,10);
 }

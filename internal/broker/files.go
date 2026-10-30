@@ -14,11 +14,13 @@ import (
 	"sync"
 
 	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/mutation"
 )
 
 type Files struct {
-	Private string
-	mu      sync.Mutex
+	Coordinator mutation.Coordinator
+	Private     string
+	mu          sync.Mutex
 }
 type Entry struct {
 	Path        string   `json:"path"`

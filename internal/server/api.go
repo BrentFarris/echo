@@ -109,6 +109,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 			return
 		}
 		e := s.Store.Delete("bots", id)
+		if e == nil && s.SourceControl != nil {
+			s.SourceControl.RemoveWorkspace(id)
+		}
 		s.emit("changed", "", "", "", nil)
 		respond(w, map[string]bool{"deleted": e == nil}, e)
 	})

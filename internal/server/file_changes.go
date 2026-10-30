@@ -23,16 +23,39 @@ func (s *Server) mutateFile(ctx context.Context, bot domain.Bot, method string, 
 		paths = []string{text(args, "from"), text(args, "to")}
 	}
 	return s.trackFileChanges(ctx, bot, paths, func() (any, error) {
-		switch method {
-		case "file.write":
-			return s.Files.Write(bot, text(args, "path"), text(args, "content"), text(args, "revision"))
-		case "file.delete":
-			return "deleted", s.Files.Delete(bot, text(args, "path"))
-		case "file.move":
-			return "moved", s.Files.Move(bot, text(args, "from"), text(args, "to"))
-		default:
+		kind := "edit"
+		if method == "file.delete" {
+			kind = "delete"
+		}
+		if method == "file.move" {
+			kind = "move"
+		}
+		if method == "file.mkdir" {
 			return "created", s.Files.Mkdir(bot, text(args, "path"))
 		}
+		destination := ""
+		if len(paths) > 1 {
+			destination = paths[1]
+		}
+		var value any
+		registration, err := s.Files.CoordinateFile(ctx, bot, kind, paths[0], destination, func() error {
+			var err error
+			switch method {
+			case "file.write":
+				value, err = s.Files.Write(bot, text(args, "path"), text(args, "content"), text(args, "revision"))
+			case "file.delete":
+				value = "deleted"
+				err = s.Files.Delete(bot, text(args, "path"))
+			case "file.move":
+				value = "moved"
+				err = s.Files.Move(bot, text(args, "from"), text(args, "to"))
+			}
+			return err
+		})
+		if registration.Pending {
+			return map[string]any{"result": value, "registration": registration}, err
+		}
+		return value, err
 	})
 }
 

@@ -11,34 +11,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 )
-
-type unixOutput struct {
-	mu     sync.Mutex
-	result ProcessResult
-	emit   func(string)
-}
-
-func (o *unixOutput) Write(data []byte) (int, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	n := len(data)
-	remaining := (1 << 20) - len(o.result.Output)
-	if len(data) > remaining {
-		data = data[:remaining]
-		o.result.Truncated = true
-	}
-	if len(data) > 0 {
-		o.result.Output += string(data)
-		if o.emit != nil {
-			o.emit(string(data))
-		}
-	}
-	return n, nil
-}
 
 func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(string)) (ProcessResult, error) {
 	timeout := r.TimeoutSeconds
@@ -81,7 +56,7 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 			return ProcessResult{}, errors.New("native toolchain cannot include Echo private state")
 		}
 	}
-	executable, args := r.Executable, r.Args
+	executable, args := r.Executable, captureArguments(r, scratch)
 	if r.Command != "" {
 		executable = "/bin/sh"
 		args = []string{"-c", r.Command}
@@ -131,9 +106,9 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	sort.Strings(command.Env)
 	command.Dir = r.Directory
 	command.Stdin = strings.NewReader(r.Input)
-	output := &unixOutput{emit: emit}
-	command.Stdout = output
-	command.Stderr = output
+	output := newProcessOutput(r, emit)
+	command.Stdout = processStream{output: output}
+	command.Stderr = processStream{output: output, stderr: true}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Cancel = func() error {
 		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
@@ -148,9 +123,7 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	}
 	err = command.Wait()
 	_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-	output.mu.Lock()
-	result := output.result
-	output.mu.Unlock()
+	result := output.snapshot()
 	if command.ProcessState != nil {
 		result.ExitCode = uint32(command.ProcessState.ExitCode())
 	}
@@ -161,6 +134,11 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	if errors.As(err, &exit) {
 		return result, nil
 	}
+	if err == nil && result.ExitCode == 0 {
+		err = captureFileResult(r, scratch, &result)
+	}
 	return result, err
 }
 func (b *ProcessBroker) Recover() error { return nil }
+
+func (b *ProcessBroker) CloseSessions(string) error { return nil }

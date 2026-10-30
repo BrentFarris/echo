@@ -14,27 +14,44 @@ import (
 )
 
 type ProcessRequest struct {
-	BotID          string
-	Roots          []string
-	Command        string
-	Executable     string
-	Args           []string
-	Input          string
-	Environment    map[string]string // Host-owned; never forwarded from plugin input.
-	Internet       bool
-	PrivateNetwork bool
-	Directory      string
-	Toolchains     []string
-	TimeoutSeconds int
+	SandboxSession     string // Host-only opt-in: reuse an identical native sandbox's filesystem grants.
+	OutputFileArgument string // Host-only marker replaced by a file inside command scratch.
+	BotID              string
+	Roots              []string
+	Command            string
+	Executable         string
+	Args               []string
+	Input              string
+	Environment        map[string]string // Host-owned; never forwarded from plugin input.
+	Internet           bool
+	PrivateNetwork     bool
+	Directory          string
+	Toolchains         []string
+	TimeoutSeconds     int
+	SeparateOutput     bool // Preserve byte-exact stdout independently of diagnostics.
+	OutputLimit        int  // Host-selected bound; defaults to 1 MiB, maximum 64 MiB.
 }
 type ProcessResult struct {
 	Output    string `json:"output"`
 	ExitCode  uint32 `json:"exitCode"`
 	Truncated bool   `json:"truncated"`
+	Stdout    string `json:"stdout,omitempty"`
+	Stderr    string `json:"stderr,omitempty"`
 }
 type ProcessBroker struct {
-	Dir string
-	mu  sync.Mutex
+	Dir        string
+	mu         sync.Mutex
+	sessionsMu sync.Mutex
+	sessions   map[string]*processSession
+}
+
+type processSession struct {
+	botID   string
+	ctx     context.Context
+	cancel  context.CancelFunc
+	gate    chan struct{}
+	journal aclJournal
+	aliases map[string]string
 }
 type aclJournal struct {
 	Name  string   `json:"name"`
@@ -69,11 +86,21 @@ func (b *ProcessBroker) Run(ctx context.Context, r ProcessRequest, emit func(str
 	if e := ctx.Err(); e != nil {
 		return ProcessResult{}, e
 	}
+	if r.OutputFileArgument != "" && (!r.SeparateOutput || r.Executable == "") {
+		return ProcessResult{}, errors.New("file capture requires a native structured command")
+	}
+	if r.SandboxSession != "" && (r.Command != "" || r.Executable == "" || !r.SeparateOutput) {
+		return ProcessResult{}, errors.New("sandbox sessions require host-owned structured native commands")
+	}
 	if (r.Command == "") == (r.Executable == "") {
 		return ProcessResult{}, errors.New("provide exactly one shell command or native executable")
 	}
-	if len(r.Input) > 1<<20 {
-		return ProcessResult{}, errors.New("standard input exceeds 1 MiB")
+	inputLimit := 1 << 20
+	if r.SeparateOutput {
+		inputLimit = 64 << 20
+	}
+	if len(r.Input) > inputLimit {
+		return ProcessResult{}, errors.New("standard input exceeds the command input limit")
 	}
 	if r.Executable != "" && (!filepath.IsAbs(r.Executable) || runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(r.Executable), ".exe")) {
 		return ProcessResult{}, errors.New("native executable must be an absolute executable path")

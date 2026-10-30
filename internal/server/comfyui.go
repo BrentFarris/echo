@@ -300,6 +300,15 @@ func (s *Server) saveComfyUIMedia(ctx context.Context, scope domain.ExecutionSco
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		return s.Files.WriteBytes(scope.Bot, destination, data, boolean(args, "overwrite"))
+		var value map[string]any
+		registration, err := s.Files.CoordinateFile(ctx, scope.Bot, "edit", destination, "", func() error {
+			var err error
+			value, err = s.Files.WriteBytes(scope.Bot, destination, data, boolean(args, "overwrite"))
+			return err
+		})
+		if value != nil && registration.Pending {
+			value["registration"] = registration
+		}
+		return value, err
 	})
 }
