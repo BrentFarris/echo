@@ -541,6 +541,7 @@
 .terminal-toolbar svg,.terminal-saved-popover svg { width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0; }
 .terminal-context-select { height:26px; min-width:65px;max-width:180px;padding:2px 20px 2px 6px;font-size:11px;border-color:transparent;background:transparent; }
 .terminal-context-select:hover,.terminal-context-select:focus { border-color:var(--border); }
+.terminal-context-select option { color:var(--text);background-color:var(--surface); }
 .terminal-panel-tabs:has(.terminal-panel-tab:only-child) { display:none; }
 .terminal-bot-label { display:none; }
 .terminal-title-button { flex:0 1 auto; }

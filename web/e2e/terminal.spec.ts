@@ -68,13 +68,14 @@ test('persistent dock, folder shortcuts, saved commands, bot isolation and lifec
     await handle.focus(); await page.keyboard.press('ArrowUp');
     await page.getByRole('button', { name: 'Maximize terminal', exact: true }).click();
     await expect(page.locator('.terminal-dock')).toHaveClass(/is-maximized/);
-    await page.getByRole('button', { name: 'Restore terminal size', exact: true }).click();
     await page.getByLabel('Terminal bot').selectOption(other.id);
-    await page.getByRole('button', { name: 'Open terminal', exact: true }).click();
+    await expect(page.locator('.terminal-dock')).toHaveClass(/is-open.*is-maximized/);
     await expect(page.locator('.terminal-status-text')).toHaveText('Running');
+    await page.getByRole('button', { name: 'Restore terminal size', exact: true }).click();
     await expect(page.getByLabel('Change folder')).toHaveCount(0);
     expect((await json(page, `/api/v1/plugins/terminal/bots/${other.id}/saved-commands`)).commands).toHaveLength(0);
     await page.getByLabel('Terminal bot').selectOption('echo');
+    await expect(page.locator('.terminal-dock')).toHaveClass(/is-open/);
     await page.reload();
     await expect(page.locator('.terminal-status-text')).toHaveText('Running');
     expect((await json(page, `${base}/sessions`)).sessions[0].id).toBe(session.id);
@@ -145,7 +146,7 @@ test('remote terminal remains on its host and reconnects without replaying input
   await expect.poll(async () => (await json(page, '/api/v1/swarm/state')).instances.some((i: any) => i.node.nodeId === node.nodeId && i.state?.plugins.some((p: any) => p.id === 'terminal' && p.enabled))).toBe(true);
   await page.reload();
   await page.getByLabel('Terminal bot').selectOption(`${node.nodeId}:echo`);
-  await page.getByRole('button', { name: 'Open terminal', exact: true }).click();
+  await expect(page.locator('.terminal-dock')).toHaveClass(/is-open/);
   await expect(page.locator('.terminal-status-text')).toHaveText('Running');
   const session = (await json(page, `${remote}/plugins/terminal/bots/echo/sessions`)).sessions[0];
   await command(page, 'echo REMOTE_TERMINAL_OK');

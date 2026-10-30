@@ -1003,6 +1003,13 @@ export function updateTerminalDock(host: HTMLElement, bots: Bot[], plugins: Plug
 }
 function selectTerminalBot(id: string): void {
   const bot = availableBots.find(b => b.id === id); if (!bot || !dockHost) return;
+  // Switching shell context should leave the visible dock exactly where it is.
+  if (mountedBot && mountedBot.id !== id) {
+    if (openBots.has(mountedBot.id)) openBots.add(id); else openBots.delete(id);
+    if (maximizedBots.has(mountedBot.id)) maximizedBots.add(id); else maximizedBots.delete(id);
+    heights.set(id, terminalHeight(mountedBot.id));
+    persistPreferences();
+  }
   selectedBot = id;
   try { localStorage.setItem(`echo2:terminal-bot:${entryNode}`, id); } catch { /* Optional. */ }
   mountTerminalDock(dockHost, bot);
