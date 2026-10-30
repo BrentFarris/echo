@@ -1,4 +1,5 @@
 import { pluginAvailable } from './apps';
+import { pluginCSP, PluginNetworkBridge, pluginNetworkMethod } from './pluginNetwork';
 import { builtinApp } from './builtinApps';
 import { escapeHTML as esc } from './helpers';
 import type { Bot, Plugin, Generation } from './types';
@@ -8,7 +9,7 @@ export type AppAPI = <T = unknown>(path: string, method?: string, body?: unknown
 export type NativeFileTarget = { botId: string; ref: { rootId: string; path: string }; kind: 'file' | 'directory' };
 export type NativeApp = { update(bots: Bot[], plugin: Plugin): void; visible(value: boolean): void; beforeClose(): Promise<boolean>; dispose(): void; openFile?(target: NativeFileTarget): Promise<void> };
 export type NativeAppContext = { api: AppAPI; client?: InstanceClient; bots: Bot[]; plugin: Plugin; botId: string; configureBot(id: string): void; generationFor?(node: string): Generation; openModelSettings?(node: string): void };
-type View = { id: string; title: string; html: string; kind: string; digest: string };
+type View = { id: string; title: string; html: string; kind: string; digest: string; network?: { origins: string[] } };
 type Mode = 'floating' | 'embedded';
 type Options = { embeddedHost?: HTMLElement; navigate?(route: string | null): void; configureBot?(id: string): void; generationFor?(node: string): Generation; openModelSettings?(node: string): void };
 type AppWindow = { key: string; element: HTMLElement; frame?: HTMLIFrameElement; native?: NativeApp; pluginId: string; viewId: string; botId: string; digest: string; mode: Mode; close(force?: boolean): Promise<void>; layout(): void };
@@ -117,6 +118,7 @@ export class PluginWindows {
     element.innerHTML = `<header tabindex="0" aria-label="Move ${esc(view.title)} with arrow keys"><strong>${esc(view.title)}${splitID(pluginId)[0] !== entryNode ? `<small class="machine-chip">${esc(machineName(splitID(pluginId)[0]))}</small>` : ''}</strong><button type="button" data-presentation>Open Embedded</button><button type="button" class="icon" data-close aria-label="Close plugin" title="Close">×</button></header><div class="plugin-content"></div>`;
     const header = element.querySelector<HTMLElement>('header')!, content = element.querySelector<HTMLElement>('.plugin-content')!;
     const nonce = crypto.randomUUID(), layoutKey = `echo2:window:${pluginId}:${viewId}`;
+    const network = new PluginNetworkBridge(pluginId, viewId, botId, view.digest);
     let geometry = { x: 300, y: 100, w: localID(pluginId) === 'monaco-editor' ? 1000 : 400, h: localID(pluginId) === 'monaco-editor' ? 700 : 400 };
     let mode: Mode = view.kind === 'embedded' ? 'embedded' : 'floating';
     try {
@@ -137,7 +139,7 @@ export class PluginWindows {
         if (!force && win.native && !await win.native.beforeClose()) { closing = false; return; }
         if (closed) return; closed = true;
         const hadFocus = element.contains(document.activeElement);
-        save(); observer.disconnect(); removeEventListener('resize', layout); removeEventListener('message', listener);
+        save(); network.close(); observer.disconnect(); removeEventListener('resize', layout); removeEventListener('message', listener);
         win.native?.dispose(); this.windows.delete(key); element.remove();
         if (this.embeddedKey === key) { this.embeddedKey = null; this.options.navigate?.(null); }
         if (hadFocus && returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
@@ -160,7 +162,9 @@ export class PluginWindows {
       if (data.nonce !== nonce || data.pluginId !== pluginId || data.viewId !== viewId || data.type !== 'echo-plugin-request') return;
       if (data.method === 'window.close') { await win.close(); return; }
       try {
-        const result = await this.api(`/plugins/${encodeURIComponent(pluginId)}/bridge`, 'POST', { botId, method: data.method, params: data.params });
+        const result = pluginNetworkMethod(data.method)
+          ? await network.call(data.method, data.params)
+          : await this.api(`/plugins/${encodeURIComponent(pluginId)}/bridge`, 'POST', { botId, digest: view.digest, method: data.method, params: data.params });
         if (!closed) win.frame.contentWindow!.postMessage({ type: 'echo-plugin-response', nonce, id: data.id, result }, '*');
       } catch (error) { if (!closed) win.frame.contentWindow!.postMessage({ type: 'echo-plugin-response', nonce, id: data.id, error: String(error) }, '*'); }
     };
@@ -194,7 +198,7 @@ export class PluginWindows {
         if (closed) win.native?.dispose();
       } else {
         const frame = document.createElement('iframe'); frame.title = view.title; frame.sandbox.add('allow-scripts'); win.frame = frame;
-        frame.srcdoc = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'"><style>:root{font-family:system-ui;background:${theme().background};color:${theme().text}}</style>${view.html}`;
+        frame.srcdoc = `<meta http-equiv="Content-Security-Policy" content="${pluginCSP(view.network?.origins)}"><style>:root{font-family:system-ui;background:${theme().background};color:${theme().text}}</style>${view.html}`;
         content.append(frame);
       }
     } catch (error) { await win.close(true); throw error; }

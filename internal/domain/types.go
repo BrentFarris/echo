@@ -197,22 +197,29 @@ type AppRegistration struct {
 	Icon   string `json:"icon,omitempty"`
 }
 type PluginManifest struct {
-	API          int              `json:"api"`
-	ID           string           `json:"id"`
-	Name         string           `json:"name"`
-	Version      string           `json:"version"`
-	Scope        string           `json:"scope"`
-	Builtin      bool             `json:"builtin"`
-	Enabled      bool             `json:"enabled"`
-	Capabilities []string         `json:"capabilities"`
-	Tools        []Tool           `json:"tools"`
-	Views        []View           `json:"views,omitempty"`
-	App          *AppRegistration `json:"app,omitempty"`
-	Renderers    []string         `json:"renderers,omitempty"`
-	Providers    []string         `json:"providers,omitempty"`
-	Settings     map[string]any   `json:"settings"`
-	Config       map[string]any   `json:"config"`
-	Digest       string           `json:"digest,omitempty"`
-	Backend      string           `json:"backend,omitempty"`
-	Pending      bool             `json:"pending"`
+	API                     int              `json:"api"`
+	ID                      string           `json:"id"`
+	Name                    string           `json:"name"`
+	Version                 string           `json:"version"`
+	Scope                   string           `json:"scope"`
+	Builtin                 bool             `json:"builtin"`
+	Enabled                 bool             `json:"enabled"`
+	Capabilities            []string         `json:"capabilities"`
+	Network                 *PluginNetwork   `json:"network,omitempty"`
+	RequestedNetworkOrigins []string         `json:"requestedNetworkOrigins,omitempty"`
+	Tools                   []Tool           `json:"tools"`
+	Views                   []View           `json:"views,omitempty"`
+	App                     *AppRegistration `json:"app,omitempty"`
+	Renderers               []string         `json:"renderers,omitempty"`
+	Providers               []string         `json:"providers,omitempty"`
+	Settings                map[string]any   `json:"settings"`
+	Config                  map[string]any   `json:"config"`
+	Digest                  string           `json:"digest,omitempty"`
+	Backend                 string           `json:"backend,omitempty"`
+	Pending                 bool             `json:"pending"`
+}
+
+// PluginNetwork grants exact origins, including their scheme and port.
+type PluginNetwork struct {
+	Origins []string `json:"origins"`
 }

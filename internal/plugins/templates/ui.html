@@ -13,8 +13,43 @@ document.addEventListener('click',event=>{
 });
 // Optional bridge: Echo delivers a per-window nonce, identity and theme.
 let echo;
+const echoPending=new Map();
+let echoReadyResolve;
+const echoReady=new Promise(resolve=>{echoReadyResolve=resolve});
+// Network methods require declared capabilities AND approved network.origins.
+// HTTP example (declare web.request and https://example.com):
+// const response=await echoCall('web.request',{url:'https://example.com',method:'GET'});
+// Remote assets use ordinary tags, e.g. <img src="https://example.com/image.png">,
+// and require that HTTP(S) origin too. Assets load from the viewing device.
+async function echoCall(method,params={}){
+ await echoReady;
+ const id=crypto.randomUUID();
+ return new Promise((resolve,reject)=>{echoPending.set(id,{resolve,reject});
+  parent.postMessage({type:'echo-plugin-request',nonce:echo.nonce,pluginId:echo.pluginId,viewId:echo.viewId,id,method,params},'*');
+ });
+}
+// Declare websocket.open/send/receive/close and the exact ws:// or wss:// origin.
+// const socket=await echoSocket('ws://localhost:8080');
+// socket.addEventListener('message',event=>console.log(event.detail));
+// await socket.send('hello'); await socket.close();
+// APIs and WebSockets connect from the machine hosting this plugin.
+async function echoSocket(url,options={}){
+ const {handle,protocol}=await echoCall('websocket.open',{url,...options});
+ const socket=new EventTarget();let closed=false;
+ socket.protocol=protocol;
+ socket.send=(data,binary=false)=>echoCall('websocket.send',{handle,data,binary,encoding:binary?'base64':'text'});
+ socket.close=async()=>{if(closed)return;closed=true;try{await echoCall('websocket.close',{handle})}finally{socket.dispatchEvent(new Event('close'))}};
+ setTimeout(async()=>{
+  socket.dispatchEvent(new Event('open'));
+  try{while(!closed){const message=await echoCall('websocket.receive',{handle});if(!closed)socket.dispatchEvent(new CustomEvent('message',{detail:message}))}}
+  catch(error){if(!closed)socket.dispatchEvent(new CustomEvent('error',{detail:String(error)}))}
+  finally{if(!closed)await socket.close().catch(()=>{})}
+ },0);
+ return socket;
+}
 addEventListener('message',event=>{if(event.source!==parent)return;
- if(event.data.type==='echo-plugin-init'){echo=event.data;document.body.style.background=echo.theme.background;document.body.style.color=echo.theme.text;}
+ if(event.data.type==='echo-plugin-init'&&!echo){echo=event.data;document.body.style.background=echo.theme.background;document.body.style.color=echo.theme.text;echoReadyResolve();}
+ if(event.data.type==='echo-plugin-response'&&echo&&event.data.nonce===echo.nonce){const pending=echoPending.get(event.data.id);if(!pending)return;echoPending.delete(event.data.id);if(event.data.error)pending.reject(new Error(event.data.error));else pending.resolve(event.data.result);}
 });
 parent.postMessage({type:'echo-plugin-ready'},'*');
 </script>

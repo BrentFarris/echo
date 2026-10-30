@@ -11,6 +11,7 @@ import (
 	"github.com/brent/echo/internal/domain"
 	"github.com/brent/echo/internal/plugins"
 	"github.com/brent/echo/internal/server"
+	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/bcrypt"
 	"log"
 	"net/http"
@@ -78,6 +79,31 @@ func main() {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/", app.Handler())
+	// Network acceptance endpoints are only part of this test fixture binary.
+	mux.HandleFunc("/__fixtures/network/http", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"method": r.Method, "cookie": r.Header.Get("Cookie"), "machine": *name})
+	})
+	mux.HandleFunc("/__fixtures/network/asset.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript")
+		fmt.Fprint(w, `document.body.dataset.networkAsset='loaded'`)
+	})
+	mux.HandleFunc("/__fixtures/network/socket", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			kind, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if conn.WriteMessage(kind, data) != nil {
+				return
+			}
+		}
+	})
 	mux.HandleFunc("POST /__fixtures/app", func(w http.ResponseWriter, r *http.Request) {
 		var manifest domain.PluginManifest
 		if err := json.NewDecoder(r.Body).Decode(&manifest); err != nil {

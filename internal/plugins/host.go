@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	networkbroker "github.com/brent/echo/internal/broker"
 	"github.com/brent/echo/internal/domain"
 	"github.com/brent/echo/internal/store"
 	"github.com/tetratelabs/wazero"
@@ -25,13 +26,14 @@ import (
 
 type Broker func(context.Context, domain.ExecutionScope, string, json.RawMessage) (any, error)
 type Host struct {
-	Store    *store.Store
-	Dir      string
-	runtime  wazero.Runtime
-	compiled wazero.CompiledModule
-	broker   Broker
-	mu       sync.Mutex
-	active   map[string]map[string]context.CancelFunc
+	Store     *store.Store
+	Dir       string
+	runtime   wazero.Runtime
+	compiled  wazero.CompiledModule
+	broker    Broker
+	mu        sync.Mutex
+	packageMu sync.Mutex
+	active    map[string]map[string]context.CancelFunc
 }
 type invocation struct {
 	scope    domain.ExecutionScope
@@ -220,6 +222,8 @@ func (h *Host) Invoke(ctx context.Context, scope domain.ExecutionScope, name str
 			defer func() { h.mu.Lock(); delete(h.active[m.ID], invocationID); h.mu.Unlock() }()
 			v := &invocation{scope: scope, manifest: m, broker: h.broker}
 			ctx = context.WithValue(ctx, invocationKey{}, v)
+			ctx, closeNetwork := networkbroker.WithNetworkSession(ctx)
+			defer closeNetwork()
 			input, _ := json.Marshal(map[string]any{"method": t.Capability, "params": json.RawMessage(args), "tool": name})
 			var output limitedWriter
 			compiled := h.compiled
@@ -325,6 +329,8 @@ func Validate(schema map[string]any, args json.RawMessage) error {
 // Install never executes package scripts. The immutable digest includes every
 // executable input. New capabilities remain pending until a direct owner grant.
 func (h *Host) Install(m domain.PluginManifest, wasm []byte) (domain.PluginManifest, error) {
+	h.packageMu.Lock()
+	defer h.packageMu.Unlock()
 	if !validID.MatchString(m.ID) || m.API != 1 || strings.TrimSpace(m.Name) == "" {
 		return m, errors.New("plugin needs API 1, a lowercase kebab-case id, and a name")
 	}
@@ -336,11 +342,19 @@ func (h *Host) Install(m domain.PluginManifest, wasm []byte) (domain.PluginManif
 		return m, errors.New("built-in packages cannot be replaced")
 	}
 	granted := old.Capabilities
+	var grantedOrigins []string
+	if old.Network != nil {
+		grantedOrigins = old.Network.Origins
+	}
 	if old.Pending {
 		granted = nil
+		grantedOrigins = nil
 		var previous domain.PluginManifest
 		if h.Store.Get("plugin-previous", m.ID, &previous) == nil && !previous.Pending {
 			granted = previous.Capabilities
+			if previous.Network != nil {
+				grantedOrigins = previous.Network.Origins
+			}
 		}
 	}
 	if len(m.Tools) > 0 && len(wasm) == 0 {
@@ -418,6 +432,19 @@ func (h *Host) Install(m domain.PluginManifest, wasm []byte) (domain.PluginManif
 	}
 	m.Builtin = false
 	m.Pending = false
+	m.RequestedNetworkOrigins = nil
+	if m.Network != nil {
+		origins, err := networkbroker.NormalizeNetworkOrigins(m.Network.Origins)
+		if err != nil {
+			return m, err
+		}
+		m.Network = &domain.PluginNetwork{Origins: origins}
+		for _, origin := range origins {
+			if !slices.Contains(grantedOrigins, origin) {
+				m.RequestedNetworkOrigins = append(m.RequestedNetworkOrigins, origin)
+			}
+		}
+	}
 	m.Enabled = true
 	if m.Scope == "" {
 		m.Scope = "bot"
@@ -433,6 +460,10 @@ func (h *Host) Install(m domain.PluginManifest, wasm []byte) (domain.PluginManif
 			m.Pending = true
 			m.Enabled = false
 		}
+	}
+	if len(m.RequestedNetworkOrigins) > 0 {
+		m.Pending = true
+		m.Enabled = false
 	}
 	m.Digest = ""
 	m.Backend = ""
@@ -470,6 +501,8 @@ func (h *Host) Approve(id string) (domain.PluginManifest, error) {
 	return h.ApproveDigest(id, m.Digest)
 }
 func (h *Host) ApproveDigest(id, digest string) (domain.PluginManifest, error) {
+	h.packageMu.Lock()
+	defer h.packageMu.Unlock()
 	m, e := h.Get(id)
 	if e != nil {
 		return m, e
@@ -478,10 +511,13 @@ func (h *Host) ApproveDigest(id, digest string) (domain.PluginManifest, error) {
 		return m, errors.New("plugin changed since review; review its current permissions and digest")
 	}
 	m.Pending = false
+	m.RequestedNetworkOrigins = nil
 	m.Enabled = true
 	return m, h.Save(m)
 }
 func (h *Host) Rollback(id string) error {
+	h.packageMu.Lock()
+	defer h.packageMu.Unlock()
 	var previous domain.PluginManifest
 	if e := h.Store.Get("plugin-previous", id, &previous); e != nil {
 		return e

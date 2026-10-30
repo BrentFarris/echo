@@ -438,34 +438,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 		view, e := plugins.FloatingView(m, r.PathValue("view"))
 		respond(w, struct {
 			domain.View
-			Digest string `json:"digest"`
-		}{view, m.Digest}, e)
+			Digest  string                `json:"digest"`
+			Network *domain.PluginNetwork `json:"network,omitempty"`
+		}{view, m.Digest, m.Network}, e)
 	})
-	mux.HandleFunc("POST /api/v1/plugins/{id}/bridge", func(w http.ResponseWriter, r *http.Request) {
-		var a struct {
-			BotID  string          `json:"botId"`
-			Method string          `json:"method"`
-			Params json.RawMessage `json:"params"`
-		}
-		if e := decode(w, r, &a); e != nil {
-			respond(w, nil, e)
-			return
-		}
-		if a.BotID == "" {
-			a.BotID = "echo"
-		}
-		b, e := s.Bot(a.BotID)
-		if e != nil {
-			respond(w, nil, e)
-			return
-		}
-		if !strings.HasPrefix(a.Method, "storage.") {
-			respond(w, nil, errors.New("UI bridge supports only namespaced storage"))
-			return
-		}
-		v, e := s.pluginCall(r.Context(), domain.ExecutionScope{Bot: b, PluginID: r.PathValue("id")}, a.Method, a.Params)
-		respond(w, v, e)
-	})
+	mux.HandleFunc("POST /api/v1/plugins/{id}/bridge", s.pluginBridge)
+	mux.HandleFunc("GET /api/v1/plugins/{id}/network", s.pluginNetworkRelay)
 	mux.HandleFunc("POST /api/v1/schedules", func(w http.ResponseWriter, r *http.Request) {
 		var a calendar.Schedule
 		if e := decode(w, r, &a); e != nil {

@@ -294,6 +294,13 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 	if e != nil {
 		return nil, e
 	}
+	if pluginNetworkMethod(method) && !manifest.Builtin {
+		// Never rely on the bot snapshot captured when a long-lived view opened.
+		scope.Bot, e = s.Bot(scope.Bot.ID)
+		if e != nil {
+			return nil, e
+		}
+	}
 	if !s.Plugins.Enabled(scope.Bot, scope.PluginID) {
 		return nil, errors.New("plugin disabled")
 	}
@@ -357,8 +364,13 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		}
 		return "saved", s.Store.Put(ns, key, a["value"])
 	case "web.get":
+		if !manifest.Builtin {
+			return s.pluginNetworkCall(ctx, manifest, method, raw)
+		}
 		grants, _ := s.Plugins.Get("web-get")
 		return broker.Fetch(ctx, text(a, "url"), stringsValue(grants.Config["allowedOrigins"]))
+	case "web.request", "websocket.open", "websocket.send", "websocket.receive", "websocket.close":
+		return s.pluginNetworkCall(ctx, manifest, method, raw)
 	case "web.search":
 		base, _ := manifest.Config["url"].(string)
 		if base == "" {
