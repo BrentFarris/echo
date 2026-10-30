@@ -18,6 +18,16 @@ Run `echo.exe`. Echo opens the installed desktop app when available, falling bac
 .\echo.exe -port 3740 -data C:\path\to\echo-data
 ```
 
+## Notes
+
+Open **Apps → Notes** for a global Markdown notebook. Notes starts enabled and supports the app dock, embedded view and floating windows. Each note stays on its chosen Echo machine, outside workspaces; the combined list includes authorized swarm machines with Notes enabled. Use **New note on** to choose where to create one, and filter the list by machine, hashtag or bot. Search matches titles and Markdown bodies.
+
+Existing notes open in read-only rendered view. **Edit** enables the title and Markdown source; **Done** saves pending changes and returns to rendered view. Changes autosave after 750 ms, and Ctrl/Cmd+S saves immediately. Notes supports sanitized GitHub-flavored Markdown, including tables and noneditable task checkboxes. Web links and images work; workspace-relative files and attachments are not supported. Titles allow 120 characters and Markdown bodies up to 1 MiB.
+
+Write `#hashtags`, `@bot` or `@machine.bot` to organize notes. Autocomplete supports arrow keys, Enter/Tab and Escape. Hashtags are case-insensitive and allow letters, numbers, underscores and hyphens; code, escaped markers, HTML and URL destinations do not create tags. Bare bot handles refer to the note's owning machine. Existing resolved mentions retain stable bot identities through renames; unavailable bots retain their historical label. Click a tag or bot chip to filter the list. Mentions do not contact bots, and notes are not exposed to model tools or model context.
+
+Previously loaded notes remain readable from this browser's cache when their machine is unavailable. Editing waits for reconnection; existing unsaved drafts are retained across reloads in that tab's browser recovery storage. Separate Notes windows and tabs cannot clear each other's recovery drafts. Conflicting saves never overwrite newer content: choose **Load latest** to discard the local draft or **Save draft as new note** to retain both versions. Browser recovery is not a backup; clearing site data removes cached notes and unsaved recovery drafts. Disabling Notes retains saved notes on its machine. Revoked machines disappear from the app and its cache. There is no cross-machine replication, automatic movement or old-workspace note import.
+
 ## Terminal
 
 The built-in **Terminal** plugin restores the original bottom dock and starts enabled. Expand its compact bar from any main view, use **Apps → Terminal**, or press **Ctrl+`** (**Cmd+`** on macOS). Drag its upper edge or use the focused separator's arrow keys to resize; maximize/restore and collapse keep the shell alive. **Kill** ends it; **Restart**, or Enter after exit, starts another shell.

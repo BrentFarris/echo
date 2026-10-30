@@ -60,7 +60,7 @@ func Builtins() []domain.PluginManifest {
 	ms = append(ms, comfyUIPlugin())
 	ms = append(ms, confluencePlugin())
 	ms = append(ms, jiraPlugin())
-	ms = append(ms, monacoEditorPlugin(), terminalPlugin())
+	ms = append(ms, monacoEditorPlugin(), terminalPlugin(), notesPlugin())
 	for i := range ms {
 		m := &ms[i]
 		m.API = 1

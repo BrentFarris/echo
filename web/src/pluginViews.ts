@@ -8,7 +8,7 @@ import { InstanceClient, entryNode, resourceID, resourceAPI, sameMachine, localI
 export type AppAPI = <T = unknown>(path: string, method?: string, body?: unknown) => Promise<T>;
 export type NativeFileTarget = { botId: string; ref: { rootId: string; path: string }; kind: 'file' | 'directory' };
 export type NativeApp = { update(bots: Bot[], plugin: Plugin): void; visible(value: boolean): void; beforeClose(): Promise<boolean>; dispose(): void; openFile?(target: NativeFileTarget): Promise<void> };
-export type NativeAppContext = { api: AppAPI; client?: InstanceClient; bots: Bot[]; plugin: Plugin; botId: string; configureBot(id: string): void; generationFor?(node: string): Generation; openModelSettings?(node: string): void };
+export type NativeAppContext = { api: AppAPI; client?: InstanceClient; bots: Bot[]; plugin: Plugin; botId: string; inventory?(): { bots: Bot[]; plugins: Plugin[] }; configureBot(id: string): void; generationFor?(node: string): Generation; openModelSettings?(node: string): void };
 type View = { id: string; title: string; html: string; kind: string; digest: string; network?: { origins: string[] } };
 type Mode = 'floating' | 'embedded';
 type Options = { openDock?(plugin: Plugin, botId: string): Promise<void>; embeddedHost?: HTMLElement; navigate?(route: string | null): void; configureBot?(id: string): void; generationFor?(node: string): Generation; openModelSettings?(node: string): void };
@@ -61,6 +61,7 @@ export class PluginWindows {
     const plugin = this.plugins.find(p => p.id === pluginId);
     botId = resourceID(plugin?.nodeId || entryNode, botId); const contextBot = botId;
     if (plugin?.scope === 'app') botId = resourceID(plugin.nodeId || entryNode, 'echo');
+    if (plugin?.builtin && localID(pluginId) === 'notes' && !builtinApp(plugin, viewId)) return Promise.reject(new Error('Update this machine to use Notes.'));
     if (plugin?.builtin && localID(pluginId) === 'terminal') {
       if (!isBuiltinDock(plugin, viewId)) return Promise.reject(new Error('Update this machine to use Terminal.'));
       if (!pluginAvailable(plugin, this.bots.find(b => b.id === botId))) return Promise.reject(new Error('Terminal is disabled.'));
@@ -129,7 +130,8 @@ export class PluginWindows {
     const header = element.querySelector<HTMLElement>('header')!, content = element.querySelector<HTMLElement>('.plugin-content')!;
     const nonce = crypto.randomUUID(), layoutKey = `echo2:window:${pluginId}:${viewId}`;
     const network = new PluginNetworkBridge(pluginId, viewId, botId, view.digest);
-    let geometry = { x: 300, y: 100, w: localID(pluginId) === 'monaco-editor' ? 1000 : 400, h: localID(pluginId) === 'monaco-editor' ? 700 : 400 };
+    const large = ['monaco-editor', 'notes'].includes(localID(pluginId));
+    let geometry = { x: 300, y: 100, w: large ? 1000 : 400, h: large ? 700 : 400 };
     let mode: Mode = view.kind === 'embedded' ? 'embedded' : 'floating';
     try {
       const saved = JSON.parse(localStorage.getItem(layoutKey) || 'null');
@@ -204,7 +206,7 @@ export class PluginWindows {
       if (load) {
         const module = await load();
         const node = plugin?.nodeId || entryNode;
-        if (!closed) win.native = await module.mount(content, { api: (path, method, body) => resourceAPI(path, method, body, node), client: new InstanceClient(node), bots: this.bots.filter(b => sameMachine(b, node)), plugin: plugin!, botId: contextBot, configureBot: id => this.options.configureBot?.(id), generationFor: node => this.options.generationFor?.(node) || { endpointId: "", model: "", thinking: "", temperature: .6 }, openModelSettings: node => this.options.openModelSettings?.(node) });
+        if (!closed) win.native = await module.mount(content, { api: (path, method, body) => resourceAPI(path, method, body, node), client: new InstanceClient(node), bots: this.bots.filter(b => sameMachine(b, node)), plugin: plugin!, botId: contextBot, inventory: localID(pluginId) === 'notes' ? () => ({ bots: this.bots, plugins: this.plugins }) : undefined, configureBot: id => this.options.configureBot?.(id), generationFor: node => this.options.generationFor?.(node) || { endpointId: "", model: "", thinking: "", temperature: .6 }, openModelSettings: node => this.options.openModelSettings?.(node) });
         if (closed) win.native?.dispose();
       } else {
         const frame = document.createElement('iframe'); frame.title = view.title; frame.sandbox.add('allow-scripts'); win.frame = frame;
