@@ -393,6 +393,44 @@ test('chat routes through tools, renders markdown, creates bots, and groups ever
   await page.screenshot({ path: 'test-results/echo2-chat.png', fullPage: true });
 });
 
+test('chat groups collapse independently and reset on reload', async ({ page }) => {
+  await setup(page);
+  for (let i = 0; i < 2; i++) await page.request.post('/api/v1/chats', { data: {} });
+  await page.request.post('/api/v1/bots', { data: { handle: 'kaiju', name: 'Kaiju', prompt: '', roots: [], plugins: {} } });
+  await page.reload();
+  await page.getByRole('button', { name: '＋ New chat', exact: true }).click();
+  await send(page, '@kaiju say hello');
+
+  const groups = page.locator('.chat-groups section');
+  const echoGroup = groups.filter({ has: page.locator('.group-label').filter({ hasText: /^Echo$/ }) });
+  const kaijuGroup = groups.filter({ has: page.locator('.group-label').filter({ hasText: /^Kaiju$/ }) });
+  const echoToggle = echoGroup.locator('.group-label');
+  await expect(echoGroup.locator('.chat-link')).toHaveCount(3);
+  await expect(kaijuGroup.locator('.chat-link')).toBeVisible();
+
+  await echoGroup.locator('.chat-link').first().click();
+  const selectedChat = new URL(page.url()).hash;
+  await echoToggle.click();
+  await expect(echoToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(echoGroup.locator('.chat-group-rows')).toBeHidden();
+  await expect(kaijuGroup.locator('.chat-link')).toBeVisible();
+  expect(new URL(page.url()).hash).toBe(selectedChat);
+
+  await page.getByRole('button', { name: '＋ New chat', exact: true }).click();
+  await expect(echoGroup.locator('.chat-link')).toHaveCount(4);
+  await expect(echoGroup.locator('.chat-group-rows')).toBeHidden();
+  await echoToggle.focus();
+  await echoToggle.press('Enter');
+  await expect(echoToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(echoGroup.locator('.chat-link').last()).toBeVisible();
+  await echoToggle.press('Space');
+  await expect(echoGroup.locator('.chat-group-rows')).toBeHidden();
+
+  await page.reload();
+  await expect(echoToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(echoGroup.locator('.chat-link').last()).toBeVisible();
+});
+
 test('installed renderer stays isolated, sanitizes output, and respects bot toggles', async ({ page }) => {
   await setup(page); expect((await page.request.post('/__fixtures/renderer')).ok()).toBe(true); await page.reload();
   try {

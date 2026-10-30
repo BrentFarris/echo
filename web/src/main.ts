@@ -59,6 +59,7 @@ let pickerStatus = '', pickerLoading = false;
 let suggestions: { label: string; hint: string; insert: string; ref?: Segment }[] = [];
 let referenceTimer = 0, referenceVersion = 0;
 let sidebarMarkup = '';
+const collapsedChatGroups = new Set<string>();
 let attachments: DraftAttachment[] = [], submitting = false;
 const stoppingChats = new Set<string>();
 const drafts = new Map<string, { text: string; references: Segment[]; generation: Generation; generationByNode: Record<string, Generation>; modelNode: string; attachments: DraftAttachment[] }>();
@@ -332,8 +333,17 @@ function renderSidebar() {
   if (filter.innerHTML !== options) { filter.innerHTML = options; filter.value = machineFilter; } filter.onchange = () => { machineFilter = filter.value; renderSidebar(); };
   const machines = (c: Chat) => [c.nodeId || entryNode, ...Object.keys(c.bots || {}).map(id => splitID(id)[0])];
   const chips = (nodes: string[]) => [...new Set(nodes)].filter(n => n !== entryNode).map(n => `<small class="machine-chip" title="${esc(n)}">${esc(machineName(n))}${instanceOnline(n) ? '' : ' · Offline'}</small>`).join('');
-  const markup = groupChats(state.chats.filter(c => !machineFilter || machines(c).includes(machineFilter))).map(group => `<section><div class="group-label">${esc(group.label)}<span class="chat-machines">${chips(group.chats.flatMap(machines))}</span></div>${group.chats.map(c => `<div class="chat-row ${!showingApps && !showingApp && c.id === chatId ? 'active' : ''}">${chatDot(c)}<button class="chat-link" data-chat="${esc(c.id)}" title="${esc(c.title)}"><span class="chat-link-title">${esc(c.title)}</span><span class="chat-machines">${chips(machines(c))}</span></button><button class="icon chat-remove" data-delete="${esc(c.id)}" aria-label="Delete ${esc(c.title)}">×</button></div>`).join('')}</section>`).join('') || '<p class="empty-list">Your chats will appear here.</p>';
+  const markup = groupChats(state.chats.filter(c => !machineFilter || machines(c).includes(machineFilter))).map((group, index) => {
+    const expanded = !collapsedChatGroups.has(group.key), rowsId = `chat-group-rows-${index}`;
+    return `<section><button type="button" class="group-label" data-group="${esc(group.key)}" aria-expanded="${expanded}" aria-controls="${rowsId}"><span class="group-chevron" aria-hidden="true"></span><span class="group-heading">${esc(group.label)}<span class="chat-machines">${chips(group.chats.flatMap(machines))}</span></span></button><div class="chat-group-rows" id="${rowsId}"${expanded ? '' : ' hidden'}>${group.chats.map(c => `<div class="chat-row ${!showingApps && !showingApp && c.id === chatId ? 'active' : ''}">${chatDot(c)}<button class="chat-link" data-chat="${esc(c.id)}" title="${esc(c.title)}"><span class="chat-link-title">${esc(c.title)}</span><span class="chat-machines">${chips(machines(c))}</span></button><button class="icon chat-remove" data-delete="${esc(c.id)}" aria-label="Delete ${esc(c.title)}">×</button></div>`).join('')}</div></section>`;
+  }).join('') || '<p class="empty-list">Your chats will appear here.</p>';
   if (markup !== sidebarMarkup) { q('.chat-groups').innerHTML = markup; sidebarMarkup = markup; }
+  for (const el of q('.chat-groups').querySelectorAll<HTMLButtonElement>('[data-group]')) el.onclick = () => {
+    const key = el.dataset.group!, collapsed = !collapsedChatGroups.has(key);
+    if (collapsed) collapsedChatGroups.add(key); else collapsedChatGroups.delete(key);
+    el.setAttribute('aria-expanded', String(!collapsed));
+    q<HTMLElement>('.chat-group-rows', el.parentElement!).hidden = collapsed;
+  };
   for (const el of document.querySelectorAll<HTMLButtonElement>('[data-chat]')) el.onclick = action(() => selectChat(el.dataset.chat!));
   for (const el of document.querySelectorAll<HTMLButtonElement>('[data-delete]')) el.onclick = action(async () => { if (submitting) return; await api(`/chats/${el.dataset.delete}`, 'DELETE'); releaseAttachments(drafts.get(el.dataset.delete!)?.attachments || []); drafts.delete(el.dataset.delete!); if (chatId === el.dataset.delete) { attachments = []; references = []; q<ReferenceInput>('#composer').value = ''; renderAttachments(); renderRefs(); autosizeComposer(); } await refresh(); });
   const count = state.occurrences.filter(j => j.status === 'missed').length; q('#missed-button').hidden = !count; q('#missed-button').textContent = `Missed jobs (${count})`;
