@@ -29,6 +29,7 @@ export function endpointForm(endpoint?: Endpoint, cloud = false) {
     <p class="subtle">Stream idle timeout resets whenever provider data or an SSE heartbeat arrives. Set it to -1 to disable inactivity detection.</p>
     <p class="subtle">A named reasoning effort is sent as <code>reasoning_effort</code> and takes precedence over the local-model thinking-token budget. Unsupported values return the provider's request error without retrying or stepping down.</p>
     <label class="check"><input name="compact" type="checkbox" ${endpoint?.compact !== false ? 'checked' : ''}> Automatically compact model context; keep full transcript</label>
+    <p class="subtle">This controls proactive compression. If a request exceeds the model's context window, Echo always tries to compress and continue. Tool results that still cannot fit are omitted from model context, while the full transcript stays available.</p>
     <label>API key<input name="key" type="password" autocomplete="new-password" placeholder="${endpoint?.credential ? 'Leave blank to keep saved credential' : 'Optional'}"><small>Saved in Windows Credential Manager.</small></label>
     <button class="primary">Save connection</button></form>`;
 }

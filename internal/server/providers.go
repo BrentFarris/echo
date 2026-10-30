@@ -79,6 +79,12 @@ func (s *Server) complete(ctx context.Context, endpoint domain.Endpoint, generat
 	if key != "" {
 		result.Content = strings.ReplaceAll(result.Content, key, "[redacted]")
 		result.Reasoning = strings.ReplaceAll(result.Reasoning, key, "[redacted]")
+		if result.Overflow != nil {
+			result.Overflow.Message = strings.ReplaceAll(result.Overflow.Message, key, "[redacted]")
+		}
+	}
+	if result.Overflow != nil {
+		return result, result.Overflow
 	}
 	seen := map[string]bool{}
 	for i := range result.Calls {
@@ -133,7 +139,12 @@ func (s *Server) providerOperation(ctx context.Context, scope domain.ExecutionSc
 		if e = json.Unmarshal(args, &input); e != nil {
 			return nil, e
 		}
-		return s.Model.Complete(ctx, invocation.Endpoint, invocation.Generation, input.Messages, input.Tools, invocation.Credential, invocation.Emit)
+		result, err := s.Model.Complete(ctx, invocation.Endpoint, invocation.Generation, input.Messages, input.Tools, invocation.Credential, invocation.Emit)
+		// WASI errors are text on the guest wire; retain typed overflow at the host boundary.
+		if model.IsContextOverflow(err) {
+			invocation.Err = err
+		}
+		return result, err
 	}
 	return nil, errors.New("unknown model capability")
 }

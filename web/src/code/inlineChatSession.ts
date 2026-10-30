@@ -14,6 +14,7 @@ export type InlineChatRequest = {
 };
 export type InlineChatEvent =
   | { type: "delta"; text: string }
+  | { type: "reset"; text: string }
   | { type: "proposal"; content: string; changes?: InlineChatChange[] }
   | { type: "status"; text: string }
   | { type: "done" }
@@ -59,7 +60,7 @@ export async function streamInlineChat(workspaceId: string, request: InlineChatR
     if (!event || typeof event !== 'object') throw new Error("Invalid inline chat response.");
     if (event.type === "error") throw new Error(typeof event.text === "string" ? event.text : "Invalid inline chat error.");
     if (event.type === "done") completed = true;
-    else if ((event.type === "delta" || event.type === "status") && typeof event.text === "string") { /* validated */ }
+    else if ((event.type === "delta" || event.type === "status" || event.type === "reset") && typeof event.text === "string") { /* validated */ }
     else if (event.type === "proposal" && validProposal(event, request.file.content)) { /* validated */ }
     else throw new Error("Invalid inline chat response.");
     receive(event);
@@ -138,6 +139,7 @@ export class InlineChatSession {
       await this.transport(this.workspaceId, request, abort.signal, event => {
         if (generation !== this.sequence || abort.signal.aborted) return;
         if (event.type === "delta") answer.content += event.text;
+        if (event.type === "reset") answer.content = event.text;
         if (event.type === "status") this.activity = event.text;
         if (event.type === "proposal") {
           this.proposal = event.content;

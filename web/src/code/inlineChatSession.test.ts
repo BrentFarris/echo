@@ -9,6 +9,21 @@ const file = { title: "draft", content: "before\r\n😀", selections: [{ startLi
 describe("inline conversation state", () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it("resets rejected output while preserving completed previews and earlier rounds", async () => {
+    const session = new InlineChatSession("workspace", "key", file, async (_w, _r, _signal, emit) => {
+      emit({ type: "delta", text: "Earlier round. " });
+      emit({ type: "proposal", content: "preview" });
+      emit({ type: "delta", text: "Rejected partial reply" });
+      emit({ type: "reset", text: "Earlier round. " });
+      emit({ type: "delta", text: "Recovered reply" });
+      emit({ type: "done" });
+    });
+    await session.send("edit", []);
+    expect(session.history[1].content).toBe("Earlier round. Recovered reply");
+    expect(session.proposal).toBe("preview");
+    expect(session.status).toBe("idle");
+  });
+
   it("accumulates proposals across follow-ups without changing the original buffer", async () => {
     const requests: InlineChatRequest[] = [];
     const transport: InlineChatTransport = async (_workspace, request, _signal, emit) => {
@@ -75,12 +90,12 @@ describe("inline conversation state", () => {
 
   it("parses split NDJSON and UTF-8 chunks, including an empty-file proposal", async () => {
     const events: InlineChatEvent[] = [];
-    const data = new TextEncoder().encode('{"type":"delta","text":"😀"}\n{"type":"proposal","content":"","changes":[]}\n{"type":"done"}\n');
+    const data = new TextEncoder().encode('{"type":"delta","text":"😀"}\n{"type":"reset","text":""}\n{"type":"proposal","content":"","changes":[]}\n{"type":"done"}\n');
     vi.stubGlobal("fetch", vi.fn(async () => new Response(new ReadableStream({ start(controller) {
       for (const byte of data) controller.enqueue(Uint8Array.of(byte)); controller.close();
     } }))));
     await streamInlineChat("workspace", { message: "edit", generation: { endpointId: "", model: "", thinking: "", temperature: .6 }, file: { ...file, content: "", selections: [] }, references: [], history: [] }, new AbortController().signal, event => events.push(event));
-    expect(events).toEqual([{ type: "delta", text: "😀" }, { type: "proposal", content: "", changes: [] }, { type: "done" }]);
+    expect(events).toEqual([{ type: "delta", text: "😀" }, { type: "reset", text: "" }, { type: "proposal", content: "", changes: [] }, { type: "done" }]);
   });
 
   it.each([

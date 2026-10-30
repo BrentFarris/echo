@@ -13,29 +13,39 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/brent/echo/internal/domain"
 )
 
 type Message struct {
-	Role    string            `json:"role"`
-	Content string            `json:"content"`
-	Parts   []ContentPart     `json:"-"`
-	Calls   []domain.ToolCall `json:"tool_calls,omitempty"`
-	CallID  string            `json:"tool_call_id,omitempty"`
+	ID           string            `json:"-"`
+	Protected    bool              `json:"-"`
+	ToolResultID string            `json:"-"` // Generated media belongs to this tool result.
+	Omitted      bool              `json:"-"`
+	Role         string            `json:"role"`
+	Content      string            `json:"content"`
+	Parts        []ContentPart     `json:"-"`
+	Calls        []domain.ToolCall `json:"tool_calls,omitempty"`
+	CallID       string            `json:"tool_call_id,omitempty"`
 }
 type Delta struct {
 	Content   string
 	Reasoning string
 }
 type Result struct {
-	Content      string            `json:"content"`
-	Reasoning    string            `json:"reasoning"`
-	Calls        []domain.ToolCall `json:"toolCalls"`
-	FinishReason string            `json:"finishReason"`
+	Usage        *domain.TokenUsage    `json:"usage,omitempty"`
+	Overflow     *ContextOverflowError `json:"overflow,omitempty"`
+	Content      string                `json:"content"`
+	Reasoning    string                `json:"reasoning"`
+	Calls        []domain.ToolCall     `json:"toolCalls"`
+	FinishReason string                `json:"finishReason"`
 }
-type Client struct{ HTTP *http.Client }
+type Client struct {
+	HTTP             *http.Client
+	unsupportedUsage sync.Map
+}
 type localEndpointKey struct{}
 
 func New() *Client {
@@ -162,7 +172,14 @@ func (c *Client) Complete(ctx context.Context, e domain.Endpoint, g domain.Gener
 			out.Calls[i].Function.Arguments = redact(out.Calls[i].Function.Arguments)
 		}
 		if err != nil {
-			err = errors.New(redact(err.Error()))
+			var overflow *ContextOverflowError
+			if errors.As(err, &overflow) {
+				copy := *overflow
+				copy.Message = redact(copy.Message)
+				err = &copy
+			} else if redact(err.Error()) != err.Error() {
+				err = errors.New(redact(err.Error()))
+			}
 		}
 	}()
 	ctx, cancel := context.WithCancel(ctx)
@@ -173,6 +190,10 @@ func (c *Client) Complete(ctx context.Context, e domain.Endpoint, g domain.Gener
 		defer timeoutCancel()
 	}
 	body := generationParameters(e, g)
+	usageKey := e.ID + "\x00" + e.URL + "\x00" + e.Model + "\x00" + g.Model
+	if _, unsupported := c.unsupportedUsage.Load(usageKey); !unsupported {
+		body["stream_options"] = map[string]bool{"include_usage": true}
+	}
 	body["messages"] = messages
 	if len(tools) > 0 {
 		defs := []any{}
@@ -181,32 +202,42 @@ func (c *Client) Complete(ctx context.Context, e domain.Endpoint, g domain.Gener
 		}
 		body["tools"] = defs
 	}
-	data, err := json.Marshal(body)
-	if err != nil {
-		return out, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, URL(e.URL, "/chat/completions"), bytes.NewReader(data))
-	if err != nil {
-		return out, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-	response, err := c.HTTP.Do(req)
-	if err != nil {
-		return out, err
+	var response *http.Response
+	for attempt := 0; attempt < 2; attempt++ {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return out, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, URL(e.URL, "/chat/completions"), bytes.NewReader(data))
+		if err != nil {
+			return out, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+		if key != "" {
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
+		response, err = c.HTTP.Do(req)
+		if err != nil {
+			return out, err
+		}
+		if response.StatusCode/100 != 2 {
+			b, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+			response.Body.Close()
+			if attempt == 0 && body["stream_options"] != nil && unsupportedStreamUsage(response.StatusCode, string(b)) {
+				c.unsupportedUsage.Store(usageKey, true)
+				delete(body, "stream_options")
+				continue
+			}
+			text := string(b)
+			if key != "" {
+				text = strings.ReplaceAll(text, key, "[redacted]")
+			}
+			return out, ProviderError(response.StatusCode, []byte(text))
+		}
+		break
 	}
 	defer response.Body.Close()
-	if response.StatusCode/100 != 2 {
-		b, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		text := string(b)
-		if key != "" {
-			text = strings.ReplaceAll(text, key, "[redacted]")
-		}
-		return out, fmt.Errorf("model HTTP %d: %s", response.StatusCode, text)
-	}
 	idle := time.Duration(e.StreamIdleTimeoutSeconds) * time.Second
 	if idle == 0 {
 		idle = 120 * time.Second
@@ -237,9 +268,8 @@ func (c *Client) Complete(ctx context.Context, e domain.Endpoint, g domain.Gener
 			return nil
 		}
 		var chunk struct {
-			Error *struct {
-				Message string `json:"message"`
-			} `json:"error"`
+			Error   json.RawMessage `json:"error"`
+			Usage   *wireUsage      `json:"usage"`
 			Choices []struct {
 				Delta struct {
 					Content      string `json:"content"`
@@ -257,8 +287,13 @@ func (c *Client) Complete(ctx context.Context, e domain.Endpoint, g domain.Gener
 		if err := json.Unmarshal([]byte(raw), &chunk); err != nil {
 			return fmt.Errorf("invalid model stream: %w", err)
 		}
-		if chunk.Error != nil {
-			return errors.New(chunk.Error.Message)
+		if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
+			return ProviderError(0, []byte(raw))
+		}
+		if chunk.Usage != nil {
+			if usage := chunk.Usage.normalized(); usage != nil {
+				out.Usage = usage
+			}
 		}
 		if len(chunk.Choices) == 0 {
 			return nil

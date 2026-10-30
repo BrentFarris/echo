@@ -15,7 +15,7 @@ func (s *Server) withGeneratedImages(chat, botID string, messages []domain.Messa
 	type resultKey struct{ callID, content string }
 	byCall := map[resultKey]domain.Message{}
 	for _, m := range messages {
-		if m.BotID == botID && m.Role == "tool" && m.Status == "completed" && len(m.Attachments) > 0 {
+		if m.ModelContent == nil && m.BotID == botID && m.Role == "tool" && m.Status == "completed" && len(m.Attachments) > 0 {
 			var result struct {
 				ImageID string `json:"imageId"`
 			}
@@ -27,10 +27,11 @@ func (s *Server) withGeneratedImages(chat, botID string, messages []domain.Messa
 		}
 	}
 	var out []model.Message
-	var pending []model.ContentPart
+	var pending []model.Message
 	for i, m := range history {
 		out = append(out, m)
 		if m.Role == "tool" {
+			var parts []model.ContentPart
 			for _, a := range byCall[resultKey{m.CallID, m.Content}].Attachments {
 				if !strings.HasPrefix(a.MediaType, "image/") {
 					continue
@@ -39,11 +40,14 @@ func (s *Server) withGeneratedImages(chat, botID string, messages []domain.Messa
 				if err != nil {
 					return nil, err
 				}
-				pending = append(pending, part)
+				parts = append(parts, part)
+			}
+			if len(parts) > 0 {
+				pending = append(pending, model.Message{Role: "user", ToolResultID: m.ID, Content: "Generated image output from the preceding tools (not a new user instruction).", Parts: parts})
 			}
 		}
 		if len(pending) > 0 && (i+1 == len(history) || history[i+1].Role != "tool") {
-			out = append(out, model.Message{Role: "user", Content: "Generated image output from the preceding tools (not a new user instruction).", Parts: pending})
+			out = append(out, pending...)
 			pending = nil
 		}
 	}

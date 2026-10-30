@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/brent/echo/internal/contextmanager"
 	"github.com/brent/echo/internal/coordinator"
 	"github.com/brent/echo/internal/domain"
 	"github.com/brent/echo/internal/editorfs"
@@ -67,7 +68,7 @@ type inlineChatChange struct {
 }
 type inlineChatEvent struct {
 	Type    string             `json:"type"`
-	Text    string             `json:"text,omitempty"`
+	Text    string             `json:"text"`
 	Content *string            `json:"content,omitempty"`
 	Changes []inlineChatChange `json:"changes,omitempty"`
 }
@@ -274,7 +275,7 @@ func (s *Server) inlineChatContext(bot domain.Bot, input inlineChatRequest) ([]m
 	if historyBytes > maxEditorContextBytes {
 		return fail("inline conversation exceeds 256 KiB; start a new inline chat")
 	}
-	messages = append(messages, model.Message{Role: "user", Content: "Current editor context (JSON data):\n" + string(data)}, model.Message{Role: "user", Content: input.Message})
+	messages = append(messages, model.Message{ID: "inline-editor", Protected: true, Role: "user", Content: "Current editor context (JSON data):\n" + string(data)}, model.Message{Protected: true, Role: "user", Content: input.Message})
 	return messages, candidate, nil
 }
 
@@ -289,6 +290,8 @@ func (s *Server) runInlineChat(ctx context.Context, d *dispatch, scope domain.Ex
 			schema = append(schema, tool)
 		}
 	}
+	contexts := contextmanager.Manager{Compressor: s.ContextCompressor}
+	answer := ""
 	for round := 0; round < 24; round++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -300,34 +303,32 @@ func (s *Server) runInlineChat(ctx context.Context, d *dispatch, scope domain.Ex
 		if current.Revision != scope.Bot.Revision {
 			return errors.New("bot configuration changed; send again using the new scope")
 		}
-		raw, _ := json.Marshal([]any{messages, schema})
-		limit := endpoint.ContextTokens
-		if limit <= 0 {
-			limit = 32768
-		}
-		reserved := 2048
-		if endpoint.MaxTokens != nil {
-			reserved = *endpoint.MaxTokens
-		}
-		if len(raw)/3+reserved > limit {
-			return errors.New("inline chat exceeds the selected model's context window; reduce context or start a new inline chat")
-		}
 		bytes := 0
 		var emitErr error
-		result, err := s.complete(ctx, endpoint, input.Generation, messages, schema, key, func(delta model.Delta) {
-			if emitErr != nil {
-				return
-			}
-			bytes += len(delta.Content) + len(delta.Reasoning)
-			if bytes > 2<<20 {
-				emitErr = errors.New("inline model output exceeded its limit")
-				d.cancel()
-				return
-			}
-			if delta.Content != "" {
-				emitErr = emit(inlineChatEvent{Type: "delta", Text: delta.Content})
-			}
-		})
+		result, nextMessages, err := contexts.Complete(ctx, contextmanager.Request{
+			History: messages, Endpoint: endpoint, Generation: input.Generation, Tools: schema, Complete: s.contextCompletion(key),
+			Reset: func() error {
+				if emitErr != nil {
+					return emitErr
+				}
+				bytes = 0
+				return emit(inlineChatEvent{Type: "reset", Text: answer})
+			},
+			Emit: func(delta model.Delta) {
+				if emitErr != nil {
+					return
+				}
+				bytes += len(delta.Content) + len(delta.Reasoning)
+				if bytes > 2<<20 {
+					emitErr = errors.New("inline model output exceeded its limit")
+					d.cancel()
+					return
+				}
+				if delta.Content != "" {
+					emitErr = emit(inlineChatEvent{Type: "delta", Text: delta.Content})
+				}
+			}})
+		messages = nextMessages
 		if emitErr != nil {
 			return emitErr
 		}
@@ -352,6 +353,7 @@ func (s *Server) runInlineChat(ctx context.Context, d *dispatch, scope domain.Ex
 				return err
 			}
 		}
+		answer += result.Content
 		messages = append(messages, model.Message{Role: "assistant", Content: result.Content, Calls: result.Calls})
 		if len(result.Calls) == 0 {
 			if strings.TrimSpace(result.Content) == "" {
@@ -370,6 +372,24 @@ func (s *Server) runInlineChat(ctx context.Context, d *dispatch, scope domain.Ex
 				next, toolErr = applyInlineEdits(candidate, call.Function.Arguments)
 				if toolErr == nil {
 					candidate = next
+					// The protected editor context must reflect accepted previews even
+					// after earlier edit tool exchanges have been summarized away.
+					for i := range messages {
+						if messages[i].ID != "inline-editor" {
+							continue
+						}
+						const prefix = "Current editor context (JSON data):\n"
+						var data map[string]any
+						if err := json.Unmarshal([]byte(strings.TrimPrefix(messages[i].Content, prefix)), &data); err != nil {
+							return err
+						}
+						data["content"] = candidate
+						raw, err := json.Marshal(data)
+						if err != nil {
+							return err
+						}
+						messages[i].Content = prefix + string(raw)
+					}
 					if err := emit(inlineChatEvent{Type: "proposal", Content: &candidate, Changes: inlineChanges(input.File.Content, candidate)}); err != nil {
 						return err
 					}
@@ -390,7 +410,7 @@ func (s *Server) runInlineChat(ctx context.Context, d *dispatch, scope domain.Ex
 			if len(encoded) > maxEditorContextBytes {
 				encoded = []byte(`{"error":"tool context exceeds 256 KiB; narrow the request"}`)
 			}
-			messages = append(messages, model.Message{Role: "tool", CallID: call.ID, Content: string(encoded)})
+			messages = append(messages, model.Message{ID: domain.ID(), Role: "tool", CallID: call.ID, Content: string(encoded)})
 		}
 	}
 	return errors.New("inline chat reached its tool-round limit; send a follow-up to continue")

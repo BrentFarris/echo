@@ -67,7 +67,7 @@ The service definitions contain no owner password. Linux startup before login ad
 
 ## Model connections
 
-Connect an existing compatible model server in **Settings → Local Models**, using its API base URL, for example `http://127.0.0.1:1234/v1`. Echo does not download or launch models. Model Settings contains connection/model selection, thinking and temperature; each send snapshots the selection for recipients on that machine. Automatic context compaction can be enabled per connection and never deletes stored history.
+Connect an existing compatible model server in **Settings → Local Models**, using its API base URL, for example `http://127.0.0.1:1234/v1`. Echo does not download or launch models. Model Settings contains connection/model selection, thinking and temperature; each send snapshots the selection for recipients on that machine. Proactive context compaction can be enabled per connection and never deletes stored history. Both regular and inline editor chats use provider-reported input tokens when available, estimating newly added context until the next response. Context-overflow recovery remains enabled even when proactive compression is off: Echo summarizes older context and retries the model request without rerunning tools. A tool response that cannot fit in minimal context is replaced with a model-facing notice to request smaller output; the original tool output and attachments remain in the regular chat transcript.
 
 ### Install Echo on your desktop
 

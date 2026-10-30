@@ -21,6 +21,7 @@ import (
 
 	"github.com/brent/echo/internal/broker"
 	"github.com/brent/echo/internal/calendar"
+	"github.com/brent/echo/internal/contextmanager"
 	"github.com/brent/echo/internal/coordinator"
 	"github.com/brent/echo/internal/credentials"
 	"github.com/brent/echo/internal/development"
@@ -34,6 +35,7 @@ import (
 )
 
 type Server struct {
+	ContextCompressor  contextmanager.Compressor // Nil selects the bounded summarizer.
 	jiraMu             sync.Mutex
 	confluenceMu       sync.Mutex
 	confluenceActive   map[string]context.CancelFunc

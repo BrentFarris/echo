@@ -111,7 +111,18 @@ type ForkOrigin struct {
 	ChatID    string `json:"chatId"`
 	MessageID string `json:"messageId"`
 }
+
+// TokenUsage is provider-reported usage for one request, not a running total.
+type TokenUsage struct {
+	InputTokens  int `json:"inputTokens"`
+	OutputTokens int `json:"outputTokens"`
+	TotalTokens  int `json:"totalTokens"`
+}
+
 type Message struct {
+	Usage *TokenUsage `json:"usage,omitempty"`
+	// ModelContent replaces only model input; original output and attachments stay inspectable.
+	ModelContent      *string      `json:"modelContent,omitempty"`
 	RerunUnavailable  bool         `json:"rerunUnavailable,omitempty"` // Derived when serving a transcript.
 	NodeID            string       `json:"nodeId,omitempty"`
 	ID                string       `json:"id"`
