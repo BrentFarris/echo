@@ -16,6 +16,51 @@ async function setup(page: Page) {
 }
 async function send(page: Page, value: string) { await page.getByRole('textbox', { name: 'Message', exact: true }).fill(value); await page.getByRole('button', { name: 'Send message', exact: true }).click(); }
 
+for (const welcome of [true, false]) test(`background refreshes preserve editing in ${welcome ? 'the welcome draft' : 'a saved chat'}`, async ({ page }) => {
+  let socket: WebSocketRoute | undefined;
+  await page.routeWebSocket('**/api/v1/events', ws => { socket = ws; });
+  await setup(page);
+  if (welcome) {
+    const state = await (await page.request.get('/api/v1/state')).json();
+    for (const chat of state.chats) await page.request.delete(`/api/v1/chats/${chat.id}`);
+    await page.goto('/');
+  }
+  await expect(page.locator('#connection')).toHaveText('');
+  await expect(page.locator('.brand-identity')).toContainText('Echo');
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  const value = () => composer.evaluate((el: any) => el.value as string);
+  const selection = () => composer.evaluate((el: any) => [el.selectionStart, el.selectionEnd]);
+  let refresh = 0;
+  await page.route('**/api/v1/state', async route => {
+    const state = await (await route.fetch()).json();
+    state.bots.find((bot: any) => bot.id === 'echo').name = `Echo refresh ${++refresh}`;
+    await route.fulfill({ json: state });
+  });
+  const backgroundRefresh = async () => {
+    const next = refresh + 1;
+    socket!.send(JSON.stringify({ type: 'changed', payload: {} }));
+    // The identity confirms the background state was applied, without focusing UI.
+    await expect(page.locator('.brand-identity')).toContainText(`Echo refresh ${next}`);
+  };
+
+  await composer.fill('Keep typing here'); await composer.press('Control+End');
+  await backgroundRefresh();
+  expect(await selection()).toEqual([16, 16]);
+  await expect(composer).toBeFocused();
+  await composer.pressSequentially('!'); await backgroundRefresh();
+  expect(await value()).toBe('Keep typing here!');
+  await composer.press('Control+Z'); expect(await value()).toBe('Keep typing here');
+  await composer.press('Control+Shift+Z'); expect(await value()).toBe('Keep typing here!');
+
+  await composer.press('Control+Home');
+  for (let i = 0; i < 4; i++) await composer.press('ArrowRight');
+  for (let i = 0; i < 7; i++) await composer.press('Shift+ArrowRight');
+  await backgroundRefresh();
+  expect(await selection()).toEqual([4, 11]);
+  await composer.pressSequentially(' writing');
+  expect(await value()).toBe('Keep writing here!');
+});
+
 test('chat releases sticky scrolling immediately and resumes only at the tail', async ({ page }) => {
   let socket: WebSocketRoute | undefined;
   await page.routeWebSocket('**/api/v1/events', ws => { socket = ws; ws.connectToServer(); });

@@ -325,9 +325,13 @@ function applyFreshState() {
   state = combineState(latestLocal, latestSwarm || { node: { nodeId: '', name: 'This machine', epoch: '', version: 1 }, enabled: false, peers: [], instances: [] });
   notifyUsageMachinesChanged();
   state.chats = state.chats.filter(c => !deletedChats.has(c.id));
-  chatId = resourceID(...splitID(chatId)); settingsNode ||= entryNode; modelNode ||= entryNode; if (!pendingNotificationHash && (!chatId || splitID(chatId)[0] === entryNode || selectedWasListed) && !state.chats.some(c => c.id === chatId)) {
+  chatId = resourceID(...splitID(chatId)); settingsNode ||= entryNode; modelNode ||= entryNode;
+  const fallbackChatId = state.chats[0]?.id || '';
+  // Restore drafts only when the selected chat changes. Repainting the welcome
+  // draft on background updates resets its caret and undo history.
+  if (!pendingNotificationHash && (!chatId || splitID(chatId)[0] === entryNode || selectedWasListed) && !state.chats.some(c => c.id === chatId) && chatId !== fallbackChatId) {
       if (chatId) { releaseAttachments(drafts.get(chatId)?.attachments || attachments); drafts.delete(chatId); }
-      chatId = state.chats[0]?.id || ''; if (!showingApps && !showingApp) history.replaceState(null, '', chatId ? '#' + chatId : location.pathname);
+      chatId = fallbackChatId; if (!showingApps && !showingApp) history.replaceState(null, '', chatId ? '#' + chatId : location.pathname);
       const draft = drafts.get(chatId);
       if (chatId) generation = { ...(draft?.generation || state.chats[0].generation) };
       references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references });
