@@ -21,6 +21,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.swarmRoutes(mux)
 	s.appRoutes(mux)
 	s.editorRoutes(mux)
+	s.terminalRoutes(mux)
 	s.developmentRoutes(mux)
 	s.sourceControlRoutes(mux)
 	s.confluenceRoutes(mux)

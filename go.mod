@@ -8,10 +8,15 @@ require (
 )
 
 require (
-	github.com/pmezard/go-difflib v1.0.0
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/pmezard/go-difflib v1.0.0
 	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06
+)
+
+require (
+	github.com/creack/pty v1.1.24 // indirect
+	github.com/u-root/u-root v0.16.0 // indirect
 )
 
 require (
@@ -20,8 +25,9 @@ require (
 )
 
 require (
+	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/dustin/go-humanize v1.1.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect

@@ -11,3 +11,9 @@ export function builtinApp(plugin: Plugin | undefined, viewId: string) {
   const compatible = !plugin?.nodeId || instances.get(plugin.nodeId)?.node.capabilities?.includes('native-monaco/1');
   return plugin?.builtin && compatible ? modules[`${localID(plugin.id)}/${viewId}`] : undefined;
 }
+
+// Dock presentation is host-owned; installed manifests cannot claim this slot.
+export function isBuiltinDock(plugin: Plugin | undefined, viewId: string): boolean {
+  return !!plugin?.builtin && localID(plugin.id) === 'terminal' && viewId === 'main' &&
+    (!plugin.nodeId || instances.get(plugin.nodeId)?.node.capabilities?.includes('native-terminal/1') === true);
+}

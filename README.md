@@ -2,7 +2,7 @@
 
 The chat-first Echo application now lives at the repository root. Echo, named bots, model streaming, scoped file operations and deterministic bot coordination form the core. Features are installed plugins. The previous application is kept temporarily in the Git-ignored `OLD/` folder for reference; its source, scripts, dependencies and local files are archived there.
 
-Open **Apps → Monaco Editor** for the built-in code editor. Choose a bot above the explorer to browse its configured folders; each bot keeps separate tabs, pins, drafts and undo history. A single click opens an italic preview, double-click keeps it open, and pinning protects it from closing. **Open in Window** and **Open Embedded** switch any app's presentation while retaining its contents. **Back to chat** hides the editor; **Close** asks about unsaved work. Editor Settings stores preferences in the Monaco plugin configuration. The editor includes bundled language services, search/replace, bookmarks, outline, Markdown and media previews, with inline AI chat; the old side chat, terminal, debugger and external-language-server integrations remain absent.
+Open **Apps → Monaco Editor** for the built-in code editor. Choose a bot above the explorer to browse its configured folders; each bot keeps separate tabs, pins, drafts and undo history. A single click opens an italic preview, double-click keeps it open, and pinning protects it from closing. **Open in Window** and **Open Embedded** switch any app's presentation while retaining its contents. **Back to chat** hides the editor; **Close** asks about unsaved work. Editor Settings stores preferences in the Monaco plugin configuration. The editor includes bundled language services, search/replace, bookmarks, outline, Markdown and media previews, with inline AI chat; the old side chat, debugger and external-language-server integrations remain absent. The Terminal plugin supplies the persistent bottom dock across chat and apps.
 
 Press **Ctrl+I** (**Cmd+I** on macOS) in an editable file or untitled buffer to open inline chat at your cursor or selection. The bot selected above the explorer answers and proposes changes using its own instructions and folders. Attach read-only file/folder context with `@`, ask follow-up questions, and review the original red/green inline previews. The checkmark accepts one undoable change into the editor buffer; **Ctrl+S** saves it. **X** discards the proposal, and **Stop** ends generation while retaining the last complete preview. Editing or changing the file invalidates an old proposal; use **Regenerate from current file** after resolving any disk conflict.
 
@@ -17,6 +17,16 @@ Run `echo.exe`. Echo opens the installed desktop app when available, falling bac
 # Optional separate test profile:
 .\echo.exe -port 3740 -data C:\path\to\echo-data
 ```
+
+## Terminal
+
+The built-in **Terminal** plugin restores the original bottom dock and starts enabled. Expand its compact bar from any main view, use **Apps → Terminal**, or press **Ctrl+`** (**Cmd+`** on macOS). Drag its upper edge or use the focused separator's arrow keys to resize; maximize/restore and collapse keep the shell alive. **Kill** ends it; **Restart**, or Enter after exit, starts another shell.
+
+Choose a bot in the bar to switch between independent sessions and saved-command lists. Remote bots show their machine name and require that machine's `native-terminal/1` capability. A **Change folder** dropdown appears only for bots with multiple folders. It sends a safely quoted directory-change command to the existing shell, just like typing it; use it at a shell prompt. The shortcut does not track manually entered directory changes. New sessions start in the first available configured folder, or the server user's home if the bot has no folders.
+
+**Saved** adds, edits, deletes and runs named commands in their saved order. Commands persist on the owning server across restarts; no old Echo data is imported. Ctrl+C copies highlighted terminal text and clears the selection after success; without a selection it sends an interrupt. Ctrl+V pastes through xterm, retaining bracketed-paste behavior. Native clipboard events and a copy fallback support browsers without the clipboard API. The terminal retains clickable links, 5,000 lines of scrollback and light/dark colors.
+
+These are owner-operated shells with the normal permissions of the Echo server user. Bot folder settings supply starting directories and shortcuts, not containment for the Terminal plugin. AI shell tools retain their separate restrictions. Browsers viewing the same bot share its server-owned shell. Collapse, navigation, browser closure and temporary network loss leave it running; reconnect restores buffered output without replaying input. Plugin disablement, bot deletion and server shutdown stop affected processes. Dock preferences are browser-local; processes and the bounded output replay do not survive a server restart.
 
 ## Connect machines with Swarm
 
@@ -131,7 +141,7 @@ File tools and plugin file capabilities record changes directly. Shell and Git/F
 
 ## Plugins and permissions
 
-**Apps**, beside Settings, lists plugins that explicitly register a GUI application. Click **Open** to launch its draggable window; opening the same app again focuses that window and preserves its contents. Apps opens in the main area, and selecting a chat returns to the conversation with its draft and attachments intact. A registered app is still the same plugin, with the same settings, permissions and enablement.
+**Apps**, beside Settings, lists plugins that explicitly register a GUI application. Click **Open** to launch its view (Terminal expands the bottom dock); opening the same app again focuses that window and preserves its contents. Apps opens in the main area, and selecting a chat returns to the conversation with its draft and attachments intact. A registered app is still the same plugin, with the same settings, permissions and enablement.
 
 Use **Dock** on an app card to add its square icon above Apps and Settings. The dock scrolls horizontally with touch, the mouse wheel, or keyboard navigation. Dock choices and their order are shared across browsers connected to this Echo profile and survive server restarts. Disabled apps and apps awaiting permission remain in the catalog with a Settings shortcut; their dock icons return when enabled again. **Undock** also works on inactive entries. Window positions remain local to each browser.
 

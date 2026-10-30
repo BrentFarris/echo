@@ -13,6 +13,6 @@ function licenses(label, dir) {
 const modules = execFileSync('go', ['list', '-deps', '-f', '{{if .Module}}{{.Module.Path}}|{{.Module.Version}}|{{.Module.Dir}}{{end}}', '.'], { encoding: 'utf8' });
 for (const entry of [...new Set(modules.trim().split(/\r?\n/))].sort()) { const [name, version, dir] = entry.split('|'); if (version && dir) licenses(`${name} ${version}`, dir); }
 licenses('Go runtime', execFileSync('go', ['env', 'GOROOT'], { encoding: 'utf8' }).trim());
-for (const name of ['dompurify', 'marked', 'vite', 'monaco-editor', '@tanstack/virtual-core', '@vscode/codicons']) licenses(name, join('web/node_modules', name));
+for (const name of ['dompurify', 'marked', 'vite', 'monaco-editor', '@tanstack/virtual-core', '@vscode/codicons', '@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-web-links']) licenses(name, join('web/node_modules', name));
 notices += '\n===== Unicode CLDR Windows timezone mapping =====\n' + readFileSync('internal/calendar/UNICODE-LICENSE.txt', 'utf8');
 writeFileSync('THIRD-PARTY-NOTICES.txt', notices.replace(/[ \t]+$/gm, ''));

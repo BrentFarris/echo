@@ -1,6 +1,6 @@
 import { pluginAvailable } from './apps';
 import { pluginCSP, PluginNetworkBridge, pluginNetworkMethod } from './pluginNetwork';
-import { builtinApp } from './builtinApps';
+import { builtinApp, isBuiltinDock } from './builtinApps';
 import { escapeHTML as esc } from './helpers';
 import type { Bot, Plugin, Generation } from './types';
 import { InstanceClient, entryNode, resourceID, resourceAPI, sameMachine, localID, splitID, machineName } from './instances';
@@ -11,7 +11,7 @@ export type NativeApp = { update(bots: Bot[], plugin: Plugin): void; visible(val
 export type NativeAppContext = { api: AppAPI; client?: InstanceClient; bots: Bot[]; plugin: Plugin; botId: string; configureBot(id: string): void; generationFor?(node: string): Generation; openModelSettings?(node: string): void };
 type View = { id: string; title: string; html: string; kind: string; digest: string; network?: { origins: string[] } };
 type Mode = 'floating' | 'embedded';
-type Options = { embeddedHost?: HTMLElement; navigate?(route: string | null): void; configureBot?(id: string): void; generationFor?(node: string): Generation; openModelSettings?(node: string): void };
+type Options = { openDock?(plugin: Plugin, botId: string): Promise<void>; embeddedHost?: HTMLElement; navigate?(route: string | null): void; configureBot?(id: string): void; generationFor?(node: string): Generation; openModelSettings?(node: string): void };
 type AppWindow = { key: string; element: HTMLElement; frame?: HTMLIFrameElement; native?: NativeApp; pluginId: string; viewId: string; botId: string; digest: string; mode: Mode; close(force?: boolean): Promise<void>; layout(): void };
 
 const popOutIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M14 3h7v7M21 3 11 13"/><path d="M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/></svg>';
@@ -61,6 +61,16 @@ export class PluginWindows {
     const plugin = this.plugins.find(p => p.id === pluginId);
     botId = resourceID(plugin?.nodeId || entryNode, botId); const contextBot = botId;
     if (plugin?.scope === 'app') botId = resourceID(plugin.nodeId || entryNode, 'echo');
+    if (plugin?.builtin && localID(pluginId) === 'terminal') {
+      if (!isBuiltinDock(plugin, viewId)) return Promise.reject(new Error('Update this machine to use Terminal.'));
+      if (!pluginAvailable(plugin, this.bots.find(b => b.id === botId))) return Promise.reject(new Error('Terminal is disabled.'));
+      if (!this.options.openDock) return Promise.reject(new Error('Terminal dock is unavailable.'));
+      const revision = this.revision;
+      return this.api(`/plugins/${encodeURIComponent(pluginId)}/views/${encodeURIComponent(viewId)}?botId=${encodeURIComponent(botId)}`).then(() => {
+        if (revision !== this.revision) throw new Error('Plugins changed while opening this app. Please try again.');
+        return this.options.openDock!(plugin, contextBot);
+      });
+    }
     const key = JSON.stringify([pluginId, viewId, botId]);
     const pending = this.pending.get(key); if (pending) return pending;
     const revision = this.revision;

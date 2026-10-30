@@ -1,3 +1,4 @@
+import { updateTerminalDock, openTerminalDock } from './terminal';
 import { pluginNetworkNotice } from './pluginNetwork';
 import { GenerationSettings, endpointGeneration } from './generationSettings';
 import { InstanceClient, resourceAPI, resourceURL, resourceID, localID, splitID, entryNode, instances, machineName, sameMachine, combineState, ownedEvent, ownedGeneration, instanceOnline, attachmentURL, type SwarmState } from './instances';
@@ -42,7 +43,7 @@ const app = document.querySelector<HTMLDivElement>('#app')!;
 const pwa = setupPWA(notice);
 let state: State = { bots: [], chats: [], endpoints: [], plugins: [], appDock: [], schedules: [], occurrences: [], runs: [] };
 let showingApps = location.hash === '#apps';
-let showingApp = !!parseAppRoute(location.hash);
+let showingApp = !!parseAppRoute(location.hash) && localID(parseAppRoute(location.hash)!.pluginId) !== "terminal";
 let chatId = (showingApps || showingApp) ? '' : parseChatRoute(location.hash).chatId, messages: Message[] = [], references: Segment[] = [];
 let pendingNotificationHash: string | null = parseChatRoute(location.hash).messageId ? location.hash : null;
 let openingNotification = false;
@@ -103,10 +104,10 @@ function shell() {
   chatGenerationSettings?.dispose();
   app.innerHTML = `<aside id="sidebar" class="sidebar"><div class="brand"><div class="brand-identity"></div><button class="icon sidebar-close" aria-label="Close sidebar">×</button></div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button></div><label class="machine-filter" hidden>Machine<select aria-label="Filter machines"></select></label><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="install-echo" hidden>Install Echo</button><button id="missed-button" hidden>Missed jobs</button><nav class="app-dock" aria-label="Docked apps" hidden></nav><div class="sidebar-footer-actions"><button id="apps-button">▦ Apps</button><button id="settings-button" data-update-notice="*">⚙ Settings</button></div></div></aside><div class="sidebar-backdrop" aria-hidden="true"></div>
   <main class="main"><header class="chat-header"><button class="icon mobile-menu" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">☰</button><strong id="chat-title">Echo</strong><span id="connection" class="subtle">Connecting…</span></header><div class="chat-view"><div class="bot-tabs-shell" hidden><button type="button" class="bot-tabs-scroll previous" aria-label="Scroll tabs left" title="Scroll tabs left">${icons.chevron}</button><div class="bot-tabs" role="tablist" aria-label="Bot threads"></div><button type="button" class="bot-tabs-scroll next" aria-label="Scroll tabs right" title="Scroll tabs right">${icons.chevron}</button></div><div id="bot-thread-panel" class="conversation-panel"><div class="chat-log" role="log" aria-label="Conversation"></div></div>
-  ${composerMarkup}</div><section class="apps-view" aria-labelledby="apps-heading" hidden><h1 id="apps-heading" tabindex="-1">Apps</h1><p class="subtle">Open your plugin apps or dock them for quick access.</p><div id="apps-catalog"></div></section><section class="embedded-app-view" hidden aria-label="App"></section></main>`;
+  ${composerMarkup}</div><section class="apps-view" aria-labelledby="apps-heading" hidden><h1 id="apps-heading" tabindex="-1">Apps</h1><p class="subtle">Open your plugin apps or dock them for quick access.</p><div id="apps-catalog"></div></section><section class="embedded-app-view" hidden aria-label="App"></section><div class="terminal-region" hidden></div></main>`;
   q('.chat-log').tabIndex = 0;
   chatScroll = createChatScrollFollower(q('.chat-log'));
-  pluginWindows = new PluginWindows(api, { embeddedHost: q('.embedded-app-view'), navigate: route => { if (route) { rememberDraft(); showingApp = true; showingApps = false; history.replaceState(null, '', route); renderMainView(); renderSidebar(); } else { void selectChat(chatId); } }, configureBot: id => editBot(currentBot(id)), generationFor: node => structuredClone(node === modelNode ? generation : generationByNode[node] || endpointGeneration(state.endpoints.find(e => sameMachine(e, node)))), openModelSettings: node => settings('models', node, false) });
+  pluginWindows = new PluginWindows(api, { openDock: async (plugin, botId) => { updateTerminalDock(q(".terminal-region"), state.bots, state.plugins); openTerminalDock(plugin, botId); }, embeddedHost: q('.embedded-app-view'), navigate: route => { if (route) { rememberDraft(); showingApp = true; showingApps = false; history.replaceState(null, '', route); renderMainView(); renderSidebar(); } else { void selectChat(chatId); } }, configureBot: id => editBot(currentBot(id)), generationFor: node => structuredClone(node === modelNode ? generation : generationByNode[node] || endpointGeneration(state.endpoints.find(e => sameMachine(e, node)))), openModelSettings: node => settings('models', node, false) });
   apps = new Apps(q('#apps-catalog'), q('.app-dock'), {
     open: async plugin => { setSidebarOpen(false, false); await openPlugin(plugin.id, plugin.app!.viewId); },
     dock: async (id, docked) => { await api<string[]>(`/plugins/${encodeURIComponent(id)}/app/dock`, 'PUT', { docked }); await refresh(); },
@@ -330,7 +331,7 @@ function applyFreshState() {
       renderRefs(); renderAttachments(); autosizeComposer(); messages = []; ++chatNavigation; renderMessages(); if (chatId) void reloadTranscript(chatId).catch(e => notice(e, true));
     }
     renderSidebar(); renderModels(); if (rendering() !== beforeRendering) { renderers.sync(state.plugins); renderMessages(false, true); } else renderMessages(); updateSendButton();
-    renderApps(); pluginWindows.sync(state.plugins, state.bots);
+    renderApps(); pluginWindows.sync(state.plugins, state.bots); updateTerminalDock(q(".terminal-region"), state.bots, state.plugins);
 }
 async function refresh(fresh = false) {
   if (refreshing) { await refreshing; if (!fresh) return; }

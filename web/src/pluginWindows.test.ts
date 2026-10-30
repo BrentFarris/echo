@@ -61,3 +61,27 @@ test('each bot gets its own window and only that bot loses it on disablement', a
   expect(document.querySelectorAll('.floating-plugin')).toHaveLength(1);
   expect(document.querySelector<HTMLElement>('.floating-plugin')!.dataset.botId).toBe('echo');
 });
+
+
+test('Terminal launches use the persistent dock without creating a window or changing the main view', async () => {
+  const terminal: Plugin = { ...plugin, id:'terminal', name:'Terminal', scope:'app', builtin:true };
+  const openDock = vi.fn(async () => {}), navigate = vi.fn();
+  windows = new PluginWindows(vi.fn().mockResolvedValue({...view,kind:'embedded'}), {openDock,navigate});
+  windows.sync([terminal],[echo]);
+  await windows.open('terminal','main'); await windows.open('terminal','main');
+  expect(openDock).toHaveBeenCalledTimes(2);
+  expect(document.querySelector('.floating-plugin,.embedded-plugin,iframe')).toBeNull();
+  expect(navigate).not.toHaveBeenCalled();
+});
+
+test('disabling Terminal during its view fetch cannot reopen the dock', async () => {
+  const terminal: Plugin = { ...plugin, id:'terminal', name:'Terminal', scope:'app', builtin:true };
+  const openDock = vi.fn(async () => {});
+  let resolve!: (value: typeof view) => void;
+  windows = new PluginWindows((() => new Promise<typeof view>(done => {resolve=done;})) as any,{openDock});
+  windows.sync([terminal],[echo]);
+  const pending = windows.open('terminal','main');
+  windows.sync([{...terminal,enabled:false}],[echo]); resolve(view);
+  await expect(pending).rejects.toThrow('changed');
+  expect(openDock).not.toHaveBeenCalled();
+});

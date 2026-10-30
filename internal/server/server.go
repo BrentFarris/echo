@@ -31,10 +31,15 @@ import (
 	"github.com/brent/echo/internal/plugins"
 	"github.com/brent/echo/internal/store"
 	"github.com/brent/echo/internal/swarm"
+	"github.com/brent/echo/internal/terminal"
 	"github.com/gorilla/websocket"
 )
 
 type Server struct {
+	Terminal        *terminal.Service
+	terminalMu      sync.Mutex
+	terminalClients map[string]map[chan terminal.Event]bool
+
 	ContextCompressor  contextmanager.Compressor // Nil selects the bounded summarizer.
 	jiraMu             sync.Mutex
 	confluenceMu       sync.Mutex
@@ -206,6 +211,7 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 		return nil, e
 	}
 	s.initEditor()
+	s.initTerminal()
 	s.startNotifications()
 	s.Development.StartAutomaticChecks()
 	go func() {
@@ -228,6 +234,9 @@ func (s *Server) Close() {
 
 func (s *Server) close() {
 	s.cancel()
+	if s.Terminal != nil {
+		_ = s.Terminal.Shutdown(context.Background())
+	}
 	if s.rollouts != nil {
 		s.rollouts.wg.Wait()
 	}
@@ -292,6 +301,9 @@ func (s *Server) Bots() ([]domain.Bot, error) {
 	return store.Decode[domain.Bot](r)
 }
 func (s *Server) emit(kind, chat, run, bot string, payload any) {
+	if kind == "changed" && s.Terminal != nil {
+		s.Terminal.Reconcile()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.emitLocked(kind, chat, run, bot, payload)
