@@ -10,6 +10,10 @@ Run `go test ./internal/workspaceskills ./internal/broker ./internal/server -run
 
 For a browser smoke check, ask a bound bot to save a skill, verify its **Files changed** entry, open `skills/<name>/SKILL.md` in the existing workspace editor, edit and save it, then ask the bot to read it again. Confirm the edited content is returned without restarting Echo.
 
+## Turn statistics acceptance
+
+Run `go test ./internal/domain ./internal/model ./internal/contextmanager ./internal/store ./internal/server -count=1 -timeout 10m`, frontend unit tests and build, and `npm run test:e2e -- e2e/usage.spec.ts e2e/echo.spec.ts e2e/development.spec.ts e2e/swarm.spec.ts` from `web` with rebuilt browser-fixture and mock-model executables. Coverage includes independent input/output presence, repeated stream snapshots, failed tools, inline usage, custom-provider delegation, durable deduplication, concurrent reset, browser-local preferences, stable exact-count overlays, offline exclusions, and reachable-only resets. These checks use isolated profiles and mock model servers.
+
 ## Swarm acceptance
 
 Coordinated update acceptance uses isolated Git repositories and deterministic participant operations to cover pinned commits despite moving upstreams, three-host ordering, lost acceptance responses, partial retries, ownership boundaries, frozen membership, dirty/diverged checkouts, drain cancellation/expiry, replacement revision verification, and reservation retry during maintenance. Deferred schedules retain their identity across restart and execute once. Browser coverage includes peer-only version lag, confirmation, machine-only scope, escaped logs, outage/reload recovery, cancellation and retry. Run `go test ./internal/development ./internal/calendar ./internal/server -run 'TestUpdate|TestRollout|TestDeferred|TestNative|TestLaunch' -count=1` and, from `web`, `npm run test:e2e -- e2e/development.spec.ts e2e/development-rollouts.spec.ts`. Native launcher tests run on Windows and Linux; native macOS replacement acceptance still requires a Mac. Coordinated updater tests do not contact real upstream repositories or restart the user's running Echo.

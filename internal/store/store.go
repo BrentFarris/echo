@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS dispatch_requests(chat_id TEXT NOT NULL REFERENCES ch
 	if err == nil {
 		err = s.migrate()
 	}
+	if err == nil {
+		_, err = s.Usage()
+	}
 	if err != nil {
 		db.Close()
 		lock.Close()

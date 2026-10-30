@@ -11,6 +11,8 @@ import { updateStreamedText } from './messageContent';
 import { conversationItems, conversationThreads, threadMessages, type ResponseGroup } from './conversation';
 import { botAvatarMarkup, threadIdentityMarkup } from './botIdentity';
 import { fileChangesFooter } from './fileChanges';
+import { turnStatisticsFooter, statisticsPreferenceKey } from './turnStatistics';
+import { mountGeneral, notifyUsageMachinesChanged } from './usage';
 import { MessageActionUI } from './messageActions';
 import { createChatScrollFollower, type ChatScrollFollower } from './chatScroll';
 import { assertOnlineRecipients } from './offlineRecipients';
@@ -114,7 +116,7 @@ function shell() {
     settings: (plugin, botDisabled) => { if (botDisabled) editBot(currentBot(resourceID(plugin.nodeId || entryNode, 'echo'))); else settings(localID(plugin.id), plugin.nodeId); },
     error: error => notice(error, true),
   });
-  q('#new-chat').onclick = action(newChat); q('#apps-button').onclick = showApps; q('#settings-button').onclick = () => settings('bots', developmentUpdateNode(settingsNode || entryNode)); q('#missed-button').onclick = showMissed;
+  q('#new-chat').onclick = action(newChat); q('#apps-button').onclick = showApps; q('#settings-button').onclick = () => settings('general', developmentUpdateNode(settingsNode || entryNode)); q('#missed-button').onclick = showMissed;
   renderMainView();
   addEventListener('hashchange', () => { if (location.hash === '#apps') { pendingNotificationHash = null; showApps(); } else if (parseAppRoute(location.hash)) { pendingNotificationHash = null; const r = parseAppRoute(location.hash)!; action(() => pluginWindows.open(r.pluginId, r.viewId, r.botId, 'embedded'))(); } else if (parseChatRoute(location.hash).messageId) { pendingNotificationHash = location.hash; action(() => openNotification(location.hash))(); } else { pendingNotificationHash = null; action(() => selectChat(parseChatRoute(location.hash).chatId))(); } });
   pwa.mount(q<HTMLButtonElement>('#install-echo'));
@@ -321,6 +323,7 @@ function applyFreshState() {
   const selectedWasListed = state.chats.some(c => c.id === chatId);
   const rendering = () => JSON.stringify([state.plugins.filter(p => p.renderers?.length).map(p => [p.id, p.enabled, p.pending, p.digest]), state.bots.map(b => b.plugins)]), beforeRendering = rendering();
   state = combineState(latestLocal, latestSwarm || { node: { nodeId: '', name: 'This machine', epoch: '', version: 1 }, enabled: false, peers: [], instances: [] });
+  notifyUsageMachinesChanged();
   state.chats = state.chats.filter(c => !deletedChats.has(c.id));
   chatId = resourceID(...splitID(chatId)); settingsNode ||= entryNode; modelNode ||= entryNode; if (!pendingNotificationHash && (!chatId || splitID(chatId)[0] === entryNode || selectedWasListed) && !state.chats.some(c => c.id === chatId)) {
       if (chatId) { releaseAttachments(drafts.get(chatId)?.attachments || attachments); drafts.delete(chatId); }
@@ -628,7 +631,11 @@ function paintResponse(group: ResponseGroup) {
     } catch (error) { notice(error, true); }
   }, editorEnabled);
   if (files) el.append(files);
-  restoreDisclosures(el); return el;
+  const statistics = turnStatisticsFooter(group, state.runs.find(run => run.id === group.final?.runId));
+  restoreDisclosures(el);
+  if (!statistics) return el;
+  const turn = document.createElement('div'); turn.className = 'response-turn'; turn.dataset.timelineKey = group.key;
+  delete el.dataset.timelineKey; turn.append(el, statistics); return turn;
 }
 function renderMessages(tail = false, force = false) {
   const log = document.querySelector<HTMLElement>('.chat-log'); if (!log) return;
@@ -802,20 +809,22 @@ function chooseSuggestion(index: number) {
 function renderRefs() { q<ReferenceInput>('#composer').updateReferences(references); }
 
 function dialog(title: string, body: string) { const el = document.createElement('dialog'); el.innerHTML = `<div class="dialog-heading"><h2>${esc(title)}</h2><button class="icon" aria-label="Close">×</button></div>${body}`; document.body.append(el); q('.dialog-heading button', el).onclick = () => el.close(); el.addEventListener('close', () => el.remove()); el.showModal(); return el; }
-function settings(section = 'bots', node = settingsNode || entryNode, selectModel = true) {
+window.addEventListener('storage', event => { if (event.key === statisticsPreferenceKey) renderMessages(false, true); });
+function settings(section = 'general', node = settingsNode || entryNode, selectModel = true) {
   settingsNode = node; section = localID(section); const ownerPlugins = state.plugins.filter(p => sameMachine(p, node)); const boundAPI = <T = any>(path: string, method = 'GET', body?: unknown) => resourceAPI<T>(path, method, body, node);
   const previous = document.querySelector<HTMLDialogElement>('#settings'); if (previous) { previous.close(); previous.remove(); }
   const el = dialog(`Settings · ${machineName(node)}`, '<div class="settings-layout"><nav class="settings-nav" aria-label="Settings sections"></nav><div class="settings-content"></div></div>'); el.id = 'settings';
   const nav = q('.settings-nav', el), content = q('.settings-content', el);
-  const entries = [{ id: 'bots', name: 'Bots' }, { id: 'models', name: 'Local Models' }, { id: 'cloud-models', name: 'Cloud Models' }, { id: 'notifications', name: 'Notifications' }, ...ownerPlugins.map(p => ({ id: localID(p.id), name: p.name }))];
+  const entries = [{ id: 'general', name: 'General' }, { id: 'bots', name: 'Bots' }, { id: 'models', name: 'Local Models' }, { id: 'cloud-models', name: 'Cloud Models' }, { id: 'notifications', name: 'Notifications' }, ...ownerPlugins.map(p => ({ id: localID(p.id), name: p.name }))];
   const picker = document.createElement('select'); picker.setAttribute('aria-label', 'Settings machine'); picker.innerHTML = [...instances.keys()].map(id => `<option value="${id}">${esc(machineName(id))}</option>`).join(''); picker.value = node; picker.onchange = () => settings(section, picker.value, selectModel); q('.dialog-heading button', el).before(picker);
   nav.innerHTML = `<div class="settings-nav-main">${entries.map(e => `<button data-section="${esc(e.id)}" class="${section === e.id ? 'active' : ''}">${esc(e.name)}</button>`).join('')}</div><hr><button data-section="development" data-update-notice="*" class="${section === 'development' ? 'active' : ''}">Development</button>`;
   renderDevelopmentUpdates();
   for (const button of nav.querySelectorAll<HTMLButtonElement>('button')) button.onclick = () => settings(button.dataset.section, node, selectModel);
-  if (section === 'bots') botSettings(content);
+  if (section === 'general') mountGeneral(content, () => renderMessages(false, true));
+  else if (section === 'bots') botSettings(content);
   else if (section === 'notifications') void notifications.mount(content);
   else if (section === 'models' || section === 'cloud-models') modelSettings(content, section === 'cloud-models', selectModel);
-  else if (section === 'development') void mountDevelopment(content, boundAPI, new InstanceClient(node), refresh);
+  else if (section === 'development') void mountDevelopment(content, boundAPI, new InstanceClient(node), async () => { await refresh(true); await swarmRefreshing; });
   else pluginSettings(content, ownerPlugins.find(p => localID(p.id) === section)!);
 }
 function botSettings(root: HTMLElement) { const bots = state.bots.filter(b => sameMachine(b, settingsNode));

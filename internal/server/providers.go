@@ -11,6 +11,7 @@ import (
 
 type providerKey struct{}
 type providerInvocation struct {
+	Statistics *domain.TurnStatistics
 	Scope      domain.ExecutionScope
 	Endpoint   domain.Endpoint
 	Generation domain.Generation
@@ -20,7 +21,19 @@ type providerInvocation struct {
 	Err        error
 }
 
-func (s *Server) complete(ctx context.Context, endpoint domain.Endpoint, generation domain.Generation, messages []model.Message, tools []domain.Tool, key string, emit func(model.Delta)) (model.Result, error) {
+func (s *Server) complete(ctx context.Context, endpoint domain.Endpoint, generation domain.Generation, messages []model.Message, tools []domain.Tool, key string, emit func(model.Delta)) (result model.Result, err error) {
+	accounting := &completionAccounting{}
+	ctx = context.WithValue(ctx, completionAccountingKey{}, accounting)
+	requestID := domain.ID()
+	defer func() {
+		if accounting.delegated == 0 {
+			err = errors.Join(err, s.recordCompletion(ctx, requestID, result.Usage))
+		}
+	}()
+	return s.completeUntracked(ctx, endpoint, generation, messages, tools, key, emit)
+}
+
+func (s *Server) completeUntracked(ctx context.Context, endpoint domain.Endpoint, generation domain.Generation, messages []model.Message, tools []domain.Tool, key string, emit func(model.Delta)) (model.Result, error) {
 	if endpoint.Provider == "" {
 		return s.Model.Complete(ctx, endpoint, generation, messages, tools, key, emit)
 	}
@@ -140,6 +153,14 @@ func (s *Server) providerOperation(ctx context.Context, scope domain.ExecutionSc
 			return nil, e
 		}
 		result, err := s.Model.Complete(ctx, invocation.Endpoint, invocation.Generation, input.Messages, input.Tools, invocation.Credential, invocation.Emit)
+		if accounting, ok := ctx.Value(completionAccountingKey{}).(*completionAccounting); ok {
+			accounting.delegated++
+			recordErr := s.recordCompletion(ctx, domain.ID(), result.Usage)
+			if recordErr != nil {
+				invocation.Err = recordErr
+			}
+			err = errors.Join(err, recordErr)
+		}
 		// WASI errors are text on the guest wire; retain typed overflow at the host boundary.
 		if model.IsContextOverflow(err) {
 			invocation.Err = err

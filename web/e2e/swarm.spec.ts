@@ -223,6 +223,7 @@ test('simultaneous Monaco windows keep owners, recovery drafts and settings isol
   expect(await readFile(path.join(roots[0], 'same.txt'), 'utf8')).toBe('local original');
   await page.locator('#settings-button').click();
   await page.getByLabel('Settings machine').selectOption(linux);
+  await page.locator('.settings-nav [data-section="bots"]').click();
   await expect(page.locator('.settings-content')).toContainText('linux.echo');
   await page.screenshot({ path: test.info().outputPath('swarm-monaco.png') });
 });

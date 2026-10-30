@@ -180,6 +180,7 @@ test('cloud connections can be added and selected without enable switches', asyn
   let endpointId = '';
   try {
     await page.getByRole('button', { name: '⚙ Settings', exact: true }).click();
+    await page.locator('.settings-nav [data-section="bots"]').click();
     for (const button of ['Edit', '＋ Add bot']) {
       await page.getByRole('button', { name: button, exact: true }).click();
       const editor = page.getByRole('dialog').last();

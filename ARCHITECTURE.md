@@ -27,6 +27,14 @@ Regular chat retries replace partial assistant snapshots and chunks; inline stre
 
 The compatible transport requests streaming usage, reads usage-only events after finish reasons, and caches explicit rejection of `stream_options.include_usage` per connection/model. HTTP and SSE context errors retain typed overflow information through credential redaction. Generic payload limits, HTTP 413 without context evidence, and rate limits do not trigger context recovery. Custom providers may optionally return `usage:{inputTokens,outputTokens,totalTokens}` and `overflow:{message,limitTokens?,inputTokens?,outputTokens?}` alongside their existing result fields; `model.complete` preserves overflow through its host invocation even across the WASI error boundary.
 
+## Usage accounting
+
+Model completions record provider-reported usage on their execution host, including inline requests and context summaries. Input/output missing flags distinguish unknown values from reported zero; only known input establishes the context manager's baseline. Custom provider `model.complete` delegations are counted at the host call, suppressing the enclosing provider result's duplicate usage. Each request's final streaming snapshot is counted once, including reported usage retained before a later stream error.
+
+The existing records store holds lifetime counters, reset baselines, request IDs, and reset receipts. Recording usage and the run's optional `statistics` metadata is transactional; replica merges, forks, and transcript reads do not count consumption. Run statistics retain the first execution start across handoffs and record elapsed wall time, tool calls started, model calls, token sums, and reporting coverage. A reset advances only the machine baseline, preserving run history and accepting in-flight requests into the new totals when they complete. No schema migration or historical backfill is required.
+
+Authenticated `GET /api/v1/usage` returns counters since reset, coverage, tracking/reset times, and a revision. `POST /api/v1/usage/reset` accepts an idempotency `requestId`. General aggregates reachable instances by stable node identity, excludes offline/unsupported instances, and refreshes every five seconds while mounted and on directory updates. Development confirms a fixed reachable target list and retries unsuccessful resets with the original request ID. Footer visibility is browser-local.
+
 ## Swarm protocol and ownership
 
 Swarm protocol version 1 negotiates `owner-api/1`, `dispatch/1`, `stream/1` and optional native app capabilities such as `native-monaco/1` and `native-terminal/1`. Unsupported peers receive an update-both-instances error. The built-in app-scoped plugin starts disabled. Only an explicit, password-authenticated pairing may activate an installed remote plugin; discovery cannot undo an owner disable, disconnect or revocation.

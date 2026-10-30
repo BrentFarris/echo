@@ -18,12 +18,15 @@ func (u wireUsage) normalized() *domain.TokenUsage {
 	if output == nil {
 		output = u.Output
 	}
-	// An output/total-only event cannot establish an accurate input baseline.
-	if input == nil || *input < 0 {
+	inputMissing, outputMissing := input == nil || *input < 0, output == nil || *output < 0
+	if inputMissing && outputMissing {
 		return nil
 	}
-	out := &domain.TokenUsage{InputTokens: *input}
-	if output != nil && *output >= 0 {
+	out := &domain.TokenUsage{InputMissing: inputMissing, OutputMissing: outputMissing}
+	if !inputMissing {
+		out.InputTokens = *input
+	}
+	if !outputMissing {
 		out.OutputTokens = *output
 	}
 	out.TotalTokens = out.InputTokens + out.OutputTokens

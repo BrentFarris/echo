@@ -43,6 +43,7 @@ test('new plugins require existing named bots to opt in while Echo keeps automat
 
   async function editWorker() {
     await page.getByRole('button', { name: '⚙ Settings', exact: true }).click();
+    await page.locator('.settings-nav [data-section="bots"]').click();
     await page.locator('.list-card').filter({ has: page.locator('strong', { hasText: /^Existing Worker$/ }) }).getByRole('button', { name: 'Edit', exact: true }).click();
     return page.getByRole('dialog').last();
   }
@@ -68,6 +69,7 @@ test('new plugins require existing named bots to opt in while Echo keeps automat
   await page.locator('#settings').getByRole('button', { name: 'Close', exact: true }).click();
   await page.reload();
   await page.getByRole('button', { name: '⚙ Settings', exact: true }).click();
+  await page.locator('.settings-nav [data-section="bots"]').click();
   await page.getByRole('button', { name: '＋ Add bot', exact: true }).click();
   editor = page.getByRole('dialog').last();
   await expect(editor.getByRole('checkbox', { name: afterName, exact: true })).toBeChecked();

@@ -114,9 +114,11 @@ type ForkOrigin struct {
 
 // TokenUsage is provider-reported usage for one request, not a running total.
 type TokenUsage struct {
-	InputTokens  int `json:"inputTokens"`
-	OutputTokens int `json:"outputTokens"`
-	TotalTokens  int `json:"totalTokens"`
+	InputTokens   int  `json:"inputTokens"`
+	OutputTokens  int  `json:"outputTokens"`
+	TotalTokens   int  `json:"totalTokens"`
+	InputMissing  bool `json:"inputMissing,omitempty"`
+	OutputMissing bool `json:"outputMissing,omitempty"`
 }
 
 type Message struct {
@@ -162,16 +164,17 @@ type FunctionCall struct {
 	Arguments string `json:"arguments"`
 }
 type Run struct {
-	UserMessageID string     `json:"userMessageId,omitempty"`
-	ID            string     `json:"id"`
-	ChatID        string     `json:"chatId"`
-	DispatchID    string     `json:"dispatchId"`
-	BotID         string     `json:"botId"`
-	Status        string     `json:"status"`
-	Error         string     `json:"error,omitempty"`
-	Generation    Generation `json:"generation"`
-	CreatedAt     time.Time  `json:"createdAt"`
-	UpdatedAt     time.Time  `json:"updatedAt"`
+	Statistics    *TurnStatistics `json:"statistics,omitempty"`
+	UserMessageID string          `json:"userMessageId,omitempty"`
+	ID            string          `json:"id"`
+	ChatID        string          `json:"chatId"`
+	DispatchID    string          `json:"dispatchId"`
+	BotID         string          `json:"botId"`
+	Status        string          `json:"status"`
+	Error         string          `json:"error,omitempty"`
+	Generation    Generation      `json:"generation"`
+	CreatedAt     time.Time       `json:"createdAt"`
+	UpdatedAt     time.Time       `json:"updatedAt"`
 }
 type ExecutionScope struct {
 	Bot           Bot    `json:"bot"`

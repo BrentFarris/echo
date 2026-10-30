@@ -64,7 +64,7 @@ type Accountant struct {
 func (a *Accountant) Reset() { *a = Accountant{} }
 func (a *Accountant) Observe(config any, messages []model.Message, usage *domain.TokenUsage) {
 	a.Reset()
-	if usage == nil || usage.InputTokens < 0 {
+	if usage == nil || usage.InputMissing || usage.InputTokens < 0 {
 		return
 	}
 	a.config, a.input, a.valid = fingerprint(config), usage.InputTokens, true

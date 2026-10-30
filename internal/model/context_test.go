@@ -104,6 +104,10 @@ func TestUsageNormalizationMissingAndAliases(t *testing.T) {
 	}{
 		{`{}`, nil}, {`{"total_tokens":100}`, nil}, {`{"prompt_tokens":-1}`, nil},
 		{`{"input_tokens":100,"output_tokens":50}`, &domain.TokenUsage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150}},
+		{`{"completion_tokens":0}`, &domain.TokenUsage{InputMissing: true}},
+		{`{"output_tokens":50}`, &domain.TokenUsage{OutputTokens: 50, TotalTokens: 50, InputMissing: true}},
+		{`{"input_tokens":100}`, &domain.TokenUsage{InputTokens: 100, TotalTokens: 100, OutputMissing: true}},
+		{`{"input_tokens":-1,"output_tokens":50}`, &domain.TokenUsage{OutputTokens: 50, TotalTokens: 50, InputMissing: true}},
 	} {
 		var wire wireUsage
 		if err := json.Unmarshal([]byte(test.raw), &wire); err != nil {

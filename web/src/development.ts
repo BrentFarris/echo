@@ -2,6 +2,7 @@ import { InstanceClient, entryNode } from './instances';
 import { escapeHTML as esc } from './helpers';
 import './development.css';
 import { mountRollouts } from './developmentRollouts';
+import { mountUsageReset } from './usage';
 import { setDevelopmentUpdate, refreshDevelopmentUpdates } from './developmentUpdates';
 
 type API = <T = any>(path: string, method?: string, body?: unknown) => Promise<T>;
@@ -151,8 +152,9 @@ async function mount(target: HTMLElement, api: API) {
       <p class="subtle" data-repository-status></p><p class="subtle" data-tracking></p>
       <div data-rollout-controls></div><p data-comparison></p>
       <div class="button-row"><button data-development-action="build-relaunch">Build &amp; Relaunch</button><button data-development-action="relaunch">Relaunch</button><button class="danger" data-development-action="terminate">Terminate Echo</button></div>
-      <p class="subtle">These three controls affect only the selected machine. Restarting and stopping with these controls interrupt active work.</p>
+      <p class="subtle">These three controls affect only the selected machine. Restarting and stopping with these controls interrupt active work.</p><section data-usage-reset></section>
       <p role="status" aria-live="polite" data-development-status></p><details data-development-logs hidden><summary>Operation log</summary><p data-log-path></p><pre data-log-tail></pre></details></section>`;
+    mountUsageReset(target.querySelector<HTMLElement>('[data-usage-reset]')!, changed);
     target.querySelector<HTMLInputElement>('[name=repositoryPath]')!.oninput = update;
     target.querySelector('form')!.onsubmit = event => {
       event.preventDefault();

@@ -373,6 +373,7 @@ func (s *Server) executeWorkerBot(w *swarmWorker, run domain.Run) {
 	for {
 		if err = w.d.ctx.Err(); err == nil {
 			run.Status = "running"
+			startRunStatistics(&run)
 			run.UpdatedAt = domain.Now()
 			_ = s.Store.Put("runs", run.ID, run)
 			s.emit("run", run.ChatID, run.ID, run.BotID, run)
@@ -389,6 +390,10 @@ func (s *Server) executeWorkerBot(w *swarmWorker, run domain.Run) {
 			w.d.group.Fail(bot.ID, err)
 		}
 		run.UpdatedAt = domain.Now()
+		if run.Statistics != nil {
+			completed := run.UpdatedAt
+			run.Statistics.CompletedAt = &completed
+		}
 		_ = s.Store.Put("runs", run.ID, run)
 		s.emit("run", run.ChatID, run.ID, run.BotID, run)
 		w.d.mu.Lock()

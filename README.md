@@ -113,6 +113,10 @@ Named bots receive the installed plugin defaults when created. Plugins added lat
 
 ## Work through chat
 
+Completed agent responses show a small footer with elapsed time, provider-reported input/output tokens, tool calls, and model calls across the run. **Settings → General → Show turn statistics** controls the footer for this browser and defaults on. Token tracking continues when the footer is hidden.
+
+General also shows combined input/output totals for online machines, including chat, inline editing, and context summaries. Hover, focus, or tap a total to see exact counts and the machine breakdown without moving the layout. Missing usage is marked partial; tracking starts fresh when this feature is installed. **Settings → Development → Reset token totals…** asks for confirmation and resets reachable machines, preserving historical chat statistics. Offline machines keep their counts and contribute them again when reconnected.
+
 Chats have no turn limit, and bots can ask clarifying questions as often as needed. Model/tool rounds and bot-to-bot questions and handoffs have no count limit. Use Stop to end active work.
 
 - Ask Echo to create, list, configure or delete bots. Unmentioned messages go to Echo even inside a named-bot chat.

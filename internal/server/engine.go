@@ -290,6 +290,7 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 				}
 				if err == nil {
 					run.Status = "running"
+					startRunStatistics(&run)
 					run.Error = ""
 					run.UpdatedAt = domain.Now()
 					err = s.Store.Put("runs", run.ID, run)
@@ -310,6 +311,10 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 					}
 				}
 				run.UpdatedAt = domain.Now()
+				if run.Statistics != nil {
+					completed := run.UpdatedAt
+					run.Statistics.CompletedAt = &completed
+				}
 				s.Store.Put("runs", run.ID, run)
 				s.emit("run", chatID, run.ID, bot.ID, run)
 				d.mu.Lock()
@@ -423,7 +428,7 @@ func (s *Server) history(bot domain.Bot, chat string) ([]model.Message, error) {
 	return s.withGeneratedImages(chat, bot.ID, ms, out)
 }
 func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run domain.Run, endpoint domain.Endpoint) error {
-	ctx = context.WithValue(ctx, providerKey{}, &providerInvocation{Scope: domain.ExecutionScope{Bot: bot, ChatID: run.ChatID, RunID: run.ID, DispatchID: d.id}})
+	ctx = context.WithValue(ctx, providerKey{}, &providerInvocation{Statistics: run.Statistics, Scope: domain.ExecutionScope{Bot: bot, ChatID: run.ChatID, RunID: run.ID, DispatchID: d.id}})
 	history, e := s.history(bot, run.ChatID)
 	if e != nil {
 		return e
@@ -583,6 +588,14 @@ func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run do
 					}
 				}
 			}()
+			if run.Statistics != nil {
+				run.Statistics.ToolCalls++
+				if err := s.Store.SaveRunStatistics(run.ID, run.Statistics); err != nil {
+					stopOutput()
+					<-outputDone
+					return err
+				}
+			}
 			value, toolErr := s.tool(toolCtx, d, scope, call)
 			stopOutput()
 			<-outputDone

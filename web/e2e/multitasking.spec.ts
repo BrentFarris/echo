@@ -15,6 +15,7 @@ async function newChat(page: Page) {
 }
 async function editBot(page: Page, name: string) {
   await page.getByRole('button', { name: '⚙ Settings', exact: true }).click();
+  await page.locator('.settings-nav [data-section="bots"]').click();
   await page.locator('.list-card').filter({ has: page.locator('strong', { hasText: new RegExp(`^${name}$`) }) }).getByRole('button', { name: 'Edit', exact: true }).click();
   return page.getByRole('dialog').last();
 }
@@ -40,6 +41,7 @@ test.afterEach(async ({ page }) => {
 
 test('checkbox defaults off, persists, and chat creation accepts multitasking', async ({ page }) => {
   await page.getByRole('button', { name: '⚙ Settings', exact: true }).click();
+  await page.locator('.settings-nav [data-section="bots"]').click();
   await page.getByRole('button', { name: '＋ Add bot', exact: true }).click();
   let editor = page.getByRole('dialog').last();
   await expect(editor.getByRole('checkbox', { name: 'Enable Multitasking', exact: true })).not.toBeChecked();
