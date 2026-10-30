@@ -410,7 +410,7 @@ func (m *Manager) dial(ctx context.Context, id string, pairing bool) (net.Conn, 
 	p := m.peers[id]
 	route := m.routesLocked()[id]
 	m.mu.Unlock()
-	if route.Node.ID == "" {
+	if pairing && route.Node.ID == "" {
 		if p.Authorized && p.Node.URL != "" {
 			_ = m.connectLink(ctx, id)
 			m.mu.Lock()

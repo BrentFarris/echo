@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/brent/echo/internal/domain"
@@ -23,6 +22,8 @@ import (
 )
 
 func (s *Server) initSwarm() error {
+	s.swarmCache = make(map[string]swarmCachedState)
+	s.swarmRefresh = make(chan struct{}, 1)
 	host, _ := os.Hostname()
 	manager, err := swarm.New(s.ctx, swarm.Config{
 		Store: s.Store, Secrets: swarmSecrets{s}, SecretPrefix: "Echo2/" + s.Dir + "/swarm", IdentityFile: filepath.Join(s.Dir, "swarm-identity.key"), Name: host, Epoch: s.Development.InstanceID(),
@@ -37,12 +38,13 @@ func (s *Server) initSwarm() error {
 		},
 		CheckPassword: s.swarmPassword,
 		Handler:       http.HandlerFunc(s.serveSwarmOwner),
-		Changed:       func() { s.emit("changed", "", "", "", nil) },
+		Changed:       func() { s.requestSwarmRefresh(); s.emit("changed", "", "", "", nil) },
 	})
 	if err != nil {
 		return err
 	}
 	s.Swarm = manager
+	s.startSwarmCache()
 	plugin, _ := s.Plugins.Get("swarm")
 	name := text(plugin.Config, "name")
 	if name == "" {
@@ -204,7 +206,7 @@ func (s *Server) swarmProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Use the local API for this instance", 400)
 		return
 	}
-	if !s.Swarm.Authorized(id) {
+	if !s.swarmCacheAuthorized(id) {
 		http.Error(w, swarm.ErrUnauthorized.Error(), 403)
 		return
 	}
@@ -214,6 +216,10 @@ func (s *Server) swarmProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(path, "/api/v1/"), "/")
+	if r.Method != "GET" && !s.swarmAvailable(id) {
+		respond(w, nil, s.offlineMachine(id, ""))
+		return
+	}
 	if len(parts) == 3 && parts[0] == "chats" && parts[2] == "messages" && r.Method == "POST" {
 		var req SendRequest
 		if err := decode(w, r, &req); err != nil {
@@ -270,6 +276,9 @@ func (s *Server) swarmProxy(w http.ResponseWriter, r *http.Request) {
 		p.Out.Header.Del("X-Forwarded-Proto")
 	}, Transport: s.Swarm.Client(id).Transport, FlushInterval: -1,
 		ModifyResponse: func(response *http.Response) error {
+			if response.StatusCode < 300 && r.Method != "GET" {
+				s.requestSwarmRefresh()
+			}
 			response.Header.Del("Set-Cookie")
 			response.Header.Set("Cache-Control", "no-store")
 			if cacheable && response.StatusCode == 200 {
@@ -293,13 +302,17 @@ func (s *Server) swarmProxy(w http.ResponseWriter, r *http.Request) {
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			var cached json.RawMessage
-			if cacheable && s.Swarm.Authorized(id) && s.Store.Get("swarm-transcripts", cacheKey, &cached) == nil {
+			if cacheable && s.swarmCacheAuthorized(id) && s.Store.Get("swarm-transcripts", cacheKey, &cached) == nil {
 				w.Header().Set("X-Echo-Cached", "true")
 				respond(w, cached, nil)
 				return
 			}
 			http.Error(w, "Remote Echo is unavailable: "+err.Error(), http.StatusBadGateway)
 		},
+	}
+	if !s.swarmAvailable(id) {
+		proxy.ErrorHandler(w, r, s.offlineMachine(id, ""))
+		return
 	}
 	proxy.ServeHTTP(w, r)
 }
@@ -342,39 +355,17 @@ func (s *Server) swarmState(w http.ResponseWriter, r *http.Request) {
 	peers := s.Swarm.Directory()
 	instances := []instanceState{}
 	if s.Swarm.Enabled() {
-		var mu sync.Mutex
-		var wg sync.WaitGroup
-		limit := make(chan struct{}, 8)
 		for _, p := range peers {
 			if !p.Authorized || p.Blocked {
 				continue
 			}
-			wg.Add(1)
-			go func(p swarm.Peer) {
-				defer wg.Done()
-				select {
-				case limit <- struct{}{}:
-					defer func() { <-limit }()
-				case <-r.Context().Done():
-					return
-				}
-				entry := instanceState{Node: p.Node}
-				ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
-				defer cancel()
-				if err := s.Swarm.JSON(ctx, p.Node.ID, "GET", "/api/v1/state", nil, &entry.State); err != nil {
-					entry.Error = "Instance unavailable"
-					_ = s.Store.Get("swarm-state", p.Node.ID, &entry.State)
-				} else {
-					entry.Online = true
-					_ = s.Store.Put("swarm-state", p.Node.ID, entry.State)
-				}
-				entry.State = s.filterRemoteDeleted(p.Node.ID, entry.State)
-				mu.Lock()
-				instances = append(instances, entry)
-				mu.Unlock()
-			}(p)
+			entry := instanceState{Node: p.Node, Online: s.swarmAvailable(p.Node.ID)}
+			entry.State = s.filterRemoteDeleted(p.Node.ID, s.cachedSwarmState(p.Node.ID))
+			if !entry.Online {
+				entry.Error = s.offlineMachine(p.Node.ID, "").Error()
+			}
+			instances = append(instances, entry)
 		}
-		wg.Wait()
 	}
 	respond(w, map[string]any{"node": s.Swarm.Node(), "enabled": s.Swarm.Enabled(), "peers": peers, "instances": instances}, nil)
 }
@@ -471,6 +462,12 @@ func (s *Server) forwardSwarmEvents(ctx context.Context, id string, out chan<- a
 				var event json.RawMessage
 				if err = conn.ReadJSON(&event); err != nil {
 					break
+				}
+				var header struct {
+					Type string `json:"type"`
+				}
+				if json.Unmarshal(event, &header) == nil && (header.Type == "changed" || header.Type == "run" || header.Type == "reset") {
+					s.requestSwarmRefresh()
 				}
 				select {
 				case out <- map[string]any{"nodeId": id, "event": event}:

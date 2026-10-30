@@ -13,21 +13,76 @@ async function connect(page: Page) {
   for (const peer of directory.peers) if (peer.authorized) await json(page, `/api/v1/swarm/peers/${peer.node.nodeId}`, 'DELETE');
   const nodes: string[] = [];
   for (const port of [3744, 3745]) { const node = await json(page, '/api/v1/swarm/peers', 'POST', { url: `http://127.0.0.1:${port}`, password }); nodes.push(node.nodeId); }
+  const expectedBots = new Map<string, string>();
   for (const node of ['', ...nodes]) {
     const api = node ? `/api/v1/swarm/instances/${node}` : '/api/v1';
     const state = await json(page, `${api}/state`);
     for (const c of state.chats) await json(page, `${api}/chats/${c.id}`, 'DELETE');
     for (const b of state.bots) if (b.id !== 'echo') await json(page, `${api}/bots/${b.id}`, 'DELETE');
     for (const s of state.schedules) await json(page, `${api}/schedules/${s.id}`, 'DELETE');
-    await json(page, `${api}/bots`, 'POST', { handle: 'kaiju', name: 'Kaiju', prompt: 'Complete the requested work.' });
+    const bot = await json(page, `${api}/bots`, 'POST', { handle: 'kaiju', name: 'Kaiju', prompt: 'Complete the requested work.' });
+    if (node) expectedBots.set(node, bot.id);
     await json(page, `${api}/endpoints`, 'POST', { endpoint: { id: 'test', name: 'Test model', url: 'http://127.0.0.1:3743/v1', model: 'echo-test', contextTokens: 32768 } });
   }
+  // Remote inventory is refreshed in the background; wait for this fixture's
+  // recreated bot IDs rather than accepting a previous test's cached roster.
+  await expect.poll(async () => {
+    const snapshot = await json(page, '/api/v1/swarm/state');
+    return nodes.every(node => snapshot.instances.find((i: any) => i.node.nodeId === node)?.state?.bots.some((b: any) => b.id === expectedBots.get(node)));
+  }).toBe(true);
   await page.reload(); return nodes;
 }
 test.afterEach(async ({ page }) => {
   const result = await page.request.get('/api/v1/swarm/peers'); if (!result.ok()) return;
   for (const peer of (await result.json()).peers) if (peer.authorized) await page.request.delete(`/api/v1/swarm/peers/${peer.node.nodeId}`);
   await page.request.patch('/api/v1/plugins/swarm', { data: { enabled: false, config: {} } });
+});
+
+test('local create and delete finish while swarm inventory is stalled', async ({ page }) => {
+  await connect(page);
+  await expect(page.locator('.chat-row')).toHaveCount(0);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/v1/swarm/state', async route => { await gate; await route.continue(); });
+  const requested = page.waitForRequest(r => r.url().endsWith('/api/v1/swarm/state'));
+  try {
+    await page.locator('#new-chat').click();
+    await requested;
+    await expect(page.locator('.chat-row.active')).toHaveCount(1, { timeout: 1000 });
+    await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeEnabled({ timeout: 1000 });
+    await page.locator('.chat-remove').click();
+    await expect(page.locator('.chat-row')).toHaveCount(0, { timeout: 1000 });
+    await page.locator('#settings-button').click();
+    await expect(page.locator('#settings')).toBeVisible({ timeout: 1000 });
+  } finally { release(); }
+});
+
+test('offline bots stay visible and block mixed sends without losing the draft', async ({ page }) => {
+  const [linux] = await connect(page);
+  await expect.poll(async () => (await json(page, '/api/v1/swarm/state')).instances.find((i: any) => i.node.nodeId === linux)?.state?.bots.length).toBe(2);
+  await json(page, `/api/v1/swarm/peers/${linux}`, 'PATCH', { disconnected: true });
+  await expect(page.locator('.machine-filter')).toContainText('linux · Offline');
+  await page.locator('#new-chat').click();
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await composer.fill('@linux.ka');
+  const option = page.getByRole('option').filter({ hasText: '@linux.kaiju' });
+  await expect(option).toHaveAttribute('aria-disabled', 'true');
+  await expect(option).toContainText('Offline');
+  const prompt = '@kaiju @linux.kaiju do this together';
+  await composer.fill(prompt);
+  let sends = 0;
+  page.on('request', r => { if (r.method() === 'POST' && r.url().endsWith('/messages')) sends++; });
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.locator('.notice[role="alert"]')).toContainText("Machine 'linux' is offline");
+  await expect(composer).toHaveText(prompt);
+  expect(sends).toBe(0);
+  await composer.fill('@kaiju local only');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.locator('.message.assistant')).toContainText('Completed the requested work.');
+  await page.locator('#new-chat').click();
+  await composer.fill('@mac.kaiju online remote only');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.locator('.message.assistant')).toContainText('Completed the requested work.');
 });
 
 test('remote plugin bridge, schedules and development stay bound to the selected host', async ({ page }) => {

@@ -42,6 +42,9 @@ type Server struct {
 	notificationClient *http.Client // Injectable transport for push delivery tests.
 
 	Swarm             *swarm.Manager
+	swarmCacheMu      sync.Mutex
+	swarmCache        map[string]swarmCachedState
+	swarmRefresh      chan struct{}
 	closeOnce         sync.Once
 	swarmMu           sync.Mutex
 	swarmWG           sync.WaitGroup

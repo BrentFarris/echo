@@ -65,6 +65,34 @@ type testSecrets struct {
 	values map[string]string
 }
 
+type noDialSecrets struct {
+	*testSecrets
+	reads int
+}
+
+func (s *noDialSecrets) Get(context.Context, string) (string, error) {
+	s.reads++
+	return "", errors.New("unexpected reconnection attempt")
+}
+
+func TestOrdinaryRequestDoesNotReconnectMissingRoute(t *testing.T) {
+	secrets := &noDialSecrets{testSecrets: &testSecrets{values: map[string]string{}}}
+	m := &Manager{
+		config: Config{Enabled: func() bool { return true }, Secrets: secrets},
+		node:   Node{ID: "self"}, links: map[string]*link{},
+		peers: map[string]Peer{"offline": {Authorized: true, Node: Node{ID: "offline", URL: "http://127.0.0.1:1"}}},
+	}
+	if _, err := m.dial(context.Background(), "offline", false); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("expected unavailable, got %v", err)
+	}
+	if secrets.reads != 0 {
+		t.Fatal("ordinary request attempted to reconnect")
+	}
+	if token := m.RouteToken("offline"); token != "" {
+		t.Fatalf("missing route has token %q", token)
+	}
+}
+
 func (s *testSecrets) Get(_ context.Context, k string) (string, error) {
 	s.Lock()
 	defer s.Unlock()

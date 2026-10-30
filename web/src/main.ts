@@ -11,6 +11,7 @@ import { botAvatarMarkup, threadIdentityMarkup } from './botIdentity';
 import { fileChangesFooter } from './fileChanges';
 import { MessageActionUI } from './messageActions';
 import { createChatScrollFollower, type ChatScrollFollower } from './chatScroll';
+import { assertOnlineRecipients } from './offlineRecipients';
 import { ReferenceSearch, validateInstanceReferences } from './referenceSearch';
 import { endpointForm, endpointValues } from './modelSettings';
 import { mountDevelopment } from './development';
@@ -53,13 +54,16 @@ let settingsNode = '', machineFilter = '', modelNode = '';
 let chatNavigation = 0;
 let generationByNode: Record<string, Generation> = {};
 let generation: Generation = { endpointId: '', model: '', thinking: '', temperature: .6 };
+let latestLocal: State | null = null, latestSwarm: SwarmState | null = null;
+let swarmRefreshing: Promise<void> | null = null;
 let refreshing: Promise<void> | null = null, refreshTimer = 0, selectedSuggestion = 0;
 const referenceSearch = new ReferenceSearch();
 let pickerStatus = '', pickerLoading = false;
-let suggestions: { label: string; hint: string; insert: string; ref?: Segment }[] = [];
+let suggestions: { label: string; hint: string; insert: string; offline?: boolean; ref?: Segment }[] = [];
 let referenceTimer = 0, referenceVersion = 0;
 let sidebarMarkup = '';
 const collapsedChatGroups = new Set<string>();
+const deletedChats = new Set<string>();
 let attachments: DraftAttachment[] = [], submitting = false;
 const stoppingChats = new Set<string>();
 const drafts = new Map<string, { text: string; references: Segment[]; generation: Generation; generationByNode: Record<string, Generation>; modelNode: string; attachments: DraftAttachment[] }>();
@@ -198,7 +202,7 @@ function saveGeneration() {
 async function newChat() {
   if (submitting) return;
   rememberDraft(); const composer = q<ReferenceInput>('#composer'); composer.disabled = true;
-  try { const c = await api<Chat>('/chats', 'POST', {}); await refresh(); await selectChat(c.id); }
+  try { const c = await api<Chat>('/chats', 'POST', {}); await refresh(true); await selectChat(c.id); }
   finally { composer.disabled = false; composer.focus(); }
 }
 async function selectChat(id: string) {
@@ -208,8 +212,8 @@ async function selectChat(id: string) {
   showingApp = false; showingApps = false; renderMainView();
   closePicker(); ++referenceVersion; clearTimeout(referenceTimer); document.querySelector('.bot-details')?.dispatchEvent(new Event('dismiss'));
   if (id !== chatId) rememberDraft(); chatId = id; if (id !== previous) markRead(previous); markRead(id); history.replaceState(null, '', '#' + id); const c = state.chats.find(c => c.id === id), draft = drafts.get(id);
-  generationByNode = { ...(c?.generationByNode || {}), ...(draft?.generationByNode || {}) }; modelNode = draft?.modelNode || c?.nodeId || entryNode;
-  generation = { ...(draft?.generation || c?.generation || generation) }; references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references }); renderModels(); renderRefs(); renderAttachments(); renderSidebar(); updateSendButton(); autosizeComposer(); setSidebarOpen(false, false);
+  generationByNode = { ...(c?.generationByNode || {}), ...(draft?.generationByNode || {}) }; modelNode = draft?.modelNode || c?.nodeId || splitID(id)[0] || entryNode;
+  generation = { ...(draft?.generation || c?.generation || endpointGeneration(state.endpoints.find(e => sameMachine(e, modelNode)))) }; references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references }); renderModels(); renderRefs(); renderAttachments(); renderSidebar(); updateSendButton(); autosizeComposer(); setSidebarOpen(false, false);
   const initialBot = selectedThreadBot([]);
   if (initialBot) addressThread(initialBot);
   // Focus before the network request so a slow remote transcript cannot steal
@@ -250,6 +254,7 @@ async function openNotification(hash: string) {
 }
 async function send() {
   if (busy() || submitting) return; const draft = trimmedDraft(q<ReferenceInput>('#composer').snapshot()), content = draft.text; if (!content && !attachments.length) return;
+  assertOnlineRecipients(content, draft.references, state.bots);
   submitting = true; q<ReferenceInput>('#composer').disabled = true; updateSendButton();
   try {
     if (!chatId) { const c = await api<Chat>('/chats', 'POST', {}); chatId = c.id; drafts.delete(''); history.replaceState(null, '', '#' + chatId); }
@@ -309,20 +314,35 @@ function renderAttachments() {
     root.append(card);
   }
 }
-async function refresh() {
-  if (refreshing) return refreshing;
+function applyFreshState() {
+  if (!latestLocal) return;
+  const selectedWasListed = state.chats.some(c => c.id === chatId);
   const rendering = () => JSON.stringify([state.plugins.filter(p => p.renderers?.length).map(p => [p.id, p.enabled, p.pending, p.digest]), state.bots.map(b => b.plugins)]), beforeRendering = rendering();
-  refreshing = (async () => { const [local, swarm] = await Promise.all([api<State>('/state'), api<SwarmState>('/swarm/state')]); state = combineState(local, swarm); void refreshDevelopmentUpdates(false); chatId = resourceID(...splitID(chatId)); settingsNode ||= entryNode; modelNode ||= entryNode; if (!pendingNotificationHash && !state.chats.some(c => c.id === chatId)) {
+  state = combineState(latestLocal, latestSwarm || { node: { nodeId: '', name: 'This machine', epoch: '', version: 1 }, enabled: false, peers: [], instances: [] });
+  state.chats = state.chats.filter(c => !deletedChats.has(c.id));
+  chatId = resourceID(...splitID(chatId)); settingsNode ||= entryNode; modelNode ||= entryNode; if (!pendingNotificationHash && (!chatId || splitID(chatId)[0] === entryNode || selectedWasListed) && !state.chats.some(c => c.id === chatId)) {
       if (chatId) { releaseAttachments(drafts.get(chatId)?.attachments || attachments); drafts.delete(chatId); }
       chatId = state.chats[0]?.id || ''; if (!showingApps && !showingApp) history.replaceState(null, '', chatId ? '#' + chatId : location.pathname);
       const draft = drafts.get(chatId);
       if (chatId) generation = { ...(draft?.generation || state.chats[0].generation) };
       references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references });
-      renderRefs(); renderAttachments(); autosizeComposer(); messages = chatId ? await api(`/chats/${chatId}/messages`) : []; renderMessages();
+      renderRefs(); renderAttachments(); autosizeComposer(); messages = []; ++chatNavigation; renderMessages(); if (chatId) void reloadTranscript(chatId).catch(e => notice(e, true));
     }
     renderSidebar(); renderModels(); if (rendering() !== beforeRendering) { renderers.sync(state.plugins); renderMessages(false, true); } else renderMessages(); updateSendButton();
     renderApps(); pluginWindows.sync(state.plugins, state.bots);
-  })().finally(() => { refreshing = null; if (pendingNotificationHash && !openingNotification && instanceOnline(splitID(parseChatRoute(pendingNotificationHash).chatId)[0])) { const hash = pendingNotificationHash; setTimeout(() => { if (pendingNotificationHash === hash) void openNotification(hash).catch(e => notice(e, true)); }, 0); } }); return refreshing;
+}
+async function refresh(fresh = false) {
+  if (refreshing) { await refreshing; if (!fresh) return; }
+  // Remote inventory and transcript loading never hold the local refresh lock.
+  if (!swarmRefreshing) {
+    swarmRefreshing = api<SwarmState>('/swarm/state').then(swarm => {
+      latestSwarm = swarm; applyFreshState();
+    }).catch(e => notice(e, true)).finally(() => { swarmRefreshing = null; });
+  }
+  refreshing = (async () => {
+    latestLocal = await api<State>('/state'); applyFreshState(); void refreshDevelopmentUpdates(false);
+  })().finally(() => { refreshing = null; if (pendingNotificationHash && !openingNotification && instanceOnline(splitID(parseChatRoute(pendingNotificationHash).chatId)[0])) { const hash = pendingNotificationHash; setTimeout(() => { if (pendingNotificationHash === hash) void openNotification(hash).catch(e => notice(e, true)); }, 0); } });
+  return refreshing;
 }
 function queueRefresh() { clearTimeout(refreshTimer); refreshTimer = window.setTimeout(() => action(refresh)(), 150); }
 function renderSidebar() {
@@ -345,9 +365,22 @@ function renderSidebar() {
     q<HTMLElement>('.chat-group-rows', el.parentElement!).hidden = collapsed;
   };
   for (const el of document.querySelectorAll<HTMLButtonElement>('[data-chat]')) el.onclick = action(() => selectChat(el.dataset.chat!));
-  for (const el of document.querySelectorAll<HTMLButtonElement>('[data-delete]')) el.onclick = action(async () => { if (submitting) return; await api(`/chats/${el.dataset.delete}`, 'DELETE'); releaseAttachments(drafts.get(el.dataset.delete!)?.attachments || []); drafts.delete(el.dataset.delete!); if (chatId === el.dataset.delete) { attachments = []; references = []; q<ReferenceInput>('#composer').value = ''; renderAttachments(); renderRefs(); autosizeComposer(); } await refresh(); });
+  for (const el of document.querySelectorAll<HTMLButtonElement>('[data-delete]')) el.onclick = action(() => deleteChat(el.dataset.delete!));
   const count = state.occurrences.filter(j => j.status === 'missed').length; q('#missed-button').hidden = !count; q('#missed-button').textContent = `Missed jobs (${count})`;
 }
+async function deleteChat(id: string) {
+  if (submitting) return;
+  await api(`/chats/${id}`, 'DELETE');
+  deletedChats.add(id);
+  releaseAttachments(drafts.get(id)?.attachments || []); drafts.delete(id);
+  if (chatId === id) {
+    chatId = ''; ++chatNavigation; messages = []; attachments = []; references = [];
+    q<ReferenceInput>('#composer').value = ''; renderAttachments(); renderRefs(); autosizeComposer();
+  }
+  applyFreshState();
+  await refresh(true);
+}
+
 function chooseEndpoint(endpoint: Endpoint) { if (modelNode) generationByNode[modelNode] = { ...generation }; modelNode = endpoint.nodeId || splitID(endpoint.id)[0]; generation = { endpointId: endpoint.id, model: endpoint.model, temperature: endpoint.temperature ?? .6, thinking: '' }; renderModels(); rememberDraft(); saveGeneration(); }
 function renderModels() {
   const endpoints = state.endpoints.filter(e => sameMachine(e, modelNode || entryNode));
@@ -699,6 +732,7 @@ function connectSwarm() {
   const events = new InstanceEvents(recoverInstance, (_, event) => receive(event), () => ws.close());
   ws.onmessage = event => { const envelope = JSON.parse(event.data);
     if (envelope.type === 'directory') { const next = JSON.stringify([envelope.node, envelope.peers?.map((p: any) => [p.node, p.authorized, p.blocked, p.connected, p.error])]); if (directory !== next) { directory = next; queueRefresh(); } return; }
+    if (envelope.error) { queueRefresh(); return; }
     if (envelope.event) events.push(envelope.nodeId, ownedEvent(envelope.nodeId, envelope.event));
   };
   ws.onclose = () => { events.close(); setTimeout(connectSwarm, 2000); };
@@ -739,7 +773,7 @@ function showPicker() {
   if (composer.snapshot().references.some(ref => ref.range && ref.range.start <= match.start && ref.range.end > match.start)) return;
   selectedSuggestion = 0;
   if (match.type === '@') {
-    suggestions = state.bots.filter(b => `${b.handle} ${b.name}`.toLowerCase().includes(match.query.toLowerCase())).map(b => ({ label: '@' + b.handle, hint: b.name + ' · ' + (b.roots?.length ? b.roots.join(', ') : 'Unrestricted host access'), insert: '@' + b.handle, ref: { type: 'bot', botId: b.id, text: '@' + b.handle } }));
+    suggestions = state.bots.filter(b => `${b.handle} ${b.name}`.toLowerCase().includes(match.query.toLowerCase())).map(b => ({ label: '@' + b.handle, offline: !instanceOnline(b.nodeId || splitID(b.id)[0]), hint: b.name + (instanceOnline(b.nodeId || splitID(b.id)[0]) ? '' : ' · Offline') + ' · ' + (b.roots?.length ? b.roots.join(', ') : 'Unrestricted host access'), insert: '@' + b.handle, ref: { type: 'bot', botId: b.id, text: '@' + b.handle } }));
     pickerStatus = suggestions.length ? '' : 'No matching bots.'; renderPicker();
   } else referenceSearch.search(composer.value, match.query, result => {
     const selected = suggestions[selectedSuggestion]?.ref?.path;
@@ -753,13 +787,14 @@ function showPicker() {
 function renderPicker() {
   const picker = q('.picker'); picker.hidden = false;
   picker.setAttribute('aria-busy', String(pickerLoading)); q('#composer').setAttribute('aria-expanded', 'true');
-  picker.innerHTML = (pickerStatus ? `<p class="picker-status" role="status">${esc(pickerStatus)}</p>` : '') + suggestions.map((s, i) => `<button type="button" id="reference-option-${i}" role="option" aria-selected="${i === selectedSuggestion}" class="${i === selectedSuggestion ? 'selected' : ''}" data-suggestion="${i}">${referenceIcons[s.ref?.type === 'bot' ? 'bot' : s.ref?.kind === 'directory' ? 'directory' : 'file']}<span class="picker-name"><strong>${esc(s.label)}</strong><small title="${esc(s.hint)}">${esc(s.hint)}</small></span><span class="picker-kind">${s.ref?.type === 'bot' ? 'Bot' : s.ref?.kind === 'directory' ? 'Folder' : 'File'}</span></button>`).join('');
+  picker.innerHTML = (pickerStatus ? `<p class="picker-status" role="status">${esc(pickerStatus)}</p>` : '') + suggestions.map((s, i) => `<button type="button" id="reference-option-${i}" role="option" aria-disabled="${!!s.offline}" aria-selected="${i === selectedSuggestion}" class="${i === selectedSuggestion ? 'selected' : ''}" data-suggestion="${i}">${referenceIcons[s.ref?.type === 'bot' ? 'bot' : s.ref?.kind === 'directory' ? 'directory' : 'file']}<span class="picker-name"><strong>${esc(s.label)}</strong><small title="${esc(s.hint)}">${esc(s.hint)}</small></span><span class="picker-kind">${s.ref?.type === 'bot' ? 'Bot' : s.ref?.kind === 'directory' ? 'Folder' : 'File'}</span></button>`).join('');
   if (suggestions.length) q('#composer').setAttribute('aria-activedescendant', `reference-option-${selectedSuggestion}`); else q('#composer').removeAttribute('aria-activedescendant');
   for (const el of picker.querySelectorAll<HTMLButtonElement>('button')) { el.onmousedown = e => e.preventDefault(); el.onclick = () => chooseSuggestion(Number(el.dataset.suggestion)); }
 }
 function chooseSuggestion(index: number) {
   const composer = q<ReferenceInput>('#composer'), match = activeMention(composer.value, composer.selectionStart), item = suggestions[index];
   if (!match || !item) return;
+  if (item.offline) { notice(`Machine '${machineName(splitID(item.ref?.botId)[0])}' is offline; ${item.label} is unavailable.`, true); return; }
   composer.replace(item.insert + ' ', match.start, match.end, item.ref); closePicker(); composer.focus();
 }
 function renderRefs() { q<ReferenceInput>('#composer').updateReferences(references); }

@@ -146,6 +146,31 @@ func (m *Manager) Node() Node {
 	return n
 }
 func (m *Manager) Enabled() bool { return m.config.Enabled != nil && m.config.Enabled() }
+
+// RouteToken identifies the current authorized route without dialing. A new
+// connection, peer epoch, or grant invalidates work started on an older route.
+func (m *Manager) RouteToken(id string) string {
+	if !m.Enabled() {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p := m.peers[id]
+	r := m.routesLocked()[id]
+	if !p.Authorized || p.Blocked || p.Disabled || len(r.Path) < 2 {
+		return ""
+	}
+	l := m.links[r.Path[1]]
+	if l == nil {
+		return ""
+	}
+	select {
+	case <-l.done:
+		return ""
+	default:
+	}
+	return p.PairID + ":" + r.Node.Epoch + ":" + l.id + ":" + strings.Join(r.Path, ":")
+}
 func (m *Manager) changed() {
 	if m.config.Changed != nil {
 		m.config.Changed()

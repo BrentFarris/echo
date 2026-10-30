@@ -117,53 +117,102 @@ func (s *Server) needsSwarm(req SendRequest) bool {
 	return false
 }
 
-func (s *Server) swarmRoster(ctx context.Context) ([]swarmParticipant, error) {
+func (s *Server) swarmRoster(ctx context.Context, req SendRequest) ([]swarmParticipant, error) {
 	self := s.Swarm.Node().ID
 	bots, err := s.Bots()
 	if err != nil {
 		return nil, err
 	}
 	out := []swarmParticipant{}
-	var rosterMu sync.Mutex
 	add := func(node string, bots []domain.Bot) {
-		rosterMu.Lock()
-		defer rosterMu.Unlock()
 		for _, b := range bots {
 			out = append(out, swarmParticipant{Ref: swarm.Ref{NodeID: node, ID: b.ID}, Handle: s.Swarm.Namespace(node) + "." + b.Handle, Name: b.Name, Revision: b.Revision})
 		}
 	}
 	add(self, bots)
-	if !s.Swarm.Enabled() {
-		return out, nil
+	origin := req.OriginNodeID
+	if origin == "" {
+		origin = self
 	}
-	var wg sync.WaitGroup
-	limit := make(chan struct{}, 8)
+	wanted := map[string]string{}
+	if req.rerunMessageID != "" {
+		for _, id := range req.rerunRecipients {
+			node, _ := swarm.Split(id)
+			if node == "" {
+				node = self
+			}
+			wanted[node] = ""
+		}
+	} else {
+		content, _ := referenceContent(req)
+		masked := codeBlocks.ReplaceAllStringFunc(content, func(value string) string { return strings.Repeat(" ", len(value)) })
+		boundaries := referenceBoundaries(req.Content)
+		for _, seg := range req.Segments {
+			if seg.Type != "bot" {
+				continue
+			}
+			node, _ := swarm.Split(seg.BotID)
+			if seg.NodeID != "" {
+				node = seg.NodeID
+			}
+			if node == "" {
+				node = origin
+			}
+			wanted[node] = strings.TrimPrefix(seg.Text, "@")
+			if seg.Range != nil {
+				start, startOK := boundaries[seg.Range.Start]
+				end, endOK := boundaries[seg.Range.End]
+				if startOK && endOK && end > start && end <= len(masked) {
+					masked = masked[:start] + strings.Repeat(" ", end-start) + masked[end:]
+				}
+			}
+		}
+		for _, match := range mentions.FindAllStringSubmatch(masked, -1) {
+			name := strings.ToLower(match[1])
+			if !strings.Contains(name, ".") {
+				wanted[origin] = s.Swarm.Namespace(origin) + "." + name
+				continue
+			}
+			if strings.HasPrefix(name, s.Swarm.Namespace(self)+".") {
+				wanted[self] = name
+			}
+			for _, peer := range s.Swarm.Directory() {
+				if strings.HasPrefix(name, s.Swarm.Namespace(peer.Node.ID)+".") {
+					wanted[peer.Node.ID] = name
+				}
+			}
+		}
+		if len(wanted) == 0 {
+			wanted[origin] = s.Swarm.Namespace(origin) + ".echo"
+		}
+	}
+	// Preflight every destination before doing any network I/O. Admission is
+	// all-or-nothing, including typed and stable structured references.
+	for node, handle := range wanted {
+		if node != self && !s.swarmAvailable(node) {
+			return nil, s.offlineMachine(node, handle)
+		}
+	}
 	for _, peer := range s.Swarm.Directory() {
 		if !peer.Authorized || peer.Blocked {
 			continue
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case limit <- struct{}{}:
-				defer func() { <-limit }()
-			case <-ctx.Done():
-				return
-			}
-			var state struct {
-				Bots []domain.Bot `json:"bots"`
-			}
+		var state struct {
+			Bots []domain.Bot `json:"bots"`
+		}
+		_ = json.Unmarshal(s.cachedSwarmState(peer.Node.ID), &state)
+		if _, selected := wanted[peer.Node.ID]; selected {
+			// Only selected machines supply authoritative bot revisions. No
+			// unrelated peer can delay this request, even with an empty cache.
 			child, cancel := context.WithTimeout(ctx, 3*time.Second)
 			err := s.Swarm.JSON(child, peer.Node.ID, "GET", "/api/v1/state", nil, &state)
 			cancel()
 			if err != nil {
-				_ = s.Store.Get("swarm-state", peer.Node.ID, &state)
+				return nil, err
 			}
-			add(peer.Node.ID, state.Bots)
-		}()
+		}
+		add(peer.Node.ID, state.Bots)
 	}
-	wg.Wait()
 	sort.Slice(out, func(i, j int) bool { return out[i].key() < out[j].key() })
 	return out, nil
 }
@@ -173,7 +222,7 @@ func (s *Server) resolveSwarm(ctx context.Context, req SendRequest) ([]swarmPart
 	if err != nil {
 		return nil, nil, err
 	}
-	roster, err := s.swarmRoster(ctx)
+	roster, err := s.swarmRoster(ctx, req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -601,7 +650,7 @@ func (s *Server) runSwarm(f *swarmDispatch) {
 				action = "stop"
 			}
 			f.mu.Unlock()
-			if s.ctx.Err() == nil {
+			if s.ctx.Err() == nil && (action != "stop" || node == s.Swarm.Node().ID) {
 				s.workerControl(f, node, action, "")
 			}
 		}
@@ -727,7 +776,11 @@ func (s *Server) failSwarmHost(f *swarmDispatch, node string, err error) {
 func (s *Server) workerControl(f *swarmDispatch, node, action, bot string) {
 	req := f.Hosts[node]
 	input := workerControl{Home: req.Home, ID: req.ID, Token: req.Token, Action: action, Bot: bot}
-	ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
+	parent := s.ctx
+	if action == "release" && f.d != nil {
+		parent = f.d.ctx
+	}
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
 	if node == s.Swarm.Node().ID {
 		_, _ = s.controlWorker(input)
@@ -773,6 +826,14 @@ func (s *Server) followWorker(ctx context.Context, f *swarmDispatch, node string
 		}
 	}
 	// The idle acknowledgement may beat the final streamed snapshot.
+	// Stop already persisted cancellation. Reconciliation collects the final
+	// remote snapshot without holding up the local stop/delete response.
+	f.mu.Lock()
+	cancelled := f.Status == "cancelled"
+	f.mu.Unlock()
+	if cancelled {
+		return
+	}
 	child, cancel := context.WithTimeout(s.ctx, 3*time.Second)
 	defer cancel()
 	var snapshot workerSnapshot
