@@ -38,7 +38,7 @@
 /* Message cards: same tone as the surrounding panel (OLD cards blended with
    the page and were defined by their border alone). */
 .message,.response-group{position:relative;min-width:0;border:1px solid var(--border);border-radius:8px;margin:0;padding:13px 16px;background:var(--surface);overflow-wrap:anywhere}
-.response-group{background-color:black;}
+@media(prefers-color-scheme:dark){.response-group{background-color:black;}}
 .chat-log>.message.user{margin-left:16px;border-color:color-mix(in srgb,var(--accent) 36%,var(--border));background:var(--user)}
 .chat-log>.message:not(.user):not(.tool){margin-right:16px}
 .message-meta{display:flex;align-items:center;gap:8px;margin-bottom:6px;line-height:1.4;font-size:11px;color:var(--subtle)}
