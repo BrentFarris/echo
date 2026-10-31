@@ -123,6 +123,8 @@ Named bots receive the installed plugin defaults when created. Plugins added lat
 
 ## Work through chat
 
+Press **Ctrl+N** to create a chat and **Ctrl+W** to close the current chat. Closing with Ctrl+W or the sidebar **X** permanently deletes the chat; busy or unread chats ask for confirmation first. Cancel keeps the chat and its work intact. While the code editor has focus, these shortcuts continue to create and close editor tabs.
+
 Completed agent responses show a small footer with elapsed time, provider-reported input/output tokens, tool calls, and model calls across the run. **Settings → General → Show turn statistics** controls the footer for this browser and defaults on. Token tracking continues when the footer is hidden.
 
 General also shows combined input/output totals for online machines, including chat, inline editing, and context summaries. Hover, focus, or tap a total to see exact counts and the machine breakdown without moving the layout. Missing usage is marked partial; tracking starts fresh when this feature is installed. **Settings → Development → Reset token totals…** asks for confirmation and resets reachable machines, preserving historical chat statistics. Offline machines keep their counts and contribute them again when reconnected.

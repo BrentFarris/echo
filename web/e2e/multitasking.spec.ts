@@ -39,6 +39,120 @@ test.afterEach(async ({ page }) => {
   for (const chat of (await state(page)).chats) await page.request.post(`/api/v1/chats/${chat.id}/stop`, { data: {} });
 });
 
+test('chat shortcuts preserve drafts, close read chats, and respect dialogs and repeated keys', async ({ page }) => {
+  const first = new URL(page.url()).hash.slice(1), composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await composer.fill('Keep this draft');
+  const created = page.waitForResponse(response => response.url().endsWith('/api/v1/chats') && response.request().method() === 'POST');
+  await composer.press('Control+n');
+  const second = (await (await created).json()).id;
+  await expect(page).toHaveURL(new RegExp('#' + second + '$'));
+  await expect(composer).toBeFocused();
+  await expect.poll(() => composer.evaluate((el: any) => el.value)).toBe('');
+  await page.locator(`[data-chat="${first}"]`).click();
+  await expect.poll(() => composer.evaluate((el: any) => el.value)).toBe('Keep this draft');
+
+  // Holding a shortcut must not create or delete multiple chats.
+  for (const key of ['n', 'w']) await composer.dispatchEvent('keydown', { key, ctrlKey: true, repeat: true });
+  expect((await state(page)).chats).toHaveLength(2);
+  await page.getByRole('button', { name: '⚙ Settings', exact: true }).click();
+  await page.keyboard.press('Control+n'); await page.keyboard.press('Control+w');
+  await expect(page.locator('#settings')).toBeVisible();
+  expect((await state(page)).chats).toHaveLength(2);
+  await page.locator('#settings').getByRole('button', { name: 'Close', exact: true }).click();
+
+  const prompts: string[] = [];
+  page.on('dialog', async dialog => { prompts.push(dialog.message()); await dialog.dismiss(); });
+  await composer.press('Control+w');
+  await expect(page.locator(`[data-chat="${first}"]`)).toHaveCount(0);
+  await expect(page).toHaveURL(new RegExp('#' + second + '$'));
+  await page.locator('#apps-button').click();
+  await page.keyboard.press('Control+w');
+  await expect(page.locator(`[data-chat="${second}"]`)).toBeVisible();
+  await page.locator(`[data-delete="${second}"]`).click();
+  await expect(page.locator('.chat-row')).toHaveCount(0);
+  await expect(page).toHaveURL('http://127.0.0.1:3742/#apps');
+  const fromApps = page.waitForResponse(response => response.url().endsWith('/api/v1/chats') && response.request().method() === 'POST');
+  await page.keyboard.press('Control+n');
+  const third = (await (await fromApps).json()).id;
+  await expect(page).toHaveURL(new RegExp('#' + third + '$'));
+  await composer.press('Control+w');
+  await expect(page.locator('.chat-row')).toHaveCount(0);
+  await expect(page).toHaveURL('http://127.0.0.1:3742/');
+  await composer.press('Control+w');
+  expect(prompts).toEqual([]);
+  expect((await state(page)).chats).toHaveLength(0);
+});
+
+for (const trigger of ['shortcut', 'X'] as const) for (const queued of [false, true]) {
+  test(`${trigger} confirms before closing a ${queued ? 'queued' : 'running'} chat`, async ({ page }) => {
+    const first = new URL(page.url()).hash.slice(1);
+    await send(page, 'multitasking hold close first');
+    await expect(page.locator('.message.assistant')).toContainText('Holding this request.');
+    let target = first;
+    if (queued) {
+      target = await newChat(page);
+      await send(page, 'multitasking hold close queued');
+      await expect(page.locator('.run-queued')).toBeVisible();
+    }
+    const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+    await composer.fill('Unsent follow-up');
+    // The X must also protect background chats without changing the selection.
+    const selected = trigger === 'X' ? await newChat(page) : target;
+    const prompts: string[] = []; let accept = false, deletes = 0;
+    page.on('request', request => { if (request.method() === 'DELETE' && request.url().endsWith('/chats/' + target)) ++deletes; });
+    page.on('dialog', async dialog => { prompts.push(dialog.message()); if (accept) await dialog.accept(); else await dialog.dismiss(); });
+    const close = () => trigger === 'X' ? page.locator(`[data-delete="${target}"]`).click() : composer.press('Control+w');
+    await close();
+    expect(prompts).toHaveLength(1); expect(prompts[0]).toContain('still busy');
+    expect(deletes).toBe(0);
+    expect((await state(page)).chats.some((chat: any) => chat.id === target)).toBe(true);
+    expect((await state(page)).runs.find((run: any) => run.chatId === target).status).toBe(queued ? 'queued' : 'running');
+    await expect(page).toHaveURL(new RegExp('#' + selected + '$'));
+    if (trigger === 'shortcut') await expect.poll(() => composer.evaluate((el: any) => el.value)).toBe('Unsent follow-up');
+    accept = true;
+    await close();
+    await expect(page.locator(`[data-chat="${target}"]`)).toHaveCount(0);
+    expect(deletes).toBe(1); expect(prompts).toHaveLength(2);
+    expect((await state(page)).chats.some((chat: any) => chat.id === target)).toBe(false);
+    if (queued) expect((await state(page)).runs.find((run: any) => run.chatId === first).status).toBe('running');
+  });
+}
+
+test('unread results require confirmation, and opening the chat clears the close warning', async ({ page }) => {
+  const unread = new URL(page.url()).hash.slice(1);
+  await send(page, 'multitasking hold unread close');
+  await expect(page.locator('.message.assistant')).toContainText('Holding this request.');
+  const selected = await newChat(page);
+  await page.request.post(`/api/v1/chats/${unread}/stop`, { data: {} });
+  const row = page.locator('.chat-row').filter({ has: page.locator(`[data-chat="${unread}"]`) });
+  await expect(row.locator('.chat-dot.done')).toBeVisible();
+  const prompts: string[] = [];
+  page.on('dialog', async dialog => { prompts.push(dialog.message()); await dialog.dismiss(); });
+  await page.locator(`[data-delete="${unread}"]`).click();
+  expect(prompts).toHaveLength(1); expect(prompts[0]).toContain('not been read');
+  await expect(page).toHaveURL(new RegExp('#' + selected + '$'));
+  expect((await state(page)).chats.some((chat: any) => chat.id === unread)).toBe(true);
+  await page.locator(`[data-chat="${unread}"]`).click();
+  await expect(row.locator('.chat-dot')).toHaveCount(0);
+  await page.getByRole('textbox', { name: 'Message', exact: true }).press('Control+w');
+  await expect(page.locator(`[data-chat="${unread}"]`)).toHaveCount(0);
+  expect(prompts).toHaveLength(1);
+});
+
+test('a never-opened chat requires confirmation before the X deletes it', async ({ page }) => {
+  const selected = new URL(page.url()).hash.slice(1);
+  const unread = await (await page.request.post('/api/v1/chats', { data: {} })).json();
+  await expect(page.locator(`[data-chat="${unread.id}"]`)).toBeVisible();
+  const prompt = page.waitForEvent('dialog');
+  const closing = page.locator(`[data-delete="${unread.id}"]`).click();
+  const dialog = await prompt;
+  expect(dialog.message()).toContain('not been read');
+  expect((await state(page)).chats.some((chat: any) => chat.id === unread.id)).toBe(true);
+  await dialog.accept(); await closing;
+  await expect(page.locator(`[data-chat="${unread.id}"]`)).toHaveCount(0);
+  await expect(page).toHaveURL(new RegExp('#' + selected + '$'));
+});
+
 test('checkbox defaults off, persists, and chat creation accepts multitasking', async ({ page }) => {
   await page.getByRole('button', { name: '⚙ Settings', exact: true }).click();
   await page.locator('.settings-nav [data-section="bots"]').click();

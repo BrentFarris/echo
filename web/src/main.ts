@@ -68,6 +68,8 @@ let referenceTimer = 0, referenceVersion = 0;
 let sidebarMarkup = '';
 const collapsedChatGroups = new Set<string>();
 const deletedChats = new Set<string>();
+const closingChats = new Set<string>();
+let creatingChat = false;
 let attachments: DraftAttachment[] = [], submitting = false;
 const stoppingChats = new Set<string>();
 const drafts = new Map<string, { text: string; references: Segment[]; generation: Generation; generationByNode: Record<string, Generation>; modelNode: string; attachments: DraftAttachment[] }>();
@@ -93,13 +95,18 @@ function pluginEnabled(id: string, botId?: string) { return pluginAvailable(stat
 const activeRunStatuses = ['running', 'waiting', 'queued'];
 const finishedRunStatuses = ['completed', 'failed', 'cancelled', 'interrupted'];
 function markRead(id: string) { if (id) void api(`/chats/${id}/read`, 'POST', {}).catch(() => { /* Sidebar state recovers on the next refresh. */ }); }
+function chatUnread(c: Chat) {
+  if (c.id === chatId && !showingApps && !showingApp) return false;
+  const lastReadAt = c.lastReadAt;
+  if (!lastReadAt) return true;
+  return state.runs.some(r => r.chatId === c.id && finishedRunStatuses.includes(r.status) && (r.updatedAt || '') > lastReadAt);
+}
 // Yellow dot: work is in progress. Green dot: the latest run finished after the
 // chat was last opened, so the outcome has not been seen yet.
 function chatDot(c: Chat) {
   if (state.runs.some(r => r.chatId === c.id && activeRunStatuses.includes(r.status))) return '<span class="chat-dot busy" role="img" aria-label="In progress" title="In progress"></span>';
-  if (c.id === chatId || !c.lastReadAt) return '';
-  const finishedAt = state.runs.filter(r => r.chatId === c.id && finishedRunStatuses.includes(r.status)).map(r => r.updatedAt || '').sort().at(-1) || '';
-  return finishedAt > c.lastReadAt ? '<span class="chat-dot done" role="img" aria-label="Finished, not yet opened" title="Finished — not yet opened"></span>' : '';
+  if (!c.lastReadAt) return '';
+  return chatUnread(c) ? '<span class="chat-dot done" role="img" aria-label="Finished, not yet opened" title="Finished — not yet opened"></span>' : '';
 }
 
 function shell() {
@@ -117,6 +124,16 @@ function shell() {
     error: error => notice(error, true),
   });
   q('#new-chat').onclick = action(newChat); q('#apps-button').onclick = showApps; q('#settings-button').onclick = () => settings('general', developmentUpdateNode(settingsNode || entryNode)); q('#missed-button').onclick = showMissed;
+  q('#new-chat').title = 'New chat (Ctrl+N)'; q('#new-chat').setAttribute('aria-keyshortcuts', 'Control+N');
+  // Let app-specific handlers (such as Monaco's file shortcuts) run first.
+  document.addEventListener('keydown', e => {
+    if (e.defaultPrevented || !e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.isComposing) return;
+    const key = e.key.toLowerCase(); if (key !== 'n' && key !== 'w') return;
+    e.preventDefault();
+    if (e.repeat || document.querySelector('dialog[open], [aria-modal="true"]')) return;
+    if (key === 'n') action(newChat)();
+    else if (chatId && !showingApps && !showingApp) { const id = chatId; action(() => deleteChat(id))(); }
+  });
   renderMainView();
   addEventListener('hashchange', () => { if (location.hash === '#apps') { pendingNotificationHash = null; showApps(); } else if (parseAppRoute(location.hash)) { pendingNotificationHash = null; const r = parseAppRoute(location.hash)!; action(() => pluginWindows.open(r.pluginId, r.viewId, r.botId, 'embedded'))(); } else if (parseChatRoute(location.hash).messageId) { pendingNotificationHash = location.hash; action(() => openNotification(location.hash))(); } else { pendingNotificationHash = null; action(() => selectChat(parseChatRoute(location.hash).chatId))(); } });
   pwa.mount(q<HTMLButtonElement>('#install-echo'));
@@ -204,10 +221,11 @@ function saveGeneration() {
   generationSaves.set(id, pending); void pending.finally(() => { if (generationSaves.get(id) === pending) generationSaves.delete(id); });
 }
 async function newChat() {
-  if (submitting) return;
+  if (submitting || creatingChat) return;
+  creatingChat = true;
   rememberDraft(); const composer = q<ReferenceInput>('#composer'); composer.disabled = true;
   try { const c = await api<Chat>('/chats', 'POST', {}); await refresh(true); await selectChat(c.id); }
-  finally { composer.disabled = false; composer.focus(); }
+  finally { creatingChat = false; composer.disabled = false; composer.focus(); }
 }
 async function selectChat(id: string) {
   if (submitting) return;
@@ -378,16 +396,26 @@ function renderSidebar() {
   const count = state.occurrences.filter(j => j.status === 'missed').length; q('#missed-button').hidden = !count; q('#missed-button').textContent = `Missed jobs (${count})`;
 }
 async function deleteChat(id: string) {
-  if (submitting) return;
-  await api(`/chats/${id}`, 'DELETE');
-  deletedChats.add(id);
-  releaseAttachments(drafts.get(id)?.attachments || []); drafts.delete(id);
-  if (chatId === id) {
-    chatId = ''; ++chatNavigation; messages = []; attachments = []; references = [];
-    q<ReferenceInput>('#composer').value = ''; renderAttachments(); renderRefs(); autosizeComposer();
+  if (submitting || closingChats.has(id)) return;
+  const chat = state.chats.find(c => c.id === id); if (!chat) return;
+  const active = state.runs.some(r => r.chatId === id && activeRunStatuses.includes(r.status)), unread = chatUnread(chat);
+  const reasons = [active ? 'This chat is still busy.' : '', unread ? 'This chat has not been read yet.' : ''].filter(Boolean);
+  if (reasons.length && !window.confirm(`Close “${chat.title}”?\n\n${reasons.join(' ')}\n\nClosing permanently deletes this chat${active ? ' and stops its work' : ''}.`)) return;
+  closingChats.add(id);
+  try {
+    await api(`/chats/${id}`, 'DELETE');
+    deletedChats.add(id);
+    releaseAttachments(drafts.get(id)?.attachments || []); drafts.delete(id);
+    if (chatId === id) {
+      chatId = ''; ++chatNavigation; messages = []; attachments = []; references = [];
+      if (!showingApps && !showingApp) history.replaceState(null, '', location.pathname + location.search);
+      q<ReferenceInput>('#composer').value = ''; renderAttachments(); renderRefs(); autosizeComposer();
+    }
+    applyFreshState();
+    await refresh(true);
+  } finally {
+    closingChats.delete(id);
   }
-  applyFreshState();
-  await refresh(true);
 }
 
 function chooseEndpoint(endpoint: Endpoint) { if (modelNode) generationByNode[modelNode] = { ...generation }; modelNode = endpoint.nodeId || splitID(endpoint.id)[0]; generation = { endpointId: endpoint.id, model: endpoint.model, temperature: endpoint.temperature ?? .6, thinking: '' }; renderModels(); rememberDraft(); saveGeneration(); }
