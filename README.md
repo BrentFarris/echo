@@ -252,6 +252,20 @@ Legacy `.echo/skills` directories are not read or migrated automatically. To ret
 
 ## Native workspace restrictions
 
+### Go plugin
+
+The built-in **Go** plugin exposes `go_command` independently of Shell. Use it for `build`, `test`, `run`, `generate`, `fmt`, `vet`, `list`, `doc`, `env`, `mod`, `work`, `get`, `install`, `tool`, and `version`. Arguments are separate strings, with no shell quoting. Select a working directory in the bot's folders; commands default to a 300-second timeout and accept `timeoutSeconds` from 1 to 300. `go test -json` retains its JSON event output.
+
+In **Settings → Go**, configure the executable if Go is not on PATH. Discovery inspects the installation without executing it; wrappers must be configured to point to the actual installed `bin/go` (`bin/go.exe` on Windows). For folder-bound bots, grant Internet access to download public dependencies or Go-selected toolchains; private-network access is a separate setting for internal services. Grants also apply to tests, generators, and programs started by Go. Only the owner can expand these grants or change executable/runtime access. Additional toolchain directories can provide Git or C compilers. The existing unbound-bot host-access behavior is retained.
+
+Go automatically creates persistent `.cache/go-mod`, `.cache/go-build`, `.cache/go-bin`, and `.cache/go-path` directories beside the nearest accessible `go.mod`, or in the working directory before a module exists. Include `.cache/` in the project's ignore rules. Installed commands persist in `go-bin` and are available to subsequent Go invocations and generators. Existing caches are reused; a bot can download dependencies once and then compile/test offline. In-scope `go.work` files and local replacements are supported; external folders must be added to the bot's scope. Cache symlinks and junctions are rejected.
+
+The proxy setting maps to `GOPROXY`, and private-module patterns map to `GOPRIVATE`, including Go's normal bypass of public proxies/checksum services for those patterns. Blank settings use Go's defaults. Public modules and unauthenticated custom HTTP(S)/file proxies are supported; dedicated authenticated-proxy/private-repository credentials and SSH agents are not provided. Ambient user Go/Git configuration is excluded. `go env -w/-u` is unavailable: use Go settings. Checksum verification stays enabled; the plugin never disables it in response to a download failure.
+
+Missing downloads, toolchains, or folder grants are environment failures and retain the native diagnostic in tool output. Compiler and test failures retain their exit status and streamed output. Cancellation, timeout, plugin disablement/settings changes, and bot scope changes terminate active commands and their children. Language-server and debugger integration are future extensions of the shared Go backend; this release adds no Monaco LSP or debugging interface.
+
+### Shell and other native tools
+
 Unbound bots have the requested host filesystem scope, except Echo's protected private profile. Binding folders confines filesystem tools through `os.Root` and native commands through the platform sandbox. Windows uses a separate AppContainer identity and cancellable Job Object; Echo journals its own ACL entries and cleans them after execution or at startup after a crash. Linux uses bubblewrap namespaces, and macOS uses Seatbelt. Workspaces being disabled never removes these restrictions.
 
 Linux/macOS network access uses a filtered HTTP(S)/SOCKS proxy and checks the destination against the bot's Internet/private-network grants. Direct network connections remain denied. HTTP-based Git operations can use these proxy settings; tools and protocols that ignore them, including direct SSH or Perforce transports, cannot connect through this sandbox. Native tool compatibility must be checked on the destination OS.

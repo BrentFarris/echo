@@ -23,6 +23,7 @@ type ProcessRequest struct {
 	Args               []string
 	Input              string
 	Environment        map[string]string // Host-owned; never forwarded from plugin input.
+	PathPrepend        []string          // Host-owned executable search directories; remapped with runtime aliases.
 	Internet           bool
 	PrivateNetwork     bool
 	Directory          string

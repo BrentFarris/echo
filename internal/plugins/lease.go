@@ -21,8 +21,8 @@ func (h *Host) Lease(ctx context.Context, bot domain.Bot, id, digest string) (co
 	ctx, cancel := context.WithCancel(ctx)
 	key := domain.ID()
 	if h.active[id] == nil {
-		h.active[id] = map[string]context.CancelFunc{}
+		h.active[id] = map[string]activeInvocation{}
 	}
-	h.active[id][key] = cancel
+	h.active[id][key] = activeInvocation{botID: bot.ID, cancel: cancel}
 	return ctx, func() { cancel(); h.mu.Lock(); delete(h.active[id], key); h.mu.Unlock() }, nil
 }

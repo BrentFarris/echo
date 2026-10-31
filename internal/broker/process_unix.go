@@ -78,7 +78,7 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 		return ProcessResult{}, err
 	}
 	env := map[string]string{"PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME": scratch, "TMPDIR": scratch, "XDG_CACHE_HOME": scratch, "XDG_CONFIG_HOME": scratch, "LANG": "C.UTF-8", "ECHO_WORKSPACE": r.Directory, "GOCACHE": filepath.Join(scratch, "go-build"), "GOMODCACHE": filepath.Join(scratch, "go-mod"), "npm_config_cache": filepath.Join(scratch, "npm"), "DOTNET_CLI_HOME": scratch, "NUGET_PACKAGES": filepath.Join(scratch, "nuget"), "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_GLOBAL": "/dev/null", "FOSSIL_HOME": scratch, "P4ENVIRO": filepath.Join(scratch, "p4enviro"), "P4TICKETS": filepath.Join(scratch, "p4tickets"), "P4TRUST": filepath.Join(scratch, "p4trust")}
-	paths := []string{}
+	paths := append([]string{}, r.PathPrepend...)
 	for _, root := range r.Toolchains {
 		paths = append(paths, root, filepath.Join(root, "bin"))
 	}

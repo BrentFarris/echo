@@ -367,6 +367,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 			a.Config, e = jiraSettings(m, a.Config, true)
 		} else if m.ID == "confluence" {
 			a.Config, e = confluenceSettings(m, a.Config, true)
+		} else if m.ID == "go" {
+			a.Config, e = s.goConfig(m, a.Config, true)
 		} else if sourceControl(m.ID) {
 			a.Config, e = s.sourceControlConfig(m, a.Config, true)
 		} else {

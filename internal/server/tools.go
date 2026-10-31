@@ -322,6 +322,8 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		return s.comfyUI(ctx, scope, manifest, method, raw)
 	case "git.run", "fossil.run", "p4.run":
 		return s.runSourceControl(ctx, scope, manifest, method, a)
+	case "go.run":
+		return s.runGo(ctx, scope, manifest, a)
 	case "model.complete", "model.request", "model.emit":
 		return s.providerOperation(ctx, scope, method, raw)
 	case "plugin.template":
@@ -536,6 +538,8 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 				if e != nil {
 					return nil, e
 				}
+			} else if m.ID == "go" {
+				cfg, e = s.goConfig(m, cfg, false)
 			} else if sourceControl(m.ID) {
 				cfg, e = s.sourceControlConfig(m, cfg, false)
 				if e != nil {

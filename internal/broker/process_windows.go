@@ -424,7 +424,7 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	app, _ := windows.UTF16PtrFromString(program)
 	cmd, _ := windows.UTF16PtrFromString(windows.ComposeCommandLine(append([]string{program}, arguments...)))
 	cwd, _ := windows.UTF16PtrFromString(r.Directory)
-	pathParts := filepath.SplitList(os.Getenv("PATH"))
+	pathParts := append(append([]string{}, r.PathPrepend...), filepath.SplitList(os.Getenv("PATH"))...)
 	for i, p := range pathParts {
 		for source, target := range toolAliases {
 			if Within(source, p) {

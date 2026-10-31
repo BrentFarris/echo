@@ -33,7 +33,7 @@ type Host struct {
 	broker    Broker
 	mu        sync.Mutex
 	packageMu sync.Mutex
-	active    map[string]map[string]context.CancelFunc
+	active    map[string]map[string]activeInvocation
 }
 type invocation struct {
 	scope    domain.ExecutionScope
@@ -47,7 +47,7 @@ var validID = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 
 func New(ctx context.Context, s *store.Store, dir string, guest []byte, broker Broker) (*Host, error) {
 	r := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithMemoryLimitPages(1024).WithCloseOnContextDone(true))
-	h := &Host{Store: s, Dir: dir, runtime: r, broker: broker, active: map[string]map[string]context.CancelFunc{}}
+	h := &Host{Store: s, Dir: dir, runtime: r, broker: broker, active: map[string]map[string]activeInvocation{}}
 	_, e := wasi_snapshot_preview1.Instantiate(ctx, r)
 	if e != nil {
 		r.Close(ctx)
@@ -121,12 +121,31 @@ func New(ctx context.Context, s *store.Store, dir string, guest []byte, broker B
 	}
 	return h, nil
 }
+
+type activeInvocation struct {
+	botID  string
+	cancel context.CancelFunc
+}
+
+// CancelBot also covers native invocations started outside a model dispatch.
+func (h *Host) CancelBot(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, invocations := range h.active {
+		for _, invocation := range invocations {
+			if invocation.botID == id {
+				invocation.cancel()
+			}
+		}
+	}
+}
+
 func (h *Host) Close(ctx context.Context) error { return h.runtime.Close(ctx) }
 func (h *Host) Save(m domain.PluginManifest) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for _, cancel := range h.active[m.ID] {
-		cancel()
+	for _, invocation := range h.active[m.ID] {
+		invocation.cancel()
 	}
 	return h.Store.Put("plugins", m.ID, m)
 }
@@ -215,9 +234,9 @@ func (h *Host) Invoke(ctx context.Context, scope domain.ExecutionScope, name str
 			}
 			invocationID := domain.ID()
 			if h.active[m.ID] == nil {
-				h.active[m.ID] = map[string]context.CancelFunc{}
+				h.active[m.ID] = map[string]activeInvocation{}
 			}
-			h.active[m.ID][invocationID] = cancel
+			h.active[m.ID][invocationID] = activeInvocation{botID: scope.Bot.ID, cancel: cancel}
 			h.mu.Unlock()
 			defer func() { h.mu.Lock(); delete(h.active[m.ID], invocationID); h.mu.Unlock() }()
 			v := &invocation{scope: scope, manifest: m, broker: h.broker}

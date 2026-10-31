@@ -17,6 +17,14 @@ The Echo name is independent of storage identifiers. The default `%LOCALAPPDATA%
 - `web`: independent Vite/TypeScript UI using Echo's design tokens and card/composer concepts, with a lazy built-in Monaco editor app. No runtime imports from legacy modules. The built-in Terminal owns a persistent bottom dock. Monaco includes provider-based Source Control; desktop automation remains separate.
 - `swarm`: stable node identities, password pairing, persistent duplex links, topology, sealed relays and destination authentication. Coordination remains at the chat home; host-local execution owns all tools, models, workspaces and credentials.
 
+## Go tooling
+
+The bot-scoped built-in `go` plugin exposes `go_command` through the built-in-only `go.run` capability. Its arguments are `command`, literal `args`, optional `directory`/`input`, and `timeoutSeconds` (1–300, default 300). Settings use the existing plugin endpoints and generated forms: `executable`, `toolchains`, `internet`, `privateNetwork`, `proxy`, and `private`. Runtime/network grant expansion is owner-only, using the same validation as native SCM settings. No additional database schema or public execution endpoint is introduced.
+
+`internal/gotool` prepares process requests independently of bot presentation. It resolves accessible modules/workspaces, creates rooted project caches and install directories, discovers Go by filesystem inspection without executing configured binaries on the host, and constructs an isolated Go environment. Go-selected toolchains may download only during broker execution with the applicable grants. The server invokes the existing tracked native process path, streams output, and enforces the requested timeout on every platform. Native PATH prefixes are remapped alongside Windows toolchain aliases. Go's normal exit status and `test -json` output are preserved.
+
+Plugin invocation and app leases retain their bot identity. Bot revocation cancels those leases as well as model dispatches; saving or disabling a plugin cancels its active invocations. This covers command children via the native process broker. Future gopls/Delve integrations can reuse Go preparation, but persistent language/debug sessions and Monaco protocol clients are not part of this release.
+
 ## Context management
 
 `contextmanager.Manager` separates retry policy from the injectable `Compressor` interface. The default `Summarizer` bounds individual summary inputs and outputs, recursively splits chunks rejected for context size, merges summaries with a progress limit, and preserves complete tool exchanges. A strategy receives the history, protected-message mask, target token budget and scoped completion callback. It must return smaller context, retain protected messages and tool pairing, and leave its input untouched. `Server.ContextCompressor` can replace the strategy without changing chat loops or recovery rules.

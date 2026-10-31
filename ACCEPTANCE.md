@@ -4,6 +4,16 @@ Run `build.ps1 -Release` from the repository root on Windows. It must succeed be
 
 For Linux/macOS, run `sh build.sh --release` on the destination OS. Linux requires bubblewrap and usable user namespaces; macOS requires Seatbelt. `.github/workflows/native.yml` defines native Windows/Linux/macOS regression jobs. Cross-compilation is a build check, not runtime acceptance. Do not mark a native platform accepted because its named browser fixture passed on another OS.
 
+## Go plugin acceptance
+
+Run `go test ./internal/gotool ./internal/plugins ./internal/broker ./internal/server -count=1 -timeout 10m`, then `go build ./...` and `go vet ./...`. Focused coverage uses `-run 'TestPrepareGo|TestGo|TestWorkspaceGoCaches'`. This checks defaults and plugin availability independent of Shell, owner-only grant expansion, configuration persistence, isolated discovery, literal arguments, module/cache selection, and rejected cache junctions. Windows junction tests require a host context that permits their creation.
+
+Set `ECHO2_NATIVE_TESTS=1` and run `go test ./internal/server -run '^TestNativeGoPluginOfflineWorkflow$' -count=1 -v -timeout 10m`. The fixture starts with no caches, downloads a checksummed module from an in-scope file proxy through the plugin, and exercises formatting, build/vet/test/run, persistent installation and generation, local replacements, go.work, offline reuse, denied external dependencies, timeouts, cancellation, bot scope changes, plugin disablement, and sandbox-grant cleanup.
+
+Also set `ECHO2_GO_NETWORK_TESTS=1` and run `go test ./internal/server -run '^TestNativeGoPluginInternet$' -count=1 -v -timeout 10m` for live network acceptance. It uses the pinned public `github.com/google/uuid@v1.6.0` module, verifies denied/allowed downloads, tests network access from a child Go program, confirms a private-network grant does not grant public Internet access, and rebuilds tests after revoking network access. This opt-in gate requires public network availability; the default suite remains deterministic.
+
+Run these native gates on Windows, Linux, and macOS before claiming acceptance on the respective platform. A successful cross-build is not evidence of AppContainer, bubblewrap, or Seatbelt runtime behavior. Private-network connectivity remains subject to the platform sandbox, including Windows AppContainer loopback restrictions; no host-wide loopback exemptions are installed.
+
 ## Workspace skills acceptance
 
 Run `go test ./internal/workspaceskills ./internal/broker ./internal/server -run 'TestSkill|TestWorkspaceSkill|TestFileScopeAndRevision' -count=1`, then `go test ./...`. The skill tests cover scoped multi-root discovery, explicit unbound workspaces, stale revisions and concurrent saves, malformed and oversized files, fresh external edits, escaping links, automatic metadata suggestions, persisted file-change reporting, editor read/save access, scope revocation, and remote-worker ownership. Link tests report a skip when the host cannot create symlinks. Windows rooted filesystem and local HTTP fixtures need a test environment that permits those operations.

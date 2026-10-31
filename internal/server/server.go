@@ -361,6 +361,9 @@ func (s *Server) stopChat(id string) func() {
 	return func() { s.mu.Lock(); s.closingChats[id]--; s.mu.Unlock() }
 }
 func (s *Server) stopBot(id string) func() {
+	if s.Plugins != nil {
+		s.Plugins.CancelBot(id)
+	}
 	if s.SourceControl != nil {
 		s.SourceControl.StopWorkspaceProcesses(id)
 	}
