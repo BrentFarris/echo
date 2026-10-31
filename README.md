@@ -262,7 +262,17 @@ Go automatically creates persistent `.cache/go-mod`, `.cache/go-build`, `.cache/
 
 The proxy setting maps to `GOPROXY`, and private-module patterns map to `GOPRIVATE`, including Go's normal bypass of public proxies/checksum services for those patterns. Blank settings use Go's defaults. Public modules and unauthenticated custom HTTP(S)/file proxies are supported; dedicated authenticated-proxy/private-repository credentials and SSH agents are not provided. Ambient user Go/Git configuration is excluded. `go env -w/-u` is unavailable: use Go settings. Checksum verification stays enabled; the plugin never disables it in response to a download failure.
 
-Missing downloads, toolchains, or folder grants are environment failures and retain the native diagnostic in tool output. Compiler and test failures retain their exit status and streamed output. Cancellation, timeout, plugin disablement/settings changes, and bot scope changes terminate active commands and their children. Language-server and debugger integration are future extensions of the shared Go backend; this release adds no Monaco LSP or debugging interface.
+Missing downloads, toolchains, or folder grants are environment failures and retain the native diagnostic in tool output. Compiler and test failures retain their exit status and streamed output. Cancellation, timeout, plugin disablement/settings changes, and bot scope changes terminate active commands and their children.
+
+#### Go language services
+
+Open a saved Go file in Monaco, then choose **Go: Install / Update Language Server** in the command palette or click the Go status indicator. Installation explicitly runs `go install golang.org/x/tools/gopls@v0.24.0` through the Go sandbox. Enable the owner's Go Internet grant for the initial download; an installed server and cached dependencies work offline. Opening a file never installs or updates tools automatically. Settings can disable language services independently of Go commands or select an owner-configured absolute gopls executable.
+
+Monaco provides diagnostics for unsaved text, completion, hover, signature help, definitions/references, Outline symbols, workspace symbol search, formatting, and symbol rename. Formatting and rename leave changed files open and unsaved, with undo and normal save/conflict handling. Standard-library and module-cache navigation opens read-only source. Package/file renames, general code actions, semantic tokens, and debugging are not included.
+
+`go_inspect` provides read-only diagnostics, symbols, definitions, references, and hover for **saved files**, independently of Shell and Monaco. Pass explicit `files` for diagnostics; positional queries use one-based lines and UTF-16 columns. Separate browser sessions and bot analysis never share unsaved overlays. Analysis results report incomplete loading separately from code errors and do not replace `go build` or `go test`.
+
+Language services use the same Go caches and permissions. For a `go.work` workspace, installation and language-service caches live under its directory's `.cache`; otherwise they use the nearest module. A remote workspace runs gopls on its owning host. **Go: Restart Language Services** reconnects and resends open buffers; the status indicator explains installation/loading failures. Settings or scope changes revoke active sessions. Windows uses temporary drive aliases for already-authorized folders so gopls can validate paths without reading denied parent folders; aliases and sandbox grants are removed on exit or recovered after interruption. Available drive letters bound concurrent Windows sessions. Native Linux/macOS acceptance must be run on those platforms before claiming support there.
 
 ### Shell and other native tools
 

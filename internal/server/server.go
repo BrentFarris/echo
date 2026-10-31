@@ -40,6 +40,11 @@ import (
 )
 
 type Server struct {
+	goLanguageMu    sync.Mutex
+	goLanguages     map[string]*goLanguageSession
+	goInstallMu     sync.Mutex
+	goToolGate      chan struct{}
+	goInspectMu     sync.Mutex
 	Fossil          *fossil.Provider
 	SourceControl   *sourcecontrol.Service
 	Git             *gitservice.Service
@@ -246,6 +251,16 @@ func (s *Server) Close() {
 func (s *Server) close() {
 	s.ready.Store(false)
 	s.cancel()
+	s.goLanguageMu.Lock()
+	languageSessions := make([]*goLanguageSession, 0, len(s.goLanguages))
+	for _, g := range s.goLanguages {
+		g.close()
+		languageSessions = append(languageSessions, g)
+	}
+	s.goLanguageMu.Unlock()
+	for _, g := range languageSessions {
+		<-g.done
+	}
 	if s.Terminal != nil {
 		_ = s.Terminal.Shutdown(context.Background())
 	}
@@ -361,6 +376,9 @@ func (s *Server) stopChat(id string) func() {
 	return func() { s.mu.Lock(); s.closingChats[id]--; s.mu.Unlock() }
 }
 func (s *Server) stopBot(id string) func() {
+	s.mu.Lock()
+	s.revoking[id]++
+	s.mu.Unlock()
 	if s.Plugins != nil {
 		s.Plugins.CancelBot(id)
 	}
@@ -371,7 +389,6 @@ func (s *Server) stopBot(id string) func() {
 		_ = s.Process.CloseSessions(id)
 	}
 	s.mu.Lock()
-	s.revoking[id]++
 	ds := []*dispatch{}
 	for _, d := range s.dispatches {
 		if _, ok := d.wake[id]; ok {

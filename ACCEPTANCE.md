@@ -14,6 +14,14 @@ Also set `ECHO2_GO_NETWORK_TESTS=1` and run `go test ./internal/server -run '^Te
 
 Run these native gates on Windows, Linux, and macOS before claiming acceptance on the respective platform. A successful cross-build is not evidence of AppContainer, bubblewrap, or Seatbelt runtime behavior. Private-network connectivity remains subject to the platform sandbox, including Windows AppContainer loopback restrictions; no host-wide loopback exemptions are installed.
 
+## Go language-service acceptance
+
+Run `go test ./internal/languageservice ./internal/gotool ./internal/broker ./internal/plugins ./internal/server ./internal/editorfs`, then `go build ./...` and `go vet ./...`. From `web`, run the LSP transport/edit tests, Outline/navigation regression tests, and `npm run build`. Rebuild `browser-fixture` and `mock-model`, then run `npm run test:e2e -- go-language.spec.ts` for actual Monaco provider integration, multi-file unsaved rename, disk preservation, and unsaved diagnostics against a deterministic protocol fixture.
+
+Set `ECHO2_NATIVE_TESTS=1` and `ECHO2_LIVE_NETWORK=1`, then run `go test ./internal/server -run '^TestNativeGoLanguageServices$' -count=1 -v -timeout 12m`. This explicitly installs pinned gopls through the Go plugin, revokes network access, and verifies real unsaved diagnostics, navigation, read-only SDK locations, formatting/rename edit results, saved-file bot isolation, clearing fixed diagnostics, and disablement cleanup. Alternatively set `ECHO_GOPLS` to an existing absolute gopls executable for offline runtime acceptance; that skips installation coverage.
+
+Run `go test ./internal/broker -run '^TestNativePersistentProcess$' -count=1 -v` with `ECHO2_NATIVE_TESTS=1` to verify duplex Unicode I/O, stderr separation, persistence beyond a finite-command deadline, denied sibling access, alias round trips, cancellation, and grant cleanup. Retain the Go command network acceptance gates above for process/child Internet versus private-network grants. Run native acceptance separately on Windows, Linux, and macOS; cross-builds and platform-named browser fixtures do not establish native support.
+
 ## Workspace skills acceptance
 
 Run `go test ./internal/workspaceskills ./internal/broker ./internal/server -run 'TestSkill|TestWorkspaceSkill|TestFileScopeAndRevision' -count=1`, then `go test ./...`. The skill tests cover scoped multi-root discovery, explicit unbound workspaces, stale revisions and concurrent saves, malformed and oversized files, fresh external edits, escaping links, automatic metadata suggestions, persisted file-change reporting, editor read/save access, scope revocation, and remote-worker ownership. Link tests report a skip when the host cannot create symlinks. Windows rooted filesystem and local HTTP fixtures need a test environment that permits those operations.

@@ -14,8 +14,9 @@ import (
 )
 
 type ProcessRequest struct {
-	SandboxSession     string // Host-only opt-in: reuse an identical native sandbox's filesystem grants.
-	OutputFileArgument string // Host-only marker replaced by a file inside command scratch.
+	duplex             *processDuplex // Host-internal persistent stdio; never accepted from plugin input.
+	SandboxSession     string         // Host-only opt-in: reuse an identical native sandbox's filesystem grants.
+	OutputFileArgument string         // Host-only marker replaced by a file inside command scratch.
 	BotID              string
 	Roots              []string
 	Command            string
@@ -55,9 +56,10 @@ type processSession struct {
 	aliases map[string]string
 }
 type aclJournal struct {
-	Name  string   `json:"name"`
-	SID   string   `json:"sid"`
-	Paths []string `json:"paths"`
+	Name   string            `json:"name"`
+	SID    string            `json:"sid"`
+	Paths  []string          `json:"paths"`
+	Drives map[string]string `json:"drives,omitempty"`
 }
 
 func (b *ProcessBroker) journal(j aclJournal) error {

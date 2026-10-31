@@ -114,6 +114,9 @@ func (b *ProcessBroker) cleanup(j aclJournal) error {
 }
 
 func (b *ProcessBroker) removeProfileJournal(j aclJournal) error {
+	if err := removeWorkspaceDrives(j.Drives); err != nil {
+		return err
+	}
 	p, _ := windows.UTF16PtrFromString(j.Name)
 	hr, _, _ := deleteProfile.Call(uintptr(unsafe.Pointer(p)))
 	if hr != 0 && uint32(hr) != 0x80070002 {
@@ -330,6 +333,16 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 					}
 				}
 			}
+			if r.duplex != nil {
+				j.Drives = map[string]string{}
+				for _, root := range r.Roots {
+					drive, e := b.workspaceDrive(root, &j)
+					if e != nil {
+						return result, e
+					}
+					toolAliases[root] = drive + `\`
+				}
+			}
 		}
 		caps.SID = sid
 		for _, grant := range []struct {
@@ -390,6 +403,10 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 		}
 		defer nul.Close()
 	}
+	if r.duplex != nil {
+		nul.Close()
+		nul = r.duplex.input
+	}
 	handles := []windows.Handle{windows.Handle(write.Fd()), windows.Handle(nul.Fd()), windows.Handle(errorWrite.Fd())}
 	for _, h := range handles {
 		if err = windows.SetHandleInformation(h, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
@@ -423,7 +440,12 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	}
 	app, _ := windows.UTF16PtrFromString(program)
 	cmd, _ := windows.UTF16PtrFromString(windows.ComposeCommandLine(append([]string{program}, arguments...)))
-	cwd, _ := windows.UTF16PtrFromString(r.Directory)
+	workingDirectory := r.Directory
+	if r.duplex != nil {
+		workingDirectory = aliasPath(workingDirectory, toolAliases, false)
+		r.duplex.aliases = toolAliases
+	}
+	cwd, _ := windows.UTF16PtrFromString(workingDirectory)
 	pathParts := append(append([]string{}, r.PathPrepend...), filepath.SplitList(os.Getenv("PATH"))...)
 	for i, p := range pathParts {
 		for source, target := range toolAliases {
@@ -467,6 +489,9 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 		commandEnvironment[key] = value
 	}
 	for key, value := range commandEnvironment {
+		if r.duplex != nil && filepath.IsAbs(value) {
+			value = aliasPath(value, toolAliases, false)
+		}
 		prefix := strings.ToUpper(key) + "="
 		filtered := env[:0]
 		for _, entry := range env {
@@ -495,6 +520,9 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	if _, err = windows.ResumeThread(pi.Thread); err != nil {
 		windows.TerminateJobObject(job, 1)
 		return result, err
+	}
+	if r.duplex != nil {
+		close(r.duplex.started)
 	}
 	write.Close()
 	errorWrite.Close()

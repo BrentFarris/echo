@@ -30,6 +30,7 @@ type WatchEvent struct {
 }
 
 type watchedWorkspace struct {
+	exclude            func(string) bool
 	privatePath        string
 	trackingReferences int
 	includeIgnored     bool
@@ -52,6 +53,7 @@ type watchedWorkspace struct {
 
 // WatchManager reference-counts recursive directory watchers by workspace.
 type WatchManager struct {
+	exclude    func(string) bool
 	service    *Service
 	onEvent    func(WatchEvent)
 	mu         sync.Mutex
@@ -60,6 +62,14 @@ type WatchManager struct {
 
 func NewWatchManager(service *Service, onEvent func(WatchEvent)) *WatchManager {
 	return &WatchManager{service: service, onEvent: onEvent, workspaces: make(map[string]*watchedWorkspace)}
+}
+
+// NewFilteredWatchManager lets native language services omit generated caches
+// without changing the editor's general filesystem observation policy.
+func NewFilteredWatchManager(service *Service, onEvent func(WatchEvent), exclude func(string) bool) *WatchManager {
+	m := NewWatchManager(service, onEvent)
+	m.exclude = exclude
+	return m
 }
 
 func (m *WatchManager) Subscribe(botID string) error {
@@ -112,6 +122,7 @@ func (m *WatchManager) subscribe(botID string, tracking bool) error {
 	workspace := &watchedWorkspace{
 		privatePath:    m.service.private,
 		includeIgnored: tracking,
+		exclude:        m.exclude,
 		id:             botID, watcher: watcher, roots: roots, references: 1,
 		stop: make(chan struct{}), done: make(chan struct{}), pending: make(map[string]Change),
 		matchers: make(map[string]*ignore.GitIgnore), watched: make(map[string]bool),
@@ -262,6 +273,9 @@ func (w *watchedWorkspace) addTree(root resolvedRoot, start string, forceStart b
 		}
 		relative, _ := filepath.Rel(root.realPath, current)
 		relative = filepath.ToSlash(relative)
+		if w.exclude != nil && w.exclude(relative) {
+			return filepath.SkipDir
+		}
 		if relative == ".git" || strings.HasPrefix(relative, ".git/") {
 			return filepath.SkipDir
 		}
@@ -329,6 +343,9 @@ func (w *watchedWorkspace) run() {
 func (w *watchedWorkspace) handle(event fsnotify.Event) {
 	ref, ok := w.refFor(event.Name)
 	if !ok {
+		return
+	}
+	if w.exclude != nil && w.exclude(ref.Path) {
 		return
 	}
 	op := "write"

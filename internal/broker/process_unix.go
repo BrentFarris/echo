@@ -23,7 +23,12 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	if timeout > 300 {
 		timeout = 300
 	}
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	var cancel context.CancelFunc
+	if r.duplex == nil {
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
+	}
 	defer cancel()
 	scratch, err := os.MkdirTemp("", "echo-run-")
 	if err != nil {
@@ -106,6 +111,9 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	sort.Strings(command.Env)
 	command.Dir = r.Directory
 	command.Stdin = strings.NewReader(r.Input)
+	if r.duplex != nil {
+		command.Stdin = r.duplex.input
+	}
 	output := newProcessOutput(r, emit)
 	command.Stdout = processStream{output: output}
 	command.Stderr = processStream{output: output, stderr: true}
@@ -120,6 +128,9 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	command.WaitDelay = 2 * time.Second
 	if err = command.Start(); err != nil {
 		return ProcessResult{}, fmt.Errorf("start native containment (no host fallback): %w", err)
+	}
+	if r.duplex != nil {
+		close(r.duplex.started)
 	}
 	err = command.Wait()
 	_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)

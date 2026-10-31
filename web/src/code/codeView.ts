@@ -31,6 +31,7 @@ import { BookmarksView } from "./bookmarksView";
 import type { Bookmark } from "./bookmarkTypes";
 import "./bookmarks.css";
 import { NavigationModelCache } from "./navigationModelCache";
+import { GoLanguage, workspaceModelAuthority } from './goLanguage';
 import { OutlineView } from "./outlineView";
 import { resolveOutlineSymbols } from "./outlineProviders";
 import type { OutlineResult } from "./outlineTypes";
@@ -109,6 +110,7 @@ const maxEditorFontSize = 30;
 const defaultEditorFontSize = 13.5;
 const codeTabDragType = "application/x-echo-code-tab";
 export class CodeView {
+	private goLanguage: ReturnType<typeof GoLanguage.acquire> | null = null;
   private readonly abort = new AbortController();
   private workspace: Workspace | null = null;
   private roots: WorkspaceRoot[] = [];
@@ -273,6 +275,20 @@ export class CodeView {
       this.editorRulers = columnGuideRulers(settings); this.editorFontSize = this.clampEditorFontSize(settings.editorFontSize || 13.5);
       this.codeNavigation = new CodeNavigationHistory(this.bot.id, {local:true});
       this.initializeEditor(); this.initializeDiffEditor(); this.initializeTree(); this.initializeOutline(); this.installEvents();
+	  this.goLanguage = GoLanguage.acquire(this.bot.id, {
+	    open: async ref => { await this.openFile(ref, true, false, true, false); return this.tabs.find(t => t.ref && refKey(t.ref) === refKey(ref))?.model || null; },
+	    load: async ref => {
+	      const uri = this.modelURI(ref); const key = uri.toString();
+	      await this.navigationModels.ensure(key, () => monaco.editor.getModel(uri), async () => {
+	        const snapshot = await editorAPI.readFile(this.bot.id, ref);
+	        if (this.abort.signal.aborted) return null;
+	        return monaco.editor.getModel(uri) || this.createEditorModel(snapshot.content, languageForPath(ref.path), uri);
+	      });
+	      return monaco.editor.getModel(uri);
+	    },
+	    revision: uri => this.tabs.find(t => t.model.uri.toString() === uri)?.revision,
+	    status: (state, message) => { const button = this.root.querySelector<HTMLButtonElement>('[data-status=go]'); if (button) { button.hidden = state === 'idle'; button.textContent = `Go: ${state}`; button.title = message || 'Go language services'; } },
+	  });
       this.initializeSearchView(); this.initializeBookmarks(); this.registerCommands();
       await this.restoreWorkspace();
       if (this.abort.signal.aborted) return;
@@ -342,7 +358,7 @@ export class CodeView {
                 </section>
                 <footer class="code-statusbar" data-statusbar>
                   <div><button type="button" class="code-mobile-explorer" data-mobile-explorer aria-label="Toggle Sidebar" aria-expanded="false"><span class="codicon codicon-${this.sidebarIcon(this.activeSidebar)}"></span></button></div>
-                  <div class="code-status-right"><span data-status="cursor">Ln 1, Col 1</span><button type="button" data-status="indentation" aria-haspopup="dialog" aria-expanded="false" title="Change indentation for the current file and saved default">Tabs: 4</button><span>UTF-8</span><span data-status="eol">LF</span><span data-status="language">Plain Text</span></div>
+                  <div class="code-status-right"><button type="button" data-status="go" hidden>Go</button><span data-status="cursor">Ln 1, Col 1</span><button type="button" data-status="indentation" aria-haspopup="dialog" aria-expanded="false" title="Change indentation for the current file and saved default">Tabs: 4</button><span>UTF-8</span><span data-status="eol">LF</span><span data-status="language">Plain Text</span></div>
                 </footer>
               </div>
             </div>
@@ -1082,17 +1098,18 @@ export class CodeView {
       if (tab.applying) return;
       this.markModelDirty(model);
     });
+    this.goLanguage?.service.attach(model, snapshot);
     return tab;
   }
 
   private modelURI(ref: FileRef, _hostPath?: string): MonacoUri {
-    return monaco.Uri.from({ scheme: "file", authority: this.bot.id, path: `/${ref.rootId}/${ref.path}` });
+    return monaco.Uri.from({ scheme: "file", authority: workspaceModelAuthority(this.bot.id), path: `/${ref.rootId}/${ref.path}` });
   }
 
   private refForFileURI(uri: string): FileRef | null {
     try {
       const parsed = monaco.Uri.parse(uri);
-      if (parsed.scheme !== "file" || parsed.authority !== this.bot.id) return null;
+      if (parsed.scheme !== "file" || parsed.authority !== workspaceModelAuthority(this.bot.id)) return null;
       const [, rootId, ...parts] = parsed.path.split("/");
       return this.roots.some(root => root.id === rootId) ? { rootId, path: parts.join("/") } : null;
     } catch {
@@ -1101,6 +1118,19 @@ export class CodeView {
   }
 
   private async openNavigationTarget(resource: MonacoUri, selectionOrPosition?: MonacoRange | MonacoPosition): Promise<boolean> {
+    if (resource.scheme === 'echo-go' && this.goLanguage && this.active) {
+      const model = await this.goLanguage.service.ensureSource(resource.toString()); if (!model) return false;
+      let tab = this.tabs.find(t => t.model === model);
+      if (!tab) {
+        this.retainModel(model);
+        tab = { kind: 'file', id: randomUUID(), ref: null, title: resource.path.split('/').pop() || 'Go source', hostPath: '', keepOpen: true, pinned: false,
+          dirty: false, deleted: false, conflict: false, revision: '', hasBom: false, eol: 'lf', model, viewState: null, changeDisposable: { dispose() {} }, applying: false, readOnly: true, transient: true };
+        this.tabs.push(tab);
+      }
+      this.activateTab(tab.id, false);
+      if (selectionOrPosition) { const p = 'startLineNumber' in selectionOrPosition ? { lineNumber: selectionOrPosition.startLineNumber, column: selectionOrPosition.startColumn } : selectionOrPosition; this.editor.setPosition(p); this.editor.revealPositionInCenter(p); }
+      this.editor.focus(); return true;
+    }
     return await this.recordCodeNavigation(async () => {
       const ref = this.refForFileURI(resource.toString());
       if (!this.active || !ref || !ref.path) return false;
@@ -2222,6 +2252,7 @@ export class CodeView {
 
   private applySavedSnapshot(tab: OpenTab, snapshot: FileSnapshot): void {
     if (this.abort.signal.aborted || tab.model.isDisposed()) return;
+    this.goLanguage?.service.saved(tab.model, snapshot);
     for (const candidate of this.tabs) {
       if (candidate.model !== tab.model) continue;
       candidate.revision = snapshot.revision;
@@ -2858,6 +2889,10 @@ export class CodeView {
         { id: "bookmarks.open", label: "View: Bookmarks", run: () => this.setSidebar("bookmarks") },
       ] : []),
       { id: "file.save", label: "File: Save", keybinding: "Ctrl+S", run: () => this.saveTab() },
+      { id: 'go.install', label: 'Go: Install / Update Language Server', run: () => this.installGoLanguage() },
+      { id: 'go.restart', label: 'Go: Restart Language Services', run: () => this.goLanguage?.service.restart() },
+      { id: 'go.status', label: 'Go: Language Service Status', run: () => this.showGoLanguageStatus() },
+      { id: 'go.symbols', label: 'Go: Find Workspace Symbol', run: () => this.findGoSymbol() },
       { id: "file.saveAs", label: "File: Save As…", keybinding: "Ctrl+Shift+S", run: () => this.saveAsActive() },
       { id: "file.new", label: "File: New Untitled File", keybinding: "Ctrl+N", run: () => this.newUntitled() },
       { id: "file.quickOpen", label: "Go to File…", keybinding: "Ctrl+P", run: () => this.showQuickOpen() },
@@ -3056,6 +3091,29 @@ export class CodeView {
   }
 
   private async formatActiveDocument(selectionOnly: boolean): Promise<void> { const editor = this.activeCodeEditor(); if (!editor) return; await editor.getAction(selectionOnly ? "editor.action.formatSelection" : "editor.action.formatDocument")?.run(); }
+
+  private async installGoLanguage(): Promise<void> {
+    try { await this.goLanguage?.service.install(this.activeTab()?.model); } catch (error) { toast((error as Error).message, { sticky: true }); }
+  }
+  private async showGoLanguageStatus(): Promise<void> {
+    const service = this.goLanguage?.service; if (!service) return;
+    const action = await this.choiceDialog({ title: `Go language services: ${service.state}`, message: (service.message || 'Go language services use the Go plugin’s filesystem and network permissions. Installation is explicit; downloads require the owner’s network grant.') + (service.log ? '\n\nRecent language-server output:\n' + service.log : ''),
+      choices: [{ id: 'close', label: 'Close' }, { id: 'restart', label: 'Restart' }, { id: 'install', label: 'Install / Update' }] });
+    if (action === 'restart') service.restart(); if (action === 'install') await this.installGoLanguage();
+  }
+  private async findGoSymbol(): Promise<void> {
+    const service = this.goLanguage?.service; const model = this.activeTab()?.model;
+    if (!service || !model || !service.owns(model)) { toast('Open a saved Go file first'); return; }
+    const query = await this.promptDialog({ title: 'Find Go Workspace Symbol', label: 'Symbol', confirmLabel: 'Find' }); if (query === null) return;
+    try {
+      const symbols = await service.request(model, 'workspace/symbol', { query });
+      if (!symbols?.length) { toast('No matching Go symbols'); return; }
+      const results = symbols.slice(0, 100);
+      const selected = await this.choiceDialog({ title: 'Go symbols', message: symbols.length > 100 ? 'Showing the first 100 results; narrow the query for more precise results.' : 'Choose a symbol to open.',
+        choices: [{ id: 'cancel', label: 'Cancel' }, ...results.map((symbol: any, i: number) => ({ id: String(i), label: `${symbol.name} — ${symbol.containerName || ''}` }))] });
+      if (selected && selected !== 'cancel') { const location = results[Number(selected)].location; await this.openNavigationTarget(service.modelURI(location.uri), { lineNumber: location.range.start.line + 1, column: location.range.start.character + 1 }); }
+    } catch (error) { toast((error as Error).message); }
+  }
 
   private async saveAsActive(): Promise<void> {
     const active = this.activeTab();
@@ -3307,6 +3365,7 @@ export class CodeView {
     this.root.querySelector("[data-tree-action=refresh]")?.addEventListener("click", () => void this.refreshExplorer(), { signal });
     this.root.querySelector("[data-tree-action=collapse-all]")?.addEventListener("click", () => this.collapseAll(), { signal });
     this.root.querySelector("[data-tree-action=trash]")?.addEventListener("click", () => void this.showTrash(), { signal });
+    this.root.querySelector<HTMLButtonElement>('[data-status=go]')?.addEventListener('click', () => { void this.showGoLanguageStatus(); }, { signal: this.abort.signal });
     this.root.querySelector<HTMLButtonElement>("[data-status=indentation]")?.addEventListener("click", (event) => {
       this.showIndentationPopover(event.currentTarget as HTMLButtonElement);
     }, { signal });
@@ -3946,6 +4005,7 @@ export class CodeView {
   }
 
   dispose(): void {
+    this.goLanguage?.dispose(); this.goLanguage = null;
     this.inlineChat?.dispose(); this.inlineChat = null;
     this.disposeBookmarks();
     this.closeIndentationPopover?.();

@@ -112,6 +112,14 @@ func New(ctx context.Context, s *store.Store, dir string, guest []byte, broker B
 			m.Enabled = current.Enabled
 			m.Config = current.Config
 		}
+		if m.ID == "go" {
+			if m.Config == nil {
+				m.Config = map[string]any{}
+			}
+			if _, configured := m.Config["languageServices"]; !configured {
+				m.Config["languageServices"] = true
+			}
+		}
 		{
 			if e = s.Put("plugins", m.ID, m); e != nil {
 				r.Close(ctx)

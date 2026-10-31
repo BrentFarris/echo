@@ -72,6 +72,9 @@ func Builtins() []domain.PluginManifest {
 			m.Scope = "bot"
 		}
 		m.Config = map[string]any{}
+		if m.ID == "go" {
+			m.Config["languageServices"] = true
+		}
 		if m.Settings == nil {
 			m.Settings = Schema(map[string]any{})
 		}

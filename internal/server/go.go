@@ -3,6 +3,9 @@ package server
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/brent/echo/internal/domain"
@@ -10,6 +13,9 @@ import (
 )
 
 func (s *Server) goConfig(m domain.PluginManifest, updates map[string]any, owner bool) (map[string]any, error) {
+	if value, ok := updates["goplsExecutable"]; ok && !owner && value != m.Config["goplsExecutable"] {
+		return nil, errors.New("change gopls executable grants directly in Go settings")
+	}
 	// Go uses the same owner-only runtime/network grants as native SCM clients.
 	config, err := s.sourceControlConfig(m, updates, owner)
 	if err != nil {
@@ -17,6 +23,11 @@ func (s *Server) goConfig(m domain.PluginManifest, updates map[string]any, owner
 	}
 	if err = gotool.ValidateProxy(text(config, "proxy")); err != nil {
 		return nil, err
+	}
+	if path := text(config, "goplsExecutable"); path != "" {
+		if !filepath.IsAbs(path) || runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(path), ".exe") || !s.Files.Allowed(domain.Bot{}, path) {
+			return nil, errors.New("gopls must be an absolute executable outside Echo private state")
+		}
 	}
 	return config, nil
 }

@@ -1,6 +1,9 @@
 package broker
 
-import "sync"
+import (
+	"io"
+	"sync"
+)
 
 // processOutput drains both streams even after reaching the capture bound.
 type processOutput struct {
@@ -9,6 +12,7 @@ type processOutput struct {
 	emit     func(string)
 	limit    int
 	separate bool
+	stdout   io.Writer
 }
 type processStream struct {
 	output *processOutput
@@ -23,10 +27,18 @@ func newProcessOutput(r ProcessRequest, emit func(string)) *processOutput {
 	if limit > 64<<20 {
 		limit = 64 << 20
 	}
-	return &processOutput{limit: limit, separate: r.SeparateOutput, emit: emit}
+	o := &processOutput{limit: limit, separate: r.SeparateOutput, emit: emit}
+	if r.duplex != nil {
+		o.stdout = r.duplex.output
+		o.separate = true
+	}
+	return o
 }
 func (w processStream) Write(data []byte) (int, error) {
 	o := w.output
+	if !w.stderr && o.stdout != nil {
+		return o.stdout.Write(data)
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	n := len(data)

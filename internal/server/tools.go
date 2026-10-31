@@ -324,6 +324,8 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		return s.runSourceControl(ctx, scope, manifest, method, a)
 	case "go.run":
 		return s.runGo(ctx, scope, manifest, a)
+	case "go.inspect":
+		return s.inspectGo(ctx, scope, manifest, a)
 	case "model.complete", "model.request", "model.emit":
 		return s.providerOperation(ctx, scope, method, raw)
 	case "plugin.template":
