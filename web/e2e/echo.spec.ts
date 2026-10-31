@@ -61,6 +61,53 @@ for (const welcome of [true, false]) test(`background refreshes preserve editing
   expect(await value()).toBe('Keep writing here!');
 });
 
+test('background refreshes preserve native selections in the transcript', async ({ page }) => {
+  let socket: WebSocketRoute | undefined;
+  await page.routeWebSocket('**/api/v1/events', ws => { socket = ws; });
+  await setup(page); await page.reload();
+  await expect(page.locator('#connection')).toHaveText('');
+  const chatId = new URL(page.url()).hash.slice(1);
+  const emit = (id: string, role: string, content: string) => socket!.send(JSON.stringify({ type: 'message', chatId, payload: {
+    id, chatId, botId: role === 'assistant' ? 'echo' : undefined, runId: role === 'assistant' ? 'selection-run' : undefined,
+    role, author: role === 'assistant' ? 'Echo' : 'You', content, status: 'completed', createdAt: '2026-01-01T00:00:00Z',
+  } }));
+  emit('selection-user', 'user', 'Select text in this prompt.');
+  emit('selection-answer', 'assistant', 'Select **formatted text** in this answer.');
+  const answer = page.locator('[id="body-selection-answer"]');
+  await expect(answer.locator('strong')).toHaveText('formatted text');
+  await expect(page.locator('.response-group')).toHaveCount(1);
+  let refresh = 0;
+  await page.route('**/api/v1/state', async route => {
+    const state = await (await route.fetch()).json();
+    state.chats.find((chat: any) => chat.id === chatId).title = `Selection refresh ${++refresh}`;
+    await route.fulfill({ json: state });
+  });
+  await page.locator('.chat-log').evaluate(log => {
+    const state = window as typeof window & { transcriptRemounted?: boolean };
+    state.transcriptRemounted = false;
+    new MutationObserver(() => { state.transcriptRemounted = true; }).observe(log, { childList: true });
+  });
+  for (const id of ['selection-user', 'selection-answer']) {
+    const body = page.locator(`[id="body-${id}"]`);
+    const selected = await body.evaluate(el => {
+      const range = document.createRange(); range.selectNodeContents(el);
+      const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range);
+      return selection.toString();
+    });
+    expect(selected).not.toBe('');
+    for (let i = 0; i < 3; i++) {
+      const next = refresh + 1;
+      socket!.send(JSON.stringify({ type: 'changed', payload: {} }));
+      // A title change proves the background state was applied without focusing UI.
+      await expect(page.locator('#chat-title')).toHaveText(`Selection refresh ${next}`);
+      expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(selected);
+      expect(await page.evaluate(() => (window as typeof window & { transcriptRemounted?: boolean }).transcriptRemounted)).toBe(false);
+    }
+  }
+  emit('selection-answer', 'assistant', 'An actual **content update** still appears.');
+  await expect(answer.locator('strong')).toHaveText('content update');
+});
+
 test('chat releases sticky scrolling immediately and resumes only at the tail', async ({ page }) => {
   let socket: WebSocketRoute | undefined;
   await page.routeWebSocket('**/api/v1/events', ws => { socket = ws; ws.connectToServer(); });

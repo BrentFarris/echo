@@ -474,7 +474,7 @@ const questionCards = new Map<string, HTMLElement>();
 let renderedChatId = '';
 const selectedBotThreads = new Map<string, string>();
 const threadScroll = new Map<string, { top: number; following: boolean }>();
-let renderedThreadKey = '', visibleBotId: string | undefined;
+let renderedThreadKey = '', renderedTranscript = '', visibleBotId: string | undefined;
 function rememberedBotThread() {
   let selected = selectedBotThreads.get(chatId);
   if (!selected) { try { selected = sessionStorage.getItem('echo:bot-thread:' + chatId) || undefined; } catch { /* Use the first thread. */ } }
@@ -675,6 +675,24 @@ function renderMessages(tail = false, force = false) {
   renderBotTabs();
   const threadKey = JSON.stringify([chatId, visibleBotId]), switchedThread = threadKey !== renderedThreadKey;
   renderedThreadKey = threadKey;
+  const visibleMessages = threadMessages(messages, visibleBotId, state.runs);
+  const visibleRuns = state.runs.filter(r => r.chatId === chatId && (!visibleBotId || r.botId === visibleBotId));
+  const transcript = JSON.stringify([
+    threadKey, visibleMessages, visibleRuns.map(({ updatedAt, ...run }) => run),
+    submitting || state.runs.some(r => r.chatId === chatId && activeRunStatuses.includes(r.status)),
+    state.bots.map(bot => [bot.id, bot.name, bot.handle]),
+    visibleMessages.map(message => {
+      const editorID = resourceID(splitID(message.chatId)[0], 'monaco-editor');
+      return pluginEnabled(editorID, message.botId) && !!builtinApp(state.plugins.find(p => p.id === editorID), 'main');
+    }),
+    !!messages.length, !!state.endpoints.length,
+  ]);
+  // Background inventory/read/heartbeat updates do not change the transcript.
+  // Even remounting cached text nodes clears the browser's native selection.
+  if (!force && !switchedThread && transcript === renderedTranscript) {
+    if (tail) chatScroll.forceFollow();
+    return;
+  }
   const previousTop = log.scrollTop;
   const contentScroll = [...log.querySelectorAll<HTMLElement>('.message-content pre, .message-content table')]
     .filter(element => element.scrollTop || element.scrollLeft)
@@ -691,9 +709,7 @@ function renderMessages(tail = false, force = false) {
   if (force || switchedThread) { messageMarkup.clear(); renderers.clearPending(); }
   log.replaceChildren();
   if (!messages.length) log.innerHTML = `<div class="welcome"><p>Ask Echo to inspect, plan, or build.</p>${!state.endpoints.length ? '<button id="setup-model">Connect a local model</button>' : ''}</div>`;
-  const visibleMessages = threadMessages(messages, visibleBotId, state.runs);
   messageActionUI.prune(new Set(visibleMessages.map(message => message.id)));
-  const visibleRuns = state.runs.filter(r => r.chatId === chatId && (!visibleBotId || r.botId === visibleBotId));
   for (const item of conversationItems(visibleMessages, visibleRuns)) {
     if (item.kind === 'run-error') {
       const div = document.createElement('div'); div.className = 'run-error'; div.dataset.timelineKey = 'run-error:' + item.run.id;
@@ -720,6 +736,7 @@ function renderMessages(tail = false, force = false) {
     chatScroll.reset(false);
   }
   chatScroll.contentChanged();
+  renderedTranscript = transcript;
 }
 function renderQueuedRuns() {
   const log = document.querySelector('.chat-log'); if (!log) return;
