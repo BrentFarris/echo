@@ -267,6 +267,66 @@ test('streaming thinking keeps clicks and its reading position intact', async ({
   await expect(thinking).toHaveAttribute('open', '');
 });
 
+for (const grouped of [false, true]) test(`streaming thinking survives transcript refreshes ${grouped ? 'inside a response' : 'as a standalone message'}`, async ({ page }) => {
+  let socket: WebSocketRoute | undefined;
+  await page.routeWebSocket('**/api/v1/events', ws => { socket = ws; });
+  await setup(page); await page.reload();
+  await expect(page.locator('#connection')).toHaveText('');
+  const chatId = new URL(page.url()).hash.slice(1), id = 'refreshed-thinking';
+  const message = { id, chatId, botId: 'echo', runId: grouped ? 'thinking-run' : undefined, role: 'assistant', author: 'Echo', content: '', reasoning: Array.from({ length: 100 }, (_, i) => `Thinking line ${i}`).join('\n'), status: 'running', createdAt: new Date().toISOString() };
+  const emit = (type: string, payload: object) => socket!.send(JSON.stringify({ type, chatId, payload }));
+  const snapshot = (suffix: string) => { message.reasoning += '\n' + suffix; emit('message', message); };
+  emit('message', message);
+  const thinking = page.locator('.reasoning'), summary = thinking.locator('summary'), text = thinking.locator('pre');
+  await expect(summary).toBeVisible();
+  const original = await text.elementHandle();
+
+  await summary.hover(); await page.mouse.down();
+  snapshot('Snapshot during click');
+  await expect(text).toContainText('Snapshot during click');
+  await page.mouse.up();
+  await expect(thinking).toHaveAttribute('open', '');
+  await expect(summary).toBeFocused();
+  await text.hover(); await page.mouse.wheel(0, 200);
+  await expect.poll(() => text.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+  const top = await text.evaluate(el => el.scrollTop);
+  for (let i = 0; i < 3; i++) {
+    snapshot(`Snapshot ${i}`);
+    await expect(text).toContainText(`Snapshot ${i}`);
+    // New transcript entries must leave the active disclosure mounted too.
+    emit('message', { ...message, id: `other-message-${i}`, reasoning: '', role: 'tool', author: 'Echo · Tool', content: `Tool result ${i}`, status: 'completed' });
+    await expect(page.locator(`[id="message-other-message-${i}"]`)).toBeAttached();
+    expect(await text.evaluate((el, node) => el === node, original)).toBe(true);
+    expect(await text.evaluate(el => el.scrollTop)).toBe(top);
+    await expect(thinking).toHaveAttribute('open', '');
+    await expect(summary).toBeFocused();
+  }
+  await page.route('**/api/v1/state', async route => {
+    const state = await (await route.fetch()).json();
+    state.chats.find((chat: any) => chat.id === chatId).title = 'Refreshed while thinking';
+    await route.fulfill({ json: state });
+  });
+  message.reasoning += '\nDelta before background refresh';
+  emit('delta', { id, reasoning: '\nDelta before background refresh' });
+  await expect(text).toContainText('Delta before background refresh');
+  emit('changed', {});
+  await expect(page.locator('#chat-title')).toHaveText('Refreshed while thinking');
+  expect(await text.evaluate((el, node) => el === node, original)).toBe(true);
+  expect(await text.evaluate(el => el.scrollTop)).toBe(top);
+  await expect(thinking).toHaveAttribute('open', '');
+  // A refresh between pointer down/up must preserve collapse as well as expand.
+  await summary.hover(); await page.mouse.down();
+  snapshot('Snapshot while closing');
+  await expect(text).toContainText('Snapshot while closing');
+  await page.mouse.up();
+  await expect(thinking).not.toHaveAttribute('open', '');
+  snapshot('Snapshot while closed');
+  await expect(text).toContainText('Snapshot while closed');
+  await expect(thinking).not.toHaveAttribute('open', '');
+  await summary.press('Enter');
+  await expect(thinking).toHaveAttribute('open', '');
+});
+
 test('cloud connections can be added and selected without enable switches', async ({ page }) => {
   await setup(page);
   let endpointId = '';

@@ -626,9 +626,24 @@ function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.da
   mountMessageActions(el, m, grouped);
   return el;
 }
-function paintResponse(group: ResponseGroup) {
-  const el = document.createElement('section'); el.className = 'response-group'; el.dataset.timelineKey = group.key; el.setAttribute('aria-label', group.author + ' response');
-  el.innerHTML = `<div class="message-meta"><strong>${esc(group.author)}</strong>${statusBadge(group.status || group.messages.at(-1)?.status)}</div>`;
+// Leave retained nodes connected: even removing and reinserting the same node
+// interrupts native disclosure clicks and resets nested scroll containers.
+function reconcileChildren(root: HTMLElement, children: HTMLElement[]) {
+  const retained = new Set<Node>(children);
+  for (const child of [...root.childNodes]) if (!retained.has(child)) child.remove();
+  let next = root.firstChild;
+  for (const child of children) {
+    if (child === next) next = next.nextSibling;
+    else root.insertBefore(child, next);
+  }
+}
+function paintResponse(group: ResponseGroup, existing?: HTMLElement) {
+  const el = !group.final && existing?.classList.contains('response-group') ? existing : document.createElement('section');
+  el.className = 'response-group'; el.dataset.timelineKey = group.key; el.setAttribute('aria-label', group.author + ' response');
+  const meta = el.querySelector<HTMLElement>(':scope > .message-meta') || document.createElement('div'); meta.className = 'message-meta';
+  const markup = `<strong>${esc(group.author)}</strong>${statusBadge(group.status || group.messages.at(-1)?.status)}`;
+  if (meta.innerHTML !== markup) meta.innerHTML = markup;
+  const children: HTMLElement[] = [meta];
   if (group.final) {
     const work = group.messages.slice(0, -1);
     // Answered question cards sit above the final response instead of inside
@@ -641,16 +656,15 @@ function paintResponse(group: ResponseGroup) {
       const body = q('.work-content', disclosure);
       for (const m of rest) body.append(paintMessage(m, undefined, true));
       if (group.final.reasoning) body.insertAdjacentHTML('beforeend', reasoningMarkup(group.final));
-      el.append(disclosure);
+      children.push(disclosure);
     }
-    for (const m of promoted) el.append(paintMessage(m, undefined, true));
+    for (const m of promoted) children.push(paintMessage(m, undefined, true));
     const final = paintMessage(group.final, undefined, true, true);
-    el.append(final);
-    messageActionUI.mount(el, final, group.final);
+    children.push(final);
   } else {
-    for (const m of group.messages) el.append(paintMessage(m, undefined, true));
+    for (const m of group.messages) children.push(paintMessage(m, undefined, true));
   }
-  const media = generatedMedia(group.messages); if (media) el.append(media);
+  const media = generatedMedia(group.messages); if (media) children.push(media);
   const node = splitID(group.messages[0].chatId)[0], editorID = resourceID(node, 'monaco-editor');
   const editorEnabled = pluginEnabled(editorID, group.messages[0].botId) && !!builtinApp(state.plugins.find(p => p.id === editorID), 'main');
   const files = fileChangesFooter(group, async file => {
@@ -662,7 +676,9 @@ function paintResponse(group: ResponseGroup) {
       } else if (!result.select) notice('Opened the containing folder in File Explorer.');
     } catch (error) { notice(error, true); }
   }, editorEnabled);
-  if (files) el.append(files);
+  if (files) children.push(files);
+  reconcileChildren(el, children);
+  if (group.final) messageActionUI.mount(el, q(':scope > .message[data-final="true"]', el), group.final);
   const statistics = turnStatisticsFooter(group, state.runs.find(run => run.id === group.final?.runId));
   restoreDisclosures(el);
   if (!statistics) return el;
@@ -707,16 +723,24 @@ function renderMessages(tail = false, force = false) {
   if (renderedChatId !== chatId) { disclosureState.clear(); messageMarkup.clear(); questionCards.clear(); renderers.clearPending(); renderedChatId = chatId; } else rememberDisclosures(log);
   // Repaint on tab changes: renderer replies for an offscreen thread may have been discarded.
   if (force || switchedThread) { messageMarkup.clear(); renderers.clearPending(); }
-  log.replaceChildren();
-  if (!messages.length) log.innerHTML = `<div class="welcome"><p>Ask Echo to inspect, plan, or build.</p>${!state.endpoints.length ? '<button id="setup-model">Connect a local model</button>' : ''}</div>`;
+  const existing = new Map([...log.children].map(child => [(child as HTMLElement).dataset.timelineKey || child.id, child as HTMLElement]));
+  const children: HTMLElement[] = [];
+  if (!messages.length) {
+    const welcome = document.createElement('div'); welcome.className = 'welcome';
+    welcome.innerHTML = `<p>Ask Echo to inspect, plan, or build.</p>${!state.endpoints.length ? '<button id="setup-model">Connect a local model</button>' : ''}`;
+    children.push(welcome);
+  }
   messageActionUI.prune(new Set(visibleMessages.map(message => message.id)));
   for (const item of conversationItems(visibleMessages, visibleRuns)) {
     if (item.kind === 'run-error') {
       const div = document.createElement('div'); div.className = 'run-error'; div.dataset.timelineKey = 'run-error:' + item.run.id;
-      div.textContent = `${currentBot(item.run.botId)?.name || 'Bot'}: ${item.run.error}`; log.append(div);
-    } else log.append(item.kind === 'response' ? paintResponse(item.group) : paintMessage(item.message));
+      div.textContent = `${currentBot(item.run.botId)?.name || 'Bot'}: ${item.run.error}`; children.push(div);
+    } else children.push(item.kind === 'response' ? paintResponse(item.group, existing.get(item.group.key)) : paintMessage(item.message));
   }
-  if (messages.length && !visibleMessages.length) log.innerHTML = '<p class="empty-list">No messages in this bot’s thread yet.</p>';
+  if (messages.length && !visibleMessages.length) {
+    const empty = document.createElement('p'); empty.className = 'empty-list'; empty.textContent = 'No messages in this bot’s thread yet.'; children.push(empty);
+  }
+  reconcileChildren(log, children);
   renderQueuedRuns(); document.querySelector<HTMLButtonElement>('#setup-model')?.addEventListener('click', () => settings('models'));
   // Browsers reset nested scroll offsets when a retained answer is remounted.
   for (const { element, top, left } of contentScroll) if (element.isConnected) { element.scrollTop = top; element.scrollLeft = left; }
