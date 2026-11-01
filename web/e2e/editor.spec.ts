@@ -85,6 +85,39 @@ test('empty roots, untitled recovery, scoped shortcuts and close cancellation', 
   await launch(page); await page.locator(`[data-chat="${chatId}"]`).click(); await expect(message).toHaveText('chat draft');
 });
 
+for (const presentation of ['embedded', 'floating']) test(`quick open without an open file in the ${presentation} editor`, async ({ page }) => {
+  await launch(page);
+  if (presentation === 'floating') await page.getByRole('button', { name: 'Open in Window', exact: true }).click();
+  const placeholder = editor(page).locator('[data-editor-placeholder]');
+  const picker = page.getByRole('textbox', { name: 'Go to File', exact: true });
+  await expect(editor(page).getByRole('tab')).toHaveCount(0);
+  await placeholder.click();
+  await page.keyboard.press('Control+p');
+  await expect(picker).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(picker).toHaveCount(0);
+  await page.keyboard.press('Control+p');
+  await expect(picker).toBeFocused();
+  await picker.fill('beta.txt');
+  await expect(page.locator('.code-picker [role=option]').first()).toContainText('beta.txt');
+  await page.keyboard.press('Enter');
+  await expect(text(page)).toContainText('second file');
+  await page.keyboard.press('Control+p');
+  await expect(picker).toBeFocused();
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Control+w');
+  await expect(placeholder).toBeVisible();
+  await expect(editor(page).getByRole('tab')).toHaveCount(0);
+  await page.keyboard.press('Control+p');
+  await expect(picker).toBeFocused();
+  await page.keyboard.press('Escape');
+  await row(page, 'beta.txt').click();
+  await tab(page, 'beta.txt').getByRole('button', { name: 'Close beta.txt', exact: true }).click();
+  await expect(placeholder).toBeVisible();
+  await page.keyboard.press('Control+p');
+  await expect(picker).toBeFocused();
+});
+
 test('quick open, duplicate selection, external changes, previews and mobile layout', async ({ page }) => {
   await launch(page); await page.locator('.embedded-plugin > header').focus(); await page.keyboard.press('Control+p');
   await page.locator('.code-picker input').fill('beta.txt'); await expect(page.locator('.code-picker [role=option]').first()).toContainText('beta.txt'); await page.keyboard.press('Enter');

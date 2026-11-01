@@ -305,7 +305,7 @@ export class CodeView {
     const workspaceName = this.workspace?.name || "No workspace";
     const explorerActive = this.activeSidebar === "explorer";
     this.root.innerHTML = `
-      <div class="code-app-shell" aria-busy="true" style="--explorer-width:${this.explorerWidth}px">
+      <div class="code-app-shell" tabindex="-1" aria-busy="true" style="--explorer-width:${this.explorerWidth}px">
         <nav class="code-left-nav" aria-label="Editor tools"><button data-code-sidebar="explorer" title="Explorer"><span class="codicon codicon-files"></span></button><button data-code-sidebar="search" title="Search"><span class="codicon codicon-search"></span></button><button data-code-sidebar="bookmarks" title="Bookmarks"><span class="codicon codicon-bookmark"></span></button><button class="code-git-activity" data-code-sidebar="source-control" title="Source Control" aria-label="Source Control"><span class="codicon codicon-source-control"></span><b data-source-control-badge hidden></b></button></nav>
         <section class="code-workbench">
           <div class="code-sidebar-backdrop" data-mobile-sidebar-backdrop aria-hidden="true"></div>
@@ -2146,6 +2146,7 @@ export class CodeView {
   private removeTab(tab: OpenTab): void {
     const index = this.tabs.indexOf(tab);
     if (index < 0) return;
+    const hadFocus = this.root.contains(document.activeElement);
     this.tabs.splice(index, 1);
     this.mruTabIds = removeFromMru(this.mruTabIds, tab.id);
     if (this.mruCycle) this.mruCycle = pruneMruCycle(this.mruCycle, this.tabs.map((t) => t.id));
@@ -2162,6 +2163,7 @@ export class CodeView {
       }
     }
     this.renderTabs();
+    if (!this.tabs.length && hadFocus) this.root.querySelector<HTMLElement>(".code-app-shell")?.focus({ preventScroll: true });
     this.schedulePersist();
 
   }
@@ -3147,6 +3149,7 @@ export class CodeView {
 
   private showQuickOpen(): void {
     if (!this.workspace) return;
+    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const overlay = document.createElement("div");
     overlay.className = "code-picker-overlay";
     overlay.innerHTML = `<section class="code-picker" role="dialog" aria-modal="true"><div class="code-picker-input"><span class="codicon codicon-search"></span><input aria-label="Go to File" placeholder="Type a file name, optionally followed by :line"></div><div class="code-picker-meta" data-picker-meta>Type to search workspace files</div><div class="code-picker-list" role="listbox" data-picker-list></div></section>`;
@@ -3159,7 +3162,10 @@ export class CodeView {
     let timer = 0;
     let closed = false;
     let searchGeneration = 0;
-    const close = () => { closed = true; window.clearTimeout(timer); overlay.remove(); };
+    const close = () => {
+      closed = true; window.clearTimeout(timer); overlay.remove();
+      if (this.active && returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+    };
     const render = () => {
       list.innerHTML = results.map((result, index) => {
         const root = this.roots.find((candidate) => candidate.id === result.ref.rootId);
