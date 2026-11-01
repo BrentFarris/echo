@@ -68,9 +68,9 @@ func TestGeneratedMediaSurvivesCrashAndDoesNotConsumeDraftQuota(t *testing.T) {
 	if err = s.AddMessage(m); err != nil {
 		t.Fatal(err)
 	}
-	// Generated video can exceed the composer's upload cap.
+	// Generated media can exceed the composer's upload cap.
 	data := bytes.Repeat([]byte{42}, MaxAttachmentBytes+1)
-	a := domain.Attachment{ID: "generated", ChatID: c.ID, Name: "result.mp4", MediaType: "video/mp4", Size: int64(len(data))}
+	a := domain.Attachment{ID: "generated", ChatID: c.ID, Name: "result.png", MediaType: "image/png", Size: int64(len(data)), ModelInput: true}
 	if err = s.AddGeneratedAttachment(a, m.ID, data); err != nil {
 		t.Fatal(err)
 	}

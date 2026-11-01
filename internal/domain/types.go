@@ -67,6 +67,7 @@ type Endpoint struct {
 
 // Attachment metadata travels with the transcript; bytes are stored once in SQLite.
 type Attachment struct {
+	ModelInput   bool   `json:"modelInput,omitempty"`
 	NodeID       string `json:"nodeId,omitempty"`
 	OriginChatID string `json:"originChatId,omitempty"`
 	ID           string `json:"id"`

@@ -108,6 +108,10 @@ export function attachmentURL(message: Message, attachment: Attachment) {
   const [home, chat] = splitID(message.chatId), owner = attachment.nodeId || home;
   return new InstanceClient(owner).url(`/chats/${encodeURIComponent(attachment.originChatId || chat)}/attachments/${encodeURIComponent(attachment.id)}`);
 }
+export function attachmentPreviewURL(message: Message, attachment: Attachment, width = 384) {
+  const url = attachmentURL(message, attachment);
+  return attachment.mediaType.startsWith('image/') ? `${url}?width=${width}` : url;
+}
 
 export async function resourceAPI<T = any>(path: string, method = 'GET', body?: any, defaultNode = entryNode): Promise<T> {
   const target = route(path, defaultNode), node = target.client.nodeId;

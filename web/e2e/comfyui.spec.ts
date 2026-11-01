@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 for (const kind of ['image', 'video', 'gif']) test(`ComfyUI ${kind} results survive reload outside Show work`, async ({ page }) => {
-  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==', 'base64');
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNIWPrrPwAGZwL/q+M67AAAAABJRU5ErkJggg==', 'base64');
   const gif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
   const media = kind === 'image' ? png : kind === 'gif' ? gif : Buffer.from([0, 0, 0, 24, ...Buffer.from('ftypmp42'), 0, 0, 0, 0, ...Buffer.from('mp42isom')]);
   const filename = kind === 'image' ? 'result.png' : kind === 'gif' ? 'result.gif' : 'result.mp4';
@@ -33,8 +33,12 @@ for (const kind of ['image', 'video', 'gif']) test(`ComfyUI ${kind} results surv
     const sent = await page.request.post(`/api/v1/chats/${chatId}/messages`, { data: { content: 'Generate media', generation: { endpointId: 'comfy-test', model: 'test', temperature: 0.6 } } });
     expect(sent.ok()).toBe(true);
     await page.goto('/#' + chatId); await page.reload();
-    const result = page.locator('.generated-media');
+    const disclosure = page.locator('.media-disclosure');
+    const result = disclosure.locator('.generated-media');
     await expect(page.locator('.response-group')).toContainText('Your generated media is ready.');
+    await expect(disclosure).toBeVisible(); await expect(disclosure).not.toHaveAttribute('open', '');
+    await expect(result.locator('img,video')).toHaveCount(0);
+    await disclosure.locator('summary').click();
     await expect(result).toBeVisible(); await expect(page.locator('.work-disclosure')).not.toHaveAttribute('open', '');
     await expect(result.getByRole('link', { name: `Download ${filename}` })).toBeVisible();
     if (kind === 'video') await expect(result.locator('video')).toHaveAttribute('controls', '');
@@ -47,10 +51,11 @@ for (const kind of ['image', 'video', 'gif']) test(`ComfyUI ${kind} results surv
     }
     const link = await result.locator('a').getAttribute('href');
     expect(await (await page.request.get(link!)).body()).toEqual(media);
-    await page.reload(); await expect(result).toBeVisible();
+    await page.reload(); await expect(disclosure).toBeVisible(); await expect(disclosure).not.toHaveAttribute('open', '');
+    await disclosure.locator('summary').click(); await expect(result).toBeVisible();
     await page.setViewportSize({ width: 390, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-    await page.getByRole('button', { name: 'Toggle sidebar', exact: true }).click();
+    await page.setViewportSize({ width: 1280, height: 720 });
     await page.getByRole('button', { name: '⚙ Settings', exact: true }).click();
     await page.locator('.settings-nav').getByRole('button', { name: 'ComfyUI', exact: true }).click();
     await expect(page.getByRole('checkbox', { name: 'Enable ComfyUI' })).toBeChecked();

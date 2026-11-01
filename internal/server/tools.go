@@ -28,6 +28,7 @@ func (s *Server) coreTools(bot domain.Bot) []domain.Tool {
 	A := plugins.A
 	out := []domain.Tool{
 		coreTool("file_read", "Read a UTF-8 file and its revision.", map[string]any{"path": S("Absolute path, or relative to the first bound root")}, "path"),
+		coreTool("file_read_image", "Read a PNG, JPEG, GIF, or WebP image within your filesystem scope and make its contents available for visual inspection. Maximum 32 MiB and 64 megapixels. Referenced image paths must be read with this tool to see them.", map[string]any{"path": S("Absolute path, or relative to the first bound root")}, "path"),
 		coreTool("file_write", "Create or replace a UTF-8 file. Supply the revision from file_read when updating existing files.", map[string]any{"path": S("Path"), "content": S("Complete new contents"), "revision": S("Expected revision")}, "path", "content"),
 		coreTool("file_list", "List a directory within your scope.", map[string]any{"path": S("Directory")}, "path"),
 		coreTool("file_search", "Search filenames or text in a directory, without indexing the whole disk.", map[string]any{"path": S("Directory"), "query": S("Search text"), "contents": plugins.B("Search file contents instead of names")}, "path", "query"),
@@ -150,6 +151,8 @@ func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionSc
 		return s.skillTool(ctx, scope.Bot, name, a)
 	case "file_read":
 		return s.Files.Read(scope.Bot, text(a, "path"))
+	case "file_read_image":
+		return s.readImage(ctx, scope, text(a, "path"))
 	case "file_write", "file_delete", "file_move", "file_mkdir":
 		return s.mutateFile(ctx, scope.Bot, strings.ReplaceAll(name, "_", "."), a)
 	case "file_list":

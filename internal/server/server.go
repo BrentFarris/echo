@@ -40,6 +40,7 @@ import (
 )
 
 type Server struct {
+	mediaPreviews   attachmentPreviewCache
 	goLanguageMu    sync.Mutex
 	goLanguages     map[string]*goLanguageSession
 	goInstallMu     sync.Mutex

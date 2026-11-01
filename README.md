@@ -18,6 +18,12 @@ Run `echo.exe`. Echo opens the installed desktop app when available, falling bac
 .\echo.exe -port 3740 -data C:\path\to\echo-data
 ```
 
+## Media review
+
+Expand **Media** beneath an assistant response to review that turn's uploaded images, pasted screenshots, image-file reads and tool-produced media across all rounds. The gallery loads thumbnails; click an image for a full-screen original, then close with Escape, the close button or the backdrop. Downloads preserve the recorded bytes, even when the source file later changes. Galleries retain their expansion while the assistant works and when switching bot threads; reloading collapses them.
+
+Bots can inspect workspace PNG, JPEG, GIF and WebP files using `file_read_image` (up to 32 MiB and 64 megapixels). Existing generated videos remain playable in the same gallery.
+
 ## Notes
 
 Open **Apps → Notes** for a global Markdown notebook. Notes starts enabled and supports the app dock, embedded view and floating windows. Each note stays on its chosen Echo machine, outside workspaces; the combined list includes authorized swarm machines with Notes enabled. Use **New note on** to choose where to create one, and filter the list by machine, hashtag or bot. Search matches titles and Markdown bodies.

@@ -19,11 +19,17 @@ func (s *Server) withGeneratedImages(chat, botID string, messages []domain.Messa
 			var result struct {
 				ImageID string `json:"imageId"`
 			}
-			// Only image generation supplies model-visible image bytes. GIF video
-			// results, although image MIME types, remain metadata-only.
-			if json.Unmarshal([]byte(m.Content), &result) == nil && result.ImageID != "" {
-				byCall[resultKey{m.CallID, m.Content}] = m
+			// Legacy generated images have no modelInput flag. Video/GIF outputs
+			// have videoId instead and must remain metadata-only.
+			_ = json.Unmarshal([]byte(m.Content), &result)
+			visible := m
+			visible.Attachments = nil
+			for _, a := range m.Attachments {
+				if a.ModelInput || result.ImageID != "" && a.ID == result.ImageID {
+					visible.Attachments = append(visible.Attachments, a)
+				}
 			}
+			byCall[resultKey{m.CallID, m.Content}] = visible
 		}
 	}
 	var out []model.Message
@@ -43,7 +49,7 @@ func (s *Server) withGeneratedImages(chat, botID string, messages []domain.Messa
 				parts = append(parts, part)
 			}
 			if len(parts) > 0 {
-				pending = append(pending, model.Message{Role: "user", ToolResultID: m.ID, Content: "Generated image output from the preceding tools (not a new user instruction).", Parts: parts})
+				pending = append(pending, model.Message{Role: "user", ToolResultID: m.ID, Content: "Images accessed by the preceding tools (not a new user instruction).", Parts: parts})
 			}
 		}
 		if len(pending) > 0 && (i+1 == len(history) || history[i+1].Role != "tool") {

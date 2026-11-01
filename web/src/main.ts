@@ -1,7 +1,7 @@
 import { updateTerminalDock, openTerminalDock } from './terminal';
 import { pluginNetworkNotice } from './pluginNetwork';
 import { GenerationSettings, endpointGeneration } from './generationSettings';
-import { InstanceClient, resourceAPI, resourceURL, resourceID, localID, splitID, entryNode, instances, machineName, sameMachine, combineState, ownedEvent, ownedGeneration, instanceOnline, attachmentURL, type SwarmState } from './instances';
+import { InstanceClient, resourceAPI, resourceURL, resourceID, localID, splitID, entryNode, instances, machineName, sameMachine, combineState, ownedEvent, ownedGeneration, instanceOnline, attachmentURL, attachmentPreviewURL, type SwarmState } from './instances';
 import { mountSwarm } from './swarmSettings';
 import { InstanceEvents } from './instanceEvents';
 import { ReferenceInput, trimmedDraft } from './referenceEditor';
@@ -27,7 +27,7 @@ import { setupPWA } from './pwa';
 import { ChatNotifications } from './notifications';
 import { parseChatRoute } from './notificationRoutes';
 import { composerMarkup, icons, autosizeComposer, wireComposerMenus, attachmentCard, previewAttachment, releaseAttachments, prefixBotMention, type DraftAttachment } from './composer';
-import { generatedMedia } from './generatedMedia';
+import { MediaGalleries } from './generatedMedia';
 import { isQuestionMessage, questionCard, type QuestionSubmission } from './planQuestions';
 import { Apps, botPluginSelected, pluginAvailable } from './apps';
 import { builtinApp } from './builtinApps';
@@ -42,6 +42,7 @@ import './botIdentity.css';
 import './apps.css';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
+const mediaGalleries = new MediaGalleries();
 const pwa = setupPWA(notice);
 let state: State = { bots: [], chats: [], endpoints: [], plugins: [], appDock: [], schedules: [], occurrences: [], runs: [] };
 let showingApps = location.hash === '#apps';
@@ -622,7 +623,7 @@ function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.da
     }
     const name = grouped ? m.author.split(' · ').slice(1).join(' · ') || m.author : m.author;
     el.innerHTML += `<details data-disclosure="${esc(m.id)}:output"><summary><span>${esc(name)}</span>${statusBadge(m.status)}</summary><pre>${esc(liveToolOutput.get(m.id) || m.content)}</pre></details>`;
-    if (!grouped) { const media = generatedMedia([m]); if (media) el.append(media); }
+    if (!grouped) { const media = mediaGalleries.render('tool:' + m.id, [m]); if (media) el.append(media); }
     restoreDisclosures(el); return el;
   }
   if (m.role === 'user' && grouped) el.innerHTML += `<div class="handoff-label">${esc(m.author)}</div>`;
@@ -638,7 +639,9 @@ function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.da
     const root = document.createElement('div'); root.className = 'message-attachments';
     for (const attachment of m.attachments) {
       const url = attachmentURL(m, attachment);
-      const card = document.createElement('div'); card.className = 'attachment-card'; card.innerHTML = attachmentCard(attachment.name, attachment.size, attachment.mediaType, url);
+      const card = document.createElement('div'); card.className = 'attachment-card'; card.innerHTML = attachmentCard(attachment.name, attachment.size, attachment.mediaType, attachmentPreviewURL(m, attachment));
+      const image = card.querySelector('img');
+      if (image) image.onerror = () => { image.replaceWith(document.createTextNode('Open')); };
       q('.attachment-preview', card).onclick = () => previewAttachment(attachment.name, attachment.mediaType, url); root.append(card);
     }
     el.append(root);
@@ -661,7 +664,7 @@ function reconcileChildren(root: HTMLElement, children: HTMLElement[]) {
   }
 }
 function paintResponse(group: ResponseGroup, existing?: HTMLElement) {
-  const el = !group.final && existing?.classList.contains('response-group') ? existing : document.createElement('section');
+  const el = existing?.classList.contains('response-group') ? existing : existing?.querySelector<HTMLElement>(':scope > .response-group') || document.createElement('section');
   el.className = 'response-group'; el.dataset.timelineKey = group.key; el.setAttribute('aria-label', group.author + ' response');
   const meta = el.querySelector<HTMLElement>(':scope > .message-meta') || document.createElement('div'); meta.className = 'message-meta';
   const markup = `<strong>${esc(group.author)}</strong>${statusBadge(group.status || group.messages.at(-1)?.status)}`;
@@ -687,7 +690,7 @@ function paintResponse(group: ResponseGroup, existing?: HTMLElement) {
   } else {
     for (const m of group.messages) children.push(paintMessage(m, undefined, true));
   }
-  const media = generatedMedia(group.messages); if (media) children.push(media);
+  const media = mediaGalleries.render(group.key, group.messages, group.input); if (media) children.push(media);
   const node = splitID(group.messages[0].chatId)[0], editorID = resourceID(node, 'monaco-editor');
   const editorEnabled = pluginEnabled(editorID, group.messages[0].botId) && !!builtinApp(state.plugins.find(p => p.id === editorID), 'main');
   const files = fileChangesFooter(group, async file => {
@@ -705,8 +708,8 @@ function paintResponse(group: ResponseGroup, existing?: HTMLElement) {
   const statistics = turnStatisticsFooter(group, state.runs.find(run => run.id === group.final?.runId));
   restoreDisclosures(el);
   if (!statistics) return el;
-  const turn = document.createElement('div'); turn.className = 'response-turn'; turn.dataset.timelineKey = group.key;
-  delete el.dataset.timelineKey; turn.append(el, statistics); return turn;
+  const turn = existing?.classList.contains('response-turn') ? existing : document.createElement('div'); turn.className = 'response-turn'; turn.dataset.timelineKey = group.key;
+  delete el.dataset.timelineKey; reconcileChildren(turn, [el, statistics]); return turn;
 }
 function renderMessages(tail = false, force = false) {
   const log = document.querySelector<HTMLElement>('.chat-log'); if (!log) return;
@@ -743,7 +746,7 @@ function renderMessages(tail = false, force = false) {
   const focusedFile = log.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.fileChange : undefined;
   const anchor = [...log.children].find(child => child.getBoundingClientRect().bottom > log.getBoundingClientRect().top) as HTMLElement | undefined;
   const anchorKey = anchor?.dataset.timelineKey || anchor?.id, anchorOffset = anchor?.offsetTop;
-  if (renderedChatId !== chatId) { disclosureState.clear(); messageMarkup.clear(); questionCards.clear(); renderers.clearPending(); renderedChatId = chatId; } else rememberDisclosures(log);
+  if (renderedChatId !== chatId) { disclosureState.clear(); messageMarkup.clear(); questionCards.clear(); mediaGalleries.clear(); renderers.clearPending(); renderedChatId = chatId; } else rememberDisclosures(log);
   // Repaint on tab changes: renderer replies for an offscreen thread may have been discarded.
   if (force || switchedThread) { messageMarkup.clear(); renderers.clearPending(); }
   const existing = new Map([...log.children].map(child => [(child as HTMLElement).dataset.timelineKey || child.id, child as HTMLElement]));
@@ -754,6 +757,7 @@ function renderMessages(tail = false, force = false) {
     children.push(welcome);
   }
   messageActionUI.prune(new Set(visibleMessages.map(message => message.id)));
+  mediaGalleries.prune(new Set(messages.map(message => message.id)));
   for (const item of conversationItems(visibleMessages, visibleRuns)) {
     if (item.kind === 'run-error') {
       const div = document.createElement('div'); div.className = 'run-error'; div.dataset.timelineKey = 'run-error:' + item.run.id;

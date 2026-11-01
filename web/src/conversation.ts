@@ -21,7 +21,7 @@ export function threadMessages(messages: Message[], botId?: string, runs: Run[] 
   });
 }
 
-export type ResponseGroup = { key: string; messages: Message[]; author: string; status?: string; final?: Message };
+export type ResponseGroup = { key: string; messages: Message[]; author: string; status?: string; final?: Message; input?: Message };
 export type ConversationItem = { kind: 'message'; message: Message } | { kind: 'response'; group: ResponseGroup } | { kind: 'run-error'; run: Run };
 
 // A bot can resume the same run after a handoff. Only its latest successful
@@ -29,6 +29,7 @@ export type ConversationItem = { kind: 'message'; message: Message } | { kind: '
 export function conversationItems(messages: Message[], runs: Run[]): ConversationItem[] {
   const result: ConversationItem[] = [], groups = new Map<string, ResponseGroup>();
   const byRun = new Map(runs.map(run => [run.id, run]));
+  const byMessage = new Map(messages.map(message => [message.id, message]));
   let turn = '';
   for (const message of messages) {
     if (!message.runId) {
@@ -39,7 +40,8 @@ export function conversationItems(messages: Message[], runs: Run[]): Conversatio
     const key = `${turn}:${message.runId}:${message.botId || ''}`;
     let group = groups.get(key);
     if (!group) {
-      group = { key, messages: [], author: message.author, status: byRun.get(message.runId)?.status };
+      const run = byRun.get(message.runId);
+      group = { key, messages: [], author: message.author, status: run?.status, input: byMessage.get(run?.userMessageId || turn) };
       groups.set(key, group); result.push({ kind: 'response', group });
     }
     group.messages.push(message);

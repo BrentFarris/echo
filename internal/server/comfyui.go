@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -187,11 +188,8 @@ func (s *Server) comfyUI(ctx context.Context, scope domain.ExecutionScope, m dom
 	if !strings.HasPrefix(kind, "image/") && !strings.HasPrefix(kind, "video/") {
 		return nil, errors.New("ComfyUI returned unsupported media")
 	}
-	a := domain.Attachment{ID: domain.ID(), ChatID: scope.ChatID, Name: filename, MediaType: kind, Size: int64(len(data))}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := s.Store.AddGeneratedAttachment(a, scope.ToolMessageID, data); err != nil {
+	a, err := s.recordToolMedia(ctx, scope, filename, kind, bytes.NewReader(data), !video)
+	if err != nil {
 		return nil, err
 	}
 	output := map[string]any{"promptId": result.PromptID, "statusMessage": result.StatusMessage, "name": a.Name, "mediaType": kind, "bytes": a.Size,

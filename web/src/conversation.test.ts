@@ -6,6 +6,14 @@ const message = (id: string, extra: Partial<Message> = {}): Message => ({ id, ch
 const run = (status: string, id = 'run'): Run => ({ id, chatId: 'chat', botId: 'bot', status });
 const response = (messages: Message[], runs: Run[]) => conversationItems(messages, runs).flatMap(item => item.kind === 'response' ? [item.group] : []);
 
+test('media input follows the run input relationship even when another prompt intervenes', () => {
+  const original = message('original', { runId: undefined, role: 'user' });
+  const newer = message('newer', { runId: undefined, role: 'user' });
+  const groups = response([original, newer, message('answer')], [{ ...run('completed'), userMessageId: 'original' }]);
+  expect(groups[0].input).toBe(original);
+  expect(response([original, message('answer')], [run('completed')])[0].input).toBe(original);
+});
+
 test('bot threads include queued and historical bots in prompt order', () => {
   const messages = [message('prompt', { botId: undefined, runId: undefined, role: 'user', recipients: ['bot', 'b'] }), message('answer', { author: 'Historical name' })];
   const threads = conversationThreads(undefined, messages, [run('completed'), { ...run('queued', 'b-run'), botId: 'b' }], []);

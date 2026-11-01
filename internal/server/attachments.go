@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -81,10 +82,30 @@ func (s *Server) attachmentRoutes(mux *http.ServeMux) {
 		respond(w, a, s.Store.AddAttachment(a, data))
 	})
 	mux.HandleFunc("GET /api/v1/chats/{id}/attachments/{attachment}", func(w http.ResponseWriter, r *http.Request) {
+		width := 0
+		if r.URL.Query().Has("width") {
+			var err error
+			width, err = strconv.Atoi(r.URL.Query().Get("width"))
+			if err != nil || width < 1 || width > 4096 {
+				http.Error(w, "width must be an integer from 1 to 4096", http.StatusBadRequest)
+				return
+			}
+		}
 		a, data, err := s.Store.Attachment(r.PathValue("id"), r.PathValue("attachment"), false)
 		if err != nil {
 			http.NotFound(w, r)
 			return
+		}
+		if width > 0 {
+			if !strings.HasPrefix(a.MediaType, "image/") {
+				http.Error(w, "only images have thumbnails", http.StatusBadRequest)
+				return
+			}
+			data, a.MediaType, err = s.mediaPreviews.thumbnail(previewKey{a.ChatID, a.ID, width}, data, a.MediaType)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+				return
+			}
 		}
 		w.Header().Set("Content-Type", a.MediaType)
 		w.Header().Set("X-Content-Type-Options", "nosniff")

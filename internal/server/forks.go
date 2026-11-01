@@ -185,7 +185,7 @@ func rewriteMediaJSON(content string, ids, urls map[string]string) string {
 			for key, item := range v {
 				if text, ok := item.(string); ok {
 					replacement := ""
-					if key == "imageId" || key == "videoId" {
+					if key == "imageId" || key == "videoId" || key == "attachmentId" {
 						replacement = ids[text]
 					}
 					if key == "url" {

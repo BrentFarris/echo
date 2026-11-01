@@ -67,11 +67,28 @@ export function attachmentCard(name: string, size: number, type: string, url: st
   const preview = type.startsWith('image/') ? `<img src="${esc(url)}" alt="">` : type.startsWith('video/') ? icons.video : icons.file;
   return `<button type="button" class="attachment-preview" aria-label="Preview ${esc(name)}">${preview}</button><span class="attachment-details"><strong title="${esc(name)}">${esc(name)}</strong><small>${formatBytes(size)}</small></span>${remove ? `<button type="button" class="attachment-remove" aria-label="Remove ${esc(name)}">${icons.close}</button>` : ''}`;
 }
+let activePreview: HTMLDialogElement | undefined;
 export function previewAttachment(name: string, type: string, url: string) {
+  activePreview?.close();
+  const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
   const modal = document.createElement('dialog'); modal.className = 'attachment-viewer';
+  if (type.startsWith('image/')) modal.classList.add('image-lightbox');
+  modal.setAttribute('aria-label', `Full screen preview: ${name}`);
   modal.innerHTML = `<header><strong>${esc(name)}</strong><button class="toolbar-icon" aria-label="Close preview">${icons.close}</button></header>${type.startsWith('image/') ? `<img src="${esc(url)}" alt="${esc(name)}">` : type.startsWith('video/') ? `<video src="${esc(url)}" controls></video>` : `<p>This file is attached to the message.</p>`}<a href="${esc(url)}" download="${esc(name)}">Download ${esc(name)}</a>`;
-  modal.querySelector('button')!.onclick = () => modal.close(); modal.onclose = () => modal.remove();
+  modal.querySelector('button')!.onclick = () => modal.close();
+  modal.onclick = event => { if (event.target === modal) modal.close(); };
+  modal.onkeydown = event => {
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); modal.close(); }
+    if (event.key !== 'Tab') return;
+    const controls = [...modal.querySelectorAll<HTMLElement>('button, a[href], video[controls]')];
+    if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1)!.focus(); }
+    else if (!event.shiftKey && document.activeElement === controls.at(-1)) { event.preventDefault(); controls[0].focus(); }
+  };
+  modal.onclose = () => { modal.remove(); if (activePreview === modal) { activePreview = undefined; document.body.classList.remove('image-lightbox-open'); if (restoreFocus?.isConnected) restoreFocus.focus(); } };
+  activePreview = modal;
   document.body.append(modal); modal.showModal();
+  if (type.startsWith('image/')) document.body.classList.add('image-lightbox-open');
+  modal.querySelector('button')!.focus();
 }
 
 export function autosizeComposer() {
