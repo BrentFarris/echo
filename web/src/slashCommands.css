@@ -1,0 +1,13 @@
+.slash-command-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.slash-command-card > div:first-child { min-width: 0; flex: 1; }
+.slash-command-card p { margin: 4px 0; }
+.slash-command-card small { color: var(--subtle); }
+.slash-command-card pre, .slash-command-form pre, .slash-command-results pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }
+.slash-command-form { margin-top: 16px; }
+.slash-command-form textarea { width: 100%; box-sizing: border-box; }
+.slash-command-form [data-action-fields], .slash-command-form [data-destination-fields] { display: grid; gap: 12px; min-width: 0; }
+.slash-command-results { max-height: 220px; overflow: auto; padding: 0 16px; flex-shrink: 0; }
+.slash-command-results article { padding: 8px 0; border-top: 1px solid var(--border); }
+.slash-command-results article > div { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.slash-command-results [role=alert], [data-editor-error] { color: var(--danger, #dc4545); }
+@media (max-width: 600px) { .slash-command-card { flex-direction: column; } }

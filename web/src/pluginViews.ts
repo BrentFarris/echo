@@ -7,20 +7,20 @@ import { InstanceClient, entryNode, resourceID, resourceAPI, sameMachine, localI
 
 export type AppAPI = <T = unknown>(path: string, method?: string, body?: unknown) => Promise<T>;
 export type NativeFileTarget = { botId: string; ref: { rootId: string; path: string }; kind: 'file' | 'directory' };
-export type NativeApp = { update(bots: Bot[], plugin: Plugin): void; visible(value: boolean): void; beforeClose(): Promise<boolean>; dispose(): void; openFile?(target: NativeFileTarget): Promise<void> };
+export type NativeApp = { update(bots: Bot[], plugin: Plugin): void; visible(value: boolean): void; beforeClose(): Promise<boolean>; dispose(): void; openFile?(target: NativeFileTarget): Promise<void>; navigate?(feature: string, botId: string): Promise<void> };
 export type NativeAppContext = { api: AppAPI; client?: InstanceClient; bots: Bot[]; plugin: Plugin; botId: string; inventory?(): { bots: Bot[]; plugins: Plugin[] }; configureBot(id: string): void; generationFor?(node: string): Generation; openModelSettings?(node: string): void };
-type View = { id: string; title: string; html: string; kind: string; digest: string; network?: { origins: string[] } };
+type View = { id: string; title: string; html: string; kind: string; digest: string; features?: { id: string; title: string }[]; network?: { origins: string[] } };
 type Mode = 'floating' | 'embedded';
 type Options = { openDock?(plugin: Plugin, botId: string): Promise<void>; embeddedHost?: HTMLElement; navigate?(route: string | null): void; configureBot?(id: string): void; generationFor?(node: string): Generation; openModelSettings?(node: string): void };
-type AppWindow = { key: string; element: HTMLElement; frame?: HTMLIFrameElement; native?: NativeApp; pluginId: string; viewId: string; botId: string; digest: string; mode: Mode; close(force?: boolean): Promise<void>; layout(): void };
+type AppWindow = { key: string; element: HTMLElement; frame?: HTMLIFrameElement; native?: NativeApp; pluginId: string; viewId: string; botId: string; digest: string; mode: Mode; feature?: string; targetBotId?: string; navigate?(feature: string): void; close(force?: boolean): Promise<void>; layout(): void };
 
 const popOutIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M14 3h7v7M21 3 11 13"/><path d="M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/></svg>';
 
-export function appRoute(pluginId: string, viewId: string, botId: string) { return '#app/' + [pluginId, viewId, botId].map(encodeURIComponent).join('/'); }
-export function parseAppRoute(hash: string): { pluginId: string; viewId: string; botId: string } | null {
-  const match = /^#app\/([^/]+)\/([^/]+)\/([^/]+)$/.exec(hash);
+export function appRoute(pluginId: string, viewId: string, botId: string, feature?: string) { return '#app/' + [pluginId, viewId, botId].map(encodeURIComponent).join('/') + (feature ? '?' + new URLSearchParams({ feature }) : ''); }
+export function parseAppRoute(hash: string): { pluginId: string; viewId: string; botId: string; feature?: string } | null {
+  const match = /^#app\/([^/?]+)\/([^/?]+)\/([^/?]+)(?:\?(.*))?$/.exec(hash);
   if (!match) return null;
-  try { return { pluginId: decodeURIComponent(match[1]), viewId: decodeURIComponent(match[2]), botId: decodeURIComponent(match[3]) }; } catch { return null; }
+  try { const feature = new URLSearchParams(match[4]).get('feature'); return { pluginId: decodeURIComponent(match[1]), viewId: decodeURIComponent(match[2]), botId: decodeURIComponent(match[3]), ...(feature ? { feature } : {}) }; } catch { return null; }
 }
 
 // Keep the same attached element in both presentations. Reparenting an iframe
@@ -57,12 +57,13 @@ export class PluginWindows {
     for (const win of this.windows.values()) if (win.mode === 'embedded') { win.element.hidden = true; win.native?.visible(false); }
   }
 
-  open(pluginId: string, viewId: string, botId = 'echo', presentation?: Mode): Promise<void> {
+  open(pluginId: string, viewId: string, botId = 'echo', presentation?: Mode, feature?: string): Promise<void> {
     const plugin = this.plugins.find(p => p.id === pluginId);
     botId = resourceID(plugin?.nodeId || entryNode, botId); const contextBot = botId;
     if (plugin?.scope === 'app') botId = resourceID(plugin.nodeId || entryNode, 'echo');
     if (plugin?.builtin && localID(pluginId) === 'notes' && !builtinApp(plugin, viewId)) return Promise.reject(new Error('Update this machine to use Notes.'));
     if (plugin?.builtin && localID(pluginId) === 'terminal') {
+      if (feature) return Promise.reject(new Error('Terminal feature is unavailable.'));
       if (!isBuiltinDock(plugin, viewId)) return Promise.reject(new Error('Update this machine to use Terminal.'));
       if (!pluginAvailable(plugin, this.bots.find(b => b.id === botId))) return Promise.reject(new Error('Terminal is disabled.'));
       if (!this.options.openDock) return Promise.reject(new Error('Terminal dock is unavailable.'));
@@ -73,16 +74,24 @@ export class PluginWindows {
       });
     }
     const key = JSON.stringify([pluginId, viewId, botId]);
-    const pending = this.pending.get(key); if (pending) return pending;
+    const pending = this.pending.get(key); if (pending) return feature === undefined ? pending : pending.then(() => this.open(pluginId, viewId, contextBot, presentation, feature));
     const revision = this.revision;
     const request = (async () => {
       const view = await this.api<View>(`/plugins/${encodeURIComponent(pluginId)}/views/${encodeURIComponent(viewId)}?botId=${encodeURIComponent(botId)}`);
       if (revision !== this.revision) throw new Error('Plugins changed while opening this app. Please try again.');
       if (view.kind === 'renderer') throw new Error('Renderer views cannot be opened as applications.');
+      if (feature && !view.features?.some(item => item.id === feature)) throw new Error('This app feature is no longer available.');
       let win = this.windows.get(key);
       if (win && win.digest !== view.digest) { await win.close(true); win = undefined; }
       if (!win) win = await this.create(key, pluginId, viewId, botId, contextBot, view);
       if (!win.element.isConnected) return;
+      if (feature !== undefined) {
+        if (win.native) {
+          if (feature && !win.native.navigate) throw new Error('This app does not support feature navigation.');
+          await win.native.navigate?.(feature, contextBot);
+        } else win.navigate?.(feature);
+        win.feature = feature; win.targetBotId = contextBot;
+      }
       this.present(win, presentation || win.mode); this.raise(win, true);
     })().finally(() => this.pending.delete(key));
     this.pending.set(key, request); return request;
@@ -105,7 +114,7 @@ export class PluginWindows {
     presentation.setAttribute('aria-label', label); presentation.title = label;
     if (mode === 'embedded') {
       this.hideEmbedded(); this.embeddedKey = win.key;
-      this.options.navigate?.(appRoute(win.pluginId, win.viewId, win.botId));
+      this.options.navigate?.(appRoute(win.pluginId, win.viewId, win.targetBotId || win.botId, win.feature));
     } else if (previous === 'embedded' && this.embeddedKey === win.key) {
       this.embeddedKey = null; this.options.navigate?.(null);
     }
@@ -138,8 +147,12 @@ export class PluginWindows {
       if (saved && [saved.x, saved.y, saved.w, saved.h].every(Number.isFinite)) geometry = saved;
       const preference = localStorage.getItem(`echo2:presentation:${key}`); if (preference === 'embedded' || preference === 'floating') mode = preference;
     } catch { /* Invalid storage does not block launch. */ }
-    let closed = false, closing = false;
+    let closed = false, closing = false, frameReady = false;
     const win: AppWindow = { key, element, pluginId, viewId, botId, digest: view.digest || '', mode,
+      navigate: feature => {
+        win.feature = feature;
+        if (frameReady) win.frame?.contentWindow?.postMessage({ type: 'echo-plugin-navigate', nonce, pluginId, viewId, botId, feature }, '*');
+      },
       layout: () => {
         if (win.mode === 'embedded') {
           const r = this.options.embeddedHost?.getBoundingClientRect() || { x: 0, y: 0, width: innerWidth, height: innerHeight };
@@ -170,7 +183,7 @@ export class PluginWindows {
     const listener = async (event: MessageEvent) => {
       if (!win.frame || event.source !== win.frame.contentWindow || !event.data || closed) return;
       const data = event.data;
-      if (data.type === 'echo-plugin-ready') { win.frame.contentWindow!.postMessage({ type: 'echo-plugin-init', nonce, pluginId, viewId, botId, theme: theme() }, '*'); return; }
+      if (data.type === 'echo-plugin-ready') { frameReady = true; win.frame.contentWindow!.postMessage({ type: 'echo-plugin-init', nonce, pluginId, viewId, botId, feature: win.feature || '', theme: theme() }, '*'); return; }
       if (data.nonce !== nonce || data.pluginId !== pluginId || data.viewId !== viewId || data.type !== 'echo-plugin-request') return;
       if (data.method === 'window.close') { await win.close(); return; }
       try {

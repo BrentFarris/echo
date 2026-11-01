@@ -216,17 +216,34 @@ func (h *Host) Provider(bot domain.Bot, name string) (domain.PluginManifest, err
 	return domain.PluginManifest{}, fmt.Errorf("unknown provider %q", name)
 }
 func (h *Host) Invoke(ctx context.Context, scope domain.ExecutionScope, name string, args json.RawMessage) (any, error) {
+	return h.invoke(ctx, scope, "", name, args)
+}
+
+// InvokePlugin binds an owner shortcut to its exact saved plugin/tool pair.
+func (h *Host) InvokePlugin(ctx context.Context, scope domain.ExecutionScope, pluginID, name string, args json.RawMessage) (any, error) {
+	return h.invoke(ctx, scope, pluginID, name, args)
+}
+
+func (h *Host) invoke(ctx context.Context, scope domain.ExecutionScope, pluginID, name string, args json.RawMessage) (any, error) {
 	ms, e := h.List()
 	if e != nil {
 		return nil, e
 	}
 	for _, m := range ms {
+		if pluginID != "" && m.ID != pluginID {
+			continue
+		}
 		for _, t := range m.Tools {
 			if t.Name != name {
 				continue
 			}
 			if !h.Enabled(scope.Bot, m.ID) {
 				return nil, errors.New("plugin is disabled for this bot")
+			}
+			if scope.Standalone {
+				if reason := StandaloneToolReason(m, t); reason != "" {
+					return nil, errors.New(reason)
+				}
 			}
 			if e = Validate(t.Parameters, args); e != nil {
 				return nil, e
@@ -422,6 +439,13 @@ func (h *Host) Install(m domain.PluginManifest, wasm []byte) (domain.PluginManif
 			return m, errors.New("views need unique lowercase ids and floating, embedded or renderer kind")
 		}
 		viewNames[v.ID] = true
+		features := map[string]bool{}
+		for _, feature := range v.Features {
+			if !validID.MatchString(feature.ID) || features[feature.ID] || strings.TrimSpace(feature.Title) == "" || len(feature.Title) > 120 || v.Kind == "renderer" {
+				return m, errors.New("app features need unique lowercase ids and titles on app views")
+			}
+			features[feature.ID] = true
+		}
 		if len(v.HTML) > 2<<20 {
 			return m, errors.New("view source exceeds 2 MiB")
 		}

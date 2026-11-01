@@ -13,12 +13,18 @@ export type UsageTotals = UsageCounts & { trackingStartedAt: string; resetAt: st
 export type Message = { usage?: TokenUsage; modelContent?: string; rerunUnavailable?: boolean; storedId?: string; nodeId?: string; id: string; chatId: string; runId?: string; botId?: string; author: string; role: string; content: string; segments?: Segment[]; recipients?: string[]; reasoning?: string; status: string; toolCalls?: unknown[]; createdAt: string; attachments?: Attachment[]; fileChanges?: FileChange[]; fileChangesNotice?: string };
 export type Run = { statistics?: TurnStatistics; id: string; chatId: string; botId: string; userMessageId?: string; status: string; error?: string; updatedAt?: string };
 export type AppRegistration = { viewId: string; icon?: string };
-export type Plugin = { nodeId?: string; id: string; name: string; enabled: boolean; pending: boolean; builtin: boolean; scope: string; digest?: string; app?: AppRegistration; capabilities: string[]; network?: { origins: string[] }; requestedNetworkOrigins?: string[]; config: Record<string, unknown>; providers?: string[]; renderers?: string[]; settings: { properties: Record<string, { type: string; description?: string }> }; views?: { id: string; title: string; html: string; kind?: string }[] };
+export type AppFeature = { id: string; title: string };
+export type SlashAction =
+  | { type: 'text'; text: string; position: 'insert' | 'append' | 'prepend' }
+  | { type: 'plugin'; pluginId: string; tool: string; arguments: Record<string, unknown>; botId?: string }
+  | { type: 'app'; pluginId: string; viewId: string; feature?: string; botId?: string };
+export type SlashCommand = { nodeId?: string; id: string; name: string; description: string; builtin: boolean; enabled: boolean; action: SlashAction };
+export type Plugin = { nodeId?: string; id: string; name: string; enabled: boolean; pending: boolean; builtin: boolean; scope: string; digest?: string; app?: AppRegistration; capabilities: string[]; network?: { origins: string[] }; requestedNetworkOrigins?: string[]; config: Record<string, unknown>; providers?: string[]; renderers?: string[]; settings: { properties: Record<string, { type: string; description?: string }> }; views?: { id: string; title: string; html: string; kind?: string; features?: AppFeature[] }[] };
 export type Schedule = { nodeId?: string; id: string; botId: string; prompt: string; recurrence: string; timezone: string; paused: boolean; generation: Generation; next: string };
 export type Occurrence = { nodeId?: string; id: string; scheduleId: string; botId: string; prompt: string; intendedAt: string; status: string; error?: string; timezone?: string; recurrence?: string };
 export type ToolCall = { id: string; type: 'function'; function: { name: string; arguments: string } };
 export type ExecutionScope = { bot: Bot; chatId: string; runId: string; dispatchId: string; pluginId: string; toolMessageId?: string };
 export type PluginManifest = Plugin & { api: 1; version: string; tools: { name: string; description: string; parameters: Record<string, unknown>; capability?: string }[]; providers?: string[]; renderers?: string[]; digest?: string; backend?: string };
 export type EchoEvent = { sequence: number; type: string; chatId?: string; runId?: string; botId?: string; payload: unknown };
-export type State = { bots: Bot[]; chats: Chat[]; endpoints: Endpoint[]; plugins: Plugin[]; appDock: string[]; schedules: Schedule[]; occurrences: Occurrence[]; runs: Run[] };
+export type State = { slashCommands?: SlashCommand[]; bots: Bot[]; chats: Chat[]; endpoints: Endpoint[]; plugins: Plugin[]; appDock: string[]; schedules: Schedule[]; occurrences: Occurrence[]; runs: Run[] };
 export type FileEntry = { nodeId?: string; path: string; name: string; directory: boolean; allowedBots: string[] };

@@ -61,7 +61,8 @@ export function ownedMessage(node: string, message: Message): Message {
 }
 export function ownedState(node: string, value: State): State {
   const key = (id: string) => resourceID(node, id);
-  return { bots: (value.bots || []).map(b => ({ ...b, id: key(b.id), nodeId: node, handle: node === entryNode ? b.handle : `${machineName(node)}.${b.handle}`, plugins: Object.fromEntries(Object.entries(b.plugins || {}).map(([id, enabled]) => [key(id), enabled])) })),
+  return { slashCommands: (value.slashCommands || []).map(command => ({ ...command, id: key(command.id), nodeId: node, action: command.action.type === 'text' ? command.action : { ...command.action, pluginId: key(command.action.pluginId), botId: command.action.botId && key(command.action.botId) } })),
+    bots: (value.bots || []).map(b => ({ ...b, id: key(b.id), nodeId: node, handle: node === entryNode ? b.handle : `${machineName(node)}.${b.handle}`, plugins: Object.fromEntries(Object.entries(b.plugins || {}).map(([id, enabled]) => [key(id), enabled])) })),
     chats: (value.chats || []).map(c => ({ ...c, id: key(c.id), nodeId: node, generation: ownedGeneration(node, c.generation), bots: Object.fromEntries(Object.entries(c.bots || {}).map(([id, v]) => [key(id), v])) })),
     plugins: (value.plugins || []).map(p => ({ ...p, id: key(p.id), nodeId: node })),
     endpoints: (value.endpoints || []).map(e => ({ ...e, id: key(e.id), nodeId: node })),
@@ -77,7 +78,7 @@ export function combineState(local: State, swarm: SwarmState): State {
   for (const entry of swarm.instances) {
     if (!entry.state) continue;
     const state = ownedState(entry.node.nodeId, entry.state);
-    for (const field of Object.keys(combined) as (keyof State)[]) (combined[field] as unknown[]).push(...state[field]);
+    for (const field of Object.keys(combined) as (keyof State)[]) (combined[field] as unknown[]).push(...(state[field] || []));
   }
   combined.chats.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   return combined;

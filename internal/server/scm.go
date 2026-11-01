@@ -275,6 +275,9 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 }
 
 func (s *Server) nativeOutput(ctx context.Context, scope domain.ExecutionScope, value string) {
+	if scope.Standalone {
+		return // The invoking browser receives the result; no orphan chat events.
+	}
 	if buffer, ok := ctx.Value(toolOutputKey{}).(*streamBuffer); ok {
 		buffer.append(model.Delta{Content: value})
 		return

@@ -193,7 +193,7 @@ test('file chips open draft and saved references in Monaco and reuse the editor'
     await expect(tab).toBeVisible();
     await expect(editor.locator('.monaco-editor .view-lines').first()).toContainText('unsaved editor draft');
     expect(reveals).toEqual([]);
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally { await page.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });
 
 test('plain-text paste, atomic deletion and IME preserve reference editing', async ({ page }) => {

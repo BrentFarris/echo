@@ -12,6 +12,9 @@ document.addEventListener('click',event=>{
  document.querySelector('#result').textContent=({add:()=>a+b,subtract:()=>a-b,multiply:()=>a*b,divide:()=>b===0?'Cannot divide by zero':a/b}[operation])();
 });
 // Optional bridge: Echo delivers a per-window nonce, identity and theme.
+// Optional slash-command destinations: declare views[].features as
+// [{id:'history',title:'History'}]. Listen for the echo-navigate event below
+// and show the named feature without reloading the app.
 let echo;
 const echoPending=new Map();
 let echoReadyResolve;
@@ -48,7 +51,8 @@ async function echoSocket(url,options={}){
  return socket;
 }
 addEventListener('message',event=>{if(event.source!==parent)return;
- if(event.data.type==='echo-plugin-init'&&!echo){echo=event.data;document.body.style.background=echo.theme.background;document.body.style.color=echo.theme.text;echoReadyResolve();}
+ if(event.data.type==='echo-plugin-init'&&!echo){echo=event.data;document.body.style.background=echo.theme.background;document.body.style.color=echo.theme.text;echoReadyResolve();document.dispatchEvent(new CustomEvent('echo-navigate',{detail:echo.feature||''}));}
+ if(event.data.type==='echo-plugin-navigate'&&echo&&event.data.nonce===echo.nonce&&event.data.pluginId===echo.pluginId&&event.data.viewId===echo.viewId){document.dispatchEvent(new CustomEvent('echo-navigate',{detail:event.data.feature||''}));}
  if(event.data.type==='echo-plugin-response'&&echo&&event.data.nonce===echo.nonce){const pending=echoPending.get(event.data.id);if(!pending)return;echoPending.delete(event.data.id);if(event.data.error)pending.reject(new Error(event.data.error));else pending.resolve(event.data.result);}
 });
 parent.postMessage({type:'echo-plugin-ready'},'*');

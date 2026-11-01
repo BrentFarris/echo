@@ -16,6 +16,7 @@ import (
 )
 
 func (s *Server) routes(mux *http.ServeMux) {
+	s.slashCommandRoutes(mux)
 	s.usageRoutes(mux)
 	s.messageActionRoutes(mux)
 	s.notificationRoutes(mux)
@@ -74,6 +75,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
+		commands, e := s.slashCommands()
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
 		runs, e := s.Store.List("runs")
 		visibleRuns := runs[:0]
 		for _, raw := range runs {
@@ -83,7 +89,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 			}
 		}
 		runs = visibleRuns
-		respond(w, map[string]any{"bots": bots, "chats": chats, "endpoints": endpoints, "plugins": ps, "schedules": schedules, "occurrences": jobs, "runs": runs, "appDock": dock}, e)
+		respond(w, map[string]any{"bots": bots, "chats": chats, "endpoints": endpoints, "plugins": ps, "schedules": schedules, "occurrences": jobs, "runs": runs, "appDock": dock, "slashCommands": commands}, e)
 	})
 	mux.HandleFunc("POST /api/v1/bots", func(w http.ResponseWriter, r *http.Request) {
 		var b domain.Bot
@@ -272,16 +278,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
-		fields := strings.Fields(a.Content)
 		if caller, ok := swarm.Caller(r.Context()); ok {
 			a.OriginNodeID = caller.NodeID
 		} else {
 			a.OriginNodeID = s.Swarm.Node().ID
-		}
-		if len(fields) > 0 && (fields[0] == "/approve" || fields[0] == "/missed") {
-			value, e := s.managementMessage(r.PathValue("id"), a)
-			respond(w, value, e)
-			return
 		}
 		d, e := s.send(r.PathValue("id"), a)
 		if e != nil {
@@ -488,79 +488,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 		s.emit("changed", "", "", "", nil)
 		respond(w, true, e)
 	})
-}
-func (s *Server) managementMessage(chatID string, req SendRequest) (any, error) {
-	if prior := s.Store.Accepted(chatID, req.RequestID); prior != "" {
-		return map[string]any{"ownerCommand": true, "dispatchId": prior}, nil
-	}
-	c, e := s.Store.Chat(chatID)
-	if e != nil {
-		return nil, e
-	}
-	if c.Title == "New chat" {
-		c.Title = truncate(req.Content, 70)
-	}
-	c.UpdatedAt = domain.Now()
-	run := domain.Run{ID: domain.ID(), DispatchID: domain.ID(), ChatID: c.ID, BotID: "echo", Status: "running", CreatedAt: domain.Now()}
-	user := domain.Message{ID: domain.ID(), ChatID: c.ID, Author: "You", Role: "user", Content: req.Content, Recipients: []string{"echo"}, Segments: []domain.Segment{{Type: "text", Text: req.Content}}, Status: "completed", CreatedAt: domain.Now()}
-	run.UserMessageID = user.ID
-	if e = s.Store.Accept(c, user, []domain.Run{run}, req.RequestID, run.DispatchID); e != nil {
-		return nil, e
-	}
-	s.emit("message", c.ID, run.ID, "echo", user)
-	_, operationErr := s.ownerCommand(req.Content)
-	response := "Saved your selection."
-	run.Status = "completed"
-	if operationErr != nil {
-		response = operationErr.Error()
-		run.Status = "failed"
-		run.Error = response
-	} else if strings.HasPrefix(req.Content, "/approve ") {
-		response = "Approved and activated the reviewed plugin package."
-	}
-	message := domain.Message{ID: domain.ID(), ChatID: c.ID, RunID: run.ID, BotID: "echo", Author: "Echo", Role: "assistant", Content: response, Status: run.Status, CreatedAt: domain.Now()}
-	if e = s.Store.AddMessage(message); e != nil {
-		return nil, e
-	}
-	run.UpdatedAt = domain.Now()
-	if e = s.Store.Put("runs", run.ID, run); e != nil {
-		return nil, e
-	}
-	s.emit("message", c.ID, run.ID, "echo", message)
-	s.emit("changed", c.ID, run.ID, "echo", nil)
-	return map[string]any{"ownerCommand": true, "dispatchId": run.DispatchID}, nil
-}
-func (s *Server) ownerCommand(content string) (bool, error) {
-	fields := strings.Fields(content)
-	if len(fields) == 0 {
-		return false, nil
-	}
-	if fields[0] == "/approve" {
-		if len(fields) != 3 {
-			return true, errors.New("usage: /approve plugin-id digest (from the requested package)")
-		}
-		_, e := s.Plugins.ApproveDigest(fields[1], fields[2])
-		s.emit("changed", "", "", "", nil)
-		return true, e
-	}
-	if fields[0] == "/missed" {
-		if len(fields) == 2 && fields[1] == "skip-all" {
-			e := s.Calendar.Review(s.ctx, nil, 1)
-			s.emit("changed", "", "", "", nil)
-			return true, e
-		}
-		if len(fields) >= 4 && fields[1] == "run" {
-			n, e := strconv.Atoi(fields[2])
-			if e != nil {
-				return true, e
-			}
-			e = s.Calendar.Review(s.ctx, fields[3:], n)
-			s.emit("changed", "", "", "", nil)
-			return true, e
-		}
-		return true, errors.New("usage: /missed run <concurrency> <job IDs>, or /missed skip-all")
-	}
-	return false, nil
 }
 
 var _ = store.Decode[domain.Endpoint]

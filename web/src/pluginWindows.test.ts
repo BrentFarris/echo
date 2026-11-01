@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { PluginWindows } from './pluginWindows';
+import { PluginWindows, appRoute, parseAppRoute } from './pluginWindows';
 import type { Bot, Plugin } from './types';
 
 const echo: Bot = { id: 'echo', name: 'Echo', handle: 'echo', prompt: '', roots: [], plugins: {}, enableMultitasking: false, revision: 1 };
@@ -84,4 +84,20 @@ test('disabling Terminal during its view fetch cannot reopen the dock', async ()
   windows.sync([{...terminal,enabled:false}],[echo]); resolve(view);
   await expect(pending).rejects.toThrow('changed');
   expect(openDock).not.toHaveBeenCalled();
+});
+
+test('declared features reach new and existing frames without reloading them', async () => {
+  const featured = { ...view, features: [{ id: 'history', title: 'History' }, { id: 'settings', title: 'Settings' }] };
+  windows = new PluginWindows(vi.fn().mockResolvedValue(featured)); windows.sync([plugin], [echo]);
+  await windows.open('calculator', 'main', 'echo', undefined, 'history');
+  const frame = document.querySelector('iframe')!, send = vi.spyOn(frame.contentWindow!, 'postMessage');
+  window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, data: { type: 'echo-plugin-ready' } }));
+  expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'echo-plugin-init', feature: 'history' }), '*');
+  const nonce = send.mock.calls[0][0].nonce;
+  await windows.open('calculator', 'main', 'echo', undefined, 'settings');
+  expect(document.querySelector('iframe')).toBe(frame);
+  expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'echo-plugin-navigate', feature: 'settings', nonce }), '*');
+  await expect(windows.open('calculator', 'main', 'echo', undefined, 'missing')).rejects.toThrow('no longer available');
+  const route = appRoute('calculator', 'main', 'echo', 'history');
+  expect(parseAppRoute(route)).toEqual({ pluginId: 'calculator', viewId: 'main', botId: 'echo', feature: 'history' });
 });

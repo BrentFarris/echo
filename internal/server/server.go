@@ -105,6 +105,7 @@ type Server struct {
 	pendingQuestions  map[string]*pendingQuestion
 	authMu            sync.Mutex
 	appDockMu         sync.Mutex
+	slashCommandsMu   sync.Mutex
 	loginAttempts     map[string][]time.Time
 	sessionSockets    map[string]map[*websocket.Conn]bool
 	revoking          map[string]int

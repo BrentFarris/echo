@@ -579,6 +579,12 @@ export class CodeView {
     this.bookmarksView = null;
   }
 
+  openFeature(feature: string): void {
+    if (!['explorer', 'search', 'bookmarks', 'debug', 'source-control'].includes(feature)) throw new Error('Unknown editor feature.');
+    if (feature === 'bookmarks' && !this.bookmarks) throw new Error('Bookmarks are unavailable for this bot.');
+    this.setSidebar(feature as CodeSidebar);
+  }
+
   private setSidebar(view: CodeSidebar, updateRoute = true): void {
     if (view === "bookmarks" && !this.bookmarks) view = "explorer";
     if (view === "source-control") this.initializeSourceControl();

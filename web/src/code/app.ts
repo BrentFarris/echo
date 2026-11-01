@@ -50,6 +50,11 @@ export async function mount(root: HTMLElement, context: NativeAppContext): Promi
   settings.onclick = () => sessions.get(selected)?.view.showSettings();
   renderBots(); await choose(selected);
   return {
+    async navigate(feature, botId) {
+      await choose(botId);
+      if (disposed || selected !== botId) throw new Error('Editor bot is unavailable.');
+      if (feature) sessions.get(selected)?.view.openFeature(feature);
+    },
     async openFile(target) {
       await choose(target.botId);
       if (disposed || selected !== target.botId) return;

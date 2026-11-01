@@ -8,6 +8,16 @@ Press **Ctrl+I** (**Cmd+I** on macOS) in an editable file or untitled buffer to 
 
 Inline chat uses the same model connection, model identifier, thinking, and temperature controls as the main chat. Editor choices are remembered separately per bot and machine in this browser, initially copied from the current chat's choices for that machine (or its first configured connection). Remote editors use their owning machine's connections. Inline conversations stay with their open tabs across bot switches and embedded/window presentation changes, and are cleared on acceptance, rejection, tab/editor closure, or reload. They do not create sidebar chats. Bot multitasking and admission rules also apply to inline requests.
 
+## Slash commands
+
+Type `/` in the main chat prompt to search commands, then click a suggestion or press Enter on the selected option. Space, Tab, and Escape dismiss the list without invoking anything. Sending, pasting, or restoring slash text never invokes a command. `/approve` and `/missed` are now ordinary text; their existing settings and missed-job controls remain available.
+
+`/plan` removes the command and visibly appends `\n\n You are to plan this request out, do not make any changes until the plan is approved`. The caret stays where the command was removed, and Undo restores the whole edit. Each invocation appends another copy.
+
+In **Settings → General → Slash commands**, create, edit, or delete custom commands, and remove or restore built-ins. Definitions belong to the selected settings machine and are shared across browsers. Chat suggestions follow the selected bot’s machine, or the chat’s home machine before a bot is selected.
+
+Text commands insert literal text at the command location, beginning, or end of the prompt. Plugin commands run a selected standalone tool with saved JSON arguments and existing bot permissions; progress and results appear separately from the draft. Chat-dependent tools such as media generation are unavailable. App commands open an Echo app view and an optional declared feature, including the editor’s Explorer, Search, Bookmarks, Run and Debug, or Source Control. Plugin/app commands use the selected bot by default or a fixed bot saved with the command. Inline editor chat and external application links are not supported.
+
 ## Run on Windows
 
 Run `echo.exe`. Echo opens the installed desktop app when available, falling back to **http://localhost:3740** in your browser. This happens only on the initial launch; Development reloads, rebuilds and updates keep the existing window. Use `-no-open` or `ECHO_NO_OPEN=1` for headless startup. The app is named Echo; data continues to use `%LOCALAPPDATA%\Echo2` and its existing database and credential identifiers. Additive, versioned storage migrations preserve existing bots, chats, model settings and credentials. Stop the console with Ctrl+C to flush active streams and terminate child processes. Only one server may open a data directory.
@@ -171,7 +181,7 @@ Use **Dock** on an app card to add its square icon above Apps and Settings. The 
 
 Each installed plugin has a settings section. Bot settings include applicable per-bot switches. Web Get, SearXNG, Markdown View, Calendar, Workspaces, Shell, Git, Fossil, P4 (Perforce), Hosted Server and Plugin Authoring start enabled. Local and cloud model connections are core settings, not plugins. SearXNG requires the URL of an existing instance. Web Get allows public HTTP(S) by default; private destinations require exact origin grants in its settings.
 
-Backend plugins run in WASI with no ambient filesystem, environment, network or process access. New capabilities require a direct owner response. Approve the reviewed package in settings, or send `/approve plugin-id digest` using the digest returned by installation. Updates keep the previous working package for rollback. Generated packages never run installation scripts.
+Backend plugins run in WASI with no ambient filesystem, environment, network or process access. New capabilities require a direct owner response. Approve the reviewed package in settings using the digest returned by installation. Updates keep the previous working package for rollback. Generated packages never run installation scripts.
 
 Floating views have opaque iframe origins and cannot read Echo's DOM or cookies. Echo owns window dragging, resizing, placement and theme delivery. All renderer output is sanitized before display. Disabling Markdown View restores plain text unless another renderer is enabled for that bot.
 
@@ -315,7 +325,7 @@ Frontend unit tests use `cd web; npm test`. Their separate native JavaScript con
 
 Supported recurrences are `daily HH:MM`, `weekly MON HH:MM`, `every N minutes/hours/days`, and an RFC3339 one-time instant. Daily/weekly schedules preserve local wall time through DST; a nonexistent wall time is skipped and an ambiguous wall time runs once. The server's Windows timezone is resolved to an IANA name when saving.
 
-After downtime, every missed occurrence awaits review. Select jobs, set concurrency (default `1`; `0` means unlimited), then choose **Run selected**. Unselected jobs are skipped. **Skip all** dismisses the entire pending batch. Equivalent chat commands are `/missed run <concurrency> <occurrence IDs>` and `/missed skip-all`. Reviews survive restart; intentionally paused/disabled schedules do not accumulate missed work. Interrupted work is identified and never automatically replays uncertain tools.
+After downtime, every missed occurrence awaits review. Select jobs, set concurrency (default `1`; `0` means unlimited), then choose **Run selected**. Unselected jobs are skipped. **Skip all** dismisses the entire pending batch. Use the missed-jobs panel to review these jobs; typed slash text is ordinary message content. Reviews survive restart; intentionally paused/disabled schedules do not accumulate missed work. Interrupted work is identified and never automatically replays uncertain tools.
 
 ## Development settings
 

@@ -292,6 +292,11 @@ func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionSc
 }
 
 func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, method string, raw json.RawMessage) (any, error) {
+	if scope.Standalone {
+		if reason := plugins.StandaloneMethodReason(method); reason != "" {
+			return nil, errors.New(reason)
+		}
+	}
 	a, e := decodeArgs(raw)
 	if e != nil {
 		return nil, e
@@ -499,7 +504,7 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 				out = append(out, j)
 			}
 		}
-		return map[string]any{"jobs": out, "instruction": "The owner can select jobs in the missed-jobs panel, or send /missed run <concurrency> <job IDs> or /missed skip-all. Zero concurrency means unlimited."}, nil
+		return map[string]any{"jobs": out, "instruction": "The owner can select jobs in the missed-jobs panel. Zero concurrency means unlimited."}, nil
 	case "plugin.list":
 		return s.Plugins.List()
 	case "plugin.configure":

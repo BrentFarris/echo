@@ -13,6 +13,11 @@ import { botAvatarMarkup, threadIdentityMarkup } from './botIdentity';
 import { fileChangesFooter } from './fileChanges';
 import { turnStatisticsFooter, statisticsPreferenceKey } from './turnStatistics';
 import { mountGeneral, notifyUsageMachinesChanged } from './usage';
+import { activeSlash, applySlash, matchingCommands } from './slashCommands';
+import { mountSlashCommandSettings, notifySlashCommandsChanged } from './slashCommandSettings';
+import { SlashCommandResults } from './slashCommandResults';
+import type { SlashCommand } from './types';
+import './slashCommands.css';
 import { MessageActionUI } from './messageActions';
 import { createChatScrollFollower, type ChatScrollFollower } from './chatScroll';
 import { assertOnlineRecipients } from './offlineRecipients';
@@ -64,7 +69,10 @@ let swarmRefreshing: Promise<void> | null = null;
 let refreshing: Promise<void> | null = null, refreshTimer = 0, selectedSuggestion = 0;
 const referenceSearch = new ReferenceSearch();
 let pickerStatus = '', pickerLoading = false;
-let suggestions: { label: string; hint: string; insert: string; offline?: boolean; ref?: Segment }[] = [];
+let suggestions: { label: string; hint: string; insert: string; offline?: boolean; ref?: Segment; command?: SlashCommand; unavailable?: string }[] = [];
+let pickerMode: 'mention' | 'slash' = 'mention', dismissedSlash = '';
+let commandResults: SlashCommandResults;
+const pendingCommands = new Set<string>();
 let referenceTimer = 0, referenceVersion = 0;
 let sidebarMarkup = '';
 let newChatBotId = 'echo', newChatBotMarkup = '';
@@ -117,6 +125,8 @@ function shell() {
   <main class="main"><header class="chat-header"><button class="icon mobile-menu" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">☰</button><strong id="chat-title">Echo</strong><span id="connection" class="subtle">Connecting…</span></header><div class="chat-view"><div class="bot-tabs-shell" hidden><button type="button" class="bot-tabs-scroll previous" aria-label="Scroll tabs left" title="Scroll tabs left">${icons.chevron}</button><div class="bot-tabs" role="tablist" aria-label="Bot threads"></div><button type="button" class="bot-tabs-scroll next" aria-label="Scroll tabs right" title="Scroll tabs right">${icons.chevron}</button></div><div id="bot-thread-panel" class="conversation-panel"><div class="chat-log" role="log" aria-label="Conversation"></div></div>
   ${composerMarkup}</div><section class="apps-view" aria-labelledby="apps-heading" hidden><h1 id="apps-heading" tabindex="-1">Apps</h1><p class="subtle">Open your plugin apps or dock them for quick access.</p><div id="apps-catalog"></div></section><section class="embedded-app-view" hidden aria-label="App"></section><div class="terminal-region" hidden></div></main>`;
   q('.chat-log').tabIndex = 0;
+  const resultPanel = document.createElement('section'); resultPanel.className = 'slash-command-results'; resultPanel.setAttribute('aria-label', 'Command results'); resultPanel.hidden = true;
+  q('.composer').before(resultPanel); commandResults = new SlashCommandResults(resultPanel); commandResults.show(chatId);
   chatScroll = createChatScrollFollower(q('.chat-log'));
   pluginWindows = new PluginWindows(api, { openDock: async (plugin, botId) => { updateTerminalDock(q(".terminal-region"), state.bots, state.plugins); openTerminalDock(plugin, botId); }, embeddedHost: q('.embedded-app-view'), navigate: route => { if (route) { rememberDraft(); showingApp = true; showingApps = false; history.replaceState(null, '', route); renderMainView(); renderSidebar(); } else { void selectChat(chatId); } }, configureBot: id => editBot(currentBot(id)), generationFor: node => structuredClone(node === modelNode ? generation : generationByNode[node] || endpointGeneration(state.endpoints.find(e => sameMachine(e, node)))), openModelSettings: node => settings('models', node, false) });
   apps = new Apps(q('#apps-catalog'), q('.app-dock'), {
@@ -138,7 +148,7 @@ function shell() {
     else if (chatId && !showingApps && !showingApp) { const id = chatId; action(() => deleteChat(id))(); }
   });
   renderMainView();
-  addEventListener('hashchange', () => { if (location.hash === '#apps') { pendingNotificationHash = null; showApps(); } else if (parseAppRoute(location.hash)) { pendingNotificationHash = null; const r = parseAppRoute(location.hash)!; action(() => pluginWindows.open(r.pluginId, r.viewId, r.botId, 'embedded'))(); } else if (parseChatRoute(location.hash).messageId) { pendingNotificationHash = location.hash; action(() => openNotification(location.hash))(); } else { pendingNotificationHash = null; action(() => selectChat(parseChatRoute(location.hash).chatId))(); } });
+  addEventListener('hashchange', () => { if (location.hash === '#apps') { pendingNotificationHash = null; showApps(); } else if (parseAppRoute(location.hash)) { pendingNotificationHash = null; const r = parseAppRoute(location.hash)!; action(() => pluginWindows.open(r.pluginId, r.viewId, r.botId, 'embedded', r.feature))(); } else if (parseChatRoute(location.hash).messageId) { pendingNotificationHash = location.hash; action(() => openNotification(location.hash))(); } else { pendingNotificationHash = null; action(() => selectChat(parseChatRoute(location.hash).chatId))(); } });
   pwa.mount(q<HTMLButtonElement>('#install-echo'));
   q('.mobile-menu').onclick = () => setSidebarOpen(!q('.sidebar').classList.contains('open'));
   q('.sidebar-close').onclick = q('.sidebar-backdrop').onclick = () => setSidebarOpen(false);
@@ -153,6 +163,7 @@ function shell() {
     discover: async endpoint => (await api<{ data: { id: string }[] }>(`/endpoints/${endpoint.id}/models`)).data?.map(m => m.id) || [],
   });
   const composer = q<ReferenceInput>('#composer'); composer.bots = () => state.bots; composer.oninput = e => {
+    dismissedSlash = '';
     ++referenceVersion; references = composer.snapshot().references; autosizeComposer(); rememberDraft(); updateSendButton(); clearTimeout(referenceTimer);
     const automatic = automaticMentions.get(chatId);
     if (automatic && !references.some(ref => ref.range?.start === 0 && ref.botId === automatic.botId && ref.text === automatic.text)) automaticMentions.delete(chatId);
@@ -164,9 +175,15 @@ function shell() {
     const chip = (e.target as HTMLElement).closest<HTMLElement>('[data-reference]');
     if (chip && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); e.stopPropagation(); void activateReference(chip); return; }
     if (!q('.picker').hidden) {
+      if (pickerMode === 'slash' && [' ', 'Tab', 'Escape'].includes(e.key)) {
+        if (e.key === 'Escape') e.preventDefault();
+        dismissSlashPicker(); return;
+      }
       if (e.key === 'Escape') { e.preventDefault(); closePicker(); return; }
       if (suggestions.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); selectedSuggestion = (selectedSuggestion + (e.key === 'ArrowDown' ? 1 : -1) + suggestions.length) % suggestions.length; renderPicker(); q('[aria-selected="true"]', q('.picker')).scrollIntoView({ block: 'nearest' }); return; }
-      if ((e.key === 'Enter' && !e.shiftKey) || (e.key === 'Tab' && suggestions.length)) { e.preventDefault(); if (suggestions.length) chooseSuggestion(selectedSuggestion); return; }
+      if (pickerMode === 'slash') {
+        if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && suggestions.length) { e.preventDefault(); chooseSuggestion(selectedSuggestion); return; }
+      } else if ((e.key === 'Enter' && !e.shiftKey) || (e.key === 'Tab' && suggestions.length)) { e.preventDefault(); if (suggestions.length) chooseSuggestion(selectedSuggestion); return; }
       if (e.key === 'Tab') closePicker();
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); action(send)(); }
@@ -195,7 +212,7 @@ function shell() {
   };
   new ResizeObserver(updateBotTabOverflow).observe(q('.bot-tabs'));
   composer.onkeyup = e => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) showPicker(); };
-  document.addEventListener('click', e => { if (!(e.target as HTMLElement).closest('.picker, #composer')) closePicker(); });
+  document.addEventListener('click', e => { if (!(e.target as HTMLElement).closest('.picker, #composer')) { if (pickerMode === 'slash') dismissSlashPicker(); else closePicker(); } });
 }
 function setSidebarOpen(open: boolean, restoreFocus = true) {
   const sidebar = q('.sidebar'), wasOpen = sidebar.classList.contains('open');
@@ -245,7 +262,8 @@ async function selectChat(id: string, initialRecipient?: Bot) {
   const navigation = ++chatNavigation, previous = chatId;
   showingApp = false; showingApps = false; renderMainView();
   closePicker(); ++referenceVersion; clearTimeout(referenceTimer); document.querySelector('.bot-details')?.dispatchEvent(new Event('dismiss'));
-  if (id !== chatId) rememberDraft(); chatId = id; if (id !== previous) markRead(previous); markRead(id); history.replaceState(null, '', '#' + id); const c = state.chats.find(c => c.id === id), draft = drafts.get(id);
+  if (id !== chatId) rememberDraft(); chatId = id; commandResults.show(chatId); if (id !== previous) markRead(previous); markRead(id); history.replaceState(null, '', '#' + id); const c = state.chats.find(c => c.id === id), draft = drafts.get(id);
+  if (initialRecipient) selectedBotThreads.set(id, initialRecipient.id);
   generationByNode = { ...(c?.generationByNode || {}), ...(draft?.generationByNode || {}) }; modelNode = draft?.modelNode || c?.nodeId || splitID(id)[0] || entryNode;
   generation = { ...(draft?.generation || c?.generation || endpointGeneration(state.endpoints.find(e => sameMachine(e, modelNode)))) }; references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references }); renderModels(); renderRefs(); renderAttachments(); renderSidebar(); updateSendButton(); autosizeComposer(); setSidebarOpen(false, false);
   const initialBot = initialRecipient || selectedThreadBot([]);
@@ -288,6 +306,7 @@ async function openNotification(hash: string) {
 }
 async function send() {
   if (busy() || submitting) return; const draft = trimmedDraft(q<ReferenceInput>('#composer').snapshot()), content = draft.text; if (!content && !attachments.length) return;
+  if (/^\/(approve|missed)(?:\s|$)/.test(content) && !slashSupported(splitID(chatId)[0] || entryNode)) throw new Error('Update the chat’s machine before sending this text; older versions interpret it as a command.');
   assertOnlineRecipients(content, draft.references, state.bots);
   submitting = true; q<ReferenceInput>('#composer').disabled = true; updateSendButton();
   try {
@@ -354,6 +373,7 @@ function applyFreshState() {
   const rendering = () => JSON.stringify([state.plugins.filter(p => p.renderers?.length).map(p => [p.id, p.enabled, p.pending, p.digest]), state.bots.map(b => b.plugins)]), beforeRendering = rendering();
   state = combineState(latestLocal, latestSwarm || { node: { nodeId: '', name: 'This machine', epoch: '', version: 1 }, enabled: false, peers: [], instances: [] });
   notifyUsageMachinesChanged();
+  notifySlashCommandsChanged();
   state.chats = state.chats.filter(c => !deletedChats.has(c.id));
   chatId = resourceID(...splitID(chatId)); settingsNode ||= entryNode; modelNode ||= entryNode;
   const fallbackChatId = state.chats[0]?.id || '';
@@ -712,6 +732,7 @@ function paintResponse(group: ResponseGroup, existing?: HTMLElement) {
   delete el.dataset.timelineKey; reconcileChildren(turn, [el, statistics]); return turn;
 }
 function renderMessages(tail = false, force = false) {
+  commandResults?.show(chatId);
   const log = document.querySelector<HTMLElement>('.chat-log'); if (!log) return;
   if (renderedThreadKey) threadScroll.set(renderedThreadKey, { top: log.scrollTop, following: chatScroll.isFollowing() });
   renderBotTabs();
@@ -877,14 +898,70 @@ async function activateReference(chip: HTMLElement) {
   } catch (error) { notice(error, true); }
 }
 
+function slashContext() {
+  const bot = currentBot(rememberedBotThread()) || selectedThreadBot(messages.filter(message => message.chatId === chatId)) || currentBot(resourceID(splitID(chatId)[0] || entryNode, 'echo'));
+  const node = bot?.nodeId || splitID(chatId)[0] || entryNode;
+  return { bot, node };
+}
+function slashSupported(node: string) { return instances.get(node)?.node.capabilities?.includes('slash-commands/1') === true || (node === entryNode && latestLocal?.slashCommands !== undefined); }
+function slashSignature() { const input = q<ReferenceInput>('#composer'); return JSON.stringify([chatId, slashContext().node, input.value, input.selectionStart]); }
+function dismissSlashPicker() { dismissedSlash = slashSignature(); closePicker(); }
+function commandUnavailable(command: SlashCommand): string {
+  const { bot, node } = slashContext(), action = command.action;
+  if (!instanceOnline(node)) return 'Machine is offline';
+  if (pendingCommands.has(command.id)) return 'Command is already running';
+  if (action.type === 'text') return '';
+  const plugin = state.plugins.find(p => p.id === action.pluginId), target = action.botId ? currentBot(action.botId) : bot;
+  if (!pluginAvailable(plugin, target)) return 'Plugin or bot is unavailable, disabled, or awaiting permission';
+  return '';
+}
+async function invokeCommand(command: SlashCommand) {
+  const input = q<ReferenceInput>('#composer'), match = activeSlash(input.snapshot(), input.selectionStart, input.selectionEnd);
+  if (!match || input.disabled) return;
+  const latest = state.slashCommands?.find(item => item.id === command.id && item.enabled && sameMachine(item, slashContext().node));
+  if (!latest) { closePicker(); notice('This command is no longer available.', true); return; }
+  command = latest;
+  const unavailable = commandUnavailable(command);
+  if (unavailable) { notice(unavailable, true); return; }
+  const context = slashContext(), originChat = chatId, action = command.action;
+  const botId = action.type !== 'text' && action.botId ? action.botId : context.bot?.id || resourceID(context.node, 'echo');
+  applySlash(input, match, command); closePicker(); rememberDraft();
+  if (action.type === 'text') return;
+  pendingCommands.add(command.id);
+  const finish = commandResults.start(originChat, '/' + command.name);
+  try {
+    if (action.type === 'app') {
+      await pluginWindows.open(action.pluginId, action.viewId, botId, undefined, action.feature || '');
+      finish('App opened.');
+    } else {
+      const plugin = state.plugins.find(p => p.id === action.pluginId)!;
+      const value = await new InstanceClient(context.node).json(`/slash-commands/${encodeURIComponent(localID(command.id))}/invoke`, 'POST', { botId: localID(botId), digest: plugin.digest || '' });
+      finish(value);
+    }
+  } catch (error) { finish(error, true); }
+  finally { pendingCommands.delete(command.id); }
+}
 function closePicker() {
   referenceSearch.close(); suggestions = []; pickerStatus = ''; pickerLoading = false;
+  pickerMode = 'mention';
   q('.picker').hidden = true;
   q('#composer').setAttribute('aria-expanded', 'false'); q('#composer').removeAttribute('aria-activedescendant');
 }
 function showPicker() {
   const composer = q<ReferenceInput>('#composer'), match = activeMention(composer.value, composer.selectionStart);
   closePicker();
+  const slash = activeSlash(composer.snapshot(), composer.selectionStart, composer.selectionEnd);
+  if (slash) {
+    if (dismissedSlash === slashSignature()) return;
+    pickerMode = 'slash'; selectedSuggestion = 0;
+    const { node } = slashContext();
+    if (!slashSupported(node)) pickerStatus = 'Update this machine to use slash commands.';
+    else {
+      suggestions = matchingCommands((state.slashCommands || []).filter(c => sameMachine(c, node)), slash.query).map(command => ({ command, label: '/' + command.name, hint: command.description, insert: '', unavailable: commandUnavailable(command) }));
+      pickerStatus = suggestions.length ? '' : 'No matching commands. Manage commands in Settings → General.';
+    }
+    renderPicker(); return;
+  }
   if (!match) return;
   if (composer.snapshot().references.some(ref => ref.range && ref.range.start <= match.start && ref.range.end > match.start)) return;
   selectedSuggestion = 0;
@@ -902,13 +979,15 @@ function showPicker() {
 }
 function renderPicker() {
   const picker = q('.picker'); picker.hidden = false;
+  picker.setAttribute('aria-label', pickerMode === 'slash' ? 'Slash commands' : 'File and bot suggestions');
   picker.setAttribute('aria-busy', String(pickerLoading)); q('#composer').setAttribute('aria-expanded', 'true');
-  picker.innerHTML = (pickerStatus ? `<p class="picker-status" role="status">${esc(pickerStatus)}</p>` : '') + suggestions.map((s, i) => `<button type="button" id="reference-option-${i}" role="option" aria-disabled="${!!s.offline}" aria-selected="${i === selectedSuggestion}" class="${i === selectedSuggestion ? 'selected' : ''}" data-suggestion="${i}">${referenceIcons[s.ref?.type === 'bot' ? 'bot' : s.ref?.kind === 'directory' ? 'directory' : 'file']}<span class="picker-name"><strong>${esc(s.label)}</strong><small title="${esc(s.hint)}">${esc(s.hint)}</small></span><span class="picker-kind">${s.ref?.type === 'bot' ? 'Bot' : s.ref?.kind === 'directory' ? 'Folder' : 'File'}</span></button>`).join('');
+  picker.innerHTML = (pickerStatus ? `<p class="picker-status" role="status">${esc(pickerStatus)}</p>` : '') + suggestions.map((s, i) => `<button type="button" id="reference-option-${i}" role="option" aria-disabled="${!!s.offline || !!s.unavailable}" aria-selected="${i === selectedSuggestion}" class="${i === selectedSuggestion ? 'selected' : ''}" data-suggestion="${i}">${s.command ? '<span aria-hidden="true">/</span>' : referenceIcons[s.ref?.type === 'bot' ? 'bot' : s.ref?.kind === 'directory' ? 'directory' : 'file']}<span class="picker-name"><strong>${esc(s.label)}</strong><small title="${esc(s.hint)}">${esc(s.unavailable || s.hint)}</small></span><span class="picker-kind">${s.command ? 'Command' : s.ref?.type === 'bot' ? 'Bot' : s.ref?.kind === 'directory' ? 'Folder' : 'File'}</span></button>`).join('');
   if (suggestions.length) q('#composer').setAttribute('aria-activedescendant', `reference-option-${selectedSuggestion}`); else q('#composer').removeAttribute('aria-activedescendant');
   for (const el of picker.querySelectorAll<HTMLButtonElement>('button')) { el.onmousedown = e => e.preventDefault(); el.onclick = () => chooseSuggestion(Number(el.dataset.suggestion)); }
 }
 function chooseSuggestion(index: number) {
   const composer = q<ReferenceInput>('#composer'), match = activeMention(composer.value, composer.selectionStart), item = suggestions[index];
+  if (item?.command) { void invokeCommand(item.command); return; }
   if (!match || !item) return;
   if (item.offline) { notice(`Machine '${machineName(splitID(item.ref?.botId)[0])}' is offline; ${item.label} is unavailable.`, true); return; }
   composer.replace(item.insert + ' ', match.start, match.end, item.ref); closePicker(); composer.focus();
@@ -931,7 +1010,11 @@ function settings(section = 'general', node = settingsNode || entryNode, selectM
   nav.innerHTML = `<div class="settings-nav-main">${entries.map(e => `<button data-section="${esc(e.id)}" class="${section === e.id ? 'active' : ''}">${esc(e.name)}</button>`).join('')}</div><hr><button data-section="development" data-update-notice="*" class="${section === 'development' ? 'active' : ''}">Development</button>`;
   renderDevelopmentUpdates();
   for (const button of nav.querySelectorAll<HTMLButtonElement>('button')) button.onclick = () => settings(button.dataset.section, node, selectModel);
-  if (section === 'general') mountGeneral(content, () => renderMessages(false, true));
+  if (section === 'general') {
+    mountGeneral(content, () => renderMessages(false, true));
+    const commands = document.createElement('section'); commands.className = 'slash-command-settings'; content.append(commands);
+    mountSlashCommandSettings(commands, boundAPI, state.bots.filter(bot => sameMachine(bot, node)), () => refresh(), slashSupported(node));
+  }
   else if (section === 'bots') botSettings(content);
   else if (section === 'notifications') void notifications.mount(content);
   else if (section === 'models' || section === 'cloud-models') modelSettings(content, section === 'cloud-models', selectModel);
@@ -1040,5 +1123,5 @@ async function start() {
   catch { app.innerHTML = '<form class="login form"><div class="brand">Echo</div><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="primary">Sign in</button></form>'; q<HTMLFormElement>('form').onsubmit = e => { e.preventDefault(); action(async () => { const f = new FormData(q('form') as HTMLFormElement); await api('/session', 'POST', { password: f.get('password') }); await ready(); })(); }; return; }
   await ready();
 }
-async function ready() { const route = parseAppRoute(location.hash); shell(); await refresh(); if (pendingNotificationHash) await openNotification(pendingNotificationHash); else if (route) await pluginWindows.open(route.pluginId, route.viewId, route.botId, 'embedded'); else if (chatId && !showingApps) await selectChat(chatId); else renderMessages(); connect(); connectSwarm(); startDevelopmentUpdates(); void notifications.start(); }
+async function ready() { const route = parseAppRoute(location.hash); shell(); await refresh(); if (pendingNotificationHash) await openNotification(pendingNotificationHash); else if (route) await pluginWindows.open(route.pluginId, route.viewId, route.botId, 'embedded', route.feature); else if (chatId && !showingApps) await selectChat(chatId); else renderMessages(); connect(); connectSwarm(); startDevelopmentUpdates(); void notifications.start(); }
 void start().catch(e => notice(e, true));

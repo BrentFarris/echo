@@ -178,6 +178,7 @@ type Run struct {
 	UpdatedAt     time.Time       `json:"updatedAt"`
 }
 type ExecutionScope struct {
+	Standalone    bool   `json:"-"` // Owner-invoked plugin action without a model/chat run.
 	Bot           Bot    `json:"bot"`
 	ChatID        string `json:"chatId"`
 	RunID         string `json:"runId"`
@@ -200,10 +201,16 @@ type Tool struct {
 	Capability  string         `json:"capability,omitempty"`
 }
 type View struct {
+	Features []AppFeature `json:"features,omitempty"`
+	ID       string       `json:"id"`
+	Title    string       `json:"title"`
+	HTML     string       `json:"html"`
+	Kind     string       `json:"kind"`
+}
+
+type AppFeature struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
-	HTML  string `json:"html"`
-	Kind  string `json:"kind"`
 }
 
 // AppRegistration exposes a plugin's primary floating or embedded view in Apps.

@@ -144,6 +144,14 @@ export class ReferenceInput extends HTMLElement {
     this.changed(); this.replaying = false;
   }
   private changed() { this.dispatchEvent(new InputEvent('input', { bubbles: true })); }
+  /** Apply a calculated draft as one undoable edit, including its final caret. */
+  applyEdit(draft: ReferenceDraft, start: number, end = start) {
+    if (this.disabled) return;
+    this.rememberSelection();
+    this.paint(draft.text, draft.references);
+    this.setSelectionRange(start, end);
+    this.changed();
+  }
   replaceSelection(text: string) { this.replace(text, this.selectionStart, this.selectionEnd); }
   replace(text: string, start: number, end: number, ref?: Segment) {
     this.rememberSelection(); const draft = this.snapshot();
