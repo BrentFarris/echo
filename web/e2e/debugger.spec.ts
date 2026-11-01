@@ -65,6 +65,26 @@ test('Go debugger supports gutter, scopes, watches, stepping and reload recovery
  await editor.getByRole('button', { name: 'Step Into', exact: true }).click();
  await expect(editor.locator('.debug-frame.is-selected')).toContainText('main.twice');
  await expect(editor.locator('.debug-variable-name').filter({ hasText: /^n$/ })).toBeVisible();
+ // Browsing frames must keep the call stack in view while their locals reload.
+ const sidebar = editor.locator('[data-sidebar-view=debug]');
+ await sidebar.evaluate(element => { element.style.height = '300px'; });
+ const scroll = sidebar.locator('.debug-sidebar-scroll');
+ await scroll.evaluate(element => {
+  element.scrollTop += element.querySelector('[data-debug-section=callstack]')!.getBoundingClientRect().top - element.getBoundingClientRect().top;
+ });
+ const stackOffset = () => scroll.evaluate(element => element.querySelector('[data-debug-section=callstack]')!.getBoundingClientRect().top - element.getBoundingClientRect().top);
+ const originalOffset = await stackOffset();
+ expect(await scroll.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+ await editor.locator('.debug-frame').filter({ hasText: 'main.main' }).click();
+ await expect(editor.locator('.debug-frame.is-selected')).toContainText('main.main');
+ await expect(editor.locator('.debug-variable-name').filter({ hasText: /^value$/ })).toBeVisible();
+ await expect.poll(stackOffset).toBeCloseTo(originalOffset, 0);
+ await editor.locator('.debug-frame').filter({ hasText: 'main.twice' }).click();
+ await expect(editor.locator('.debug-frame.is-selected')).toContainText('main.twice');
+ await expect(editor.locator('.debug-variable-name').filter({ hasText: /^n$/ })).toBeVisible();
+ await expect.poll(stackOffset).toBeCloseTo(originalOffset, 0);
+ expect(await scroll.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+ await sidebar.evaluate(element => { element.style.removeProperty('height'); });
  await editor.getByRole('button', { name: 'Step Out', exact: true }).click();
  await expect(editor.locator('.debug-frame.is-selected')).toContainText('main.main');
  await editor.getByRole('button', { name: 'Stop', exact: true }).click();

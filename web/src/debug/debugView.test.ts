@@ -24,6 +24,7 @@ const internals = () => view as unknown as {
   invalidateInspection(): void;
   receiveEvent(event: DebugEvent): void;
   frameSelection: { frame: DAPStackFrame; threadId: number } | null;
+  threads: Map<string, Array<{ id: number; name: string }>>;
   frames: Map<string, DAPStackFrame[]>;
   savedFrame: { sessionId: string; threadId: number; frameId: number; stopGeneration: number };
 };
@@ -98,6 +99,26 @@ it("discards scope results from a frame selected earlier in the same stop", asyn
   await old;
   expect(host.textContent).toContain("Go locals");
   expect(host.textContent).not.toContain("Stale C locals");
+});
+
+it("keeps the sidebar's current scroll position while switching frames and loading scopes", async () => {
+  let finishScopes!: (value: unknown) => void;
+  const frames = [{ id: 10, name: "main.first", line: 8, column: 1 }, { id: 11, name: "main.second", line: 1, column: 1 }];
+  internals().threads.set("session", [{ id: 1, name: "Main" }]);
+  internals().frames.set("session:1", frames);
+  mocks.request.mockResolvedValue({ body: { scopes: [] } });
+  await internals().selectFrameByID("session", 1, 10);
+  host.querySelector<HTMLElement>(".debug-sidebar-scroll")!.scrollTop = 180;
+  mocks.request.mockImplementation(() => new Promise(resolve => { finishScopes = resolve; }));
+
+  const select = internals().selectFrameByID("session", 1, 11);
+  expect(host.querySelector<HTMLElement>(".debug-sidebar-scroll")!.scrollTop).toBe(180);
+  // Scrolling during the request should win over the position at selection.
+  host.querySelector<HTMLElement>(".debug-sidebar-scroll")!.scrollTop = 260;
+  finishScopes({ body: { scopes: [{ name: "Second frame locals", variablesReference: 0 }] } });
+  await select;
+  expect(host.textContent).toContain("Second frame locals");
+  expect(host.querySelector<HTMLElement>(".debug-sidebar-scroll")!.scrollTop).toBe(260);
 });
 
 it("opens an adapter source before its echoRef and carries the exact source position", async () => {

@@ -425,6 +425,14 @@ export class DebugView {
   }
 
   private render(): void {
+    const scroll = this.options.host.querySelector<HTMLElement>(".debug-sidebar-scroll");
+    const scrollTop = scroll?.scrollTop || 0;
+    const scrollLeft = scroll?.scrollLeft || 0;
+    const viewport = scroll?.getBoundingClientRect();
+    const stack = scroll?.querySelector<HTMLElement>("[data-debug-section=callstack]")?.getBoundingClientRect();
+    // Keep a visible call stack in place as scopes and watches above it resize.
+    const stackOffset = scrollTop > 0 && viewport && stack && stack.bottom > viewport.top && stack.top < viewport.bottom
+      ? stack.top - viewport.top : null;
     const session = this.activeSession();
     const launches = [
       ...(this.config.configurations || []).map((item) => ({ id: item.id, name: item.name, kind: item.request })),
@@ -456,6 +464,15 @@ export class DebugView {
       </div>`;
     this.renderToolbar();
     this.refreshEditorDecorations();
+    const restoredScroll = this.options.host.querySelector<HTMLElement>(".debug-sidebar-scroll");
+    if (restoredScroll) {
+      restoredScroll.scrollTop = scrollTop;
+      restoredScroll.scrollLeft = scrollLeft;
+      const restoredStack = restoredScroll.querySelector<HTMLElement>("[data-debug-section=callstack]");
+      if (stackOffset !== null && restoredStack) {
+        restoredScroll.scrollTop += restoredStack.getBoundingClientRect().top - restoredScroll.getBoundingClientRect().top - stackOffset;
+      }
+    }
   }
 
   private renderSection(id: string, label: string, content: string, visible: boolean, actions = ""): string {
