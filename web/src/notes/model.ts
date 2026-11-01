@@ -1,4 +1,4 @@
-import { marked, type Token } from 'marked';
+import { marked, Renderer, type Token } from 'marked';
 import DOMPurify from 'dompurify';
 import type { Bot } from '../types';
 import { entryNode, localID, machineName } from '../instances';
@@ -15,30 +15,31 @@ export function sameContent(a: Note, b: Note): boolean {
   return (a.title.trim() || 'Untitled note') === (b.title.trim() || 'Untitled note') && a.markdown === b.markdown && JSON.stringify(a.mentions) === JSON.stringify(b.mentions);
 }
 
+function locate(raw: string, source: string, cursor: number): { end: number; offset(index: number): number } | undefined {
+  const at = source.indexOf(raw, cursor);
+  if (at >= 0) return { end: at + raw.length, offset: index => at + index };
+  // Marked removes quote/list prefixes and normalizes CRLF in child tokens.
+  // Map each line back to the parent's raw text instead of losing its ranges.
+  const lines = raw.split('\n'), spans: { raw: number; source: number }[] = [];
+  let rawOffset = 0, position = cursor;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i], index = source.indexOf(line, position);
+    if (index < 0 || (i > 0 && !/^[\t >]*$/.test(source.slice(position, index)))) return;
+    spans.push({ raw: rawOffset, source: index });
+    position = index + line.length;
+    if (i < lines.length - 1) {
+      if (source[position] === '\r') position++;
+      if (source[position] !== '\n') return;
+      position++; rawOffset += line.length + 1;
+    }
+  }
+  return { end: position, offset: index => { const span = spans.findLast(span => span.raw <= index)!; return span.source + index - span.raw; } };
+}
+
 // Walk only Markdown prose tokens. Raw token locations retain UTF-16 offsets
 // into the source; destinations, escaped markers, code and HTML are excluded.
 export function markers(markdown: string): Marker[] {
   const found: Marker[] = [];
-  function locate(raw: string, source: string, cursor: number): { end: number; offset(index: number): number } | undefined {
-    const at = source.indexOf(raw, cursor);
-    if (at >= 0) return { end: at + raw.length, offset: index => at + index };
-    // Marked removes quote/list prefixes and normalizes CRLF in child tokens.
-    // Map each line back to the parent's raw text instead of losing its ranges.
-    const lines = raw.split('\n'), spans: { raw: number; source: number }[] = [];
-    let rawOffset = 0, position = cursor;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i], index = source.indexOf(line, position);
-      if (index < 0 || (i > 0 && !/^[\t >]*$/.test(source.slice(position, index)))) return;
-      spans.push({ raw: rawOffset, source: index });
-      position = index + line.length;
-      if (i < lines.length - 1) {
-        if (source[position] === '\r') position++;
-        if (source[position] !== '\n') return;
-        position++; rawOffset += line.length + 1;
-      }
-    }
-    return { end: position, offset: index => { const span = spans.findLast(span => span.raw <= index)!; return span.source + index - span.raw; } };
-  }
   function walk(tokens: Token[], source: string, absolute: (index: number) => number) {
     let cursor = 0, htmlDepth = 0;
     for (const token of tokens) {
@@ -109,11 +110,46 @@ export function bindMentions(markdown: string, home: string, bots: Bot[], previo
   });
 }
 
-export function renderNote(markdown: string): DocumentFragment {
-  const fragment = DOMPurify.sanitize(marked.parse(markdown, { async: false, gfm: true }), {
+function taskOffsets(tokens: Token[], source: string, absolute = (index: number) => index, found = new Map<Token, number>()): Map<Token, number> {
+  let cursor = 0;
+  for (const token of tokens) {
+    const location = locate(token.raw, source, cursor);
+    if (!location) continue;
+    cursor = location.end;
+    const offset = (index: number) => absolute(location.offset(index));
+    if (token.type === 'list_item' && token.task) {
+      const marker = /^[\t ]*(?:[-+*]|\d+[.)])[\t ]+\[([ xX])\]/.exec(token.raw);
+      if (marker) found.set(token, offset(marker[0].length - 2));
+    }
+    if (token.type === 'list') taskOffsets(token.items, token.raw, offset, found);
+    else if ('tokens' in token && token.tokens) taskOffsets(token.tokens, token.raw, offset, found);
+  }
+  return found;
+}
+
+export function renderNote(markdown: string, changeTask?: (offset: number, checked: boolean) => void): DocumentFragment {
+  const tokens = marked.lexer(markdown, { gfm: true }), offsets = taskOffsets(tokens, markdown);
+  const inputs = new Map<string, number>(), renderer = new Renderer();
+  let currentOffset: number | undefined;
+  renderer.listitem = function(item) {
+    const previous = currentOffset;
+    currentOffset = offsets.get(item);
+    try { return Renderer.prototype.listitem.call(this, item); }
+    finally { currentOffset = previous; }
+  };
+  renderer.checkbox = function(token) {
+    const html = Renderer.prototype.checkbox.call(this, token);
+    if (currentOffset === undefined) return html;
+    // Only checkboxes generated from located task tokens may edit the source.
+    // An unpredictable key keeps raw HTML from impersonating those controls.
+    const key = crypto.randomUUID();
+    inputs.set(key, currentOffset);
+    return html.replace('<input ', `<input data-note-task="${key}" `);
+  };
+  const fragment = DOMPurify.sanitize(marked.parser(tokens, { renderer, gfm: true }), {
     RETURN_DOM_FRAGMENT: true,
     ALLOWED_TAGS: ['p','br','hr','strong','em','b','i','del','s','blockquote','pre','code','ul','ol','li','h1','h2','h3','h4','h5','h6','table','thead','tbody','tr','th','td','a','img','input','details','summary','kbd','sub','sup'],
-    ALLOWED_ATTR: ['href','src','alt','title','type','checked','disabled','start','align'],
+    ALLOWED_ATTR: ['href','src','alt','title','type','checked','disabled','start','align','data-note-task'],
     ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: false,
   });
   for (const link of fragment.querySelectorAll('a')) {
@@ -126,7 +162,17 @@ export function renderNote(markdown: string): DocumentFragment {
     img.loading = 'lazy'; img.referrerPolicy = 'no-referrer';
   }
   for (const input of fragment.querySelectorAll('input')) {
-    if (input.type === 'checkbox') input.disabled = true; else input.remove();
+    const offset = inputs.get(input.getAttribute('data-note-task') || '');
+    input.removeAttribute('data-note-task');
+    if (input.type !== 'checkbox') { input.remove(); continue; }
+    input.disabled = true;
+    if (offset !== undefined) {
+      input.setAttribute('aria-label', input.closest('li')?.textContent?.trim() || 'Task');
+      if (changeTask) {
+        input.disabled = false;
+        input.onchange = () => changeTask(offset, input.checked);
+      }
+    }
   }
   return fragment;
 }

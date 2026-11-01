@@ -50,7 +50,7 @@ beforeEach(() => {
 });
 afterEach(async () => { app?.dispose(); await tick(); root.remove(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
-it('starts read-only, autosaves Markdown and toggles back to noneditable rendering', async () => {
+it('starts with rendered Markdown, autosaves edits and returns to preview', async () => {
   mount(); await tick(); await open();
   expect(q<HTMLTextAreaElement>('[data-body]').readOnly).toBe(true);
   expect(q('[data-preview] h1').textContent).toBe('Welcome');
@@ -62,8 +62,62 @@ it('starts read-only, autosaves Markdown and toggles back to noneditable renderi
   q<HTMLButtonElement>('[data-mode]').click(); await tick();
   expect(q('[data-preview]').hidden).toBe(false);
   expect(q<HTMLTextAreaElement>('[data-body]').readOnly).toBe(true);
-  expect(q<HTMLInputElement>('[data-preview] input').disabled).toBe(true);
+  expect(q<HTMLInputElement>('[data-preview] input').disabled).toBe(false);
   expect(q('[data-status]').textContent).toBe('Saved');
+});
+
+it('autosaves individual preview tasks in Markdown, preserves mentions and reloads their state', async () => {
+  const markdown = '# 😀 Tasks\r\n\r\n- [ ] first @retired\r\n  - [X] second\r\n- [ ] third';
+  const start = markdown.indexOf('@retired');
+  const mentions = [{ nodeId: home, botId: 'deleted-bot', label: '@retired', start, end: start + 8 }];
+  records.set(home, [{ ...note(), markdown, mentions }]);
+  mount(); await tick(); await open();
+  const tasks = () => [...root.querySelectorAll<HTMLInputElement>('[data-preview] input')];
+  tasks()[1].click(); tasks()[0].click();
+  const changed = markdown.replace('[X]', '[ ]').replace('[ ] first', '[x] first');
+  expect(q<HTMLTextAreaElement>('[data-body]').value).toBe(changed.replaceAll('\r\n', '\n'));
+  expect(q('[data-mode]').textContent).toBe('Edit');
+  expect(q('[data-status]').textContent).toBe('Unsaved');
+  expect(records.get(home)![0].markdown).toBe(markdown);
+  await vi.advanceTimersByTimeAsync(750);
+  expect(records.get(home)![0]).toMatchObject({ markdown: changed, mentions, revision: 2 });
+  app.dispose(); await tick(); mount(); await tick(); await open();
+  expect(tasks().map(input => input.checked)).toEqual([true, false, false]);
+  tasks()[0].click(); await vi.advanceTimersByTimeAsync(750);
+  expect(records.get(home)![0].markdown).toBe(changed.replace('[x] first', '[ ] first'));
+});
+
+it('saves remote tasks on their owner and disables offline and conflicting tasks', async () => {
+  records.get(remote)![0].markdown = '- [ ] remote task';
+  mount(); await tick(); await open(`${remote}:remote`);
+  q<HTMLInputElement>('[data-preview] input').click(); await vi.advanceTimersByTimeAsync(750);
+  expect(records.get(remote)![0].markdown).toBe('- [x] remote task');
+  expect(records.get(home)![0].revision).toBe(1);
+  instances.get(remote)!.online = false; app.update(); await tick();
+  expect(q<HTMLInputElement>('[data-preview] input').disabled).toBe(true);
+  q<HTMLInputElement>('[data-preview] input').click(); await vi.advanceTimersByTimeAsync(750);
+  expect(records.get(remote)![0].markdown).toBe('- [x] remote task');
+  instances.get(remote)!.online = true; app.update(); await tick();
+  records.get(remote)![0].revision++;
+  q<HTMLInputElement>('[data-preview] input').click(); await vi.advanceTimersByTimeAsync(750);
+  expect(q('[data-conflict]').hidden).toBe(false);
+  expect(q<HTMLInputElement>('[data-preview] input').disabled).toBe(true);
+  expect(q<HTMLInputElement>('[data-preview] input').checked).toBe(false);
+  expect(records.get(remote)![0].markdown).toBe('- [x] remote task');
+  expect(cache.get(remote).drafts[0].note.markdown).toBe('- [ ] remote task');
+});
+
+it('serializes preview task toggles while a previous save is in flight', async () => {
+  records.get(home)![0].markdown = '- [ ] first\n- [ ] second';
+  mount(); await tick(); await open();
+  const original = api.getMockImplementation()!;
+  let release!: () => void;
+  api.mockImplementationOnce(async function(this: InstanceClient, ...args: any[]) { await new Promise<void>(resolve => { release = resolve; }); return original.apply(this, args as any); });
+  q<HTMLInputElement>('[data-preview] input').click(); await vi.advanceTimersByTimeAsync(750);
+  root.querySelectorAll<HTMLInputElement>('[data-preview] input')[1].click();
+  release(); await tick();
+  expect(records.get(home)![0].markdown).toBe('- [x] first\n- [x] second');
+  expect(api.mock.calls.filter((c: any[]) => c[1] === 'PUT').map((c: any[]) => c[2].revision)).toEqual([1, 2]);
 });
 
 it('combines filters and creates a note on the chosen machine', async () => {

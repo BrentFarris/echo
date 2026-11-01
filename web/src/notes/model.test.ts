@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { bindMentions, hashtags, markers, renderNote } from './model';
 import { combineState } from '../instances';
 import type { Bot, State } from '../types';
@@ -54,4 +54,35 @@ it('renders sanitized read-only GFM without workspace paths or host markup', () 
   expect(host.querySelectorAll('a[href]')).toHaveLength(1);
   expect(host.querySelector('a')?.rel).toBe('noopener noreferrer');
   expect(host.querySelector('img')).toBeNull();
+});
+
+describe('Notes task checkboxes', () => {
+  it.each(['\n', '\r\n'])('maps nested, quoted, ordered and repeated tasks to source characters with %j line endings', newline => {
+    const markdown = [
+      '# 😀 Checklist', '', '- [ ] repeat', '  - [X] repeat', '',
+      '> 1. [x] repeat', '>    continuation', '>    - [ ] child', '',
+      '* [ ] **formatted**', '', '  paragraph', '', '+ [ ] last', '',
+      '```md', '- [ ] code', '```', '', '    - [ ] indented code', '',
+      '`- [ ] inline` and \\- [ ] escaped', '',
+      '<input type="checkbox" data-note-task="0"><input type="text">',
+    ].join(newline);
+    const change = vi.fn(), host = document.createElement('div');
+    host.append(renderNote(markdown, change));
+    const inputs = [...host.querySelectorAll<HTMLInputElement>('input')];
+    expect(inputs).toHaveLength(7);
+    expect(inputs.map(input => input.disabled)).toEqual([false, false, false, false, false, false, true]);
+    expect(inputs.map(input => input.checked)).toEqual([false, true, true, false, false, false, false]);
+    const expected = ['- [ ] repeat', '- [X] repeat', '1. [x] repeat', '- [ ] child', '* [ ] **formatted**', '+ [ ]'];
+    for (const [index, task] of expected.entries()) {
+      inputs[index].checked = !inputs[index].checked;
+      inputs[index].dispatchEvent(new Event('change'));
+      expect(change).toHaveBeenLastCalledWith(markdown.indexOf(task) + task.indexOf('[') + 1, ![1, 2].includes(index));
+    }
+    expect(host.querySelector('[data-note-task]')).toBeNull();
+  });
+
+  it('leaves task and raw HTML checkboxes disabled without an editing callback', () => {
+    const fragment = renderNote('- [x] saved\n- [ ] pending\n\n<input type="checkbox">');
+    expect([...fragment.querySelectorAll<HTMLInputElement>('input')].every(input => input.disabled)).toBe(true);
+  });
 });

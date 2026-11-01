@@ -267,7 +267,7 @@ export class NotesApp implements NativeApp {
     title.readOnly = body.readOnly = !editing || !writable || conflict;
     this.q('[data-source]').hidden = !editing;
     this.q('[data-preview]').hidden = editing;
-    if (!editing) this.q('[data-preview]').replaceChildren(renderNote(note.markdown));
+    if (!editing) this.q('[data-preview]').replaceChildren(renderNote(note.markdown, writable && !conflict ? (offset, checked) => this.toggleTask(offset, checked) : undefined));
     const mode = this.q<HTMLButtonElement>('[data-mode]'); mode.textContent = editing ? 'Done' : 'Edit'; mode.setAttribute('aria-pressed', String(editing)); mode.disabled = !editing && (!writable || conflict);
     this.q<HTMLButtonElement>('[data-note-delete]').disabled = !writable || conflict || this.saves.has(this.selected);
     this.q('[data-owner]').textContent = machineName(note.nodeId);
@@ -291,10 +291,24 @@ export class NotesApp implements NativeApp {
 
   private edited() {
     const previous = this.current();
-    if (!previous || !this.editing || !this.writable(previous.nodeId)) return;
+    if (!previous || !this.editing || !this.writable(previous.nodeId) || this.drafts.get(this.selected)?.conflict) return;
     const body = this.q<HTMLTextAreaElement>('[data-body]').value;
     const note = { ...previous, title: this.q<HTMLInputElement>('[data-title]').value, markdown: body,
       mentions: bindMentions(body, previous.nodeId, this.inventory().bots, previous.markdown, previous.mentions) };
+    this.saveDraft(note);
+  }
+
+  private toggleTask(offset: number, checked: boolean) {
+    const note = this.current();
+    if (!note || this.editing || !this.writable(note.nodeId) || this.drafts.get(this.selected)?.conflict) return;
+    const markdown = note.markdown.slice(0, offset) + (checked ? 'x' : ' ') + note.markdown.slice(offset + 1);
+    if (markdown === note.markdown) return;
+    this.q<HTMLTextAreaElement>('[data-body]').value = markdown;
+    // Replacing one character preserves all mention ranges and identities.
+    this.saveDraft({ ...note, markdown });
+  }
+
+  private saveDraft(note: OwnedNote) {
     const draft = this.drafts.get(this.selected);
     this.drafts.set(this.selected, { note, dirty: true, baseRevision: draft?.baseRevision || note.revision });
     this.errors.delete(this.selected);

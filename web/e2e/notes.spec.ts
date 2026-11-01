@@ -23,7 +23,7 @@ test.afterEach(async ({ page }) => {
   if (response.ok()) for (const peer of (await response.json()).peers) if (peer.authorized) await page.request.delete(`/api/v1/swarm/peers/${peer.node.nodeId}`);
 });
 
-test('Markdown autosave, tags, bots, read-only preview and window presentation', async ({ page }) => {
+test('Markdown autosave, tags, bots, preview and window presentation', async ({ page }) => {
   await openNotes(page);
   const app = page.locator('.notes-app');
   await app.getByRole('button', { name: 'New note', exact: true }).click();
@@ -33,7 +33,7 @@ test('Markdown autosave, tags, bots, read-only preview and window presentation',
   await expect(app.locator('[data-status]')).toHaveText('Saved');
   await app.getByRole('button', { name: 'Done', exact: true }).click();
   await expect(app.getByRole('heading', { name: 'Launch', exact: true })).toBeVisible();
-  await expect(app.locator('[data-preview] input[type="checkbox"]')).toBeDisabled();
+  await expect(app.locator('[data-preview] input[type="checkbox"]')).toBeEnabled();
   await expect(source).toBeHidden();
   await expect(app.getByRole('textbox', { name: 'Note title', exact: true })).toHaveAttribute('readonly', '');
   await app.getByRole('button', { name: '#launch', exact: true }).click();
@@ -57,6 +57,37 @@ test('Markdown autosave, tags, bots, read-only preview and window presentation',
   page.once('dialog', dialog => dialog.accept());
   await app.getByRole('button', { name: 'Delete note', exact: true }).click();
   await expect(app.locator('[data-note]')).toHaveCount(0);
+});
+
+test('preview checkboxes update only their Markdown markers and persist through reload', async ({ page }) => {
+  const markdown = '# Checklist\r\n\r\n```md\r\n- [ ] example\r\n```\r\n\r\n- [ ] Repeat\r\n  - [X] Repeat\r\n\r\n> 1. [ ] Quoted\r\n\r\n<input type="checkbox" data-note-task="0">';
+  const note = await json(page, base, 'POST', { title: 'Task checklist', markdown });
+  await openNotes(page);
+  const app = page.locator('.notes-app');
+  await app.locator('[data-note]').click();
+  const tasks = app.locator('[data-preview] input[type="checkbox"]');
+  await expect(tasks).toHaveCount(4);
+  await expect(tasks.nth(3)).toBeDisabled();
+  await tasks.nth(1).uncheck();
+  await tasks.nth(0).focus();
+  await page.keyboard.press('Space');
+  await tasks.nth(2).check();
+  const changed = markdown.replace('[X]', '[ ]').replace('- [ ] Repeat', '- [x] Repeat').replace('1. [ ] Quoted', '1. [x] Quoted');
+  await expect(app.locator('[data-status]')).toHaveText('Saved');
+  expect((await json(page, `${base}/${note.id}`)).markdown).toBe(changed);
+  await app.getByRole('button', { name: 'Edit', exact: true }).click();
+  // Textareas normalize newlines; the stored Markdown retains its original CRLF.
+  await expect(app.getByRole('textbox', { name: 'Markdown source' })).toHaveValue(changed.replaceAll('\r\n', '\n'));
+  await app.getByRole('button', { name: 'Done', exact: true }).click();
+  await page.reload();
+  await expect(app).toBeVisible();
+  await app.locator('[data-note]').click();
+  await expect(tasks.nth(0)).toBeChecked();
+  await expect(tasks.nth(1)).not.toBeChecked();
+  await expect(tasks.nth(2)).toBeChecked();
+  await tasks.nth(0).uncheck();
+  await expect(app.locator('[data-status]')).toHaveText('Saved');
+  expect((await json(page, `${base}/${note.id}`)).markdown).toBe(changed.replace('- [x] Repeat', '- [ ] Repeat'));
 });
 
 test('combined machines, cached offline reading and reconnect', async ({ page }) => {
