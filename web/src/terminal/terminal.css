@@ -535,7 +535,7 @@
  --terminal-bg:var(--surface);--code-editor-bg:var(--surface);--code-editor-text:var(--text);--code-editor-border:var(--border);--code-editor-gutter-text:var(--subtle);--color-danger:var(--danger);--color-bg:var(--bg);--color-text:var(--text);--color-text-muted:var(--subtle);--color-border:var(--border);--color-primary:var(--accent);--edge-padding:56px;
 }
 .terminal-region[hidden] { display:none; }
-.main { position:relative; }
+#app > .main { position:relative; }
 .terminal-dock.is-maximized { height:calc(100dvh - 56px); }
 .terminal-toolbar { gap:6px; }
 .terminal-toolbar svg,.terminal-saved-popover svg { width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0; }

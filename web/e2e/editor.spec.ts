@@ -85,6 +85,33 @@ test('empty roots, untitled recovery, scoped shortcuts and close cancellation', 
   await launch(page); await page.locator(`[data-chat="${chatId}"]`).click(); await expect(message).toHaveText('chat draft');
 });
 
+for (const presentation of ['embedded', 'floating']) test(`autocomplete labels fit within rows in the ${presentation} editor`, async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.request.patch('/api/v1/plugins/monaco-editor', { data: { enabled: true, config: { editorFontSize: presentation === 'floating' ? 20 : 14 } } });
+  await launch(page);
+  if (presentation === 'floating') await page.getByRole('button', { name: 'Open in Window', exact: true }).click();
+  await row(page, 'beta.txt').dblclick();
+  await editor(page).locator('[data-monaco-host] .view-lines').click({ position: { x: 80, y: 10 } });
+  await page.keyboard.press('Control+a');
+  await page.keyboard.type('autocompleteAlpha autocompleteBeta\n\nautocomplete');
+  await page.keyboard.press('Control+Space');
+  const suggestions = editor(page).locator('.suggest-widget.visible .monaco-list-row');
+  await expect(suggestions).toHaveCount(2);
+  await expect(suggestions).toContainText(['autocompleteAlpha', 'autocompleteBeta']);
+  for (const suggestion of await suggestions.all()) {
+    const bounds = await suggestion.evaluate(element => {
+      const row = element.getBoundingClientRect();
+      const label = element.querySelector('.monaco-highlighted-label')!;
+      const range = document.createRange();
+      range.selectNodeContents(label);
+      const text = range.getBoundingClientRect();
+      return { top: text.top - row.top, bottom: row.bottom - text.bottom, left: text.left - row.left, right: row.right - text.right };
+    });
+    for (const margin of Object.values(bounds)) expect(margin).toBeGreaterThanOrEqual(0);
+  }
+  await page.screenshot({ path: test.info().outputPath('autocomplete.png') });
+});
+
 for (const presentation of ['embedded', 'floating']) test(`quick open without an open file in the ${presentation} editor`, async ({ page }) => {
   await launch(page);
   if (presentation === 'floating') await page.getByRole('button', { name: 'Open in Window', exact: true }).click();
