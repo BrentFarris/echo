@@ -408,11 +408,14 @@ func (p *Provider) commit(ctx context.Context, state *repositoryState, request s
 			missing[pathIdentity(record.path)] = record.path
 		}
 	}
-	if protected > 0 {
-		return nil, nil, &sourcecontrol.Error{Code: "protected_workspace_metadata", Message: "remove Echo or source-control metadata from the Fossil change set before committing", Details: map[string]any{"count": protected}}
-	}
 	paths := visibleTracked
 	if request.Action == "commit_all" {
+		// Commit All has no path filter, so it would also commit internal
+		// files hidden from the view. Selected commits validate each requested
+		// path below and must not be blocked by unrelated internal changes.
+		if protected > 0 {
+			return nil, nil, &sourcecontrol.Error{Code: "protected_workspace_metadata", Message: "Commit All is blocked by changes to Echo settings or source-control internal files hidden from this view. Select the files you want to commit and use Commit Selected.", Details: map[string]any{"count": protected}}
+		}
 		if hidden > 0 {
 			return nil, nil, &sourcecontrol.Error{Code: "hidden_changes", Message: "this parent checkout has changes outside the workspace; select the visible files to commit", Details: map[string]any{"count": hidden}}
 		}

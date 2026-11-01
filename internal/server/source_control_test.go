@@ -179,4 +179,40 @@ func TestEditorSourceControlNativeFossil(t *testing.T) {
 	if changes := fixtureSCM(t, checkout, "fossil", "changes"); strings.TrimSpace(changes) != "" {
 		t.Fatal("commit left changes", changes)
 	}
+	// Internal files hidden by the view must not block selected commits or
+	// slip into them. Keep a tracked .echo file dirty beside a visible edit.
+	metadata := filepath.Join(checkout, ".echo", "workspace.json")
+	if err := os.MkdirAll(filepath.Dir(metadata), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(metadata, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fixtureSCM(t, checkout, "fossil", "add", "--dotfiles", ".echo/workspace.json")
+	fixtureSCM(t, checkout, "fossil", "commit", "--nosync", "-m", "tracked settings fixture")
+	if err := os.WriteFile(metadata, []byte("{\"changed\":true}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "new.txt"), []byte("selected edit\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SourceControl.Action(ctx, bot.ID, repos[0].ID, sourcecontrol.ActionRequest{
+		RequestID: "all-with-metadata", Action: "commit_all", Message: "must be blocked",
+	}); err == nil || !strings.Contains(err.Error(), "Commit Selected") {
+		t.Fatalf("Commit All with internal files: %v", err)
+	}
+	if _, err := s.SourceControl.Action(ctx, bot.ID, repos[0].ID, sourcecontrol.ActionRequest{
+		RequestID: "selected-with-metadata", Action: "commit_selected", Message: "selected edit", Paths: []string{"new.txt"},
+	}); err != nil {
+		t.Fatal("selected commit with unrelated internal change", err)
+	}
+	if content := fixtureSCM(t, checkout, "fossil", "cat", "-r", "current", "new.txt"); content != "selected edit\n" {
+		t.Fatalf("selected file was not committed: %q", content)
+	}
+	if content := fixtureSCM(t, checkout, "fossil", "cat", "-r", "current", ".echo/workspace.json"); content != "{}\n" {
+		t.Fatalf("unselected internal change was committed: %q", content)
+	}
+	if changes := fixtureSCM(t, checkout, "fossil", "changes", "--dotfiles"); !strings.Contains(changes, ".echo/workspace.json") || strings.Contains(changes, "new.txt") {
+		t.Fatalf("selected commit left unexpected changes: %s", changes)
+	}
 }
