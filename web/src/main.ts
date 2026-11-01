@@ -921,6 +921,10 @@ function settings(section = 'general', node = settingsNode || entryNode, selectM
   settingsNode = node; section = localID(section); const ownerPlugins = state.plugins.filter(p => sameMachine(p, node)); const boundAPI = <T = any>(path: string, method = 'GET', body?: unknown) => resourceAPI<T>(path, method, body, node);
   const previous = document.querySelector<HTMLDialogElement>('#settings'); if (previous) { previous.close(); previous.remove(); }
   const el = dialog(`Settings · ${machineName(node)}`, '<div class="settings-layout"><nav class="settings-nav" aria-label="Settings sections"></nav><div class="settings-content"></div></div>'); el.id = 'settings';
+  el.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    event.preventDefault(); event.stopPropagation(); el.close();
+  });
   const nav = q('.settings-nav', el), content = q('.settings-content', el);
   const entries = [{ id: 'general', name: 'General' }, { id: 'bots', name: 'Bots' }, { id: 'models', name: 'Local Models' }, { id: 'cloud-models', name: 'Cloud Models' }, { id: 'notifications', name: 'Notifications' }, ...ownerPlugins.map(p => ({ id: localID(p.id), name: p.name }))];
   const picker = document.createElement('select'); picker.setAttribute('aria-label', 'Settings machine'); picker.innerHTML = [...instances.keys()].map(id => `<option value="${id}">${esc(machineName(id))}</option>`).join(''); picker.value = node; picker.onchange = () => settings(section, picker.value, selectModel); q('.dialog-heading button', el).before(picker);
