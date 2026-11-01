@@ -561,7 +561,7 @@ export class SourceControlView {
     });
     this.selections.clear();
     this.selections.set(this.selectionKey(repository.id, context.scope), next);
-    if (!event.ctrlKey && !event.metaKey && !event.shiftKey) await this.callbacks.openDiff(repository, {
+    await this.callbacks.openDiff(repository, {
       kind: "change", groupId: context.change.groupId, path: context.change.path,
       oldPath: context.change.oldPath, fileRef: context.change.ref,
       scope: diffScopeForGroup(this.statuses.get(repository.id)?.groups.find((group) => group.id === context.change.groupId)),
