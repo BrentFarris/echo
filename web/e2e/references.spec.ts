@@ -78,6 +78,7 @@ test('inline references edit, restore, reveal and persist with distinct paths', 
     await mkdir(join(root, 'map_editor')); await mkdir(join(root, 'other'));
     await writeFile(join(root, 'map_editor', 'camera.go'), 'package game'); await writeFile(join(root, 'other', 'camera.go'), 'package other');
     await setup(page, root);
+    await page.request.patch('/api/v1/plugins/monaco-editor', { data: { enabled: false, config: {} } });
     await page.request.post('/api/v1/endpoints', { data: { endpoint: { id: 'test', name: 'Test local model', url: 'http://127.0.0.1:3743/v1', model: 'echo-test', cloud: false, contextTokens: 32768, compact: true } } });
     await page.reload();
     await context.grantPermissions(['clipboard-read', 'clipboard-write']);
@@ -109,10 +110,10 @@ test('inline references edit, restore, reveal and persist with distinct paths', 
 
     const reveals: any[] = [];
     await page.route('**/references/reveal', async route => { reveals.push(route.request().postDataJSON()); await route.fulfill({ json: { path: reveals.at(-1).path, select: true, fallback: false } }); });
-    const file = composer.getByRole('button', { name: `Reveal file ${join(root, 'map_editor', 'camera.go')}`, exact: true });
+    const file = composer.getByRole('button', { name: `Open file ${join(root, 'map_editor', 'camera.go')}`, exact: true });
     await file.click(); await expect.poll(() => reveals.length).toBe(1);
     await file.focus(); await file.press('Enter'); await expect.poll(() => reveals.length).toBe(2);
-    const folder = composer.getByRole('button', { name: `Reveal folder ${join(root, 'map_editor')}`, exact: true });
+    const folder = composer.getByRole('button', { name: `Open folder ${join(root, 'map_editor')}`, exact: true });
     await folder.click(); await expect.poll(() => reveals.length).toBe(3);
     await composer.locator('.bot-reference').click();
     const details = page.getByRole('dialog', { name: 'Bot details' });
@@ -138,13 +139,60 @@ test('inline references edit, restore, reveal and persist with distinct paths', 
     const files = user.segments.filter((s: any) => s.type === 'file');
     expect(files.map((s: any) => s.path)).toEqual([join(root, 'map_editor'), join(root, 'map_editor', 'camera.go'), join(root, 'other', 'camera.go')]);
     for (const ref of files) expect(user.content.slice(ref.range.start, ref.range.end)).toBe('#' + ref.text);
-    await page.locator('.message.user').getByRole('button', { name: `Reveal file ${join(root, 'other', 'camera.go')}`, exact: true }).click();
+    await page.locator('.message.user').getByRole('button', { name: `Open file ${join(root, 'other', 'camera.go')}`, exact: true }).click();
     await expect.poll(() => reveals.length).toBe(4); expect(reveals[3].messageId).toBe(user.id);
 
     const state = await (await page.request.get('/api/v1/state')).json();
     await page.request.delete('/api/v1/bots/' + state.bots.find((b: any) => b.handle === 'kaiju').id); await page.reload();
     await page.locator('.message.user .bot-reference').click();
     await expect(details).toContainText('no longer available'); await expect(details.getByRole('button')).toHaveCount(0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('file chips open draft and saved references in Monaco and reuse the editor', async ({ page }) => {
+  const root = await mkdtemp(join(tmpdir(), 'echo-reference-editor-'));
+  try {
+    await mkdir(join(root, 'src'));
+    await writeFile(join(root, 'src', 'camera.go'), 'package game');
+    await setup(page, root);
+    await page.request.patch('/api/v1/plugins/monaco-editor', { data: { enabled: true, config: {} } });
+    await page.request.post('/api/v1/endpoints', { data: { endpoint: { id: 'test', name: 'Test local model', url: 'http://127.0.0.1:3743/v1', model: 'echo-test', contextTokens: 32768 } } });
+    await page.reload();
+    const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+    const picker = page.getByRole('listbox', { name: 'File and bot suggestions' });
+    await composer.fill('@kaiju inspect #src/camera.go');
+    await expect(picker.getByRole('option').first().locator('strong')).toHaveText('camera.go'); await composer.press('Tab');
+    await composer.pressSequentially('in #src');
+    await expect(picker.getByRole('option').first().locator('strong')).toHaveText('src'); await composer.press('Tab');
+    const value = await composer.evaluate((el: any) => el.value as string);
+    const chatID = new URL(page.url()).hash.slice(1);
+    const fileName = `Open file ${join(root, 'src', 'camera.go')}`;
+    const file = composer.getByRole('button', { name: fileName, exact: true });
+    const reveals: string[] = [];
+    await page.route('**/references/reveal', async route => { reveals.push(route.request().url()); await route.fulfill({ json: { fallback: false } }); });
+    await file.click();
+    const editor = page.locator('.editor-bot-session:not([hidden])');
+    const tab = editor.getByRole('tab', { name: /camera\.go/ });
+    await expect(tab).toBeVisible();
+    await expect(editor.locator('.monaco-editor .view-lines').first()).toContainText('package game');
+    await expect(page.getByLabel('Editor bot').locator('option:checked')).toContainText('Kaiju');
+    await editor.locator('[data-monaco-host] .view-lines').click({ position: { x: 100, y: 10 } });
+    await page.keyboard.press('Control+End'); await page.keyboard.type(' // unsaved editor draft');
+    await page.locator(`[data-chat="${chatID}"]`).click();
+    await expect.poll(() => composer.evaluate((el: any) => el.value)).toBe(value);
+    await file.focus(); await file.press('Enter');
+    await expect(tab).toBeVisible(); await expect(page.locator('.monaco-app')).toHaveCount(1);
+    await expect(editor.locator('.monaco-editor .view-lines').first()).toContainText('unsaved editor draft');
+    await page.locator(`[data-chat="${chatID}"]`).click();
+    await composer.getByRole('button', { name: `Open folder ${join(root, 'src')}`, exact: true }).click();
+    await expect(editor.locator('.code-tree-row.is-selected')).toContainText('src');
+    await page.locator(`[data-chat="${chatID}"]`).click();
+    await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    await expect(page.locator('.message.user').getByRole('button', { name: fileName, exact: true })).toBeVisible();
+    await page.locator('.message.user').getByRole('button', { name: fileName, exact: true }).click();
+    await expect(tab).toBeVisible();
+    await expect(editor.locator('.monaco-editor .view-lines').first()).toContainText('unsaved editor draft');
+    expect(reveals).toEqual([]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { ReferenceSearch, type ReferenceResults, type ReferenceSearchState } from './referenceSearch';
+import { ReferenceSearch, instanceReferenceDraft, type ReferenceResults, type ReferenceSearchState } from './referenceSearch';
+import { combineState } from './instances';
+import type { Segment, State } from './types';
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -46,4 +48,23 @@ test('empty results, incomplete searches and actionable errors are preserved', a
   expect(updates).toHaveBeenLastCalledWith(empty);
   search.search('@missing #folder', 'folder', updates); await vi.advanceTimersByTimeAsync(100);
   expect(updates.mock.lastCall?.[0].error).toBe('unknown bot @missing'); search.close();
+});
+
+test('reference activation keeps files and resolved recipients on their owning machine', () => {
+  const local = 'a'.repeat(32), remote = 'b'.repeat(32);
+  const state = (): State => ({ bots: [{ id: 'echo', handle: 'echo' }, { id: 'kaiju', handle: 'kaiju' }].map(bot => ({ ...bot, name: bot.handle, roots: [], plugins: {}, enableMultitasking: false, prompt: '', revision: 0 })), chats: [], endpoints: [], plugins: [], appDock: [], schedules: [], occurrences: [], runs: [] });
+  combineState(state(), { node: { nodeId: local, name: 'desktop', epoch: '', version: 1 }, enabled: true, peers: [], instances: [{ node: { nodeId: remote, name: 'linux', epoch: '', version: 1 }, state: state(), online: true }] });
+  const content = '@kaiju @linux.kaiju inspect #local.txt and #@missing.txt';
+  const file = (name: string, nodeId: string): Segment => ({ type: 'file', nodeId, text: name, path: `/${name}`, range: { start: content.indexOf('#' + name), end: content.indexOf('#' + name) + name.length + 1 } });
+  const localFile = file('local.txt', local), remoteFile = file('@missing.txt', remote);
+  const draft = instanceReferenceDraft(content, [localFile, remoteFile], remote);
+  expect(draft.content).toHaveLength(content.length);
+  expect(draft.content).not.toContain('@kaiju'); expect(draft.content).not.toContain('@linux.kaiju');
+  expect(draft.content.slice(remoteFile.range!.start, remoteFile.range!.end)).toBe('#@missing.txt');
+  expect(draft.segments).toEqual([remoteFile, { type: 'bot', botId: 'kaiju' }]);
+  const localDraft = instanceReferenceDraft(content, [localFile, remoteFile], local);
+  expect(localDraft.segments).toEqual([localFile, { type: 'bot', botId: 'kaiju' }]);
+  expect(localDraft.content).not.toContain('@missing');
+  expect(instanceReferenceDraft('#file', [], local).segments).toEqual([{ type: 'bot', botId: 'echo' }]);
+  expect(() => instanceReferenceDraft('No recipients on Linux', [remoteFile], remote)).toThrow('no longer available');
 });

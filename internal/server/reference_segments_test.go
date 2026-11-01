@@ -11,6 +11,7 @@ import (
 
 	"github.com/brent/echo/internal/broker"
 	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/editorfs"
 )
 
 func TestReferenceRangesValidateUTF16AndRouting(t *testing.T) {
@@ -44,6 +45,110 @@ func TestReferenceRangesValidateUTF16AndRouting(t *testing.T) {
 	}
 	if _, err := referenceContent(SendRequest{Content: content, Segments: []domain.Segment{ref, ref}}); err == nil {
 		t.Fatal("accepted overlapping ranges")
+	}
+}
+
+func TestReferencesOpenInEditorOrRevealWhenDisabled(t *testing.T) {
+	s := testServer(t)
+	root := t.TempDir()
+	path := filepath.Join(root, "My File.txt")
+	if err := os.WriteFile(path, []byte("reference"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := s.saveBot(domain.Bot{Handle: "blocked", Name: "Blocked", Roots: []string{t.TempDir()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bot, err := s.saveBot(domain.Bot{Handle: "kaiju", Name: "Kaiju", Roots: []string{t.TempDir(), root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := "@blocked @kaiju inspect #My File.txt"
+	ref := domain.Segment{Type: "file", Text: "My File.txt", Path: path, Kind: "file", AllowedBots: []string{blocked.ID, bot.ID}, Range: &domain.SegmentRange{Start: utf16Offset("@blocked @kaiju inspect "), End: utf16Offset(content)}}
+	c := chat(t, s, domain.Generation{})
+	message := domain.Message{ID: "reference", ChatID: c.ID, Role: "user", Content: content, Segments: []domain.Segment{ref}}
+	if err := s.Store.AddMessage(message); err != nil {
+		t.Fatal(err)
+	}
+	draft := map[string]any{"content": content, "segments": []domain.Segment{ref}, "path": path}
+	stored := map[string]any{"messageId": message.ID, "path": path}
+	endpoints := []struct {
+		path string
+		body map[string]any
+	}{{"/references/open", draft}, {"/chats/" + c.ID + "/references/open", stored}}
+	var revealed []broker.RevealTarget
+	s.revealFile = func(target broker.RevealTarget) error { revealed = append(revealed, target); return nil }
+	roots, err := s.EditorFS.Roots(bot.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEditor := func(response *httptest.ResponseRecorder, relative, kind string, fallback bool) {
+		t.Helper()
+		var result struct {
+			Editor struct {
+				BotID string           `json:"botId"`
+				Ref   editorfs.FileRef `json:"ref"`
+				Kind  string           `json:"kind"`
+			} `json:"editor"`
+			Fallback bool `json:"fallback"`
+		}
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil || result.Editor.BotID != bot.ID || result.Editor.Ref != (editorfs.FileRef{RootID: roots[1].ID, Path: relative}) || result.Editor.Kind != kind || result.Fallback != fallback || len(revealed) != 0 {
+			t.Fatalf("unexpected editor target: %d %s; revealed: %+v", response.Code, response.Body.String(), revealed)
+		}
+	}
+	setRemotePassword(t, s)
+	owner := remoteLogin(t, s)
+	for _, endpoint := range endpoints {
+		assertEditor(scmAPI(t, s, "POST", endpoint.path, endpoint.body), "My File.txt", "file", false)
+		body, _ := json.Marshal(endpoint.body)
+		assertEditor(remoteRequest(s, "POST", endpoint.path, string(body), owner), "My File.txt", "file", false)
+		bad := map[string]any{}
+		for key, value := range endpoint.body {
+			bad[key] = value
+		}
+		bad["path"] = filepath.Join(root, "unrecorded.txt")
+		if response := scmAPI(t, s, "POST", endpoint.path, bad); response.Code == http.StatusOK {
+			t.Fatal("opened an unrecorded reference")
+		}
+	}
+	if response := scmAPI(t, s, "POST", "/chats/"+chat(t, s, domain.Generation{}).ID+"/references/open", stored); response.Code == http.StatusOK {
+		t.Fatal("opened a cross-chat reference")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	for _, endpoint := range endpoints {
+		assertEditor(scmAPI(t, s, "POST", endpoint.path, endpoint.body), "", "directory", true)
+	}
+	plugin, _ := s.Plugins.Get("monaco-editor")
+	plugin.Enabled = false
+	if err := s.Plugins.Save(plugin); err != nil {
+		t.Fatal(err)
+	}
+	for _, endpoint := range endpoints {
+		if response := scmAPI(t, s, "POST", endpoint.path, endpoint.body); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"fallback":true`) {
+			t.Fatal(response.Body.String())
+		}
+		body, _ := json.Marshal(endpoint.body)
+		if response := remoteRequest(s, "POST", endpoint.path, string(body), owner); response.Code != http.StatusForbidden {
+			t.Fatal("remote browser opened host UI with the editor disabled")
+		}
+	}
+	if len(revealed) != 2 || revealed[0].Select || !strings.EqualFold(revealed[0].Path, root) {
+		t.Fatalf("unexpected browser fallback: %+v", revealed)
+	}
+	plugin.Enabled = true
+	if err := s.Plugins.Save(plugin); err != nil {
+		t.Fatal(err)
+	}
+	bot.Roots = []string{t.TempDir()}
+	if _, err := s.saveBot(bot); err != nil {
+		t.Fatal(err)
+	}
+	for _, endpoint := range endpoints {
+		if response := scmAPI(t, s, "POST", endpoint.path, endpoint.body); response.Code == http.StatusOK {
+			t.Fatal("ignored workspace revocation")
+		}
 	}
 }
 

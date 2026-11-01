@@ -23,7 +23,7 @@ export function updateReferenceChip(chip: HTMLElement, ref: Segment, bots: Bot[]
   const unavailable = ref.type === 'file' && !!ref.allowedBots && !ref.allowedBots.length;
   chip.classList.toggle('reference-unavailable', unavailable);
   chip.title = ref.type === 'bot' ? `Show details for ${ref.text}` : `${ref.path}${unavailable ? '\nUnavailable to all recipients' : ref.allowedBots?.length ? '\nAccessible to ' + ref.allowedBots.map(id => bots.find(b => b.id === id)?.handle || id).join(', ') : ''}`;
-  chip.setAttribute('aria-label', ref.type === 'bot' ? `Show details for ${ref.text}` : `Reveal ${ref.kind === 'directory' ? 'folder' : 'file'} ${ref.path}`);
+  chip.setAttribute('aria-label', ref.type === 'bot' ? `Show details for ${ref.text}` : `Open ${ref.kind === 'directory' ? 'folder' : 'file'} ${ref.path}`);
 }
 
 export function typedBotSegments(text: string, bots: Bot[], completedOnly = false): Segment[] {

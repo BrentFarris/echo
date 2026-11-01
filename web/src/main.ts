@@ -16,7 +16,7 @@ import { mountGeneral, notifyUsageMachinesChanged } from './usage';
 import { MessageActionUI } from './messageActions';
 import { createChatScrollFollower, type ChatScrollFollower } from './chatScroll';
 import { assertOnlineRecipients } from './offlineRecipients';
-import { ReferenceSearch, validateInstanceReferences } from './referenceSearch';
+import { ReferenceSearch, instanceReferenceDraft, validateInstanceReferences } from './referenceSearch';
 import { endpointForm, endpointValues } from './modelSettings';
 import { mountDevelopment } from './development';
 import { developmentUpdateNode, refreshDevelopmentUpdates, renderDevelopmentUpdates, startDevelopmentUpdates } from './developmentUpdates';
@@ -838,8 +838,15 @@ async function activateReference(chip: HTMLElement) {
     const article = chip.closest<HTMLElement>('.message');
     const message = article && messages.find(m => 'message-' + m.id === article.id);
     const draft = q<ReferenceInput>('#composer').snapshot();
-    const result = await api<{ fallback: boolean; path: string }>(message ? `/chats/${encodeURIComponent(message.chatId)}/references/reveal` : '/references/reveal', 'POST', message ? { messageId: message.id, path: ref.path } : { content: draft.text, segments: draft.references, path: ref.path });
-    if (result.fallback) notice('The reference no longer exists. Opened its containing folder in File Explorer.');
+    const node = message ? splitID(message.chatId)[0] : ref.nodeId || entryNode, editorID = resourceID(node, 'monaco-editor');
+    const editorEnabled = pluginEnabled(editorID, resourceID(node, 'echo')) && !!builtinApp(state.plugins.find(p => p.id === editorID), 'main');
+    const operation = editorEnabled ? 'open' : 'reveal';
+    const result = await resourceAPI<{ fallback: boolean; editor?: NativeFileTarget }>(message ? `/chats/${encodeURIComponent(message.chatId)}/references/${operation}` : `/references/${operation}`, 'POST', message ? { messageId: message.id, path: ref.path } : { ...instanceReferenceDraft(draft.text, draft.references, node), path: ref.path }, node);
+    if (result.editor) {
+      await refresh();
+      await pluginWindows.openFile(editorID, 'main', { ...result.editor, botId: resourceID(node, result.editor.botId) });
+    }
+    if (result.fallback) notice(`The reference no longer exists. Opened its containing folder in ${result.editor ? 'the code editor' : 'File Explorer'}.`);
   } catch (error) { notice(error, true); }
 }
 

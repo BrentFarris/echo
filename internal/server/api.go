@@ -335,6 +335,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /api/v1/references/reveal", s.revealDraftReference)
 	mux.HandleFunc("POST /api/v1/chats/{id}/references/reveal", s.revealMessageReference)
+	mux.HandleFunc("POST /api/v1/references/open", s.openDraftReference)
+	mux.HandleFunc("POST /api/v1/chats/{id}/references/open", s.openMessageReference)
 	mux.HandleFunc("PATCH /api/v1/plugins/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if r.PathValue("id") == "confluence" {
 			s.confluenceMu.Lock()

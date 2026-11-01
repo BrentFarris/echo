@@ -29,17 +29,24 @@ function referenceGroups(content: string, segments: Segment[]) {
   if (!groups.size) groups.set(entryNode, ['echo']);
   return groups;
 }
+export function instanceReferenceDraft(content: string, segments: Segment[], node = entryNode) {
+  const bots = referenceGroups(content, segments).get(node) || [];
+  if (!bots.length) throw new Error('This reference is no longer available to any recipient.');
+  const files = segments.filter(s => s.type === 'file' && (s.nodeId || entryNode) === node);
+  // Mentions are already resolved; the target receives only its own recipients.
+  let text = content.replace(/(?:^|[^A-Za-z0-9_@])@([A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)*)/g, value => ' '.repeat(value.length));
+  // Keep filenames containing @ intact so their checked ranges still match.
+  for (const ref of files) if (ref.range) text = text.slice(0, ref.range.start) + content.slice(ref.range.start, ref.range.end) + text.slice(ref.range.end);
+  return { content: text, segments: [...files, ...bots.map(botId => ({ type: 'bot', botId }))] };
+}
 export async function validateInstanceReferences(content: string, segments: Segment[]): Promise<Segment[]> {
   const groups = referenceGroups(content, segments);
-  // Mentions are already resolved; the target receives only its own recipients.
-  const masked = content.replace(/(?:^|[^A-Za-z0-9_@])@([A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)*)/g, value => ' '.repeat(value.length));
   const files = segments.filter(s => s.type === 'file');
   const results = await Promise.all(files.map(async file => {
     const node = file.nodeId || entryNode, bots = groups.get(node) || [];
     if (!bots.length) return { ...file, allowedBots: [] };
-    // Keep filenames containing @ intact so their checked ranges still match.
-    let text = masked; for (const ref of files) if (ref.range) text = text.slice(0, ref.range.start) + content.slice(ref.range.start, ref.range.end) + text.slice(ref.range.end);
-    const values = await new InstanceClient(node).json<Segment[]>('/references/validate', 'POST', { content: text, segments: [{ ...file, nodeId: node }, ...bots.map(botId => ({ type: 'bot', botId }))] });
+    const draft = instanceReferenceDraft(content, segments, node);
+    const values = await new InstanceClient(node).json<Segment[]>('/references/validate', 'POST', { ...draft, segments: [{ ...file, nodeId: node }, ...draft.segments.filter(s => s.type === 'bot')] });
     return { ...values[0], nodeId: node, allowedBots: (values[0]?.allowedBots || []).map(id => resourceID(node, id)) };
   }));
   return results;

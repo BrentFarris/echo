@@ -64,7 +64,7 @@ func (s *Server) openRecordedChange(w http.ResponseWriter, r *http.Request, pref
 			target, err := s.Files.RevealTarget(bot, change.Path)
 			if err == nil {
 				if preferEditor && s.Plugins.Enabled(bot, "monaco-editor") {
-					ref, err := s.changedFileEditorRef(bot.ID, target.Path)
+					ref, err := s.fileEditorRef(bot.ID, target.Path)
 					kind := "directory"
 					if target.Select {
 						kind = "file"
@@ -88,9 +88,9 @@ func (s *Server) openRecordedChange(w http.ResponseWriter, r *http.Request, pref
 	respond(w, nil, errors.New("this file is not a recorded change in this chat"))
 }
 
-// Convert only a revalidated recorded change into the editor's root-relative
+// Convert only a revalidated path into the editor's root-relative
 // reference. Editor reads still enforce their own current filesystem boundary.
-func (s *Server) changedFileEditorRef(botID, path string) (editorfs.FileRef, error) {
+func (s *Server) fileEditorRef(botID, path string) (editorfs.FileRef, error) {
 	roots, err := s.EditorFS.Roots(botID)
 	if err != nil {
 		return editorfs.FileRef{}, err
@@ -115,8 +115,41 @@ func (s *Server) changedFileEditorRef(botID, path string) (editorfs.FileRef, err
 	return editorfs.FileRef{}, errors.New("this file is outside the editor's folders; configure this bot's folders to open it in the editor")
 }
 
-func (s *Server) revealReference(w http.ResponseWriter, path string, bots []domain.Bot) {
+func (s *Server) openReference(w http.ResponseWriter, r *http.Request, path string, bots []domain.Bot, preferEditor bool) {
 	var last error = errors.New("this reference is no longer available to any recipient")
+	if preferEditor {
+		editorEnabled := false
+		for _, bot := range bots {
+			if !s.Plugins.Enabled(bot, "monaco-editor") {
+				continue
+			}
+			editorEnabled = true
+			target, err := s.Files.RevealTarget(bot, path)
+			if err != nil {
+				last = err
+				continue
+			}
+			ref, err := s.fileEditorRef(bot.ID, target.Path)
+			if err != nil {
+				last = err
+				continue
+			}
+			kind := "directory"
+			if target.Select {
+				kind = "file"
+			}
+			_, statErr := s.Files.ReferenceKind(bot, path)
+			respond(w, map[string]any{"editor": map[string]any{"botId": bot.ID, "ref": ref, "kind": kind}, "fallback": statErr != nil}, nil)
+			return
+		}
+		if editorEnabled {
+			respond(w, nil, last)
+			return
+		}
+	}
+	if !localRevealRequest(w, r) {
+		return
+	}
 	for _, bot := range bots {
 		target, err := s.Files.RevealTarget(bot, path)
 		if err != nil {
@@ -142,6 +175,14 @@ func (s *Server) revealDraftReference(w http.ResponseWriter, r *http.Request) {
 	if !localRevealRequest(w, r) {
 		return
 	}
+	s.openDraftReferenceRequest(w, r, false)
+}
+
+func (s *Server) openDraftReference(w http.ResponseWriter, r *http.Request) {
+	s.openDraftReferenceRequest(w, r, true)
+}
+
+func (s *Server) openDraftReferenceRequest(w http.ResponseWriter, r *http.Request, preferEditor bool) {
 	var req struct {
 		SendRequest
 		Path string `json:"path"`
@@ -157,7 +198,7 @@ func (s *Server) revealDraftReference(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, ref := range req.Segments {
 		if ref.Type == "file" && ref.Path == req.Path && ref.Range != nil {
-			s.revealReference(w, ref.Path, bots)
+			s.openReference(w, r, ref.Path, bots, preferEditor)
 			return
 		}
 	}
@@ -168,6 +209,14 @@ func (s *Server) revealMessageReference(w http.ResponseWriter, r *http.Request) 
 	if !localRevealRequest(w, r) {
 		return
 	}
+	s.openMessageReferenceRequest(w, r, false)
+}
+
+func (s *Server) openMessageReference(w http.ResponseWriter, r *http.Request) {
+	s.openMessageReferenceRequest(w, r, true)
+}
+
+func (s *Server) openMessageReferenceRequest(w http.ResponseWriter, r *http.Request, preferEditor bool) {
 	var req struct {
 		MessageID string `json:"messageId"`
 		Path      string `json:"path"`
@@ -195,7 +244,7 @@ func (s *Server) revealMessageReference(w http.ResponseWriter, r *http.Request) 
 					bots = append(bots, bot)
 				}
 			}
-			s.revealReference(w, ref.Path, bots)
+			s.openReference(w, r, ref.Path, bots, preferEditor)
 			return
 		}
 	}
