@@ -81,6 +81,12 @@ func TestNativeSourceControlRepositories(t *testing.T) {
 				repository := filepath.Join(root, "project.fossil")
 				nativeSCM(t, s, bot, "fossil_command", root, "init", []string{"--admin-user", "echo-test", repository}, "")
 				nativeSCM(t, s, bot, "fossil_command", checkout, "open", []string{repository, "--nosync"}, "")
+				// The database is a sibling of the only configured workspace.
+				bot.Roots = []string{checkout}
+				bot, e = s.saveBot(bot)
+				if e != nil {
+					t.Fatal(e)
+				}
 			}
 			os.WriteFile(filepath.Join(checkout, "file with spaces.txt"), []byte("initial\n"), 0600)
 			nativeSCM(t, s, bot, id+"_command", checkout, "add", []string{"file with spaces.txt"}, "")
@@ -98,6 +104,20 @@ func TestNativeSourceControlRepositories(t *testing.T) {
 			diff := nativeSCM(t, s, bot, id+"_diff", checkout, "", nil, "")
 			if !strings.Contains(diff.Output, "changed") {
 				t.Fatal(diff.Output)
+			}
+			if id == "fossil" {
+				if err := os.MkdirAll(filepath.Join(checkout, "nested"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				for _, directory := range []string{"", filepath.Join(checkout, "nested"), "nested"} {
+					status := nativeSCM(t, s, bot, "fossil_status", directory, "", nil, "")
+					if !strings.Contains(status.Output, "EDITED") {
+						t.Fatal(status.Output)
+					}
+				}
+				if s.Files.Allowed(bot, filepath.Join(root, "project.fossil")) || len(bot.Roots) != 1 || bot.Roots[0] != checkout {
+					t.Fatal("Fossil command expanded the bot's file access")
+				}
 			}
 			if id == "git" {
 				log := nativeSCM(t, s, bot, "git_command", checkout, "log", []string{"-1", "--format=%s"}, "")

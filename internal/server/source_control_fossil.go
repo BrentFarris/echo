@@ -29,20 +29,27 @@ func (s *Server) fossilRepositoryAccess(ctx context.Context, bot domain.Bot, che
 		return "", "", err
 	}
 	var marker string
-	for _, name := range []string{".fslckout", "_FOSSIL_", ".fos"} {
-		candidate := filepath.Join(checkout, name)
-		info, e := os.Lstat(candidate)
-		if os.IsNotExist(e) {
-			continue
+	for {
+		for _, name := range []string{".fslckout", "_FOSSIL_", ".fos"} {
+			candidate := filepath.Join(checkout, name)
+			info, e := os.Lstat(candidate)
+			if os.IsNotExist(e) {
+				continue
+			}
+			if e != nil || !info.Mode().IsRegular() || !s.Files.Allowed(bot, candidate) {
+				return "", "", errors.New("Fossil checkout metadata must be an accessible regular file")
+			}
+			marker = candidate
+			break
 		}
-		if e != nil || !info.Mode().IsRegular() || !s.Files.Allowed(bot, candidate) {
-			return "", "", errors.New("Fossil checkout metadata must be an accessible regular file")
+		if marker != "" {
+			break
 		}
-		marker = candidate
-		break
-	}
-	if marker == "" {
-		return "", "", nil
+		parent := filepath.Dir(checkout)
+		if parent == checkout || !s.Files.Allowed(bot, parent) {
+			return "", "", nil
+		}
+		checkout = parent
 	}
 	uriPath := filepath.ToSlash(marker)
 	if runtime.GOOS == "windows" && !strings.HasPrefix(uriPath, "/") {
@@ -98,6 +105,32 @@ func (s *Server) fossilRepositoryAccess(ctx context.Context, bot domain.Bot, che
 		return "", "", errors.New("Fossil repository database must be a regular file, not a link or directory")
 	}
 	return repository, parent, nil
+}
+
+// Keep the metadata grant local to each Fossil process. It must never become a
+// configured bot root or grant access through editor/file APIs.
+func (s *Server) fossilProcessRoots(ctx context.Context, bot domain.Bot, directory string) ([]string, error) {
+	roots := append([]string(nil), bot.Roots...)
+	if len(roots) == 0 {
+		return roots, nil
+	}
+	if directory == "" {
+		directory = roots[0]
+	}
+	_, metadataRoot, err := s.fossilRepositoryAccess(ctx, bot, directory)
+	if err != nil {
+		return nil, err
+	}
+	if metadataRoot == "" {
+		return roots, nil
+	}
+	roots = []string{metadataRoot}
+	for _, root := range bot.Roots {
+		if !broker.Within(metadataRoot, root) {
+			roots = append(roots, root)
+		}
+	}
+	return roots, nil
 }
 
 func sameFossilPath(a, b string) bool {

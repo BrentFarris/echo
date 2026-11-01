@@ -6,7 +6,7 @@ func sourceControlPlugins() []domain.PluginManifest {
 	var out []domain.PluginManifest
 	for _, spec := range []struct{ id, name, description string }{
 		{"git", "Git", "Git repositories: status, diff, log, add, commit, branch, fetch, pull and push."},
-		{"fossil", "Fossil", "Fossil repositories: status, diff, timeline, add, commit, branch and sync. The repository database must also be inside the bot's folders."},
+		{"fossil", "Fossil", "Fossil repositories: status, diff, timeline, add, commit, branch and sync. Run from the checkout or a subdirectory. The checkout's linked repository database may also live in its immediate parent folder; other locations must be inside the bot's folders."},
 		{"p4", "P4 (Perforce)", "Perforce workspaces: info, opened, status, diff, sync, edit, reconcile, changelists and submit. Configure server, user and client in P4 settings."},
 	} {
 		properties := map[string]any{"executable": S("CLI executable path (blank discovers it on PATH)"), "toolchains": A("Additional read/execute runtime folders"), "internet": B("Grant Internet access to this plugin's workspace-bound commands"), "privateNetwork": B("Grant private-network connections/listeners to this plugin's workspace-bound commands")}

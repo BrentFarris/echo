@@ -197,8 +197,22 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 		return nil, errors.New("executable cannot be inside Echo private data")
 	}
 	directory := text(a, "directory")
+	if id == "fossil" && len(scope.Bot.Roots) > 0 {
+		if directory == "" {
+			directory = scope.Bot.Roots[0]
+		} else if !filepath.IsAbs(directory) {
+			directory = filepath.Join(scope.Bot.Roots[0], directory)
+		}
+	}
 	if directory != "" && !s.Files.Allowed(scope.Bot, directory) {
 		return nil, errors.New("working directory is outside the bot's scope")
+	}
+	roots := scope.Bot.Roots
+	if id == "fossil" {
+		roots, e = s.fossilProcessRoots(ctx, scope.Bot, directory)
+		if e != nil {
+			return nil, e
+		}
 	}
 	if path := text(m.Config, "trustFile"); path != "" && (!filepath.IsAbs(path) || !s.Files.Allowed(scope.Bot, path)) {
 		return nil, errors.New("P4 trust file must be an absolute path inside the bot's scope")
@@ -251,7 +265,7 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 		output.WriteString(chunk)
 		s.nativeOutput(ctx, scope, chunk)
 	}
-	result, err := s.runTrackedProcess(ctx, scope.Bot, broker.ProcessRequest{BotID: scope.Bot.ID, Roots: scope.Bot.Roots, Executable: binary, Args: args, Input: text(a, "input"), Environment: env, Directory: directory, Toolchains: toolchains, Internet: boolean(m.Config, "internet"), PrivateNetwork: boolean(m.Config, "privateNetwork")}, func(chunk string) { emit(filter.push(chunk, false)) })
+	result, err := s.runTrackedProcess(ctx, scope.Bot, broker.ProcessRequest{BotID: scope.Bot.ID, Roots: roots, Executable: binary, Args: args, Input: text(a, "input"), Environment: env, Directory: directory, Toolchains: toolchains, Internet: boolean(m.Config, "internet"), PrivateNetwork: boolean(m.Config, "privateNetwork")}, func(chunk string) { emit(filter.push(chunk, false)) })
 	emit(filter.push("", true))
 	result.Output = output.String()
 	if err != nil {

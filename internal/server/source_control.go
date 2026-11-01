@@ -136,19 +136,9 @@ func (s *Server) executeSCM(ctx context.Context, botID string, request scmexec.R
 	}
 	roots := append([]string(nil), bot.Roots...)
 	if id == "fossil" {
-		_, metadataRoot, err := s.fossilRepositoryAccess(ctx, bot, request.WorkingDirectory)
+		roots, err = s.fossilProcessRoots(ctx, bot, request.WorkingDirectory)
 		if err != nil {
 			return out, err
-		}
-		if metadataRoot != "" {
-			// This grant belongs only to the host-owned Fossil invocation. It is
-			// never saved as a bot root or exposed through editor/file APIs.
-			roots = []string{metadataRoot}
-			for _, root := range bot.Roots {
-				if !broker.Within(metadataRoot, root) {
-					roots = append(roots, root)
-				}
-			}
 		}
 	}
 	config := map[string]any{}
