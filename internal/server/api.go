@@ -23,6 +23,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.appRoutes(mux)
 	s.editorRoutes(mux)
 	s.goLanguageRoutes(mux)
+	s.debugRoutes(mux)
 	s.terminalRoutes(mux)
 	s.notesRoutes(mux)
 	s.developmentRoutes(mux)

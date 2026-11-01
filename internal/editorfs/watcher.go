@@ -36,6 +36,8 @@ type watchedWorkspace struct {
 	includeIgnored     bool
 	id                 string
 	watcher            *fsnotify.Watcher
+	events             chan fsnotify.Event
+	errors             chan error
 	roots              []resolvedRoot
 	matchers           map[string]*ignore.GitIgnore
 	references         int
@@ -124,6 +126,7 @@ func (m *WatchManager) subscribe(botID string, tracking bool) error {
 		includeIgnored: tracking,
 		exclude:        m.exclude,
 		id:             botID, watcher: watcher, roots: roots, references: 1,
+		events: make(chan fsnotify.Event, 1024), errors: make(chan error, 1),
 		stop: make(chan struct{}), done: make(chan struct{}), pending: make(map[string]Change),
 		matchers: make(map[string]*ignore.GitIgnore), watched: make(map[string]bool),
 		onEvent: m.onEvent, applyIndex: m.service.index.ApplyChanges,
@@ -134,6 +137,7 @@ func (m *WatchManager) subscribe(botID string, tracking bool) error {
 	m.workspaces[botID] = workspace
 	m.mu.Unlock()
 
+	go workspace.drainEvents()
 	for _, root := range roots {
 		if matcher, compileErr := ignore.CompileIgnoreFile(filepath.Join(root.realPath, ".gitignore")); compileErr == nil {
 			workspace.matchers[root.ID] = matcher
@@ -312,6 +316,37 @@ func (w *watchedWorkspace) addTree(root resolvedRoot, start string, forceStart b
 	})
 }
 
+// Keep consuming native notifications while Add/Remove waits on the Windows
+// watcher thread. Handling a create synchronously on its unbuffered Events
+// channel otherwise deadlocks if another notification precedes the Add reply.
+func (w *watchedWorkspace) drainEvents() {
+	defer close(w.events)
+	defer close(w.errors)
+	for {
+		select {
+		case event, ok := <-w.watcher.Events:
+			if !ok {
+				return
+			}
+			select {
+			case w.events <- event:
+			default:
+				w.mu.Lock()
+				w.overflowed = true
+				w.mu.Unlock()
+			}
+		case err, ok := <-w.watcher.Errors:
+			if !ok {
+				return
+			}
+			select {
+			case w.errors <- err:
+			default:
+			}
+		}
+	}
+}
+
 func (w *watchedWorkspace) run() {
 	defer close(w.done)
 	defer w.watcher.Close()
@@ -322,13 +357,13 @@ func (w *watchedWorkspace) run() {
 		case <-w.stop:
 			w.flush()
 			return
-		case event, ok := <-w.watcher.Events:
+		case event, ok := <-w.events:
 			if !ok {
 				w.emitResync()
 				return
 			}
 			w.handle(event)
-		case _, ok := <-w.watcher.Errors:
+		case _, ok := <-w.errors:
 			if !ok {
 				w.emitResync()
 				return
@@ -409,13 +444,21 @@ func (w *watchedWorkspace) refFor(filePath string) (FileRef, bool) {
 
 func (w *watchedWorkspace) flush() {
 	w.mu.Lock()
-	if len(w.pending) == 0 {
-		overflowed := w.overflowed
-		w.overflowed = false
+	overflowed := w.overflowed
+	w.overflowed = false
+	if overflowed {
+		canRecover := w.watchCount < maximumWatchedDirectories
 		w.mu.Unlock()
-		if overflowed {
-			w.emitResync()
+		if canRecover {
+			for _, root := range w.roots {
+				_ = w.addTree(root, root.realPath, false)
+			}
 		}
+		w.emitResync()
+		w.mu.Lock()
+	}
+	if len(w.pending) == 0 {
+		w.mu.Unlock()
 		return
 	}
 	changes := make([]Change, 0, len(w.pending))

@@ -13,7 +13,11 @@ import type { Bot } from "../types";
 import type { CodeSidebar } from "./navigation";
 import { Virtualizer, elementScroll, observeElementOffset, observeElementRect } from "@tanstack/virtual-core";
 import type { editor as MonacoEditor, IPosition as MonacoPosition, IRange as MonacoRange, languages as MonacoLanguages, Uri as MonacoUri } from "monaco-editor";
-import { splitID } from '../instances';
+import { splitID, instances } from '../instances';
+import { DebugView } from '../debug/debugView';
+import type { DebugSource, DebugSourceNavigation } from '../debug/types';
+
+import '../debug/debug.css';
 import { api } from "./api";
 import * as editorAPI from "./editorApi";
 import type { APIError } from "./editorApi";
@@ -31,7 +35,8 @@ import { BookmarksView } from "./bookmarksView";
 import type { Bookmark } from "./bookmarkTypes";
 import "./bookmarks.css";
 import { NavigationModelCache } from "./navigationModelCache";
-import { GoLanguage, workspaceModelAuthority } from './goLanguage';
+import { languageContributions, debugContribution, workspaceModelAuthority, type AcquiredLanguage } from './languageContribution';
+import '../plugins/go/contribution';
 import { OutlineView } from "./outlineView";
 import { resolveOutlineSymbols } from "./outlineProviders";
 import type { OutlineResult } from "./outlineTypes";
@@ -79,6 +84,7 @@ type OpenTab = MarkdownViewState & {
   eol: "lf" | "crlf";
   model: MonacoEditor.ITextModel;
   viewState: MonacoEditor.ICodeEditorViewState | null;
+  debugSourceKey?: string;
   changeDisposable: { dispose(): void };
   applying: boolean;
 	readOnly?: boolean;
@@ -110,7 +116,8 @@ const maxEditorFontSize = 30;
 const defaultEditorFontSize = 13.5;
 const codeTabDragType = "application/x-echo-code-tab";
 export class CodeView {
-	private goLanguage: ReturnType<typeof GoLanguage.acquire> | null = null;
+	private languages = new Map<string, AcquiredLanguage>();
+  private get goLanguage(): AcquiredLanguage | undefined { return this.languages.get('go'); }
   private readonly abort = new AbortController();
   private workspace: Workspace | null = null;
   private roots: WorkspaceRoot[] = [];
@@ -165,6 +172,7 @@ export class CodeView {
   private bookmarks: BookmarksController | null = null;
   private bookmarksView: BookmarksView | null = null;
   private bookmarkActions: Array<{ dispose(): void }> = [];
+  private debugView: DebugView | null = null;
   private activeSidebar: CodeSidebar = "explorer";
   private leadingWhitespaceIndicators = true;
   private editorFontSize = 13.5;
@@ -275,7 +283,7 @@ export class CodeView {
       this.editorRulers = columnGuideRulers(settings); this.editorFontSize = this.clampEditorFontSize(settings.editorFontSize || 13.5);
       this.codeNavigation = new CodeNavigationHistory(this.bot.id, {local:true});
       this.initializeEditor(); this.initializeDiffEditor(); this.initializeTree(); this.initializeOutline(); this.installEvents();
-	  this.goLanguage = GoLanguage.acquire(this.bot.id, {
+	  for (const contribution of languageContributions()) this.languages.set(contribution.pluginID, contribution.acquire(this.bot.id, {
 	    open: async ref => { await this.openFile(ref, true, false, true, false); return this.tabs.find(t => t.ref && refKey(t.ref) === refKey(ref))?.model || null; },
 	    load: async ref => {
 	      const uri = this.modelURI(ref); const key = uri.toString();
@@ -287,9 +295,9 @@ export class CodeView {
 	      return monaco.editor.getModel(uri);
 	    },
 	    revision: uri => this.tabs.find(t => t.model.uri.toString() === uri)?.revision,
-	    status: (state, message) => { const button = this.root.querySelector<HTMLButtonElement>('[data-status=go]'); if (button) { button.hidden = state === 'idle'; button.textContent = `Go: ${state}`; button.title = message || 'Go language services'; } },
-	  });
-      this.initializeSearchView(); this.initializeBookmarks(); this.registerCommands();
+	    status: (state, message) => { const button = this.root.querySelector<HTMLButtonElement>('[data-status=go]'); if (button) { button.hidden = state === 'idle'; button.textContent = `${contribution.name}: ${state}`; button.title = message || 'Language services'; } },
+	  }));
+      this.initializeSearchView(); this.initializeBookmarks(); this.initializeDebugView(); this.registerCommands();
       await this.restoreWorkspace();
       if (this.abort.signal.aborted) return;
       for (const root of this.roots) await this.ensureRoot(root);
@@ -306,7 +314,7 @@ export class CodeView {
     const explorerActive = this.activeSidebar === "explorer";
     this.root.innerHTML = `
       <div class="code-app-shell" tabindex="-1" aria-busy="true" style="--explorer-width:${this.explorerWidth}px">
-        <nav class="code-left-nav" aria-label="Editor tools"><button data-code-sidebar="explorer" title="Explorer"><span class="codicon codicon-files"></span></button><button data-code-sidebar="search" title="Search"><span class="codicon codicon-search"></span></button><button data-code-sidebar="bookmarks" title="Bookmarks"><span class="codicon codicon-bookmark"></span></button><button class="code-git-activity" data-code-sidebar="source-control" title="Source Control" aria-label="Source Control"><span class="codicon codicon-source-control"></span><b data-source-control-badge hidden></b></button></nav>
+        <nav class="code-left-nav" aria-label="Editor tools"><button data-code-sidebar="explorer" title="Explorer"><span class="codicon codicon-files"></span></button><button data-code-sidebar="search" title="Search"><span class="codicon codicon-search"></span></button><button data-code-sidebar="bookmarks" title="Bookmarks"><span class="codicon codicon-bookmark"></span></button><button data-code-sidebar="debug" title="Run and Debug" aria-label="Run and Debug"><span class="codicon codicon-debug-alt"></span></button><button class="code-git-activity" data-code-sidebar="source-control" title="Source Control" aria-label="Source Control"><span class="codicon codicon-source-control"></span><b data-source-control-badge hidden></b></button></nav>
         <section class="code-workbench">
           <div class="code-sidebar-backdrop" data-mobile-sidebar-backdrop aria-hidden="true"></div>
           <div class="code-sidebar">
@@ -328,6 +336,7 @@ export class CodeView {
             <section aria-label="Outline" data-code-outline></section>
           </aside>
           <aside class="code-search-view" aria-label="Search" data-sidebar-view="search"${this.activeSidebar === "search" ? "" : " hidden"}></aside>
+          <aside class="code-debug-view" aria-label="Run and Debug" data-sidebar-view="debug" hidden></aside>
           <aside class="code-git-view" aria-label="Source Control" data-sidebar-view="source-control" hidden></aside><aside class="code-bookmarks-view" aria-label="Bookmarks" data-sidebar-view="bookmarks"${this.activeSidebar === "bookmarks" ? "" : " hidden"}></aside>
           </div>
           <div class="code-explorer-resizer" role="separator" aria-orientation="vertical" aria-label="Resize Explorer" tabindex="0"></div>
@@ -343,6 +352,7 @@ export class CodeView {
                     <button type="button" data-markdown-mode="preview" aria-pressed="false" title="Show Markdown preview">Preview</button>
                   </div>
                 </nav>
+                <div class="debug-toolbar-host" data-debug-toolbar-host></div>
                 <section class="code-editor-area">
                   <div class="code-editor-placeholder" data-editor-placeholder>
                     <span class="codicon codicon-code"></span>
@@ -369,6 +379,126 @@ export class CodeView {
   }
 
   private installNavigation(): void { this.root.querySelectorAll<HTMLElement>("[data-code-sidebar]").forEach(button => button.addEventListener("click", () => this.setSidebar(button.dataset.codeSidebar as CodeSidebar), {signal:this.abort.signal})); }
+
+  private initializeDebugView(): void {
+    if (!this.workspace) return;
+    const owner = instances.get(splitID(this.bot.id)[0]);
+    if (owner && !owner.node.capabilities?.includes("editor-debug/1")) { const host = this.root.querySelector<HTMLElement>("[data-sidebar-view=debug]"); if (host) host.textContent = "Update this Echo host to use debugging."; return; }
+    const host = this.root.querySelector<HTMLElement>("[data-sidebar-view=debug]");
+    const toolbarHost = this.root.querySelector<HTMLElement>("[data-debug-toolbar-host]");
+    if (!host || !toolbarHost) return;
+    this.debugView = new DebugView({
+      workspaceId: this.workspace.id,
+      host,
+      toolbarHost,
+      editor: this.editor,
+      signal: this.abort.signal,
+      openConfiguration: (file, rootId) => this.openDebugConfiguration(file, rootId),
+      debuggerStatus: async provider => {
+        try {
+          const status = await debugContribution(provider)?.debuggerStatus?.(this.bot.id, this.roots.find(r => r.id === this.activeTab()?.ref?.rootId)?.hostPath || this.roots[0]?.hostPath);
+          if (status) toast(status.state === 'ready' ? `${debugContribution(provider)?.name || provider} debugger ${status.version || 'unknown version'}: ${status.executable} (managed version ${status.managedVersion})` : status.message || status.state, { sticky: true });
+        } catch (error) { toast(error instanceof Error ? error.message : String(error)); }
+      },
+      installDebugger: provider => this.installDebugger(provider),
+      hoverExpression: (provider, line, column) => debugContribution(provider)?.hoverExpression?.(line, column) || "",
+      activeFile: () => {
+        const tab = this.activeTab();
+        return tab && !tab.readOnly ? this.worktreeRef(tab) : null;
+      },
+      selectedText: () => {
+        const selection = this.editor.getSelection();
+        return selection && !selection.isEmpty() ? this.editor.getModel()?.getValueInRange(selection) || "" : "";
+      },
+      saveAll: required => this.saveAllForDebug(required),
+      showSidebar: () => this.setSidebar("debug"),
+      openSource: (source, line, column, isCurrent) => this.openDebugSource(source, line, column, isCurrent),
+      openVirtualSource: (title, content, mimeType, navigation) => this.openVirtualDebugSource(title, content, mimeType, navigation),
+      activeDebugSourceKey: () => this.activeTab()?.debugSourceKey,
+    });
+    void this.debugView.start();
+  }
+
+  private async openDebugSource(source: DebugSource, line: number, column: number, isCurrent?: () => boolean): Promise<void> {
+    const ref = source.echoRef;
+    if (!ref) {
+      toast("The adapter source is outside this workspace. Open it from Loaded Sources to request its contents.");
+      return;
+    }
+    if (!(await this.openFile(ref, true, false, true, true, isCurrent)) || isCurrent?.() === false) return;
+    const tab = this.tabs.find((candidate) => candidate.ref && refKey(candidate.ref) === refKey(ref));
+    if (!tab) return;
+    this.activateTab(tab.id, false);
+    const position = { lineNumber: Math.max(1, line || 1), column: Math.max(1, column || 1) };
+    this.editor.setPosition(position);
+    this.editor.revealPositionInCenter(position);
+    this.debugView?.onEditorContextChanged();
+  }
+
+  private async openVirtualDebugSource(title: string, content: string, mimeType?: string, navigation?: DebugSourceNavigation): Promise<void> {
+    const reveal = () => {
+      if (navigation) {
+        const position = { lineNumber: Math.max(1, navigation.line), column: Math.max(1, navigation.column) };
+        this.editor.setPosition(position);
+        this.editor.revealPositionInCenter(position);
+      }
+      this.debugView?.onEditorContextChanged();
+    };
+    const existing = this.tabs.find((tab) => tab.transient && (navigation ? tab.debugSourceKey === navigation.key : !tab.debugSourceKey && tab.title === title));
+    if (existing) {
+      existing.applying = true;
+      existing.model.setValue(content);
+      existing.applying = false;
+      this.activateTab(existing.id);
+      reveal();
+      return;
+    }
+    const id = randomUUID();
+    const extension = mimeType?.includes("json") ? ".json" : mimeType?.includes("javascript") ? ".js" : mimeType?.includes("python") ? ".py" : "";
+    const uri = monaco.Uri.from({ scheme: "echo-debug", authority: this.workspace?.id || "workspace", path: `/${id}/${title.replace(/[\\/]/g, "-")}${extension}` });
+    const model = this.createEditorModel(content, languageForPath(title + extension), uri);
+    this.retainModel(model);
+    const tab: OpenTab = {
+      kind: "file", id, ref: null, title, hostPath: uri.toString(), keepOpen: true, pinned: false, dirty: false,
+      deleted: false, conflict: false, revision: "", hasBom: false, eol: "lf", model,
+      viewState: null, changeDisposable: { dispose() {} }, applying: false, readOnly: true, transient: true,
+      debugSourceKey: navigation?.key,
+    };
+    this.tabs.push(tab);
+    this.activateTab(tab.id);
+    this.renderTabs();
+    reveal();
+  }
+
+  private async saveAllForDebug(requireActiveFile = false): Promise<boolean> {
+    if (requireActiveFile && !this.activeTab()?.ref) { toast('This launch requires an active saved file.'); return false; }
+    for (const tab of [...this.tabs]) if (tab.ref && tab.dirty && !tab.readOnly && !await this.saveTab(tab)) return false;
+    return true;
+  }
+  private async installDebugger(provider: string): Promise<void> {
+    try { await debugContribution(provider)?.installDebugger?.(this.bot.id, this.roots.find(r => r.id === this.activeTab()?.ref?.rootId)?.hostPath || this.roots[0]?.hostPath); toast('Debugger installed.'); }
+    catch(error) { toast((error as Error).message, { sticky: true }); }
+  }
+  private async openDebugConfiguration(file: 'launch.json' | 'settings.json', rootId?: string): Promise<void> {
+    let root = this.roots.find(r => r.id === (rootId || this.activeTab()?.ref?.rootId)) || this.roots[0];
+    if (!root) { toast('Configure a bot folder first.'); return; }
+    if (!rootId && !this.activeTab()?.ref && this.roots.length > 1) {
+      const selected = await this.choiceDialog({ title: 'Configuration folder', message: 'Select the folder whose VS Code configuration to edit.', choices: [{id:'cancel',label:'Cancel'}, ...this.roots.map(r => ({id:r.id,label:r.label}))] });
+      if (!selected || selected === 'cancel') return; root = this.roots.find(r => r.id === selected)!;
+    }
+    const ref = { rootId: root.id, path: '.vscode/' + file };
+    try {
+      try { await editorAPI.readFile(this.bot.id, ref); }
+      catch(error) {
+        if ((error as APIError).status !== 404) throw error;
+        try { await editorAPI.createEntry(this.bot.id, { parent: { rootId: root.id, path: '' }, name: '.vscode', kind: 'directory' }); }
+        catch(error) { if ((error as APIError).status !== 409) throw error; }
+        const content = file === 'settings.json' ? '{}\n' : languageContributions().find(c => c.launchTemplate)?.launchTemplate || '{\n  "version": "0.2.0",\n  "configurations": []\n}\n';
+        await editorAPI.saveFile(this.bot.id, { ref, content, expectedRevision:'', createOnly:true });
+      }
+      await this.openFile(ref, true);
+    } catch(error) { toast((error as Error).message, {sticky:true}); }
+  }
 
   private initializeSearchView(): void {
     if (!this.workspace) return;
@@ -474,6 +604,7 @@ export class CodeView {
   }
 
   private sidebarIcon(view: CodeSidebar): string {
+    if (view === "debug") return "debug-alt";
     if (view === "source-control") return "source-control";
     if (view === "bookmarks") return "bookmark";
     if (view === "search") return "search";
@@ -1098,7 +1229,7 @@ export class CodeView {
       if (tab.applying) return;
       this.markModelDirty(model);
     });
-    this.goLanguage?.service.attach(model, snapshot);
+    for (const language of this.languages.values()) language.service.attach(model, snapshot);
     return tab;
   }
 
@@ -1118,12 +1249,14 @@ export class CodeView {
   }
 
   private async openNavigationTarget(resource: MonacoUri, selectionOrPosition?: MonacoRange | MonacoPosition): Promise<boolean> {
-    if (resource.scheme === 'echo-go' && this.goLanguage && this.active) {
-      const model = await this.goLanguage.service.ensureSource(resource.toString()); if (!model) return false;
+    const contribution = languageContributions().find(c => c.sourceSchemes.includes(resource.scheme));
+    const language = contribution && this.languages.get(contribution.pluginID);
+    if (language && this.active) {
+      const model = await language.service.ensureSource(resource.toString()); if (!model) return false;
       let tab = this.tabs.find(t => t.model === model);
       if (!tab) {
         this.retainModel(model);
-        tab = { kind: 'file', id: randomUUID(), ref: null, title: resource.path.split('/').pop() || 'Go source', hostPath: '', keepOpen: true, pinned: false,
+        tab = { kind: 'file', id: randomUUID(), ref: null, title: resource.path.split('/').pop() || 'Source', hostPath: '', keepOpen: true, pinned: false,
           dirty: false, deleted: false, conflict: false, revision: '', hasBom: false, eol: 'lf', model, viewState: null, changeDisposable: { dispose() {} }, applying: false, readOnly: true, transient: true };
         this.tabs.push(tab);
       }
@@ -1342,6 +1475,7 @@ export class CodeView {
         this.codeNavigation?.remapRef(node.ref, value.entry.ref);
         this.rewriteOpenRefs(node.ref, value.entry.ref, node.hostPath, value.entry.hostPath);
         await this.bookmarks?.remap(node.ref, value.entry.ref);
+        await this.debugView?.remap(node.ref, value.entry.ref);
       }
       if (result.succeeded.length) {
         this.expanded = new Set(expandedRefs.map(refKey));
@@ -1739,6 +1873,7 @@ export class CodeView {
   }
 
   private activateTab(id: string, focusEditor = true, mru = true, revealInExplorer = true): void {
+    queueMicrotask(() => this.debugView?.onEditorContextChanged());
     const next = this.tabs.find((tab) => tab.id === id);
     if (!next) return;
     if (mru) this.touchMru(id);
@@ -2254,7 +2389,7 @@ export class CodeView {
 
   private applySavedSnapshot(tab: OpenTab, snapshot: FileSnapshot): void {
     if (this.abort.signal.aborted || tab.model.isDisposed()) return;
-    this.goLanguage?.service.saved(tab.model, snapshot);
+    for (const language of this.languages.values()) language.service.saved(tab.model, snapshot);
     for (const candidate of this.tabs) {
       if (candidate.model !== tab.model) continue;
       candidate.revision = snapshot.revision;
@@ -2497,6 +2632,7 @@ export class CodeView {
       const previousRef = node.ref;
       const result = await editorAPI.renameEntry(this.workspace.id, previousRef, newName);
       await this.bookmarks?.remap(previousRef, result.entry.ref);
+      await this.debugView?.remap(previousRef, result.entry.ref);
       this.codeNavigation?.remapRef(previousRef, result.entry.ref);
       this.rewriteOpenRefs(previousRef, result.entry.ref, node.hostPath, result.entry.hostPath);
       this.rewriteExpandedRefs(previousRef, result.entry.ref);
@@ -2891,6 +3027,24 @@ export class CodeView {
         { id: "bookmarks.open", label: "View: Bookmarks", run: () => this.setSidebar("bookmarks") },
       ] : []),
       { id: "file.save", label: "File: Save", keybinding: "Ctrl+S", run: () => this.saveTab() },
+      { id: "debug.open", label: "View: Run and Debug", keybinding: "Ctrl+Shift+D", run: () => this.setSidebar("debug") },
+      { id: "debug.startPauseContinue", label: "Debug: Start / Pause / Continue", keybinding: "F5", run: () => this.debugView?.toggleLifecycle() },
+      { id: "debug.startNew", label: "Debug: Start New Instance", run: () => this.debugView?.launch(false) },
+      { id: "debug.startWithout", label: "Debug: Start Without Debugging", run: () => this.debugView?.launch(true) },
+      { id: "debug.pauseAll", label: "Debug: Pause All Sessions", run: () => this.debugView?.controlAll("pause") },
+      { id: "debug.continueAll", label: "Debug: Continue All Sessions", run: () => this.debugView?.controlAll("continue") },
+      { id: "debug.stop", label: "Debug: Stop", keybinding: "Shift+F5", run: () => this.debugView?.stopActive() },
+      { id: "debug.restart", label: "Debug: Restart", keybinding: "Ctrl+Shift+F5", run: () => this.debugView?.restartActive() },
+      { id: "debug.restartCompound", label: "Debug: Restart Compound", run: () => this.debugView?.restartActiveCompound() },
+      { id: "debug.stopCompound", label: "Debug: Stop Compound", run: () => this.debugView?.stopActiveCompound() },
+      { id: "debug.toggleBreakpoint", label: "Debug: Toggle Breakpoint", keybinding: "F9", run: () => this.debugView?.toggleBreakpointAtCursor() },
+      { id: "debug.stepOver", label: "Debug: Step Over", keybinding: "F10", run: () => this.debugView?.control("next") },
+      { id: "debug.stepInto", label: "Debug: Step Into", keybinding: "F11", run: () => this.debugView?.control("stepIn") },
+      { id: "debug.stepOut", label: "Debug: Step Out", keybinding: "Shift+F11", run: () => this.debugView?.control("stepOut") },
+      { id: "debug.terminate", label: "Debug: Terminate Attached Process", run: () => this.debugView?.stopActive(true) },
+      { id: "debug.console", label: "Debug: Open Debug Console", run: () => this.debugView?.openPanel("debug-console") },
+      { id: "debug.output", label: "Debug: Open Debug Output", run: () => this.debugView?.openPanel("debug-output") },
+      { id: "debug.settings", label: "Debug: Open Debug Configuration", run: () => this.debugView?.openSettings() },
       { id: 'go.install', label: 'Go: Install / Update Language Server', run: () => this.installGoLanguage() },
       { id: 'go.restart', label: 'Go: Restart Language Services', run: () => this.goLanguage?.service.restart() },
       { id: 'go.status', label: 'Go: Language Service Status', run: () => this.showGoLanguageStatus() },
@@ -3561,6 +3715,7 @@ export class CodeView {
     if (document.querySelector(".code-modal-overlay, .code-picker-overlay")) return;
     // Monaco owns navigation and cancellation while its quick input is focused.
     if (event.target instanceof Element && event.target.closest(".quick-input-widget")) return;
+    if (this.debugView?.handleKeydown(event)) return;
     if (this.handleReferencePeekKeyboard(event)) return;
     if (event.key === "Escape" && this.root.querySelector(".code-app-shell.is-explorer-open")) {
       event.preventDefault();
@@ -4011,7 +4166,8 @@ export class CodeView {
   }
 
   dispose(): void {
-    this.goLanguage?.dispose(); this.goLanguage = null;
+    this.debugView?.dispose(); this.debugView = null;
+    for (const language of this.languages.values()) language.dispose(); this.languages.clear();
     this.inlineChat?.dispose(); this.inlineChat = null;
     this.disposeBookmarks();
     this.closeIndentationPopover?.();

@@ -326,6 +326,9 @@ func (s *Service) List(botID string) ([]Snapshot, error) {
 		result = append(result, candidate.snapshot(0))
 	}
 	sort.SliceStable(result, func(i, j int) bool {
+		if (result[i].Kind == "default") != (result[j].Kind == "default") {
+			return result[i].Kind == "default"
+		}
 		if result[i].Kind != result[j].Kind {
 			return result[i].Kind < result[j].Kind
 		}

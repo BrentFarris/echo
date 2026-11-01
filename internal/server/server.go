@@ -24,10 +24,12 @@ import (
 	"github.com/brent/echo/internal/contextmanager"
 	"github.com/brent/echo/internal/coordinator"
 	"github.com/brent/echo/internal/credentials"
+	"github.com/brent/echo/internal/debugger"
 	"github.com/brent/echo/internal/development"
 	"github.com/brent/echo/internal/domain"
 	"github.com/brent/echo/internal/editorfs"
 	"github.com/brent/echo/internal/gitservice"
+	"github.com/brent/echo/internal/languagecontribution"
 	"github.com/brent/echo/internal/model"
 	"github.com/brent/echo/internal/plugins"
 	"github.com/brent/echo/internal/sourcecontrol"
@@ -40,6 +42,10 @@ import (
 )
 
 type Server struct {
+	Debug           *debugger.Service
+	Languages       *languagecontribution.Registry
+	debugMu         sync.Mutex
+	debugClients    map[string]map[chan debugger.Event]bool
 	mediaPreviews   attachmentPreviewCache
 	goLanguageMu    sync.Mutex
 	goLanguages     map[string]*goLanguageSession
@@ -228,6 +234,7 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 	s.initEditor()
 	s.initSourceControl()
 	s.initTerminal()
+	s.initDebugger()
 	s.startNotifications()
 	s.Development.StartAutomaticChecks()
 	go func() {
@@ -261,6 +268,9 @@ func (s *Server) close() {
 	s.goLanguageMu.Unlock()
 	for _, g := range languageSessions {
 		<-g.done
+	}
+	if s.Debug != nil {
+		_ = s.Debug.Shutdown(context.Background())
 	}
 	if s.Terminal != nil {
 		_ = s.Terminal.Shutdown(context.Background())
@@ -382,6 +392,9 @@ func (s *Server) stopBot(id string) func() {
 	s.mu.Unlock()
 	if s.Plugins != nil {
 		s.Plugins.CancelBot(id)
+	}
+	if s.Debug != nil {
+		s.Debug.StopWorkspace(id)
 	}
 	if s.SourceControl != nil {
 		s.SourceControl.StopWorkspaceProcesses(id)

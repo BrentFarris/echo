@@ -4,6 +4,7 @@ import "github.com/brent/echo/internal/domain"
 
 func goPlugin() domain.PluginManifest {
 	return domain.PluginManifest{ID: "go", Name: "Go", Settings: Schema(map[string]any{
+		"debugging":        B("Enable interactive Go debugging (enabled when unset)"),
 		"languageServices": B("Enable Go language services (enabled when unset; install gopls explicitly from the editor)"),
 		"goplsExecutable":  S("Optional absolute gopls executable path; blank uses the project installation"),
 		"executable":       S("Go executable path (blank discovers the installed Go toolchain)"),

@@ -9,17 +9,12 @@ import type { FileRef, FileSnapshot } from './types';
 import { installLSPProviders } from './lspProviders';
 import { validateTextEdits } from './lspEdits';
 
-export const lspRange = (range: Range): IRange => ({ startLineNumber: range.start.line + 1, startColumn: range.start.character + 1, endLineNumber: range.end.line + 1, endColumn: range.end.character + 1 });
-export type GoEditorHooks = {
-  open(ref: FileRef): Promise<editor.ITextModel | null>;
-  load(ref: FileRef): Promise<editor.ITextModel | null>;
-  revision(uri: string): string | undefined;
-  status(state: string, message: string): void;
-};
+import { lspRange, workspaceModelAuthority, type LanguageEditorHooks as GoEditorHooks } from './languageContribution';
+export { lspRange, workspaceModelAuthority } from './languageContribution';
 type Document = { model: editor.ITextModel; snapshot: FileSnapshot; session?: GoSession; subscription: IDisposable; dispose: IDisposable };
 type GoSession = { directory: string; client: LSPClient; opened: Set<string>; ready: Promise<void> };
 const managers = new Map<string, GoLanguage>();
-export const workspaceModelAuthority = (workspace: string): string => splitID(workspace).join('-');
+
 
 export class GoLanguage {
   readonly documents = new Map<string, Document>();
@@ -35,7 +30,7 @@ export class GoLanguage {
   private retryTimer = 0;
   state = 'idle'; message = '';
   log = '';
-  private constructor(readonly workspace: string) { this.disposables = installLSPProviders(this); }
+  private constructor(readonly workspace: string) { this.disposables = installLSPProviders(this, [{ language: "go", scheme: "file" }, { scheme: "file", pattern: "**/go.mod" }, { scheme: "file", pattern: "**/go.work" }]); }
   static acquire(workspace: string, hooks: GoEditorHooks): { service: GoLanguage; dispose(): void } {
     let service = managers.get(workspace); if (!service) { service = new GoLanguage(workspace); managers.set(workspace, service); }
     service.hooks.add(hooks); hooks.status(service.state, service.message);

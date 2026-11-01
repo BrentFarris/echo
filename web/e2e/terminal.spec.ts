@@ -14,8 +14,12 @@ async function start(page: Page) {
   for (const item of saved.commands) if (item.name === 'Terminal saved check') await json(page, `${base}/saved-commands/${item.id}`, 'DELETE');
   await page.evaluate(() => localStorage.clear()); await page.reload();
   await expect(page.getByLabel('Terminal bot')).toBeVisible();
+  // A restored PTY may still have the previous browser's mobile dimensions.
+  const resized = page.waitForResponse(response => response.url().includes(`${base}/sessions/`)
+    && response.url().endsWith('/size') && response.request().method() === 'PUT');
   await page.getByRole('button', { name: 'Open terminal', exact: true }).click();
   await expect(page.locator('.terminal-status-text')).toHaveText('Running');
+  expect((await resized).ok()).toBe(true);
   const sessions = await json(page, `${base}/sessions`);
   return sessions.sessions[0];
 }
@@ -29,6 +33,7 @@ test('persistent dock, folder shortcuts, saved commands, bot isolation and lifec
   const folders = [path.join(root, 'first'), path.join(root, "second ' 日本")];
   for (const folder of folders) await mkdir(folder, { recursive: true });
   await page.goto('/');
+  await expect(page.locator('#apps-button')).toBeVisible();
   const state = await json(page, '/api/v1/state');
   const echo = state.bots.find((b: any) => b.id === 'echo');
   await json(page, '/api/v1/bots', 'POST', { ...echo, roots: folders });

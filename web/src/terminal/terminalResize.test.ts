@@ -135,6 +135,16 @@ describe("terminal PTY size synchronization", () => {
     expect(mocks.sync).toHaveBeenCalledTimes(2);
   });
 
+  it("preserves the mounted viewport when replay changes only output sequence", async () => {
+    await connect();
+    const viewport = document.querySelector('[data-terminal-viewport]');
+    mocks.sync.mockResolvedValue({ ...snapshot(), lastSequence: 2 });
+    mocks.handlers.get("terminal_event")!({ botId: bot.id, sessionId: "shell", event: "data", sequence: 2, data: "" });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(mocks.sync).toHaveBeenCalled();
+    expect(document.querySelector('[data-terminal-viewport]')).toBe(viewport);
+  });
+
   it("ignores an old session snapshot that finishes after restart", async () => {
     await connect();
     const pending = deferred<TerminalSnapshot>();

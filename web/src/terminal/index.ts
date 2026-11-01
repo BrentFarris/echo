@@ -15,7 +15,7 @@ import { copyText, toast } from "./ui";
 import {
   createSavedCommand, deleteSavedCommand, listSavedCommands, changeTerminalFolder, resizeTerminal,
   restartTerminal as restartTerminalAPI, startTerminal, stopTerminal as stopTerminalAPI,
-  syncTerminal, updateSavedCommand, writeTerminal,
+  syncTerminal, updateSavedCommand, writeTerminal, listTerminalSessions,
   type SavedCommand, type TerminalEvent, type TerminalSnapshot,
 } from "./terminalApi";
 import {
@@ -68,6 +68,9 @@ const subscribed = new Set<string>();
 const requestedSubscriptions = new Set<string>();
 const workbenchPanels = new Map<string, Map<string, WorkbenchPanel>>();
 const activePanels = new Map<string, string>();
+const dismissedDebugTerminals = new Set<string>();
+const debugPanelUnregister = new Map<string, () => void>();
+const terminalRestorePromises = new Map<string, Promise<void>>();
 
 
 const subscriptionWaits = new Map<string, { promise: Promise<void>; resolve(): void; reject(error: Error): void }>();
@@ -382,7 +385,7 @@ class TerminalController {
     this.lastSequence = Math.max(this.lastSequence, snapshot.lastSequence || 0);
     // A snapshot requested before exit can arrive after the exit event.
     const exited = !changedSession && !forceReset && meta.get(this.key)?.status === "exited" ? meta.get(this.key) : undefined;
-    meta.set(this.key, {
+    this.setMeta({
       id: snapshot.id,
       shell: snapshot.shell || "Terminal",
       workingDirectory: snapshot.workingDirectory || "",
@@ -392,7 +395,6 @@ class TerminalController {
       lastSequence: this.lastSequence,
     });
     this.flushInput();
-    renderMountedDock();
     this.fit();
   }
 
@@ -406,8 +408,14 @@ class TerminalController {
       id: this.sessionId, shell: this.fixedSession ? "Debug Terminal" : "Terminal",
       workingDirectory: "", status: "idle", lastSequence: 0,
     };
-    meta.set(this.key, { ...current, ...patch });
-    if (rerender && mountedBot?.id === this.botId) renderMountedDock();
+    const next = { ...current, ...patch };
+    meta.set(this.key, next);
+    // Output replay does not change the dock. Keeping its DOM mounted preserves
+    // xterm selection and focus while normal and debug terminals synchronize.
+    const changed = next.id !== current.id || next.shell !== current.shell
+      || next.workingDirectory !== current.workingDirectory || next.status !== current.status
+      || next.exitCode !== current.exitCode || next.message !== current.message;
+    if (rerender && changed && mountedBot?.id === this.botId) renderMountedDock();
   }
 
   private queueInput(data: string): void {
@@ -505,6 +513,7 @@ export function registerWorkbenchPanel(botId: string, panel: WorkbenchPanel): ()
 
 export function openWorkbenchPanel(botId: string, panelId: string, focus = false): void {
   if (panelId !== "terminal" && !workbenchPanels.get(botId)?.has(panelId)) return;
+  if (mountedBot?.id !== botId) selectTerminalBot(botId);
   activePanels.set(botId, panelId);
   openBots.add(botId);
   persistPreferences();
@@ -546,7 +555,7 @@ function renderMountedDock(): void {
         <select class="terminal-context-select" aria-label="Terminal bot" title="Terminal bot" data-terminal-bot>${availableBots.map(item => `<option value="${escapeAttribute(item.id)}" ${item.id === botId ? "selected" : ""}>${escapeHTML(item.name)}</option>`).join("")}</select>
         ${(bot.folders?.length || 0) > 1 ? `<select class="terminal-context-select terminal-folder-select" aria-label="Change folder" title="Change folder — sends cd to this terminal" data-terminal-folder ${bot.online === false ? "disabled" : ""}><option value="">Change folder</option>${bot.folders!.map(folder => `<option value="${escapeAttribute(folder)}" title="${escapeAttribute(folder)}">${escapeHTML(folder.split(/[\\/]/).filter(Boolean).at(-1) || folder)}</option>`).join("")}</select>` : ""}
         <div class="terminal-panel-tabs" role="tablist" aria-label="Panel views">
-          ${tabs.map((panel) => `<div class="terminal-panel-tab" role="presentation"><button type="button" role="tab" aria-selected="${activePanel === panel.id}" class="${activePanel === panel.id ? "is-active" : ""}" data-terminal-action="panel" data-panel-id="${escapeAttribute(panel.id)}"><span class="codicon codicon-${escapeAttribute(panel.icon || "output")}"></span>${escapeHTML(panel.label)}</button>${panel.canClose?.() ? `<button type="button" class="terminal-panel-close" title="Close ${escapeAttribute(panel.label)}" aria-label="Close ${escapeAttribute(panel.label)}" data-terminal-action="close-panel" data-panel-id="${escapeAttribute(panel.id)}">${icons.x}</button>` : ""}</div>`).join("")}
+          ${tabs.map((panel) => `<div class="terminal-panel-tab" role="presentation"><button type="button" role="tab" aria-selected="${activePanel === panel.id}" class="${activePanel === panel.id ? "is-active" : ""}" data-terminal-action="panel" data-panel-id="${escapeAttribute(panel.id)}"><span aria-hidden="true" class="codicon codicon-${escapeAttribute(panel.icon || "output")}"></span>${escapeHTML(panel.label)}</button>${panel.canClose?.() ? `<button type="button" class="terminal-panel-close" title="Close ${escapeAttribute(panel.label)}" aria-label="Close ${escapeAttribute(panel.label)}" data-terminal-action="close-panel" data-panel-id="${escapeAttribute(panel.id)}">${icons.x}</button>` : ""}</div>`).join("")}
         </div>
         <div class="terminal-toolbar-actions">
           ${activePanel === "terminal" ? `
@@ -645,7 +654,61 @@ function unmountBotTerminals(botId: string): void {
   for (const controller of controllers.values()) if (controller.botId === botId) controller.unmount();
 }
 
-function debugTerminalKey(botId: string, sessionId: string): string { return `${botId}:${sessionId}`; }
+function debugTerminalKey(botId: string, sessionId: string): string { return `${botId}:debug:${sessionId}`; }
+function debugTerminalPanelID(sessionId: string): string { return `debug-terminal-${sessionId}`; }
+function isDebugTerminalDismissed(botId: string, sessionId: string): boolean {
+  const key = debugTerminalKey(botId, sessionId);
+  if (dismissedDebugTerminals.has(key)) return true;
+  try { return window.sessionStorage.getItem(`echo.dismissedTerminal:${key}`) === "true"; }
+  catch { return false; }
+}
+
+function closeDebugTerminal(botId: string, sessionId: string): void {
+  const key = debugTerminalKey(botId, sessionId);
+  dismissedDebugTerminals.add(key);
+  // Keep dismissed output closed across reconnects and reloads in this browser tab.
+  try { window.sessionStorage.setItem(`echo.dismissedTerminal:${key}`, "true"); } catch { /* Storage may be unavailable. */ }
+  controllers.get(key)?.dispose();
+  controllers.delete(key);
+  meta.delete(key);
+  debugPanelUnregister.get(key)?.();
+  debugPanelUnregister.delete(key);
+  persistPreferences();
+}
+
+function closePreviousDebugTerminals(botId: string, sessionId: string, name: string): void {
+  for (const controller of [...controllers.values()]) {
+    if (controller.botId !== botId || !controller.fixedSession) continue;
+    const current = meta.get(controller.key);
+    const panel = current && workbenchPanels.get(botId)?.get(debugTerminalPanelID(current.id));
+    if (current?.status === "exited" && current.id !== sessionId && panel?.label === name) {
+      closeDebugTerminal(botId, current.id);
+    }
+  }
+}
+
+function debugTerminalController(botId: string, sessionId: string, name: string): TerminalController {
+  const key = debugTerminalKey(botId, sessionId);
+  let controller = controllers.get(key);
+  if (!controller) {
+    controller = new TerminalController(botId, sessionId);
+    controllers.set(key, controller);
+  }
+  if (!debugPanelUnregister.has(key)) {
+    const registered = controller;
+    debugPanelUnregister.set(key, registerWorkbenchPanel(botId, {
+      id: debugTerminalPanelID(sessionId), label: name, icon: "terminal",
+      canClose() { return ["exited", "error"].includes(meta.get(key)?.status || ""); },
+      close() { closeDebugTerminal(botId, sessionId); },
+      mount(host) { registered.mount(host); void registered.ensureStarted(); },
+      unmount() { registered.unmount(); },
+    }));
+  }
+  void subscribeBot(botId);
+  return controller;
+}
+
+
 
 function subscribeBot(botId: string): Promise<void> {
   requestedSubscriptions.add(botId);
@@ -675,10 +738,13 @@ onSocketState((state) => {
 onSocket("terminal_subscribed", (message: object) => {
   const botId = String((message as { botId?: string }).botId || "");
   if (!botId) return;
+  const reconnecting = !subscribed.has(botId);
   subscribed.add(botId);
+  if (reconnecting && mountedBot?.id === botId) renderMountedDock();
   const wait = subscriptionWaits.get(botId);
   wait?.resolve();
   subscriptionWaits.delete(botId);
+  void restoreDebugTerminals(botId);
   for (const controller of controllers.values()) {
     if (controller.botId === botId) void controller.resync().catch(error => toast(errorMessage(error)));
   }
@@ -697,11 +763,38 @@ onSocket("terminal_resync", (message: object) => {
 });
 onSocket("terminal_event", (message: object) => {
   const event = message as TerminalEvent;
+  if (event.kind === "test") return;
+  if (event.kind === "debug" || controllers.has(debugTerminalKey(event.botId, event.sessionId))) {
+    if (isDebugTerminalDismissed(event.botId, event.sessionId)) return;
+    const controller = debugTerminalController(event.botId, event.sessionId, event.name || "Debug Terminal");
+    controller.applyEvent(event);
+    if (event.event === "started") {
+      openWorkbenchPanel(event.botId, debugTerminalPanelID(event.sessionId), true);
+      closePreviousDebugTerminals(event.botId, event.sessionId, event.name || "Debug Terminal");
+    }
+    return;
+  }
   controllers.get(event.botId)?.applyEvent(event);
 });
 
 export function subscribeTerminalBot(botId: string): Promise<void> {
   return subscribeBot(botId);
+}
+
+function restoreDebugTerminals(botId: string): Promise<void> {
+  const existing = terminalRestorePromises.get(botId);
+  if (existing) return existing;
+  const restore = listTerminalSessions(botId)
+    .then((sessions) => {
+      for (const snapshot of sessions) {
+        if (snapshot.kind !== "debug" || isDebugTerminalDismissed(botId, snapshot.id)) continue;
+        debugTerminalController(botId, snapshot.id, snapshot.name || "Debug Terminal").restore(snapshot);
+      }
+    })
+    .catch((error) => toast(`Could not restore debug terminals: ${errorMessage(error)}`))
+    .finally(() => terminalRestorePromises.delete(botId));
+  terminalRestorePromises.set(botId, restore);
+  return restore;
 }
 
 function toggleTerminal(botId: string): void {
@@ -985,7 +1078,8 @@ export function updateTerminalDock(host: HTMLElement, bots: Bot[], plugins: Plug
     return isBuiltinDock(plugin, "main") && pluginAvailable(plugin, bot);
   }).map(bot => ({ id: bot.id, name: bot.name + (splitID(bot.id)[0] !== entryNode ? ` · ${machineName(splitID(bot.id)[0])}` : ""), mainPath:bot.roots[0] || "", folders:[...new Set(bot.roots)], online:instanceOnline(splitID(bot.id)[0]) }));
   const valid = new Set(next.map(b => b.id));
-  for (const [id, controller] of controllers) if (!valid.has(id)) {
+  for (const [id, controller] of controllers) if (!valid.has(controller.botId)) {
+    debugPanelUnregister.get(id)?.(); debugPanelUnregister.delete(id);
     controller.dispose(); controllers.delete(id); meta.delete(id); commands.delete(id); commandsLoaded.delete(id);
     closeTerminalSocket(id); subscribed.delete(id); requestedSubscriptions.delete(id);
     subscriptionWaits.get(id)?.reject(new Error("Terminal is unavailable")); subscriptionWaits.delete(id);

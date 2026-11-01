@@ -1,7 +1,7 @@
 import type { CancellationToken, editor, languages, IDisposable, Position } from 'monaco-editor';
 import type * as LSP from 'vscode-languageserver-protocol';
 import { monaco } from './language';
-import { type GoLanguage, lspRange } from './goLanguage';
+import { type LanguageService, lspRange } from './languageContribution';
 
 const providerSet = new WeakSet<object>();
 export const isLSPDocumentSymbolProvider = (provider: object): boolean => providerSet.has(provider);
@@ -19,8 +19,7 @@ function completion(item: LSP.CompletionItem, model: editor.ITextModel, p: Posit
 }
 function symbol(s: LSP.DocumentSymbol): languages.DocumentSymbol { return { name: s.name, detail: s.detail || '', kind: s.kind - 1, tags: s.tags || [], range: lspRange(s.range), selectionRange: lspRange(s.selectionRange), children: s.children?.map(symbol) }; }
 
-export function installLSPProviders(service: GoLanguage): IDisposable[] {
-  const selector = [{ language: 'go', scheme: 'file' }, { scheme: 'file', pattern: '**/go.mod' }, { scheme: 'file', pattern: '**/go.work' }];
+export function installLSPProviders(service: LanguageService, selector: languages.LanguageSelector): IDisposable[] {
   const request = async (model: editor.ITextModel, method: string, params: any, token: CancellationToken): Promise<any> => {
     if (!service.owns(model)) return null;
     const abort = new AbortController(); if (token.isCancellationRequested) abort.abort();

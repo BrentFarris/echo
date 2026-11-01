@@ -1,0 +1,73 @@
+name: Native debugger acceptance
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main, echo2]
+permissions:
+  contents: read
+jobs:
+  debugger:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            shell: bash
+          - os: macos-latest
+            shell: bash
+          - os: windows-latest
+            shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Windows C compiler
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          path-type: inherit
+          install: mingw-w64-x86_64-gcc
+      - name: Permit local attach on the disposable Linux runner
+        if: runner.os == 'Linux'
+        run: sudo sysctl kernel.yama.ptrace_scope=0
+      - name: Install pinned Delve
+        shell: ${{ matrix.shell }}
+        run: |
+          go install github.com/go-delve/delve/cmd/dlv@v1.27.2
+          if [ "$RUNNER_OS" = macOS ]; then codesign --force --sign - "$(go env GOPATH)/bin/dlv"; fi
+      - name: Go protocol, lifecycle, launch, attach and CGO acceptance
+        shell: ${{ matrix.shell }}
+        env:
+          CGO_ENABLED: '1'
+          ECHO_TEST_DELVE: '1'
+        run: go test ./internal/debugconfig ./internal/debugger ./internal/godebug ./internal/terminal -race -count=1 -timeout=5m
+      - name: Build browser fixture
+        shell: ${{ matrix.shell }}
+        run: |
+          cd web
+          npm ci --ignore-scripts
+          npm run build
+          npx playwright install --with-deps chromium
+          cd ..
+          GOOS=wasip1 GOARCH=wasm go build -o internal/plugins/guest/builtin.wasm ./internal/plugins/guest
+          suffix=""; if [ "$RUNNER_OS" = Windows ]; then suffix=.exe; fi
+          go build -o "browser-fixture$suffix" ./cmd/browser-fixture
+          go build -o "mock-model$suffix" ./cmd/mock-model
+      - name: Browser debugger and language-service acceptance
+        shell: ${{ matrix.shell }}
+        env:
+          ECHO_TEST_DELVE: '1'
+        run: cd web && npx playwright test debugger.spec.ts go-language.spec.ts
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: debugger-${{ runner.os }}
+          path: web/test-results
