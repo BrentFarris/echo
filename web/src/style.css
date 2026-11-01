@@ -13,6 +13,8 @@ dialog{color:var(--text);background:var(--surface);border:1px solid var(--border
 .machine-filter { padding:8px 12px; display:flex; align-items:center; gap:8px; font-size:12px; }
 .machine-filter[hidden] { display:none; }
 .machine-filter select { min-width:0; flex:1; }
+.sidebar-actions #new-chat { flex:none; white-space:nowrap; }
+.sidebar-actions #new-chat-bot { flex:1; min-width:0; text-overflow:ellipsis; }
 .chat-link .machine-chip { max-width:100%; overflow:hidden; text-overflow:ellipsis; }
 .chat-link-title { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .chat-machines { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }

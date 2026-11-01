@@ -346,6 +346,7 @@ test('chat navigation and bot tabs address follow-ups to the selected bot', asyn
   const group = await newChat(page);
   await send(page, '@echo @partner hello');
   await expect(page.getByRole('button', { name: 'Stop response' })).toBeHidden();
+  await expect(composer).toBeEnabled();
   await page.getByRole('tab', { name: 'Partner', exact: true }).click();
   await expect.poll(value).toBe('@partner ');
   await composer.click(); await composer.press('Control+End'); await composer.pressSequentially('Keep this draft');

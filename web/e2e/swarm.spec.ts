@@ -38,6 +38,40 @@ test.afterEach(async ({ page }) => {
   await page.request.patch('/api/v1/plugins/swarm', { data: { enabled: false, config: {} } });
 });
 
+test('new chat bot choices include remote Echo, dispatch qualified mentions, and reset offline selections', async ({ page }) => {
+  const [linux] = await connect(page), remote = `/api/v1/swarm/instances/${linux}`;
+  const select = page.getByRole('combobox', { name: 'Bot for new chat' }), composer = page.locator('#composer');
+  const bot = (await json(page, `${remote}/state`)).bots.find((bot: any) => bot.handle === 'kaiju'), id = `${linux}:${bot.id}`;
+  await expect(select).toHaveValue('echo');
+  await expect(select.locator(`option[value="${linux}:echo"]`)).toContainText('@linux.echo');
+  await select.selectOption(`${linux}:echo`); await page.locator('#new-chat').click();
+  await expect(composer).toBeEnabled();
+  await expect.poll(() => composer.evaluate((el: any) => el.value)).toBe('@linux.echo ');
+  await select.selectOption(id); await page.locator('#new-chat').click();
+  await expect(composer).toBeEnabled();
+  await expect.poll(() => composer.evaluate((el: any) => el.value)).toBe('@linux.kaiju ');
+  await expect(composer.locator('.bot-reference')).toHaveCount(1);
+  const chatId = new URL(page.url()).hash.slice(1);
+  expect(chatId).not.toContain(':');
+  await composer.pressSequentially('hello');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.locator('.message.assistant')).toContainText('Completed the requested work.');
+  const message = (await json(page, `/api/v1/chats/${chatId}/messages`)).find((message: any) => message.role === 'user');
+  expect(message.content).toBe('@linux.kaiju hello');
+  expect(message.recipients).toEqual([id]);
+  expect(message.segments).toContainEqual(expect.objectContaining({ type: 'bot', botId: id, nodeId: linux, text: '@linux.kaiju' }));
+  await json(page, `/api/v1/swarm/peers/${linux}`, 'PATCH', { disconnected: true });
+  const offline = select.locator(`option[value="${id}"]`);
+  await expect(offline).toBeDisabled(); await expect(offline).toContainText('Offline');
+  await expect(select).toHaveValue('echo');
+  await page.locator('#new-chat').click();
+  await expect(composer).toBeEnabled();
+  await expect.poll(() => composer.evaluate((el: any) => el.value)).toBe('');
+  await json(page, `/api/v1/swarm/peers/${linux}`, 'PATCH', { disconnected: false });
+  await expect(offline).toBeEnabled();
+  await expect(select).toHaveValue('echo');
+});
+
 test('local create and delete finish while swarm inventory is stalled', async ({ page }) => {
   await connect(page);
   await expect(page.locator('.chat-row')).toHaveCount(0);
@@ -65,7 +99,7 @@ test('offline bots stay visible and block mixed sends without losing the draft',
   await page.locator('#new-chat').click();
   const composer = page.getByRole('textbox', { name: 'Message', exact: true });
   await composer.fill('@linux.ka');
-  const option = page.getByRole('option').filter({ hasText: '@linux.kaiju' });
+  const option = page.getByRole('listbox', { name: 'File and bot suggestions' }).getByRole('option').filter({ hasText: '@linux.kaiju' });
   await expect(option).toHaveAttribute('aria-disabled', 'true');
   await expect(option).toContainText('Offline');
   const prompt = '@kaiju @linux.kaiju do this together';

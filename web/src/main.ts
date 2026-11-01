@@ -66,6 +66,7 @@ let pickerStatus = '', pickerLoading = false;
 let suggestions: { label: string; hint: string; insert: string; offline?: boolean; ref?: Segment }[] = [];
 let referenceTimer = 0, referenceVersion = 0;
 let sidebarMarkup = '';
+let newChatBotId = 'echo', newChatBotMarkup = '';
 const collapsedChatGroups = new Set<string>();
 const deletedChats = new Set<string>();
 const closingChats = new Set<string>();
@@ -111,7 +112,7 @@ function chatDot(c: Chat) {
 
 function shell() {
   chatGenerationSettings?.dispose();
-  app.innerHTML = `<aside id="sidebar" class="sidebar"><div class="brand"><div class="brand-identity"></div><button class="icon sidebar-close" aria-label="Close sidebar">×</button></div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button></div><label class="machine-filter" hidden>Machine<select aria-label="Filter machines"></select></label><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="install-echo" hidden>Install Echo</button><button id="missed-button" hidden>Missed jobs</button><nav class="app-dock" aria-label="Docked apps" hidden></nav><div class="sidebar-footer-actions"><button id="apps-button">▦ Apps</button><button id="settings-button" data-update-notice="*">⚙ Settings</button></div></div></aside><div class="sidebar-backdrop" aria-hidden="true"></div>
+  app.innerHTML = `<aside id="sidebar" class="sidebar"><div class="brand"><div class="brand-identity"></div><button class="icon sidebar-close" aria-label="Close sidebar">×</button></div><div class="sidebar-actions"><button id="new-chat">＋ New chat</button><select id="new-chat-bot" aria-label="Bot for new chat"><option value="echo">Echo</option></select></div><label class="machine-filter" hidden>Machine<select aria-label="Filter machines"></select></label><nav class="chat-groups" aria-label="Chats"></nav><div class="sidebar-footer"><button id="install-echo" hidden>Install Echo</button><button id="missed-button" hidden>Missed jobs</button><nav class="app-dock" aria-label="Docked apps" hidden></nav><div class="sidebar-footer-actions"><button id="apps-button">▦ Apps</button><button id="settings-button" data-update-notice="*">⚙ Settings</button></div></div></aside><div class="sidebar-backdrop" aria-hidden="true"></div>
   <main class="main"><header class="chat-header"><button class="icon mobile-menu" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">☰</button><strong id="chat-title">Echo</strong><span id="connection" class="subtle">Connecting…</span></header><div class="chat-view"><div class="bot-tabs-shell" hidden><button type="button" class="bot-tabs-scroll previous" aria-label="Scroll tabs left" title="Scroll tabs left">${icons.chevron}</button><div class="bot-tabs" role="tablist" aria-label="Bot threads"></div><button type="button" class="bot-tabs-scroll next" aria-label="Scroll tabs right" title="Scroll tabs right">${icons.chevron}</button></div><div id="bot-thread-panel" class="conversation-panel"><div class="chat-log" role="log" aria-label="Conversation"></div></div>
   ${composerMarkup}</div><section class="apps-view" aria-labelledby="apps-heading" hidden><h1 id="apps-heading" tabindex="-1">Apps</h1><p class="subtle">Open your plugin apps or dock them for quick access.</p><div id="apps-catalog"></div></section><section class="embedded-app-view" hidden aria-label="App"></section><div class="terminal-region" hidden></div></main>`;
   q('.chat-log').tabIndex = 0;
@@ -125,6 +126,7 @@ function shell() {
   });
   q('#new-chat').onclick = action(newChat); q('#apps-button').onclick = showApps; q('#settings-button').onclick = () => settings('general', developmentUpdateNode(settingsNode || entryNode)); q('#missed-button').onclick = showMissed;
   q('#new-chat').title = 'New chat (Ctrl+N)'; q('#new-chat').setAttribute('aria-keyshortcuts', 'Control+N');
+  q<HTMLSelectElement>('#new-chat-bot').onchange = e => { newChatBotId = (e.target as HTMLSelectElement).value; renderNewChatBots(); };
   // Let app-specific handlers (such as Monaco's file shortcuts) run first.
   document.addEventListener('keydown', e => {
     if (e.defaultPrevented || !e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.isComposing) return;
@@ -222,12 +224,21 @@ function saveGeneration() {
 }
 async function newChat() {
   if (submitting || creatingChat) return;
+  const botId = newChatBotId;
   creatingChat = true;
   rememberDraft(); const composer = q<ReferenceInput>('#composer'); composer.disabled = true;
-  try { const c = await api<Chat>('/chats', 'POST', {}); await refresh(true); await selectChat(c.id); }
-  finally { creatingChat = false; composer.disabled = false; composer.focus(); }
+  let createdId = '';
+  try {
+    const c = await api<Chat>('/chats', 'POST', {}); createdId = c.id;
+    await refresh(true);
+    const bot = botId === 'echo' ? undefined : currentBot(botId);
+    await selectChat(c.id, bot && instanceOnline(splitID(bot.id)[0]) ? bot : undefined);
+  } finally {
+    creatingChat = false; composer.disabled = false;
+    if ((!createdId || chatId === createdId) && !showingApps && !showingApp) composer.focus();
+  }
 }
-async function selectChat(id: string) {
+async function selectChat(id: string, initialRecipient?: Bot) {
   if (submitting) return;
   if (!openingNotification) pendingNotificationHash = null;
   const navigation = ++chatNavigation, previous = chatId;
@@ -236,7 +247,7 @@ async function selectChat(id: string) {
   if (id !== chatId) rememberDraft(); chatId = id; if (id !== previous) markRead(previous); markRead(id); history.replaceState(null, '', '#' + id); const c = state.chats.find(c => c.id === id), draft = drafts.get(id);
   generationByNode = { ...(c?.generationByNode || {}), ...(draft?.generationByNode || {}) }; modelNode = draft?.modelNode || c?.nodeId || splitID(id)[0] || entryNode;
   generation = { ...(draft?.generation || c?.generation || endpointGeneration(state.endpoints.find(e => sameMachine(e, modelNode)))) }; references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references }); renderModels(); renderRefs(); renderAttachments(); renderSidebar(); updateSendButton(); autosizeComposer(); setSidebarOpen(false, false);
-  const initialBot = selectedThreadBot([]);
+  const initialBot = initialRecipient || selectedThreadBot([]);
   if (initialBot) addressThread(initialBot);
   // Focus before the network request so a slow remote transcript cannot steal
   // focus or replace the selection after the user has started editing.
@@ -372,7 +383,19 @@ async function refresh(fresh = false) {
   return refreshing;
 }
 function queueRefresh() { clearTimeout(refreshTimer); refreshTimer = window.setTimeout(() => action(refresh)(), 150); }
+function renderNewChatBots() {
+  const select = q<HTMLSelectElement>('#new-chat-bot');
+  const bots = state.bots.filter(bot => bot.id !== 'echo').sort((a, b) => a.handle.localeCompare(b.handle));
+  if (!bots.some(bot => bot.id === newChatBotId && instanceOnline(splitID(bot.id)[0]))) newChatBotId = 'echo';
+  const markup = '<option value="echo">Echo</option>' + bots.map(bot => {
+    const offline = !instanceOnline(splitID(bot.id)[0]);
+    return `<option value="${esc(bot.id)}"${offline ? ' disabled' : ''}>${esc(bot.name)} (@${esc(bot.handle)})${offline ? ' · Offline' : ''}</option>`;
+  }).join('');
+  if (markup !== newChatBotMarkup) { select.innerHTML = markup; newChatBotMarkup = markup; }
+  select.value = newChatBotId; select.title = select.selectedOptions[0]?.textContent || 'Echo';
+}
 function renderSidebar() {
+  renderNewChatBots();
   renderThreadIdentity();
   q('#chat-title').textContent = showingApp ? 'App' : showingApps ? 'Apps' : state.chats.find(c => c.id === chatId)?.title || 'Echo';
   const filter = q<HTMLSelectElement>('.machine-filter select'); q('.machine-filter').hidden = instances.size < 2;

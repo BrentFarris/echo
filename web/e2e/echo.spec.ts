@@ -606,9 +606,10 @@ test('keyboard references edit an authorized file and deleting a bot keeps autho
     await setup(page);
     await page.request.post('/api/v1/bots', { data: { handle: 'kaiju', name: 'Kaiju', prompt: '', roots: [root], plugins: {} } }); await page.reload();
     const composer = page.getByRole('textbox', { name: 'Message', exact: true });
-    await composer.fill('@kai'); await expect(page.getByRole('option').filter({ hasText: '@kaiju' })).toBeVisible(); await composer.press('Tab');
+    const picker = page.getByRole('listbox', { name: 'File and bot suggestions' });
+    await composer.fill('@kai'); await expect(picker.getByRole('option').filter({ hasText: '@kaiju' })).toBeVisible(); await composer.press('Tab');
     await composer.press('End'); await composer.pressSequentially('edit #map');
-    await expect(page.getByRole('option').filter({ hasText: 'map_editor.go' })).toBeVisible(); await composer.press('Tab'); await composer.pressSequentially('to add a transform gizmo');
+    await expect(picker.getByRole('option').filter({ hasText: 'map_editor.go' })).toBeVisible(); await composer.press('Tab'); await composer.pressSequentially('to add a transform gizmo');
     await page.getByRole('button', { name: 'Send message', exact: true }).click();
     await expect(page.locator('.message.assistant').filter({ hasText: 'Added the transform gizmo.' })).toBeVisible();
     expect(await readFile(join(root, 'map_editor.go'), 'utf8')).toContain('transform gizmo');

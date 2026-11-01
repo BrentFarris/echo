@@ -203,7 +203,7 @@ test('plain-text paste, atomic deletion and IME preserve reference editing', asy
     const composer = page.getByRole('textbox', { name: 'Message', exact: true });
     const value = () => composer.evaluate((e: any) => e.value as string);
     await composer.fill('@kaiju #My File');
-    await expect(page.getByRole('option').first().locator('strong')).toHaveText('My File.txt'); await composer.press('Tab');
+    await expect(page.getByRole('listbox', { name: 'File and bot suggestions' }).getByRole('option').first().locator('strong')).toHaveText('My File.txt'); await composer.press('Tab');
     await composer.press('Backspace'); await composer.press('Backspace');
     await expect(composer.locator('.reference-chip')).toHaveCount(1); await expect.poll(value).toBe('@kaiju ');
     await composer.press('Control+Z'); await expect(composer.locator('.reference-chip')).toHaveCount(2);
@@ -234,7 +234,7 @@ test('late validation cannot replace another chat draft', async ({ page }) => {
     await writeFile(join(root, 'camera.go'), 'package game'); await setup(page, root);
     await page.route('**/references/validate', async route => { const body = route.request().postDataJSON(); started(); await gate; await route.fulfill({ json: body.segments.filter((s: any) => s.type === 'file').map((s: any) => ({ ...s, allowedBots: [] })) }); });
     const composer = page.getByRole('textbox', { name: 'Message', exact: true });
-    await composer.fill('@kaiju #camera'); await expect(page.getByRole('option').first().locator('strong')).toHaveText('camera.go'); await composer.press('Tab'); await pending;
+    await composer.fill('@kaiju #camera'); await expect(page.getByRole('listbox', { name: 'File and bot suggestions' }).getByRole('option').first().locator('strong')).toHaveText('camera.go'); await composer.press('Tab'); await pending;
     await page.getByRole('button', { name: '＋ New chat', exact: true }).click();
     await composer.fill('A different draft'); release();
     await expect(composer).toHaveText('A different draft'); await expect(composer.locator('.reference-chip')).toHaveCount(0);
