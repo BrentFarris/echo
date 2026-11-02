@@ -721,7 +721,7 @@ function paintResponse(group: ResponseGroup, existing?: HTMLElement) {
         await pluginWindows.openFile(editorID, 'main', { ...result.editor, botId: resourceID(node, result.editor.botId) });
       } else if (!result.select) notice('Opened the containing folder in File Explorer.');
     } catch (error) { notice(error, true); }
-  }, editorEnabled);
+  }, editorEnabled, el.querySelector<HTMLElement>(':scope > .files-changed'));
   if (files) children.push(files);
   reconcileChildren(el, children);
   if (group.final) messageActionUI.mount(el, q(':scope > .message[data-final="true"]', el), group.final);

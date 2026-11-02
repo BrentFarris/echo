@@ -619,6 +619,54 @@ test('keyboard references edit an authorized file and deleting a bot keeps autho
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('changed files keep their reading position through refreshes and a running follow-up', async ({ page }) => {
+  let socket: WebSocketRoute | undefined;
+  await page.routeWebSocket('**/api/v1/events', ws => { socket = ws; });
+  await setup(page); await page.reload();
+  await expect(page.locator('#connection')).toHaveText('');
+  const chatId = new URL(page.url()).hash.slice(1);
+  const base = { chatId, botId: 'echo', author: 'Echo', createdAt: '2026-01-01T00:00:00Z' };
+  const files = Array.from({ length: 40 }, (_, i) => ({ path: `/workspace/file-${String(i).padStart(2, '0')}.txt`, displayPath: `file-${String(i).padStart(2, '0')}.txt`, operation: 'edited', before: 'before', after: 'after' }));
+  const history = [
+    { ...base, id: 'files-prompt', role: 'user', content: 'Change these files.', status: 'completed' },
+    { ...base, id: 'files-tool', runId: 'files-run', role: 'tool', content: 'Updated files.', status: 'completed', fileChanges: files },
+    { ...base, id: 'files-answer', runId: 'files-run', role: 'assistant', content: 'Files updated.', status: 'completed' },
+  ];
+  const emit = (type: string, payload: object) => socket!.send(JSON.stringify({ type, chatId, payload }));
+  for (const message of history) emit('message', message);
+  const list = page.locator('.changed-file-list');
+  await expect(list.locator('button')).toHaveCount(40);
+  await list.hover(); await page.mouse.wheel(0, 300);
+  await expect.poll(() => list.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+  const original = await list.elementHandle(), top = await list.evaluate(el => el.scrollTop);
+  const expectPosition = async () => {
+    expect(await list.evaluate(el => el.scrollTop)).toBe(top);
+    expect(await list.evaluate((el, node) => el === node, original)).toBe(true);
+  };
+
+  // Full snapshots arrive with fresh message objects, even for completed turns.
+  await page.route(`**/api/v1/chats/${chatId}/messages`, route => route.fulfill({ json: history }));
+  emit('message', { ...history[2], content: 'Files updated. Ready for review.' });
+  await expect(page.locator('[id="body-files-answer"]')).toContainText('Ready for review');
+  await expectPosition();
+
+  const followUp = { ...base, id: 'files-follow-up', runId: 'follow-up-run', role: 'assistant', content: 'Working on the follow-up.', status: 'running' };
+  history.push({ ...base, id: 'follow-up-prompt', role: 'user', content: 'Keep working.', status: 'completed' }, followUp);
+  for (const message of history.slice(-2)) emit('message', message);
+  await expect(page.locator('[id="body-files-follow-up"]')).toContainText('Working on the follow-up');
+  await expectPosition();
+  for (let i = 0; i < 3; i++) {
+    await page.waitForTimeout(1100);
+    followUp.content += ` Update ${i}.`;
+    emit('changed', { messagesChanged: true });
+    await expect(page.locator('[id="body-files-follow-up"]')).toContainText(`Update ${i}`);
+    await expectPosition();
+  }
+  emit('message', { ...followUp, status: 'completed', content: 'Follow-up complete.' });
+  await expect(page.locator('[id="body-files-follow-up"]')).toHaveText('Follow-up complete.');
+  await expectPosition();
+});
+
 test('completed replies open changed files in the editor and fall back when it is disabled', async ({ page }) => {
   const root = await mkdtemp(join(tmpdir(), 'echo-changes-'));
   try {

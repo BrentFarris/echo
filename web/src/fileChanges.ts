@@ -4,6 +4,8 @@ import { escapeHTML as esc } from './helpers';
 import { icons } from './composer';
 
 export type ChangedFile = FileChange & { messageId: string };
+type OpenFile = (file: ChangedFile) => Promise<void>;
+const footers = new WeakMap<HTMLElement, { signature: string; open: OpenFile }>();
 
 // Collapse repeated writes into one net change, retaining a durable tool-message
 // reference for the file-opening API. Never infer paths from assistant output.
@@ -19,14 +21,29 @@ export function changedFiles(messages: Message[]): ChangedFile[] {
   return [...files.values()].filter(file => file.before !== file.after).map(file => ({ ...file, operation: (!file.before ? 'created' : !file.after ? 'deleted' : 'edited') as FileChange['operation'] })).sort((a, b) => a.displayPath.localeCompare(b.displayPath));
 }
 
-export function fileChangesFooter(group: ResponseGroup, open: (file: ChangedFile) => Promise<void>, editorEnabled = false): HTMLElement | null {
+export function fileChangesFooter(group: ResponseGroup, open: OpenFile, editorEnabled = false, existing?: HTMLElement | null): HTMLElement | null {
   const status = group.status || group.messages.at(-1)?.status;
   if (!status || ['running', 'waiting', 'queued'].includes(status)) return null;
   const files = changedFiles(group.messages), notices = [...new Set(group.messages.map(m => m.fileChangesNotice).filter(Boolean))];
   if (!files.length && !notices.length) return null;
-  const footer = document.createElement('section'); footer.className = 'files-changed'; footer.setAttribute('aria-label', 'Files changed');
-  footer.innerHTML = `<div class="files-changed-heading"><strong>Files changed</strong><span>${files.length} ${files.length === 1 ? 'file' : 'files'}</span></div><ul class="changed-file-list"></ul>`;
+  const footer = existing || document.createElement('section');
+  const signature = JSON.stringify([group.key, files, notices, editorEnabled]);
+  let state = footers.get(footer);
+  if (state) {
+    state.open = open;
+    // Leave the list and its buttons connected through transcript refreshes.
+    // Replacing them resets scrolling and interrupts clicks during a follow-up.
+    if (state.signature === signature) return footer;
+    state.signature = signature;
+  } else {
+    state = { signature, open }; footers.set(footer, state);
+    footer.className = 'files-changed'; footer.setAttribute('aria-label', 'Files changed');
+    footer.innerHTML = '<div class="files-changed-heading"><strong>Files changed</strong><span></span></div><ul class="changed-file-list"></ul>';
+  }
+  footer.querySelector('.files-changed-heading span')!.textContent = `${files.length} ${files.length === 1 ? 'file' : 'files'}`;
   const list = footer.querySelector('ul')!;
+  const top = list.scrollTop;
+  list.replaceChildren();
   for (const file of files) {
     const action = editorEnabled
       ? (file.operation === 'deleted' ? 'Show containing folder in code editor' : 'Open in code editor')
@@ -35,9 +52,11 @@ export function fileChangesFooter(group: ResponseGroup, open: (file: ChangedFile
     const item = document.createElement('li');
     item.innerHTML = `<button type="button" class="file-change" data-file-change="${esc(group.key + ':' + file.path)}" title="${esc(action + '\n' + file.path)}" aria-label="${esc(action + ': ' + file.displayPath + ' (' + label + ')')}">${icons.file}<span class="changed-file-path">${esc(file.displayPath)}</span><span class="file-operation ${file.operation}">${label}</span></button>`;
     const button = item.querySelector('button')!;
-    button.onclick = async () => { button.disabled = true; try { await open(file); } finally { button.disabled = false; } };
+    button.onclick = async () => { button.disabled = true; try { await state.open(file); } finally { button.disabled = false; } };
     list.append(item);
   }
+  list.scrollTop = top;
+  footer.querySelectorAll('.file-changes-note').forEach(note => note.remove());
   for (const text of notices) { const note = document.createElement('p'); note.className = 'file-changes-note'; note.textContent = text!; footer.append(note); }
   return footer;
 }
