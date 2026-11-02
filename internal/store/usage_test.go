@@ -26,7 +26,8 @@ func TestUsageDurabilityDeduplicationAndReset(t *testing.T) {
 	if err = s.Put("runs", run.ID, run); err != nil {
 		t.Fatal(err)
 	}
-	u := &domain.TokenUsage{InputTokens: 100, OutputTokens: 20}
+	cached := 60
+	u := &domain.TokenUsage{InputTokens: 100, OutputTokens: 20, CachedInputTokens: &cached}
 	run.Statistics.Add(u)
 	for range 2 {
 		if err = s.RecordModelUsage("one", u, run.ID, run.Statistics); err != nil {
@@ -44,6 +45,12 @@ func TestUsageDurabilityDeduplicationAndReset(t *testing.T) {
 		t.Fatal(before)
 	}
 	reset, err := s.ResetUsage("reset-one")
+	if before.CachedInputTokens != 60 || before.UncachedInputTokens != 40 || before.CacheReports != 1 {
+		t.Fatal(before)
+	}
+	if reset.CachedInputTokens != 0 || reset.UncachedInputTokens != 0 || reset.CacheReports != 0 {
+		t.Fatal(reset)
+	}
 	if err != nil || reset.ModelCalls != 0 || reset.InputTokens != 0 || reset.Revision <= before.Revision {
 		t.Fatal(reset, err)
 	}
@@ -55,11 +62,11 @@ func TestUsageDurabilityDeduplicationAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	after, _ := s.Usage()
-	if after.ModelCalls != 1 || after.InputTokens != 100 {
+	if after.ModelCalls != 1 || after.InputTokens != 100 || after.CachedInputTokens != 60 || after.UncachedInputTokens != 40 || after.CacheReports != 1 {
 		t.Fatal(after)
 	}
 	var saved domain.Run
-	if err = s.Get("runs", run.ID, &saved); err != nil || saved.Statistics.InputTokens != 100 {
+	if err = s.Get("runs", run.ID, &saved); err != nil || saved.Statistics.InputTokens != 100 || saved.Statistics.CachedInputTokens != 60 || saved.Statistics.UncachedInputTokens != 40 || saved.Statistics.CacheReports != 1 {
 		t.Fatal(saved, err)
 	}
 	// Removing transcript/run data must not erase machine consumption.

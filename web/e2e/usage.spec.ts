@@ -32,7 +32,7 @@ test('completed turn footer, General preference, stable details and confirmed re
   const chat = await generate(page);
   await page.goto('/#' + chat);
   const footer = page.locator('.turn-statistics');
-  await expect(footer).toContainText('2,468 in · 112 out · 1 tool call · 2 model calls');
+  await expect(footer).toContainText('2,468 in (1,024 cached, 1,444 uncached) · 112 out · 1 tool call · 2 model calls');
   await expect(page.locator('.response-turn > .response-group + .turn-statistics')).toHaveCount(1);
   await page.locator('#settings-button').click();
   await expect(page.locator('.settings-nav button').first()).toHaveText('General');
@@ -43,6 +43,8 @@ test('completed turn footer, General preference, stable details and confirmed re
   await page.getByRole('button', { name: 'Input token details' }).hover();
   await expect(page.locator('#input-usage-details')).toBeVisible();
   await expect(page.locator('#input-usage-details')).toContainText('2,468 input tokens');
+  await expect(page.locator('#input-usage-details')).toContainText('1,024 cached, 1,444 uncached');
+  await expect(page.locator('#input-usage-details')).toContainText('Cache breakdown reported by 2 of 2 model calls');
   expect(await page.locator('.usage-totals').boundingBox()).toEqual(before);
   await toggle.uncheck(); await expect(footer).toHaveCount(0);
   await page.reload(); await expect(footer).toHaveCount(0);
@@ -57,11 +59,13 @@ test('completed turn footer, General preference, stable details and confirmed re
   page.once('dialog', dialog => dialog.accept()); await reset.click();
   await expect(page.locator('[data-reset-status]')).toContainText(': reset');
   expect((await api(page, '/usage')).inputTokens).toBe(0);
+  expect(await api(page, '/usage')).toMatchObject({ cachedInputTokens: 0, uncachedInputTokens: 0, cacheReports: 0 });
   await page.locator('[data-section=general]').click(); await expect(page.locator('[data-direction=input]')).toHaveText('0');
-  await page.locator('#settings .dialog-heading button').click(); await expect(footer).toContainText('2,468 in');
+  await page.locator('#settings .dialog-heading button').click(); await expect(footer).toContainText('2,468 in (1,024 cached, 1,444 uncached)');
   await page.screenshot({ path: test.info().outputPath('turn-statistics.png') });
   await page.locator('#settings-button').click();
   await page.setViewportSize({ width: 390, height: 844 });
+  expect(await footer.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
   const input = page.getByRole('button', { name: 'Input token details' });
   const mobileBefore = await page.locator('.usage-totals').boundingBox();
   await input.click();
@@ -87,6 +91,7 @@ test('online machine totals exclude disconnected peers and reset only reachable 
   await expect(page.locator('[data-direction=input]')).toHaveText('4,936');
   await page.getByRole('button', { name: 'Input token details' }).focus();
   await expect(page.locator('#input-usage-details')).toContainText('linux');
+  await expect(page.locator('#input-usage-details')).toContainText('2,048 cached, 2,888 uncached');
   await api(page, `/swarm/peers/${peer.nodeId}`, 'PATCH', { disconnected: true });
   await expect(page.locator('[data-direction=input]')).toHaveText('2,468');
   await expect(page.locator('[data-usage-status]')).toContainText('excluded');

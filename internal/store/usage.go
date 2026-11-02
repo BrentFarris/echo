@@ -39,6 +39,9 @@ func writeUsageRecord(tx *sql.Tx, namespace, id string, value any) error {
 func (l usageLedger) current() domain.UsageTotals {
 	value := l.UsageTotals
 	value.InputTokens -= l.Baseline.InputTokens
+	value.CachedInputTokens -= l.Baseline.CachedInputTokens
+	value.UncachedInputTokens -= l.Baseline.UncachedInputTokens
+	value.CacheReports -= l.Baseline.CacheReports
 	value.OutputTokens -= l.Baseline.OutputTokens
 	value.ModelCalls -= l.Baseline.ModelCalls
 	value.InputReports -= l.Baseline.InputReports

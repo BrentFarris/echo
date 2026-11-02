@@ -37,11 +37,13 @@ func main() {
 		if strings.Contains(lower, "usage statistics fixture") {
 			w.Header().Set("Content-Type", "text/event-stream")
 			delta := map[string]any{"content": "Usage statistics complete."}
+			cached := 1024
 			if last.Role != "tool" {
+				cached = 0
 				delta = map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": "usage-tool", "function": map[string]string{"name": "unknown_usage_fixture", "arguments": "{}"}}}}
 			}
 			data, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": delta, "finish_reason": "stop"}}})
-			fmt.Fprintf(w, "data: %s\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":1234,\"completion_tokens\":56}}\n\ndata: [DONE]\n\n", data)
+			fmt.Fprintf(w, "data: %s\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":1234,\"completion_tokens\":56,\"prompt_tokens_details\":{\"cached_tokens\":%d}}}\n\ndata: [DONE]\n\n", data, cached)
 			return
 		}
 		if strings.Contains(lower, "multitasking hold") {

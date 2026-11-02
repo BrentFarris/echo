@@ -1,7 +1,7 @@
 import { InstanceClient, instances, machineName } from './instances';
 import { escapeHTML as esc } from './helpers';
-import { compactTokens, exactTokens, setShowTurnStatistics, showTurnStatistics } from './turnStatistics';
-import type { UsageTotals } from './types';
+import { compactTokens, exactTokens, inputCacheText, setShowTurnStatistics, showTurnStatistics } from './turnStatistics';
+import type { UsageCounts, UsageTotals } from './types';
 import './usage.css';
 
 export type UsageMachine = { nodeId: string; name: string; online: boolean; usage?: UsageTotals; error?: string };
@@ -25,10 +25,20 @@ export function aggregateUsage(machines: UsageMachine[], direction: 'input' | 'o
 }
 function breakdown(machines: UsageMachine[], direction: 'input' | 'output') {
   const aggregate = aggregateUsage(machines, direction), tokens = direction === 'input' ? 'inputTokens' : 'outputTokens', reports = direction === 'input' ? 'inputReports' : 'outputReports';
-  return `<strong>${aggregate.available ? exactTokens(aggregate.total) : 'Unavailable'} ${direction} tokens${aggregate.partial ? ' (partial)' : ''}</strong>` + machines.map(m => {
+  const cache = direction === 'input' && aggregate.available ? `<p>${inputCacheText(aggregateCacheUsage(machines), exactTokens)}</p><p>Cached = read from cache. Uncached includes cache writes. Missing reports remain unknown.</p>` : '';
+  return `<strong>${aggregate.available ? exactTokens(aggregate.total) : 'Unavailable'} ${direction} tokens${aggregate.partial ? ' (partial)' : ''}</strong>${cache}` + machines.map(m => {
     const u = m.online && !m.error ? m.usage : undefined;
-    return `<div class="usage-machine"><strong>${esc(m.name)}</strong><span>${u ? `${exactTokens(u[tokens])}${u[reports] < u.modelCalls ? ' (partial)' : ''}` : esc(m.error || 'Offline — excluded')}</span>${u ? `<small>Tracking since ${esc(new Date(u.trackingStartedAt).toLocaleString())}<br>Counting since ${esc(new Date(u.resetAt).toLocaleString())}<br>Reported by ${exactTokens(u[reports])} of ${exactTokens(u.modelCalls)} model calls</small>` : ''}</div>`;
+    return `<div class="usage-machine"><strong>${esc(m.name)}</strong><span>${u ? `${exactTokens(u[tokens])}${u[reports] < u.modelCalls ? ' (partial)' : ''}` : esc(m.error || 'Offline — excluded')}</span>${u ? `<small>${direction === 'input' ? `${inputCacheText(u, exactTokens)}<br>Cache breakdown reported by ${exactTokens(u.cacheReports ?? 0)} of ${exactTokens(u.modelCalls)} model calls<br>` : ''}Tracking since ${esc(new Date(u.trackingStartedAt).toLocaleString())}<br>Counting since ${esc(new Date(u.resetAt).toLocaleString())}<br>Reported by ${exactTokens(u[reports])} of ${exactTokens(u.modelCalls)} model calls</small>` : ''}</div>`;
   }).join('');
+}
+export function aggregateCacheUsage(machines: UsageMachine[]): UsageCounts {
+  const counts: UsageCounts = { inputTokens: 0, outputTokens: 0, modelCalls: 0, inputReports: 0, outputReports: 0, cachedInputTokens: 0, uncachedInputTokens: 0, cacheReports: 0 };
+  for (const machine of machines) {
+    if (!machine.online || machine.error || !machine.usage) continue;
+    const usage = machine.usage;
+    for (const key of Object.keys(counts) as (keyof UsageCounts)[]) counts[key] = (counts[key] ?? 0) + (usage[key] ?? 0);
+  }
+  return counts;
 }
 
 // The overlay is fixed-positioned inside the dialog's top layer. Opening it

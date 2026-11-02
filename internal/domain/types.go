@@ -115,11 +115,13 @@ type ForkOrigin struct {
 
 // TokenUsage is provider-reported usage for one request, not a running total.
 type TokenUsage struct {
-	InputTokens   int  `json:"inputTokens"`
-	OutputTokens  int  `json:"outputTokens"`
-	TotalTokens   int  `json:"totalTokens"`
-	InputMissing  bool `json:"inputMissing,omitempty"`
-	OutputMissing bool `json:"outputMissing,omitempty"`
+	// CachedInputTokens counts cache reads within InputTokens. Nil means unknown.
+	CachedInputTokens *int `json:"cachedInputTokens,omitempty"`
+	InputTokens       int  `json:"inputTokens"`
+	OutputTokens      int  `json:"outputTokens"`
+	TotalTokens       int  `json:"totalTokens"`
+	InputMissing      bool `json:"inputMissing,omitempty"`
+	OutputMissing     bool `json:"outputMissing,omitempty"`
 }
 
 type Message struct {

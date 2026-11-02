@@ -16,15 +16,20 @@ import (
 	"github.com/brent/echo/internal/plugins"
 )
 
-func usageStream(w http.ResponseWriter, input, output int, tool bool) {
+func usageStream(w http.ResponseWriter, input, output int, tool bool, cached ...int) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	delta := map[string]any{"content": "Done"}
 	if tool {
 		delta["tool_calls"] = []any{map[string]any{"index": 0, "id": "tool-one", "function": map[string]string{"name": "unknown_tool", "arguments": "{}"}}}
 	}
 	data, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": delta, "finish_reason": "stop"}}})
+	usage := map[string]any{"prompt_tokens": input, "completion_tokens": output}
+	if len(cached) > 0 {
+		usage["prompt_tokens_details"] = map[string]int{"cached_tokens": cached[0]}
+	}
+	usageData, _ := json.Marshal(usage)
 	// Duplicate snapshots must never be added together.
-	fmt.Fprintf(w, "data: %s\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":%d}}\n\ndata: [DONE]\n\n", data, input, output)
+	fmt.Fprintf(w, "data: %s\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"prompt_tokens_details\":{\"cached_tokens\":1}}}\n\ndata: {\"choices\":[],\"usage\":%s}\n\ndata: [DONE]\n\n", data, usageData)
 }
 
 func TestTurnUsageAcrossModelAndFailedToolRounds(t *testing.T) {
@@ -32,7 +37,11 @@ func TestTurnUsageAcrossModelAndFailedToolRounds(t *testing.T) {
 	requests := 0
 	g := attachModel(t, s, func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		usageStream(w, requests*10, 2, requests == 1)
+		if requests == 1 {
+			usageStream(w, 10, 2, true, 4)
+		} else {
+			usageStream(w, requests*10, 2, false)
+		}
 	})
 	c := chat(t, s, g)
 	d, err := s.send(c.ID, SendRequest{Content: "test usage", Generation: g})
@@ -53,6 +62,12 @@ func TestTurnUsageAcrossModelAndFailedToolRounds(t *testing.T) {
 		t.Fatal(stats)
 	}
 	totals, _ := s.Store.Usage()
+	if stats.CachedInputTokens != 4 || stats.UncachedInputTokens != 6 || stats.CacheReports != 1 {
+		t.Fatal(stats)
+	}
+	if messages[1].Usage == nil || messages[1].Usage.CachedInputTokens == nil || *messages[1].Usage.CachedInputTokens != 4 || messages[len(messages)-1].Usage.CachedInputTokens != nil {
+		t.Fatal("per-request cache usage was not preserved")
+	}
 	if totals.UsageCounts != stats.UsageCounts {
 		t.Fatal(totals, stats)
 	}
@@ -157,7 +172,7 @@ func TestUsageCustomProviderDelegationIsCountedOnce(t *testing.T) {
 	if _, err = s.Plugins.ApproveDigest(installed.ID, installed.Digest); err != nil {
 		t.Fatal(err)
 	}
-	g := attachModel(t, s, func(w http.ResponseWriter, r *http.Request) { usageStream(w, 40, 7, false) })
+	g := attachModel(t, s, func(w http.ResponseWriter, r *http.Request) { usageStream(w, 40, 7, false, 25) })
 	var endpoint domain.Endpoint
 	s.Store.Get("endpoints", g.EndpointID, &endpoint)
 	endpoint.Provider = "usage_provider_complete"
@@ -170,5 +185,8 @@ func TestUsageCustomProviderDelegationIsCountedOnce(t *testing.T) {
 	u, err := s.Store.Usage()
 	if err != nil || u.ModelCalls != 1 || u.InputTokens != 40 || u.OutputTokens != 7 {
 		t.Fatal(u, err)
+	}
+	if u.CachedInputTokens != 25 || u.UncachedInputTokens != 15 || u.CacheReports != 1 {
+		t.Fatal(u)
 	}
 }

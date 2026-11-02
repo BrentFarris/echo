@@ -119,3 +119,39 @@ func TestUsageNormalizationMissingAndAliases(t *testing.T) {
 		}
 	}
 }
+
+func TestUsageCacheNormalization(t *testing.T) {
+	for _, test := range []struct {
+		name, raw string
+		cached    int // -1 means unknown, distinct from a reported zero.
+	}{
+		{"chat", `{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":60}}`, 60},
+		{"input alias", `{"input_tokens":100,"input_tokens_details":{"cached_tokens":40}}`, 40},
+		{"explicit zero", `{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":0}}`, 0},
+		{"all cached", `{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":100}}`, 100},
+		{"empty input", `{"prompt_tokens":0,"prompt_tokens_details":{"cached_tokens":0}}`, 0},
+		{"absent", `{"prompt_tokens":100}`, -1},
+		{"empty details", `{"prompt_tokens":100,"prompt_tokens_details":{}}`, -1},
+		{"null", `{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":null}}`, -1},
+		{"negative", `{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":-1}}`, -1},
+		{"exceeds input", `{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":101}}`, -1},
+		{"missing input", `{"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":60}}`, -1},
+		{"matching alias", `{"prompt_tokens":100,"input_tokens":200,"prompt_tokens_details":{"cached_tokens":60},"input_tokens_details":{"cached_tokens":150}}`, 60},
+		{"mismatched alias", `{"prompt_tokens":100,"input_tokens_details":{"cached_tokens":60}}`, -1},
+		{"writes are not reads", `{"prompt_tokens":100,"prompt_tokens_details":{"cache_write_tokens":60}}`, -1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var wire wireUsage
+			if err := json.Unmarshal([]byte(test.raw), &wire); err != nil {
+				t.Fatal(err)
+			}
+			got := wire.normalized()
+			if got == nil || (got.CachedInputTokens == nil) != (test.cached < 0) {
+				t.Fatalf("unexpected cache presence: %+v", got)
+			}
+			if got.CachedInputTokens != nil && *got.CachedInputTokens != test.cached {
+				t.Fatalf("cached = %d, want %d", *got.CachedInputTokens, test.cached)
+			}
+		})
+	}
+}

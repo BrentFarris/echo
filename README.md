@@ -145,6 +145,8 @@ Choose a bot beside **New chat** to start chats with its mention already in the 
 
 Completed agent responses show a small footer with elapsed time, provider-reported input/output tokens, tool calls, and model calls across the run. **Settings → General → Show turn statistics** controls the footer for this browser and defaults on. Token tracking continues when the footer is hidden.
 
+Input tokens are cumulative across model calls, including repeated conversation context; they are not the current context-window size. The footer and General's input-token details split reported input into **cached** (read from cache) and **uncached** (the remainder, including cache writes). If only some requests report cache usage, the remaining known input is labeled **cache unknown**. Older history and providers that omit cache usage show **cache breakdown unavailable**, never an assumed zero. These counts are not a cost estimate; providers can price ordinary input, cache reads, and cache writes differently.
+
 General also shows combined input/output totals for online machines, including chat, inline editing, and context summaries. Hover, focus, or tap a total to see exact counts and the machine breakdown without moving the layout. Missing usage is marked partial; tracking starts fresh when this feature is installed. **Settings → Development → Reset token totals…** asks for confirmation and resets reachable machines, preserving historical chat statistics. Offline machines keep their counts and contribute them again when reconnected.
 
 Chats have no turn limit, and bots can ask clarifying questions as often as needed. Model/tool rounds and bot-to-bot questions and handoffs have no count limit. Use Stop to end active work.

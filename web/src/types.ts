@@ -6,8 +6,8 @@ export type Chat = { forkedFrom?: { chatId: string; messageId: string }; nodeId?
 // Ranges are half-open UTF-16 offsets into the plain message content.
 export type Segment = { nodeId?: string; type: string; botId?: string; path?: string; text?: string; allowedBots?: string[]; kind?: 'file' | 'directory'; range?: { start: number; end: number } };
 export type FileChange = { path: string; displayPath: string; operation: 'created' | 'edited' | 'deleted'; before?: string; after?: string };
-export type TokenUsage = { inputTokens?: number; outputTokens?: number; totalTokens?: number; inputMissing?: boolean; outputMissing?: boolean };
-export type UsageCounts = { inputTokens: number; outputTokens: number; modelCalls: number; inputReports: number; outputReports: number };
+export type TokenUsage = { inputTokens?: number; outputTokens?: number; totalTokens?: number; cachedInputTokens?: number; inputMissing?: boolean; outputMissing?: boolean };
+export type UsageCounts = { inputTokens: number; outputTokens: number; modelCalls: number; inputReports: number; outputReports: number; cachedInputTokens?: number; uncachedInputTokens?: number; cacheReports?: number };
 export type TurnStatistics = UsageCounts & { startedAt: string; completedAt?: string; toolCalls: number };
 export type UsageTotals = UsageCounts & { trackingStartedAt: string; resetAt: string; revision: number };
 export type Message = { usage?: TokenUsage; modelContent?: string; rerunUnavailable?: boolean; storedId?: string; nodeId?: string; id: string; chatId: string; runId?: string; botId?: string; author: string; role: string; content: string; segments?: Segment[]; recipients?: string[]; reasoning?: string; status: string; toolCalls?: unknown[]; createdAt: string; attachments?: Attachment[]; fileChanges?: FileChange[]; fileChangesNotice?: string };

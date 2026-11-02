@@ -27,11 +27,14 @@ func (u *TokenUsage) UnmarshalJSON(data []byte) error {
 }
 
 type UsageCounts struct {
-	InputTokens   int64 `json:"inputTokens"`
-	OutputTokens  int64 `json:"outputTokens"`
-	ModelCalls    int64 `json:"modelCalls"`
-	InputReports  int64 `json:"inputReports"`
-	OutputReports int64 `json:"outputReports"`
+	CachedInputTokens   int64 `json:"cachedInputTokens"`
+	UncachedInputTokens int64 `json:"uncachedInputTokens"`
+	CacheReports        int64 `json:"cacheReports"`
+	InputTokens         int64 `json:"inputTokens"`
+	OutputTokens        int64 `json:"outputTokens"`
+	ModelCalls          int64 `json:"modelCalls"`
+	InputReports        int64 `json:"inputReports"`
+	OutputReports       int64 `json:"outputReports"`
 }
 
 func (c *UsageCounts) Add(u *TokenUsage) {
@@ -42,6 +45,13 @@ func (c *UsageCounts) Add(u *TokenUsage) {
 	if !u.InputMissing && u.InputTokens >= 0 {
 		c.InputTokens += int64(u.InputTokens)
 		c.InputReports++
+		// Only classify input when the provider supplied a valid cache count.
+		// Cache writes are newly processed input, so belong to the uncached remainder.
+		if cached := u.CachedInputTokens; cached != nil && *cached >= 0 && *cached <= u.InputTokens {
+			c.CachedInputTokens += int64(*cached)
+			c.UncachedInputTokens += int64(u.InputTokens - *cached)
+			c.CacheReports++
+		}
 	}
 	if !u.OutputMissing && u.OutputTokens >= 0 {
 		c.OutputTokens += int64(u.OutputTokens)
