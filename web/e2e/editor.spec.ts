@@ -167,6 +167,28 @@ test('quick open, duplicate selection, external changes, previews and mobile lay
   await page.screenshot({ path: test.info().outputPath('editor-mobile.png') });
 });
 
+for (const presentation of ['embedded', 'floating']) test(`code fills the editor through portrait and landscape resizing in the ${presentation} editor`, async ({ page }) => {
+  await launch(page);
+  if (presentation === 'floating') await page.getByRole('button', { name: 'Open in Window', exact: true }).click();
+  await row(page, 'beta.txt').click();
+  await expect(text(page)).toContainText('second file');
+  for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }, { width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    await expect.poll(() => editor(page).locator('.code-editor-pane').evaluate(pane => {
+      const breadcrumbs = pane.querySelector('.code-breadcrumbs')!.getBoundingClientRect();
+      const area = pane.querySelector('.code-editor-area')!.getBoundingClientRect();
+      const monaco = pane.querySelector('[data-monaco-host] .monaco-editor')!.getBoundingClientRect();
+      const status = pane.querySelector('.code-statusbar')!.getBoundingClientRect();
+      return Math.max(Math.abs(area.top - breadcrumbs.bottom), Math.abs(area.bottom - status.top), Math.abs(monaco.height - area.height));
+    }), `code should fill the space between breadcrumbs and status bar at ${viewport.width}×${viewport.height}`).toBeLessThanOrEqual(1);
+    await expect.poll(() => editor(page).locator('.code-editor-area').evaluate(area => {
+      const line = area.querySelector('[data-monaco-host] .view-line')!.getBoundingClientRect();
+      return line.top - area.getBoundingClientRect().top;
+    })).toBeLessThanOrEqual(8);
+  }
+  await page.screenshot({ path: test.info().outputPath('editor-portrait.png') });
+});
+
 test('explorer creation, rename, trash restoration and revision conflicts', async ({ page }) => {
   await launch(page);
   await editor(page).getByRole('button', { name: 'New File', exact: true }).click();
