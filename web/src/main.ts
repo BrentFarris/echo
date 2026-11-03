@@ -164,14 +164,15 @@ function shell() {
     const chip = (e.target as HTMLElement).closest<HTMLElement>('[data-reference]');
     if (chip && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); e.stopPropagation(); void activateReference(chip); return; }
     if (!q('.picker').hidden) {
-      if (pickerMode === 'slash' && [' ', 'Tab', 'Escape'].includes(e.key)) {
+      if (pickerMode === 'slash' && [' ', 'Escape'].includes(e.key)) {
         if (e.key === 'Escape') e.preventDefault();
         dismissSlashPicker(); return;
       }
       if (e.key === 'Escape') { e.preventDefault(); closePicker(); return; }
       if (suggestions.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); selectedSuggestion = (selectedSuggestion + (e.key === 'ArrowDown' ? 1 : -1) + suggestions.length) % suggestions.length; renderPicker(); q('[aria-selected="true"]', q('.picker')).scrollIntoView({ block: 'nearest' }); return; }
       if (pickerMode === 'slash') {
-        if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && suggestions.length) { e.preventDefault(); chooseSuggestion(selectedSuggestion); return; }
+        if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && suggestions.length) { e.preventDefault(); chooseSuggestion(selectedSuggestion); return; }
+        if (e.key === 'Tab') { dismissSlashPicker(); return; }
       } else if ((e.key === 'Enter' && !e.shiftKey) || (e.key === 'Tab' && suggestions.length)) { e.preventDefault(); if (suggestions.length) chooseSuggestion(selectedSuggestion); return; }
       if (e.key === 'Tab') closePicker();
     }

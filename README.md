@@ -10,7 +10,7 @@ Inline chat uses the same model connection, model identifier, thinking, and temp
 
 ## Slash commands
 
-Type `/` in the main chat prompt to search commands, then click a suggestion or press Enter on the selected option. Space, Tab, and Escape dismiss the list without invoking anything. Sending, pasting, or restoring slash text never invokes a command. `/approve` and `/missed` are now ordinary text; their existing settings and missed-job controls remain available.
+Type `/` in the main chat prompt to search commands, then click a suggestion or press Enter or Tab on the selected option. Space, Shift+Tab, and Escape dismiss the list without invoking anything. Sending, pasting, or restoring slash text never invokes a command. `/approve` and `/missed` are now ordinary text; their existing settings and missed-job controls remain available.
 
 `/plan` removes the command and visibly appends `\n\n You are to plan this request out, do not make any changes until the plan is approved`. The caret stays where the command was removed, and Undo restores the whole edit. Each invocation appends another copy.
 

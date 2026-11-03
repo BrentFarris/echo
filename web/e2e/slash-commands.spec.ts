@@ -33,12 +33,14 @@ test.beforeEach(async ({ page }) => {
   await page.reload(); await page.locator('#new-chat').click(); await input(page).focus();
 });
 
-test('plan is a visible single undoable edit that preserves the invocation caret', async ({ page }) => {
+for (const key of ['Enter', 'Tab']) test(`${key} selects plan as a single undoable edit that preserves the invocation caret`, async ({ page }) => {
   await input(page).fill('before /pl after');
   await input(page).evaluate((el: any) => { el.setSelectionRange(10); el.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
   await expect(picker(page).getByRole('option')).toContainText('/plan');
-  await input(page).press('Enter');
+  await input(page).press(key);
   await expect.poll(() => value(page)).toBe('before  after' + planText);
+  await expect(input(page)).toBeFocused();
+  await expect(picker(page)).toBeHidden();
   expect(await input(page).evaluate((el: any) => el.selectionStart)).toBe(7);
   await expect(page.locator('.message.user')).toHaveCount(0);
   await input(page).press('Control+Z'); await expect.poll(() => value(page)).toBe('before /pl after');
@@ -51,14 +53,16 @@ test('plan is a visible single undoable edit that preserves the invocation caret
   expect(await input(page).evaluate((el: any) => el.selectionStart)).toBe(0);
 });
 
-test('Space Tab Escape paste and submission leave slash text literal', async ({ page }) => {
-  for (const key of ['Space', 'Tab', 'Escape']) {
+test('Space Shift+Tab Escape paste and submission leave slash text literal', async ({ page }) => {
+  for (const key of ['Space', 'Shift+Tab', 'Escape']) {
     await input(page).fill('/plan'); await expect(picker(page)).toBeVisible();
     await input(page).press(key); await expect(picker(page)).toBeHidden();
     expect(await value(page)).toBe('/plan' + (key === 'Space' ? ' ' : ''));
   }
   await input(page).fill('literal /plan text'); await expect(picker(page)).toBeHidden();
-  await input(page).fill('/unknown-command'); await input(page).press('Enter');
+  await input(page).fill('/unknown-command'); await input(page).press('Tab');
+  await expect(picker(page)).toBeHidden(); expect(await value(page)).toBe('/unknown-command');
+  await input(page).press('Enter');
   await expect(page.locator('.message.user').last()).toContainText('/unknown-command');
   await expect(page.locator('#send')).toHaveAttribute('aria-label', 'Send message');
   await input(page).fill('/plan'); await input(page).press('Escape'); await input(page).press('Enter');
