@@ -11,6 +11,7 @@ import (
 
 	"github.com/brent/echo/internal/credentials"
 	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/plugins"
 )
 
 type scmSecrets map[string]string
@@ -41,6 +42,14 @@ func TestSourceControlContractsAndSettings(t *testing.T) {
 		for _, tool := range s.Plugins.Tools(echo) {
 			if strings.HasPrefix(tool.Name, id+"_") {
 				count++
+				params := map[string]any{"client": "workspace"}
+				if tool.Name == id+"_command" {
+					params["command"] = "edit"
+				}
+				raw, _ := json.Marshal(params)
+				if e := plugins.Validate(tool.Parameters, raw); (e == nil) != (id == "p4") {
+					t.Fatal(tool.Name, "workspace selection contract", e)
+				}
 			}
 		}
 		if count != 3 {
@@ -69,23 +78,23 @@ func TestSourceControlContractsAndSettings(t *testing.T) {
 
 func TestSourceControlLiteralArgumentsAndSecretFilter(t *testing.T) {
 	literal := `a file "quoted" ; $(bad) & | C:\tail\`
-	args, _, e := scmArguments("git", "add", []string{"--", literal}, nil)
+	args, _, e := scmArguments("git", "add", []string{"--", literal}, nil, "")
 	if e != nil || !reflect.DeepEqual(args, []string{"--no-pager", "add", "--", literal}) {
 		t.Fatal(args, e)
 	}
-	if _, _, e = scmArguments("git", "status;evil", nil, nil); e == nil {
+	if _, _, e = scmArguments("git", "status;evil", nil, nil, ""); e == nil {
 		t.Fatal("accepted shell command")
 	}
-	args, env, e := scmArguments("p4", "client", []string{"-i"}, map[string]any{"port": "ssl:server:1666", "user": "artist", "client": "game"})
+	args, env, e := scmArguments("p4", "client", []string{"-i"}, map[string]any{"port": "ssl:server:1666", "user": "artist", "client": "game"}, "")
 	if e != nil || !reflect.DeepEqual(args, []string{"-p", "ssl:server:1666", "-u", "artist", "-c", "game", "client", "-i"}) || env["P4PASSWD"] == "" {
 		t.Fatal(args, env, e)
 	}
 	for _, command := range []string{"-p", "login", "tickets", "set", "passwd", "clone", "init", "fetch", "push", "remote"} {
-		if _, _, e = scmArguments("p4", command, nil, nil); e == nil {
+		if _, _, e = scmArguments("p4", command, nil, nil, ""); e == nil {
 			t.Fatal("credential bypass", command)
 		}
 	}
-	if _, _, e = scmArguments("p4", "info", nil, map[string]any{"port": "rsh:arbitrary command"}); e == nil {
+	if _, _, e = scmArguments("p4", "info", nil, map[string]any{"port": "rsh:arbitrary command"}, ""); e == nil {
 		t.Fatal("shell transport allowed")
 	}
 	filter := &secretFilter{secret: "abc-secret-xyz"}
@@ -96,6 +105,44 @@ func TestSourceControlLiteralArgumentsAndSecretFilter(t *testing.T) {
 	out += filter.push("", true)
 	if out != "safe [redacted] done [redacted]" {
 		t.Fatal(out)
+	}
+}
+
+func TestP4WorkspaceSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name, saved, client, selected string
+	}{
+		{"saved default", "game", "", "game"},
+		{"override wrong default", "DT-BRENTF", "BFarris_NF_Stream", "BFarris_NF_Stream"},
+		{"override missing default", "", "BFarris_NF_Stream", "BFarris_NF_Stream"},
+		{"native default", "", "", ""},
+		{"literal value", "game", `workspace ; & -p other:1666`, `workspace ; & -p other:1666`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := map[string]any{"port": "ssl:server:1666", "user": "artist", "client": tc.saved, "credential": "protected-ref"}
+			for _, command := range []string{"edit", "reopen", "status", "diff"} {
+				args, _, err := scmArguments("p4", command, []string{"-c", "123", "file with spaces.cpp"}, config, tc.client)
+				want := []string{"-p", "ssl:server:1666", "-u", "artist"}
+				if tc.selected != "" {
+					want = append(want, "-c", tc.selected)
+				}
+				want = append(want, command, "-c", "123", "file with spaces.cpp")
+				if err != nil || !reflect.DeepEqual(args, want) {
+					t.Fatal(command, args, err)
+				}
+			}
+			if config["client"] != tc.saved || config["credential"] != "protected-ref" {
+				t.Fatal("per-call client changed saved settings", config)
+			}
+		})
+	}
+	for _, client := range []string{"bad\x00client", "bad\rclient", "bad\nclient"} {
+		if _, _, err := scmArguments("p4", "edit", nil, map[string]any{"port": "server:1666"}, client); err == nil {
+			t.Fatalf("accepted invalid client %q", client)
+		}
+	}
+	if _, _, err := scmArguments("p4", "set", []string{"P4CLIENT=workspace"}, nil, ""); err == nil || !strings.Contains(err.Error(), "client tool parameter") {
+		t.Fatal("workspace selection recovery is not actionable", err)
 	}
 }
 
@@ -145,6 +192,10 @@ func TestP4CredentialOwnerAPIAndDestinationBinding(t *testing.T) {
 	}
 	if _, e := s.sourceControlConfig(m, map[string]any{"port": "attacker:1666"}, false); e == nil {
 		t.Fatal("model redirected credential")
+	}
+	selected, e := s.sourceControlConfig(m, map[string]any{"client": "BFarris_NF_Stream"}, false)
+	if e != nil || selected["client"] != "BFarris_NF_Stream" || selected["credential"] != ref {
+		t.Fatal("model could not save workspace while retaining its credential", selected, e)
 	}
 	config["client"] = "game2"
 	r = scmAPI(t, s, "PATCH", "/plugins/p4", map[string]any{"enabled": true, "config": config})

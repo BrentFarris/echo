@@ -25,7 +25,7 @@ var scmCommand = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 // Workspace operations always use the configured server. DVCS/bootstrap and
 // credential commands can select other transports or print secrets and are not
 // exposed through this credential-bearing client.
-const p4WorkspaceCommands = " help info status diff diff2 opened files dirs fstat where have changes change changelist describe filelog annotate print clients client streams stream add edit delete move reconcile revert resolve resolved sync submit shelve unshelve labels label labelsync branches branch integrate merge copy lock unlock protects groups users jobs job fixes fix review reviews sizes typemap depot depots monitor trust "
+const p4WorkspaceCommands = " help info status diff diff2 opened files dirs fstat where have changes change changelist describe filelog annotate print clients client streams stream add edit reopen delete move reconcile revert resolve resolved sync submit shelve unshelve labels label labelsync branches branch integrate merge copy lock unlock protects groups users jobs job fixes fix review reviews sizes typemap depot depots monitor trust "
 
 // Configuration from chat can change ordinary preferences but cannot grant a
 // process network access or enlarge the executable/runtime grant.
@@ -92,7 +92,7 @@ func (s *Server) sourceControlConfig(m domain.PluginManifest, updates map[string
 	return config, nil
 }
 
-func scmArguments(id, command string, args []string, config map[string]any) ([]string, map[string]string, error) {
+func scmArguments(id, command string, args []string, config map[string]any, client string) ([]string, map[string]string, error) {
 	if !scmCommand.MatchString(command) {
 		return nil, nil, errors.New("command must be one CLI subcommand; put options in the args array")
 	}
@@ -130,12 +130,21 @@ func scmArguments(id, command string, args []string, config map[string]any) ([]s
 		}
 		return append(out, args...), env, nil
 	case "p4":
+		if client == "" {
+			client = text(config, "client")
+		}
+		if strings.ContainsAny(client, "\x00\r\n") {
+			return nil, nil, errors.New("P4 client must be a single line without NUL")
+		}
 		if command == "version" {
 			return []string{"-V"}, env, nil
 		}
 		// Login/ticket printing would put a new secret in the transcript. Credentials
 		// instead arrive through the owner-only Windows Credential Manager field.
-		if command == "set" || command == "tickets" || command == "login" || command == "passwd" {
+		if command == "set" {
+			return nil, nil, errors.New("select the P4 workspace with the client tool parameter; Echo can save a default with plugin_configure (id p4, config.client). Manage credentials in the protected P4 settings field")
+		}
+		if command == "tickets" || command == "login" || command == "passwd" {
 			return nil, nil, errors.New("manage P4 credentials in the protected P4 settings field; use an existing ticket")
 		}
 		if !strings.Contains(p4WorkspaceCommands, " "+command+" ") {
@@ -148,9 +157,9 @@ func scmArguments(id, command string, args []string, config map[string]any) ([]s
 			return nil, nil, errors.New("configure the P4 server in Settings → P4 (Perforce)")
 		}
 		out := []string{}
-		for _, option := range []struct{ key, flag string }{{"port", "-p"}, {"user", "-u"}, {"client", "-c"}, {"charset", "-C"}} {
-			if v := text(config, option.key); v != "" {
-				out = append(out, option.flag, v)
+		for _, option := range []struct{ value, flag string }{{text(config, "port"), "-p"}, {text(config, "user"), "-u"}, {client, "-c"}, {text(config, "charset"), "-C"}} {
+			if option.value != "" {
+				out = append(out, option.flag, option.value)
 			}
 		}
 		env["P4CONFIG"] = "__echo2_disabled_" + domain.ID()
@@ -170,7 +179,7 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 		return nil, errors.New("source control capability belongs to its built-in plugin")
 	}
 	command := text(a, "command")
-	args, env, e := scmArguments(id, command, stringsValue(a["args"]), m.Config)
+	args, env, e := scmArguments(id, command, stringsValue(a["args"]), m.Config, text(a, "client"))
 	if e != nil {
 		return nil, e
 	}

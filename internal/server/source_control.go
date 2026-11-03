@@ -164,7 +164,7 @@ func (s *Server) executeSCM(ctx context.Context, botID string, request scmexec.R
 			return out, errors.New("grant network access in P4 plugin settings")
 		}
 	}
-	_, env, err := scmArguments(id, "version", nil, config)
+	_, env, err := scmArguments(id, "version", nil, config, "")
 	if err != nil {
 		return out, err
 	}

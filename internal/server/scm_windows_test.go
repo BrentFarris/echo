@@ -19,9 +19,12 @@ import (
 	"github.com/brent/echo/internal/domain"
 )
 
-func nativeSCM(t *testing.T, s *Server, bot domain.Bot, tool, directory, command string, args []string, input string) broker.ProcessResult {
+func nativeSCM(t *testing.T, s *Server, bot domain.Bot, tool, directory, command string, args []string, input string, p4Client ...string) broker.ProcessResult {
 	t.Helper()
 	params := map[string]any{"directory": directory}
+	if len(p4Client) > 0 {
+		params["client"] = p4Client[0]
+	}
 	if strings.HasSuffix(tool, "_command") {
 		params["command"] = command
 		if input != "" {
@@ -193,33 +196,66 @@ func TestNativePerforceDepot(t *testing.T) {
 	}
 	s := testServer(t)
 	m, _ := s.Plugins.Get("p4")
-	m.Config = map[string]any{"executable": client, "port": address, "user": "echo-test", "client": "echo-workspace"}
+	// Reproduce a machine-name default that is not a workspace on this server.
+	m.Config = map[string]any{"executable": client, "port": address, "user": "echo-test", "client": "DT-BRENTF"}
 	s.Plugins.Save(m)
 	echo, _ := s.Bot("echo")
 	// No machine-wide loopback exemptions: test depot networking with the normal
 	// unbound actor; separately verify the client executable in AppContainer.
-	bound := domain.Bot{ID: "scope", Handle: "scope", Roots: []string{workspace}}
+	bound := domain.Bot{ID: "scope", Handle: "scope", Roots: []string{workspace}, Plugins: map[string]bool{"p4": true}}
 	nativeSCM(t, s, bound, "p4_command", workspace, "version", nil, "")
 	info := nativeSCM(t, s, echo, "p4_command", workspace, "info", nil, "")
 	if !strings.Contains(info.Output, "Server address:") {
 		t.Fatal(info.Output)
 	}
+	if !strings.Contains(info.Output, "DT-BRENTF") {
+		t.Fatal("fixture did not use the incorrect default client", info.Output)
+	}
 	spec := fmt.Sprintf("Client: echo-workspace\nOwner: echo-test\nRoot: %s\nOptions: noallwrite noclobber nocompress unlocked nomodtime normdir\nLineEnd: local\nView:\n\t//depot/... //echo-workspace/...\n", workspace)
-	nativeSCM(t, s, echo, "p4_command", workspace, "client", []string{"-i"}, spec)
+	nativeSCM(t, s, echo, "p4_command", workspace, "client", []string{"-i"}, spec, "echo-workspace")
+	clients := nativeSCM(t, s, echo, "p4_command", workspace, "clients", []string{"-u", "echo-test"}, "")
+	if !strings.Contains(clients.Output, "echo-workspace") {
+		t.Fatal("workspace discovery failed", clients.Output)
+	}
+	selected := nativeSCM(t, s, echo, "p4_command", workspace, "info", nil, "", "echo-workspace")
+	if !strings.Contains(selected.Output, "Client name: echo-workspace") || !strings.Contains(selected.Output, workspace) {
+		t.Fatal("workspace selection failed", selected.Output)
+	}
 	file := filepath.Join(workspace, "notes.txt")
 	os.WriteFile(file, []byte("first\n"), 0600)
-	nativeSCM(t, s, echo, "p4_command", workspace, "add", []string{"notes.txt"}, "")
-	submitted := nativeSCM(t, s, echo, "p4_command", workspace, "submit", []string{"-d", "Echo plugin test"}, "")
+	nativeSCM(t, s, echo, "p4_command", workspace, "add", []string{"notes.txt"}, "", "echo-workspace")
+	submitted := nativeSCM(t, s, echo, "p4_command", workspace, "submit", []string{"-d", "Echo plugin test"}, "", "echo-workspace")
 	if !strings.Contains(submitted.Output, "submitted") {
 		t.Fatal(submitted.Output)
 	}
-	nativeSCM(t, s, echo, "p4_command", workspace, "edit", []string{"notes.txt"}, "")
+	change := nativeSCM(t, s, echo, "p4_command", workspace, "change", []string{"-i"}, "Change: new\nClient: echo-workspace\nUser: echo-test\nDescription:\n\tCheckout regression\n", "echo-workspace")
+	var changelist int
+	if _, err := fmt.Sscanf(change.Output, "Change %d created.", &changelist); err != nil {
+		t.Fatal("could not create a numbered changelist", change.Output, err)
+	}
+	checkout := nativeSCM(t, s, echo, "p4_command", workspace, "edit", []string{"-c", fmt.Sprint(changelist), "notes.txt"}, "", "echo-workspace")
+	if !strings.Contains(checkout.Output, "opened for edit") {
+		t.Fatal(checkout.Output)
+	}
+	opened := nativeSCM(t, s, echo, "p4_command", workspace, "opened", nil, "", "echo-workspace")
+	if !strings.Contains(opened.Output, fmt.Sprintf("change %d", changelist)) {
+		t.Fatal("checkout used the wrong changelist", opened.Output)
+	}
 	os.WriteFile(file, []byte("first\nsecond\n"), 0600)
-	diff := nativeSCM(t, s, echo, "p4_diff", workspace, "", nil, "")
+	diff := nativeSCM(t, s, echo, "p4_diff", workspace, "", nil, "", "echo-workspace")
 	if !strings.Contains(diff.Output, "second") {
 		t.Fatal(diff.Output)
 	}
-	nativeSCM(t, s, echo, "p4_status", workspace, "", nil, "")
+	nativeSCM(t, s, echo, "p4_status", workspace, "", nil, "", "echo-workspace")
+	nativeSCM(t, s, echo, "p4_command", workspace, "reopen", []string{"-c", "default", "notes.txt"}, "", "echo-workspace")
+	opened = nativeSCM(t, s, echo, "p4_command", workspace, "opened", nil, "", "echo-workspace")
+	if !strings.Contains(opened.Output, "default change") {
+		t.Fatal("reopen did not move the file to the default changelist", opened.Output)
+	}
+	m, _ = s.Plugins.Get("p4")
+	if text(m.Config, "client") != "DT-BRENTF" {
+		t.Fatal("workspace override changed the saved default", m.Config)
+	}
 	if _, e = s.Plugins.Invoke(context.Background(), domain.ExecutionScope{Bot: bound}, "p4_command", json.RawMessage(`{"command":"info"}`)); e == nil || !strings.Contains(e.Error(), "network") {
 		t.Fatal("missing owner grant was not actionable", e)
 	}

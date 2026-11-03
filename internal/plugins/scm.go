@@ -7,7 +7,7 @@ func sourceControlPlugins() []domain.PluginManifest {
 	for _, spec := range []struct{ id, name, description string }{
 		{"git", "Git", "Git repositories: status, diff, log, add, commit, branch, fetch, pull and push."},
 		{"fossil", "Fossil", "Fossil repositories: status, diff, timeline, add, commit, branch and sync. Run from the checkout or a subdirectory. The checkout's linked repository database may also live in its immediate parent folder; other locations must be inside the bot's folders."},
-		{"p4", "P4 (Perforce)", "Perforce workspaces: info, opened, status, diff, sync, edit, reconcile, changelists and submit. Configure server, user and client in P4 settings."},
+		{"p4", "P4 (Perforce)", "Perforce workspaces: info, clients, client, opened, status, diff, sync, edit, reopen, reconcile, changelists and submit. Configure server/user in P4 settings. Select a workspace with the client parameter on any P4 tool; it overrides the saved client for that call. Use clients to discover workspaces and client with args [-o, workspace] to inspect their mappings. Use edit to check out files before modifying them; edit/reopen args -c selects a changelist, not a workspace."},
 	} {
 		properties := map[string]any{"executable": S("CLI executable path (blank discovers it on PATH)"), "toolchains": A("Additional read/execute runtime folders"), "internet": B("Grant Internet access to this plugin's workspace-bound commands"), "privateNetwork": B("Grant private-network connections/listeners to this plugin's workspace-bound commands")}
 		switch spec.id {
@@ -24,10 +24,17 @@ func sourceControlPlugins() []domain.PluginManifest {
 			properties["trustFile"] = S("Optional P4 trust file inside the bot's folders")
 		}
 		args := map[string]any{"command": S("CLI subcommand, such as status, diff, log, help or version"), "args": A("Arguments as separate strings; no shell quoting, pipes or redirects"), "directory": S("Working directory; defaults to the first bot folder"), "input": S("Optional standard input, for example a Perforce form with -i or a Git patch"), "timeoutSeconds": N("Optional timeout in seconds; omitted or 0 runs until exit or cancellation")}
+		if spec.id == "p4" {
+			args["client"] = S("P4 workspace for this call; passed as global -c before the subcommand. Blank uses the saved P4 client. Does not change saved settings or P4CLIENT. To save a default, Echo can use plugin_configure with id p4 and config.client.")
+		}
 		description := spec.description + " Runs the installed CLI directly with streamed output and workspace containment, independently of Shell. Use version to check installation. Interactive editors/prompts are unavailable; supply messages/forms explicitly. Remote access from bound bots needs the owner's network grant. Never put passwords or tickets in tool arguments."
 		m := domain.PluginManifest{ID: spec.id, Name: spec.name, Settings: Schema(properties), Tools: []domain.Tool{tool(spec.id+"_command", description, spec.id+".run", args, "command")}}
 		for _, command := range []string{"status", "diff"} {
-			m.Tools = append(m.Tools, tool(spec.id+"_"+command, "Run "+spec.name+" "+command+" in a workspace. Output is streamed; include paths/options in args.", spec.id+".run", map[string]any{"args": A("Additional subcommand arguments"), "directory": S("Working directory"), "timeoutSeconds": N("Optional timeout in seconds; omitted or 0 runs until exit or cancellation")}))
+			params := map[string]any{"args": A("Additional subcommand arguments"), "directory": S("Working directory"), "timeoutSeconds": N("Optional timeout in seconds; omitted or 0 runs until exit or cancellation")}
+			if spec.id == "p4" {
+				params["client"] = args["client"]
+			}
+			m.Tools = append(m.Tools, tool(spec.id+"_"+command, "Run "+spec.name+" "+command+" in a workspace. Output is streamed; include paths/options in args.", spec.id+".run", params))
 		}
 		out = append(out, m)
 	}
