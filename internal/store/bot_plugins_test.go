@@ -93,7 +93,7 @@ func TestBotPluginMigrationPreservesOnlyStoredCatalog(t *testing.T) {
 		t.Fatal("restart reapplied plugin defaults")
 	}
 	var version int
-	if err = s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 5 {
+	if err = s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 6 {
 		t.Fatal("migration version", version, err)
 	}
 }

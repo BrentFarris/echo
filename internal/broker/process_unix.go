@@ -16,19 +16,7 @@ import (
 )
 
 func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(string)) (ProcessResult, error) {
-	timeout := r.TimeoutSeconds
-	if timeout <= 0 {
-		timeout = 120
-	}
-	if timeout > 300 {
-		timeout = 300
-	}
-	var cancel context.CancelFunc
-	if r.duplex == nil {
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
-	} else {
-		ctx, cancel = context.WithCancel(ctx)
-	}
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	scratch, err := os.MkdirTemp("", "echo-run-")
 	if err != nil {

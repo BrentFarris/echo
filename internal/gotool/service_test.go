@@ -40,7 +40,7 @@ func TestPrepareGoProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(r.Args, append([]string{"build"}, args...)) || r.Command != "" || !r.Internet || r.PrivateNetwork || r.TimeoutSeconds != 300 {
+	if !reflect.DeepEqual(r.Args, append([]string{"build"}, args...)) || r.Command != "" || !r.Internet || r.PrivateNetwork || r.TimeoutSeconds != 0 {
 		t.Fatalf("bad request: %+v", r)
 	}
 	for key, name := range map[string]string{"GOMODCACHE": "go-mod", "GOCACHE": "go-build", "GOBIN": "go-bin", "GOPATH": "go-path"} {
@@ -81,10 +81,13 @@ func TestPrepareGoNewProjectAndDenials(t *testing.T) {
 	if err != nil || r.Environment["GOMODCACHE"] != filepath.Join(root, ".cache", "go-mod") {
 		t.Fatal(r, err)
 	}
-	for _, command := range []Command{{Command: "version", Directory: outside}, {Command: "build;evil"}, {Command: "env", Args: []string{"-w", "GOPROXY=off"}}, {Command: "env", Args: []string{"-u=GOPROXY"}}, {Command: "build", TimeoutSeconds: 301}} {
+	for _, command := range []Command{{Command: "version", Directory: outside}, {Command: "build;evil"}, {Command: "env", Args: []string{"-w", "GOPROXY=off"}}, {Command: "env", Args: []string{"-u=GOPROXY"}}, {Command: "build", TimeoutSeconds: -1}} {
 		if _, err := Prepare(context.Background(), files, bot, Settings{}, command); err == nil {
 			t.Fatal("accepted", command)
 		}
+	}
+	if r, err = Prepare(context.Background(), files, bot, Settings{}, Command{Command: "build", TimeoutSeconds: 3600}); err != nil || r.TimeoutSeconds != 3600 {
+		t.Fatal("explicit long timeout rejected", r, err)
 	}
 	files.Private = root
 	if _, err := Prepare(context.Background(), files, bot, Settings{}, Command{Command: "env"}); err == nil {

@@ -674,7 +674,9 @@ func (m *Manager) discover() {
 
 func (m *Manager) Client(id string) *http.Client { return m.client(id, false) }
 func (m *Manager) client(id string, pairing bool) *http.Client {
-	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true, ResponseHeaderTimeout: 130 * time.Second, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { return m.dial(ctx, id, pairing) }}
+	// Callers bound control requests with their context. Handoff waits and
+	// worker streams can legitimately stay open for the lifetime of a run.
+	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { return m.dial(ctx, id, pairing) }}
 	return &http.Client{Transport: transport, CheckRedirect: noRedirect}
 }
 

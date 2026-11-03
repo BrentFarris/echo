@@ -29,7 +29,7 @@ type ProcessRequest struct {
 	PrivateNetwork     bool
 	Directory          string
 	Toolchains         []string
-	TimeoutSeconds     int
+	TimeoutSeconds     int  // Optional execution limit; zero runs until exit or cancellation.
 	SeparateOutput     bool // Preserve byte-exact stdout independently of diagnostics.
 	OutputLimit        int  // Host-selected bound; defaults to 1 MiB, maximum 64 MiB.
 }
@@ -88,6 +88,14 @@ func (b *ProcessBroker) journal(j aclJournal) error {
 func (b *ProcessBroker) Run(ctx context.Context, r ProcessRequest, emit func(string)) (ProcessResult, error) {
 	if e := ctx.Err(); e != nil {
 		return ProcessResult{}, e
+	}
+	if r.TimeoutSeconds < 0 || int64(r.TimeoutSeconds) > int64((1<<63-1)/time.Second) {
+		return ProcessResult{}, errors.New("timeoutSeconds must be nonnegative and fit in a duration")
+	}
+	if r.duplex == nil && r.TimeoutSeconds > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(r.TimeoutSeconds)*time.Second)
+		defer cancel()
 	}
 	if r.OutputFileArgument != "" && (!r.SeparateOutput || r.Executable == "") {
 		return ProcessResult{}, errors.New("file capture requires a native structured command")

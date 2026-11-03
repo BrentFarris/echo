@@ -9,8 +9,8 @@ func modelSettingsProperties() map[string]any {
 		"contextTokens": plugins.N("Context length in tokens"), "compact": plugins.B("Proactive context compaction; context overflow recovery always remains enabled"),
 		"compressionThreshold":     plugins.N("Context compression threshold, 1–99 percent; default 70"),
 		"reasoningEffort":          plugins.S("Default named reasoning effort: none, minimal, low, medium, high, xhigh or max; empty uses provider default"),
-		"requestTimeoutSeconds":    plugins.N("Overall request timeout in seconds; 0 uses the default"),
-		"streamIdleTimeoutSeconds": plugins.N("Seconds without arriving stream data; -1 disables, 0 uses the default"),
+		"requestTimeoutSeconds":    plugins.N("Optional overall request timeout in seconds; 0 disables (default)"),
+		"streamIdleTimeoutSeconds": plugins.N("Optional seconds without arriving stream data; 0 or -1 disables (default)"),
 	}
 	for _, name := range []string{"temperature", "topP", "minP", "frequencyPenalty", "presencePenalty", "repetitionPenalty"} {
 		props[name] = map[string]any{"type": []string{"number", "null"}, "description": "Endpoint sampling default; null omits this parameter"}

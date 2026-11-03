@@ -63,11 +63,8 @@ func Prepare(ctx context.Context, files *broker.Files, bot domain.Bot, settings 
 			return r, errors.New("go env -w/-u are unavailable; use Go plugin settings")
 		}
 	}
-	if r.TimeoutSeconds == 0 {
-		r.TimeoutSeconds = 300
-	}
-	if r.TimeoutSeconds < 1 || r.TimeoutSeconds > 300 {
-		return r, errors.New("timeoutSeconds must be 1-300")
+	if r.TimeoutSeconds < 0 {
+		return r, errors.New("timeoutSeconds must be nonnegative; 0 disables the timeout")
 	}
 	if err := ValidateProxy(settings.Proxy); err != nil {
 		return r, err

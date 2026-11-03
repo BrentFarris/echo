@@ -17,8 +17,6 @@ var ErrPending = errors.New("prompt not found in history")
 
 // Polling works with ComfyUI installations that do not proxy WebSockets.
 func (c *Client) WaitForCompletionPoll(ctx context.Context, promptID string) (*GenerateResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
 	for {
 		result, err := c.GetHistory(ctx, promptID)
 		if err == nil {

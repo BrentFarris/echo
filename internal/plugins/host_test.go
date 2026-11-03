@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/brent/echo/internal/domain"
@@ -26,6 +27,13 @@ func TestWASIBrokerAndPermissionBoundary(t *testing.T) {
 	calls := 0
 	h, e := New(context.Background(), s, filepath.Join(t.TempDir(), "plugins"), guest, func(ctx context.Context, scope domain.ExecutionScope, method string, args json.RawMessage) (any, error) {
 		calls++
+		if _, limited := ctx.Deadline(); limited {
+			t.Fatal("plugin invocation has an implicit deadline")
+		}
+		time.Sleep(6 * time.Minute)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if scope.PluginID == "" {
 			t.Fatal("missing invocation identity")
 		}
@@ -36,7 +44,10 @@ func TestWASIBrokerAndPermissionBoundary(t *testing.T) {
 	}
 	defer h.Close(context.Background())
 	scope := domain.ExecutionScope{Bot: domain.Bot{ID: "echo", Plugins: map[string]bool{}}}
-	value, e := h.Invoke(context.Background(), scope, "web_get", json.RawMessage(`{"url":"https://example.com"}`))
+	var value any
+	synctest.Test(t, func(t *testing.T) {
+		value, e = h.Invoke(context.Background(), scope, "web_get", json.RawMessage(`{"url":"https://example.com"}`))
+	})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -58,9 +69,11 @@ func TestWASIBrokerAndPermissionBoundary(t *testing.T) {
 	if _, e = h.Approve(m.ID); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = h.Invoke(context.Background(), scope, "untrusted_fetch", json.RawMessage(`{"url":"https://example.com"}`)); e != nil {
-		t.Fatal(e)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		if _, e = h.Invoke(context.Background(), scope, "untrusted_fetch", json.RawMessage(`{"url":"https://example.com"}`)); e != nil {
+			t.Fatal(e)
+		}
+	})
 }
 func TestRunawayWASMIsCancelled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)

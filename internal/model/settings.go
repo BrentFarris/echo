@@ -39,10 +39,10 @@ func ValidateSettings(e domain.Endpoint) error {
 		return errors.New("compression threshold must be 1–99 percent")
 	}
 	if e.RequestTimeoutSeconds < 0 || e.RequestTimeoutSeconds > 86400 {
-		return errors.New("request timeout must be 1–86400 seconds (0 uses the default)")
+		return errors.New("request timeout must be 0–86400 seconds (0 disables the timeout)")
 	}
 	if e.StreamIdleTimeoutSeconds < -1 || e.StreamIdleTimeoutSeconds > 86400 {
-		return errors.New("stream idle timeout must be -1, or 1–86400 seconds (0 uses the default)")
+		return errors.New("stream idle timeout must be -1–86400 seconds (0 or -1 disables the timeout)")
 	}
 	if !slices.Contains([]string{"", "none", "minimal", "low", "medium", "high", "xhigh", "max"}, e.ReasoningEffort) {
 		return errors.New("unknown reasoning effort")

@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/brent/echo/internal/broker"
 	"github.com/brent/echo/internal/domain"
@@ -248,14 +247,9 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 		}
 	}
 	timeout := integer(a, "timeoutSeconds")
-	if timeout == 0 {
-		timeout = 60
+	if timeout < 0 {
+		return nil, errors.New("timeoutSeconds must be nonnegative; 0 disables the timeout")
 	}
-	if timeout < 1 || timeout > 300 {
-		return nil, errors.New("timeoutSeconds must be 1-300")
-	}
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
-	defer cancel()
 	var output strings.Builder
 	filter := &secretFilter{secret: secret}
 	emit := func(chunk string) {
@@ -265,7 +259,7 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 		output.WriteString(chunk)
 		s.nativeOutput(ctx, scope, chunk)
 	}
-	result, err := s.runTrackedProcess(ctx, scope.Bot, broker.ProcessRequest{BotID: scope.Bot.ID, Roots: roots, Executable: binary, Args: args, Input: text(a, "input"), Environment: env, Directory: directory, Toolchains: toolchains, Internet: boolean(m.Config, "internet"), PrivateNetwork: boolean(m.Config, "privateNetwork")}, func(chunk string) { emit(filter.push(chunk, false)) })
+	result, err := s.runTrackedProcess(ctx, scope.Bot, broker.ProcessRequest{BotID: scope.Bot.ID, Roots: roots, Executable: binary, Args: args, Input: text(a, "input"), Environment: env, Directory: directory, Toolchains: toolchains, Internet: boolean(m.Config, "internet"), PrivateNetwork: boolean(m.Config, "privateNetwork"), TimeoutSeconds: timeout}, func(chunk string) { emit(filter.push(chunk, false)) })
 	emit(filter.push("", true))
 	result.Output = output.String()
 	if err != nil {

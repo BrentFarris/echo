@@ -188,11 +188,8 @@ func TestMultitaskingFIFOAndIdempotency(t *testing.T) {
 		if len(runs) != 1 || runs[0].Status != "queued" {
 			t.Fatal("not queued", runs)
 		}
-		s.mu.Lock()
-		timerStarted := d.timer != nil
-		s.mu.Unlock()
-		if timerStarted {
-			t.Fatal("queued dispatch started its execution timeout")
+		if _, limited := d.ctx.Deadline(); limited {
+			t.Fatal("queued dispatch has an execution deadline")
 		}
 	}
 	duplicate, err := s.send(d2.chatID, SendRequest{Content: "two", RequestID: "request", Generation: g})

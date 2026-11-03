@@ -249,7 +249,7 @@ func (h *Host) invoke(ctx context.Context, scope domain.ExecutionScope, pluginID
 				return nil, e
 			}
 			scope.PluginID = m.ID
-			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			h.mu.Lock()
 			current, lookupErr := h.Get(m.ID)

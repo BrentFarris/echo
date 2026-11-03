@@ -80,7 +80,7 @@ func New() *Client {
 	}
 	// Connections must not cross local/cloud policy boundaries through pooling:
 	// every request rechecks the resolved address at the actual connection.
-	return &Client{HTTP: &http.Client{Transport: &http.Transport{Proxy: nil, DialContext: dial, DisableKeepAlives: true, ResponseHeaderTimeout: 60 * time.Second}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("model redirects are not allowed") }}}
+	return &Client{HTTP: &http.Client{Transport: &http.Transport{Proxy: nil, DialContext: dial, DisableKeepAlives: true}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("model redirects are not allowed") }}}
 }
 func ValidateEndpoint(e domain.Endpoint) error {
 	if err := ValidateSettings(e); err != nil {
@@ -239,15 +239,11 @@ func (c *Client) Complete(ctx context.Context, e domain.Endpoint, g domain.Gener
 	}
 	defer response.Body.Close()
 	idle := time.Duration(e.StreamIdleTimeoutSeconds) * time.Second
-	if idle == 0 {
-		idle = 120 * time.Second
-	}
-	timer := time.NewTimer(time.Hour)
-	timer.Stop()
+	var timer *time.Timer
 	if idle > 0 {
 		timer = time.AfterFunc(idle, cancel)
+		defer timer.Stop()
 	}
-	defer timer.Stop()
 	scanner := bufio.NewScanner(activityReader{response.Body, func() {
 		if idle > 0 {
 			timer.Reset(idle)

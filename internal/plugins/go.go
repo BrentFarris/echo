@@ -18,7 +18,7 @@ func goPlugin() domain.PluginManifest {
 		"args":           A("Literal arguments; no shell quoting, pipes or redirects"),
 		"directory":      S("Working directory; defaults to the first bot folder"),
 		"input":          S("Optional standard input"),
-		"timeoutSeconds": N("1-300 seconds; defaults to 300"),
+		"timeoutSeconds": N("Optional timeout in seconds; omitted or 0 runs until exit or cancellation"),
 	}, "command"), tool("go_inspect", "Inspect saved Go files with gopls: diagnostics, symbols, definition, references or hover. Editor unsaved changes are isolated. This does not replace go build/test. Install gopls explicitly in the editor first. Positions are one-based lines and UTF-16 columns. Results may be incomplete when dependencies are unavailable.", "go.inspect", map[string]any{
 		"action":    S("diagnostics, symbols, definition, references or hover"),
 		"directory": S("Project working directory inside bot scope"),

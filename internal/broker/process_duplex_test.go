@@ -3,6 +3,7 @@ package broker
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -59,5 +60,17 @@ func main(){fmt.Fprintln(os.Stderr,"stderr-only");s:=bufio.NewScanner(os.Stdin);
 	journals, _ := filepath.Glob(filepath.Join(b.Dir, "*.json"))
 	if len(journals) != 0 {
 		t.Fatal("sandbox grants left behind", journals)
+	}
+	for _, timeout := range []int{0, 1, 3600} {
+		t.Run(fmt.Sprintf("command-timeout=%d", timeout), func(t *testing.T) {
+			result, err := b.Run(ctx, ProcessRequest{BotID: "finite", Executable: binary, Roots: []string{root}, Directory: root, Input: "wait\n", TimeoutSeconds: timeout, Environment: map[string]string{"FORBIDDEN": forbidden}}, nil)
+			if timeout == 1 {
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("explicit timeout was not enforced: %+v, %v", result, err)
+				}
+			} else if err != nil || result.ExitCode != 0 || !strings.Contains(result.Output, "wait:true") {
+				t.Fatalf("command failed without an expired deadline: %+v, %v", result, err)
+			}
+		})
 	}
 }

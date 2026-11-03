@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"slices"
-	"time"
 )
 
 // All scheduler state is protected by Server.mu. Enqueue every recipient in one
@@ -43,9 +42,6 @@ func (s *Server) admitLocked(id string) {
 			s.botReservations[id] = map[string]bool{}
 		}
 		s.botReservations[id][d.id] = true
-		if d.timer == nil {
-			d.timer = time.AfterFunc(2*time.Hour, d.cancel)
-		}
 		close(d.admitted[id])
 	}
 	if len(queue) == 0 {
@@ -58,9 +54,6 @@ func (s *Server) admitLocked(id string) {
 // Keep reservations until the entire dispatch finishes: a bot's final response
 // can still be followed by a handoff from a peer in that same dispatch.
 func (s *Server) releaseLocked(d *dispatch) {
-	if d.timer != nil {
-		d.timer.Stop()
-	}
 	for id := range d.admitted {
 		delete(s.botReservations[id], d.id)
 		if len(s.botReservations[id]) == 0 {

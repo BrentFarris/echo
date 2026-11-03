@@ -55,8 +55,12 @@ func (c *Client) ProviderRequest(ctx context.Context, endpoint domain.Endpoint, 
 	if len(data) > 4<<20 {
 		return nil, errors.New("provider request exceeds 4 MiB")
 	}
-	ctx, cancel := context.WithTimeout(context.WithValue(ctx, localEndpointKey{}, !endpoint.Cloud), 120*time.Second)
-	defer cancel()
+	ctx = context.WithValue(ctx, localEndpointKey{}, !endpoint.Cloud)
+	if endpoint.RequestTimeoutSeconds > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(endpoint.RequestTimeoutSeconds)*time.Second)
+		defer cancel()
+	}
 	request, e := http.NewRequestWithContext(ctx, a.Method, target.String(), bytes.NewReader(data))
 	if e != nil {
 		return nil, e

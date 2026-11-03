@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/brent/echo/internal/domain"
 	"github.com/brent/echo/internal/gotool"
@@ -44,7 +43,5 @@ func (s *Server) runGo(ctx context.Context, scope domain.ExecutionScope, m domai
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(request.TimeoutSeconds)*time.Second)
-	defer cancel()
 	return s.runTrackedProcess(ctx, scope.Bot, request, func(output string) { s.nativeOutput(ctx, scope, output) })
 }

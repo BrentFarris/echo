@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/brent/echo/internal/broker"
 	"github.com/brent/echo/internal/calendar"
@@ -201,9 +200,7 @@ func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionSc
 				return nil, err
 			}
 		}
-		waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancel()
-		return d.group.Wait(waitCtx, scope.Bot.ID, text(a, "requestId"))
+		return d.group.Wait(ctx, scope.Bot.ID, text(a, "requestId"))
 	case AskUserQuestionsToolName:
 		return s.askUserQuestions(ctx, scope, raw)
 	case "bot_list":
@@ -411,16 +408,7 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		return parsed, nil
 	case "process.run":
 		grants, _ := s.Plugins.Get("shell")
-		timeout := integer(a, "timeoutSeconds")
-		if timeout <= 0 {
-			timeout = 30
-		}
-		if timeout > 300 {
-			timeout = 300
-		}
-		ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
-		defer cancel()
-		return s.runTrackedProcess(ctx, scope.Bot, broker.ProcessRequest{BotID: scope.Bot.ID, Roots: scope.Bot.Roots, Command: text(a, "command"), Directory: text(a, "directory"), Toolchains: stringsValue(grants.Config["toolchains"])}, func(value string) {
+		return s.runTrackedProcess(ctx, scope.Bot, broker.ProcessRequest{BotID: scope.Bot.ID, Roots: scope.Bot.Roots, Command: text(a, "command"), Directory: text(a, "directory"), Toolchains: stringsValue(grants.Config["toolchains"]), TimeoutSeconds: integer(a, "timeoutSeconds")}, func(value string) {
 			s.nativeOutput(ctx, scope, value)
 		})
 	case "workspace.bind":
@@ -639,8 +627,6 @@ func (s *Server) compilePlugin(ctx context.Context, source string) ([]byte, erro
 	if e = os.WriteFile(filepath.Join(dir, "main.go"), []byte(source), 0600); e != nil {
 		return nil, e
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
 	r, e := s.Process.Run(ctx, broker.ProcessRequest{BotID: "plugin-builder", Roots: []string{dir}, Directory: dir, Toolchains: []string{filepath.Dir(filepath.Dir(compiler))}, Executable: compiler, Args: []string{"build", "-trimpath", "-o", "backend.wasm", "."}, Environment: map[string]string{"GOOS": "wasip1", "GOARCH": "wasm", "CGO_ENABLED": "0"}}, nil)
 	if e != nil {
 		return nil, e

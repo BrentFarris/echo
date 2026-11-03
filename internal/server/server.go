@@ -130,7 +130,6 @@ type dispatch struct {
 	err        error
 	ctx        context.Context
 	admitted   map[string]chan struct{}
-	timer      *time.Timer // Protected by Server.mu; starts at first admission.
 }
 type SendRequest struct {
 	GenerationByNode       map[string]domain.Generation `json:"generationByNode,omitempty"`

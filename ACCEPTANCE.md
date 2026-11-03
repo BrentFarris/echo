@@ -4,6 +4,12 @@ Run `build.ps1 -Release` from the repository root on Windows. It must succeed be
 
 For Linux/macOS, run `sh build.sh --release` on the destination OS. Linux requires bubblewrap and usable user namespaces; macOS requires Seatbelt. `.github/workflows/native.yml` defines native Windows/Linux/macOS regression jobs. Cross-compilation is a build check, not runtime acceptance. Do not mark a native platform accepted because its named browser fixture passed on another OS.
 
+## Unlimited execution acceptance
+
+Run `go test ./internal/model ./internal/plugins ./internal/server ./internal/store ./internal/comfyui -run 'TestCompletionsWithoutImplicitTimeouts|TestWASIBrokerAndPermissionBoundary|TestDispatchAdmissionWithoutTimeLimit|TestBotWaitWithoutTimeLimit|TestEndpointTimeout.*Migration|TestGenerationWaitWithoutTimeLimit' -count=1`. Virtual-clock regressions pass the former response-header, stream-idle, plugin, handoff, generation and two-hour dispatch cutoffs without waiting in real time. Migration coverage verifies removal of the old model timeout defaults, preservation of custom limits and unknown fields, rollback, and restart idempotency. Retain model timeout, Stop, revocation and Swarm integration tests to verify explicit cancellation.
+
+With `ECHO2_NATIVE_TESTS=1`, run `go test ./internal/broker ./internal/server -run 'TestNativePersistentProcess|TestNativeGoPluginOfflineWorkflow' -count=1 -timeout 10m`. Native command coverage checks omitted, one-second and one-hour timeouts, persistent-process lifetimes, child cancellation and permission cleanup. Run on each supported operating system before claiming native acceptance there.
+
 ## Go plugin acceptance
 
 Run `go test ./internal/gotool ./internal/plugins ./internal/broker ./internal/server -count=1 -timeout 10m`, then `go build ./...` and `go vet ./...`. Focused coverage uses `-run 'TestPrepareGo|TestGo|TestWorkspaceGoCaches'`. This checks defaults and plugin availability independent of Shell, owner-only grant expansion, configuration persistence, isolated discovery, literal arguments, module/cache selection, and rejected cache junctions. Windows junction tests require a host context that permits their creation.

@@ -23,11 +23,11 @@ func sourceControlPlugins() []domain.PluginManifest {
 			properties["charset"] = S("Optional P4 character set")
 			properties["trustFile"] = S("Optional P4 trust file inside the bot's folders")
 		}
-		args := map[string]any{"command": S("CLI subcommand, such as status, diff, log, help or version"), "args": A("Arguments as separate strings; no shell quoting, pipes or redirects"), "directory": S("Working directory; defaults to the first bot folder"), "input": S("Optional standard input, for example a Perforce form with -i or a Git patch"), "timeoutSeconds": N("1-300 seconds; defaults to 60")}
+		args := map[string]any{"command": S("CLI subcommand, such as status, diff, log, help or version"), "args": A("Arguments as separate strings; no shell quoting, pipes or redirects"), "directory": S("Working directory; defaults to the first bot folder"), "input": S("Optional standard input, for example a Perforce form with -i or a Git patch"), "timeoutSeconds": N("Optional timeout in seconds; omitted or 0 runs until exit or cancellation")}
 		description := spec.description + " Runs the installed CLI directly with streamed output and workspace containment, independently of Shell. Use version to check installation. Interactive editors/prompts are unavailable; supply messages/forms explicitly. Remote access from bound bots needs the owner's network grant. Never put passwords or tickets in tool arguments."
 		m := domain.PluginManifest{ID: spec.id, Name: spec.name, Settings: Schema(properties), Tools: []domain.Tool{tool(spec.id+"_command", description, spec.id+".run", args, "command")}}
 		for _, command := range []string{"status", "diff"} {
-			m.Tools = append(m.Tools, tool(spec.id+"_"+command, "Run "+spec.name+" "+command+" in a workspace. Output is streamed; include paths/options in args.", spec.id+".run", map[string]any{"args": A("Additional subcommand arguments"), "directory": S("Working directory"), "timeoutSeconds": N("1-300 seconds")}))
+			m.Tools = append(m.Tools, tool(spec.id+"_"+command, "Run "+spec.name+" "+command+" in a workspace. Output is streamed; include paths/options in args.", spec.id+".run", map[string]any{"args": A("Additional subcommand arguments"), "directory": S("Working directory"), "timeoutSeconds": N("Optional timeout in seconds; omitted or 0 runs until exit or cancellation")}))
 		}
 		out = append(out, m)
 	}

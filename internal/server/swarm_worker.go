@@ -584,8 +584,6 @@ func (w *swarmWorker) groupCall(ctx context.Context, input groupCall) (json.RawM
 	if input.Bot != "" && !strings.Contains(input.Bot, ":") {
 		input.Bot = swarm.Key(w.s.Swarm.Node().ID, input.Bot)
 	}
-	ctx, cancel := context.WithTimeout(ctx, 125*time.Second)
-	defer cancel()
 	if input.Action != "wait" {
 		var stop context.CancelFunc
 		ctx, stop = context.WithTimeout(ctx, 4*time.Second)
@@ -687,9 +685,7 @@ func (s *Server) coordinateWorker(ctx context.Context, node string, input groupC
 		err := f.group.ReplyWithCommit(input.Bot, input.RequestID, input.Content, func(value coordinator.Request) error { return s.Store.Put("swarm-replies:"+f.ID, value.ID, value) })
 		return true, err
 	case "wait":
-		child, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancel()
-		return f.group.Wait(child, input.Bot, input.RequestID)
+		return f.group.Wait(ctx, input.Bot, input.RequestID)
 	case "target":
 		return f.group.WaitTarget(input.Bot, input.RequestID)
 	case "pending":
