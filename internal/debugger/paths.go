@@ -3,68 +3,27 @@ package debugger
 import (
 	"encoding/json"
 	"path/filepath"
-	"strings"
 
 	"github.com/brent/echo/internal/debugconfig"
-	"github.com/brent/echo/internal/workspacefs"
+	"github.com/brent/echo/internal/editorfs"
 )
 
 func (s *Service) resolveSource(workspaceID string, ref debugconfig.SourceRef) (string, error) {
-	return s.fs.ResolveExistingHostPath(workspaceID, workspacefs.FileRef{RootID: ref.RootID, Path: ref.Path}, false)
+	return s.fs.ResolveExistingHostPath(workspaceID, editorfs.FileRef{RootID: ref.RootID, Path: ref.Path}, false)
 }
 
-func (s *Service) fileRefForPath(workspaceID, path string) *debugconfig.SourceRef {
+func (s *Service) fileRefForPath(id, path string) *debugconfig.SourceRef {
 	if s.fs == nil || !filepath.IsAbs(path) {
 		return nil
 	}
-	roots, err := s.fs.Roots(workspaceID)
+	ref, err := s.fs.ReferenceForHostPath(id, path)
 	if err != nil {
 		return nil
 	}
-	clean, err := filepath.Abs(path)
-	if err != nil {
-		return nil
-	}
-	for _, root := range roots {
-		base, baseErr := filepath.Abs(root.HostPath)
-		if baseErr != nil {
-			continue
-		}
-		relative, relErr := filepath.Rel(base, clean)
-		if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			continue
-		}
-		return &debugconfig.SourceRef{RootID: root.ID, Path: filepath.ToSlash(relative)}
-	}
-	return nil
+	return &debugconfig.SourceRef{RootID: ref.RootID, Path: ref.Path}
 }
-
-func (s *Service) adapterPathToHost(workspaceID, path string) string {
-	if path == "" {
-		return ""
-	}
-	workspace, err := s.workspace(workspaceID)
-	if err == nil && workspace.Sandbox.Enabled {
-		if manager := s.sandboxManager(); manager != nil {
-			if host, mapErr := manager.GuestToHost(workspaceID, path); mapErr == nil {
-				return host
-			}
-		}
-	}
-	return path
-}
-
-func (s *Service) hostPathToAdapter(workspaceID, path string) string {
-	workspace, err := s.workspace(workspaceID)
-	if err == nil && workspace.Sandbox.Enabled {
-		if manager := s.sandboxManager(); manager != nil {
-			if guest, mapErr := manager.HostToGuest(workspaceID, path); mapErr == nil {
-				return guest
-			}
-		}
-	}
-	return path
-}
+func (s *Service) adapterPathToHost(id, path string) string { return path }
+func (s *Service) hostPathToAdapter(id, path string) string { return path }
 
 // translateDAPBody adds stable Echo file references while retaining ordinary
 // DAP source objects, and converts guest paths back to host paths.

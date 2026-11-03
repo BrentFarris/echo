@@ -1,12 +1,8 @@
 // Package launch opens the Echo web app once the server is listening.
 //
-// When the Echo PWA is installed it registers an OS-level handler for the
-// echo: URL scheme (declared via protocol_handlers in the web app manifest).
-// Launching echo:// then opens the standalone installed app. When no handler
-// exists — the PWA was installed before the manifest declared the handler,
-// or the browser does not register them — the installed PWA's Start Menu
-// shortcut is launched directly (Windows), and the default browser at the
-// server URL is the final fallback.
+// Existing installations may register an echo: protocol handler. Windows
+// installations without that handler are found through their Start Menu
+// shortcuts. The default browser at the server URL is the final fallback.
 //
 // Open never fails the process: every error is logged and startup continues.
 package launch
@@ -14,22 +10,16 @@ package launch
 import (
 	"fmt"
 	"log"
-	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 )
 
 // suppressEnv disables auto-open for headless or embedded use.
 const suppressEnv = "ECHO_NO_OPEN"
-
-// healthTimeout bounds how long Open waits for the server to answer before
-// giving up. The PWA (or browser tab) is only launched once the origin can
-// actually serve it.
-const healthTimeout = 10 * time.Second
 
 // commandRunner executes external commands and returns their combined output.
 // It exists so detection and launch behavior can be tested with a fake.
@@ -43,6 +33,7 @@ func (execRunner) Run(name string, args ...string) (string, error) {
 	// exec.Command is intentionally not used with a context: opening the app
 	// must not be cancelled mid-flight, and every opener here returns quickly.
 	command := exec.Command(name, args...)
+	configureCommand(command)
 	output, err := command.CombinedOutput()
 	return string(output), err
 }
@@ -58,22 +49,15 @@ func BrowserURL(port int) string {
 	return fmt.Sprintf("http://localhost:%d/", port)
 }
 
-// Open waits for the server on 127.0.0.1:port to become healthy, then opens
-// the installed Echo PWA via the echo: scheme, falling back to launching the
-// installed PWA shortcut directly, and finally to the default browser. It is
-// safe to call in a goroutine and never returns an error; problems are
-// logged.
-func Open(port int) {
+// Open opens the installed Echo PWA or the default browser. The caller must
+// bind the server listener first. Problems are logged without stopping Echo.
+func Open(serverURL string) {
 	if os.Getenv(suppressEnv) == "1" {
 		log.Printf("echo launch: skipped (%s is set)", suppressEnv)
 		return
 	}
-	if err := waitUntilHealthy(port, healthTimeout); err != nil {
-		log.Printf("echo launch: server did not become healthy, not opening an app window: %v", err)
-		return
-	}
 	runner := execRunner{}
-	opened, err := open(runner, port)
+	opened, err := open(runner, serverURL)
 	if err != nil {
 		log.Printf("echo launch: failed to open %s: %v", opened, err)
 		return
@@ -89,36 +73,58 @@ var goos = runtime.GOOS
 // attempted last (for logging). macOS relies on try-and-fall-back because
 // `open` exits non-zero when no application claims the scheme; Windows and
 // Linux detect the handler first because their openers either pop an OS
-// dialog (Windows `start`) or silently misbehave (some xdg-open
+// dialog (Windows) or silently misbehave (some xdg-open
 // implementations) when the scheme is unregistered.
-func open(runner commandRunner, port int) (string, error) {
+func open(runner commandRunner, serverURL string) (string, error) {
+	origin, err := url.Parse(serverURL)
+	if err != nil || origin.Hostname() != "localhost" || (origin.Scheme != "http" && origin.Scheme != "https") || origin.Port() == "" {
+		return serverURL, fmt.Errorf("invalid local Echo URL: %q", serverURL)
+	}
+	// The legacy protocol only carries an HTTP port. HTTPS must keep its origin.
+	appURL := ""
+	if origin.Scheme == "http" {
+		appURL = "echo://open?port=" + origin.Port()
+	}
 	run := func(name string, args ...string) error {
 		_, err := runner.Run(name, args...)
 		return err
 	}
 	switch goos {
 	case "darwin":
-		if err := run("open", AppURL(port)); err == nil {
-			return AppURL(port), nil
+		if appURL != "" {
+			if err := run("open", appURL); err == nil {
+				return appURL, nil
+			}
 		}
-		return BrowserURL(port), run("open", BrowserURL(port))
+		return serverURL, run("open", serverURL)
 	case "windows":
-		decision := resolveWindows(runner, port)
-		return decision, run("cmd", "/c", "start", "", decision)
-	default:
-		if hasEchoHandler(runner) {
-			return AppURL(port), run("xdg-open", AppURL(port))
+		decision := resolveWindows(runner, serverURL, appURL)
+		launch := func(target string) error {
+			// Quote as a PowerShell literal; paths may contain spaces or shell metacharacters.
+			return run("powershell", "-NoProfile", "-NonInteractive", "-Command", "Start-Process -ErrorAction Stop -FilePath '"+strings.ReplaceAll(target, "'", "''")+"'")
 		}
-		return BrowserURL(port), run("xdg-open", BrowserURL(port))
+		if err := launch(decision); err == nil {
+			return decision, nil
+		} else if decision == serverURL {
+			return decision, err
+		}
+		return serverURL, launch(serverURL)
+	default:
+		if appURL != "" && hasEchoHandler(runner) {
+			if err := run("xdg-open", appURL); err == nil {
+				return appURL, nil
+			}
+		}
+		return serverURL, run("xdg-open", serverURL)
 	}
 }
 
 // resolveWindows decides what to open on Windows, in order of preference:
-// the echo: scheme handler (registered by an up-to-date PWA install), the
+// an existing echo: scheme handler, the
 // installed PWA's Start Menu shortcut, then the browser.
-func resolveWindows(runner commandRunner, port int) string {
-	if hasEchoHandler(runner) {
-		return AppURL(port)
+func resolveWindows(runner commandRunner, serverURL, appURL string) string {
+	if appURL != "" && hasEchoHandler(runner) {
+		return appURL
 	}
 	// A PWA installed before the manifest declared protocol_handlers (or by
 	// a browser that does not register them) has no echo: handler, but its
@@ -126,7 +132,7 @@ func resolveWindows(runner commandRunner, port int) string {
 	if shortcut := findPWAShortcut(runner); shortcut != "" {
 		return shortcut
 	}
-	return BrowserURL(port)
+	return serverURL
 }
 
 // pwaShortcutScript prints the full paths of Start Menu shortcuts whose
@@ -153,7 +159,8 @@ func findPWAShortcut(runner commandRunner) string {
 		if path == "" {
 			continue
 		}
-		name := strings.TrimSuffix(strings.ToLower(filepath.Base(path)), ".lnk")
+		// Accept Windows paths even when these tests run on Unix.
+		name := strings.TrimSuffix(strings.ToLower(filepath.Base(strings.ReplaceAll(path, `\`, "/"))), ".lnk")
 		if name == "echo" {
 			return path
 		}
@@ -193,31 +200,5 @@ func hasEchoHandler(runner commandRunner) bool {
 			return false
 		}
 		return strings.TrimSpace(output) != ""
-	}
-}
-
-// waitUntilHealthy polls the server's health endpoint until it answers or
-// the timeout elapses.
-func waitUntilHealthy(port int, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	url := fmt.Sprintf("http://127.0.0.1:%d/api/health", port)
-	client := &http.Client{Timeout: time.Second}
-	for {
-		response, err := client.Get(url)
-		if err == nil {
-			// Any HTTP response means the listener is up and serving; the
-			// body is irrelevant here.
-			_ = response.Body.Close()
-			if response.StatusCode != 0 {
-				return nil
-			}
-		}
-		if time.Now().After(deadline) {
-			if err != nil {
-				return fmt.Errorf("health check at %s: %w", url, err)
-			}
-			return nil
-		}
-		time.Sleep(250 * time.Millisecond)
 	}
 }

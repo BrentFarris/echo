@@ -2,20 +2,22 @@ package sourcecontrol
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	workspacefs "github.com/brent/echo/internal/editorfs"
 	"github.com/brent/echo/internal/mutation"
-	"github.com/brent/echo/internal/workspacefs"
 )
 
 // Service multiplexes provider capabilities behind one repository namespace.
 type Service struct {
 	mu            sync.RWMutex
 	providers     map[string]Provider
+	diagnostics   map[string]map[string]string
 	providerOrder []string
 	repositories  map[string]map[string]string
 	subscriptions map[string]int
@@ -25,7 +27,7 @@ type Service struct {
 
 func New() *Service {
 	return &Service{
-		providers: make(map[string]Provider), repositories: make(map[string]map[string]string),
+		providers: make(map[string]Provider), diagnostics: make(map[string]map[string]string), repositories: make(map[string]map[string]string),
 		subscriptions: make(map[string]int), refreshTimers: make(map[string]*time.Timer),
 	}
 }
@@ -59,7 +61,7 @@ func (s *Service) HandleFileEvent(event workspacefs.WatchEvent) {
 			receiver.HandleFileEvent(event)
 		}
 	}
-	s.InvalidateWorkspace(event.WorkspaceID)
+	s.InvalidateWorkspace(event.BotID)
 }
 
 func (s *Service) Tracks(workspaceID, path string) bool {
@@ -112,7 +114,13 @@ func (s *Service) Providers(ctx context.Context, workspaceID string) []ProviderD
 	providers := s.providerSnapshot()
 	result := make([]ProviderDescriptor, 0, len(providers))
 	for _, provider := range providers {
-		result = append(result, provider.Descriptor(ctx, workspaceID))
+		descriptor := provider.Descriptor(ctx, workspaceID)
+		s.mu.RLock()
+		if diagnostic := s.diagnostics[workspaceID][descriptor.ID]; diagnostic != "" {
+			descriptor.Diagnostic = diagnostic
+		}
+		s.mu.RUnlock()
+		result = append(result, descriptor)
 	}
 	return result
 }
@@ -121,14 +129,11 @@ func (s *Service) Repositories(ctx context.Context, workspaceID string) ([]Repos
 	providers := s.providerSnapshot()
 	repositories := make([]Repository, 0)
 	providerByRepository := make(map[string]string)
-	var firstErr error
+	diagnostics := map[string]string{}
 	for _, provider := range providers {
 		items, err := provider.Repositories(ctx, workspaceID)
 		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
+			diagnostics[provider.Descriptor(ctx, "").ID] = "Discovery incomplete: " + err.Error()
 		}
 		for _, repository := range items {
 			if repository.ID == "" || repository.ProviderID == "" {
@@ -138,9 +143,7 @@ func (s *Service) Repositories(ctx context.Context, workspaceID string) ([]Repos
 			repositories = append(repositories, repository)
 		}
 	}
-	if len(repositories) == 0 && firstErr != nil {
-		return nil, firstErr
-	}
+
 	sort.SliceStable(repositories, func(i, j int) bool {
 		left, right := strings.ToLower(repositories[i].Label), strings.ToLower(repositories[j].Label)
 		if left != right {
@@ -153,6 +156,7 @@ func (s *Service) Repositories(ctx context.Context, workspaceID string) ([]Repos
 	})
 	s.mu.Lock()
 	s.repositories[workspaceID] = providerByRepository
+	s.diagnostics[workspaceID] = diagnostics
 	s.mu.Unlock()
 	return repositories, nil
 }
@@ -290,7 +294,8 @@ func (s *Service) Action(ctx context.Context, workspaceID, repositoryID string, 
 			operation.Error = resultErr.Error()
 		}
 		s.Emit(Event{Type: "source_control_operation", WorkspaceID: workspaceID, RepositoryID: repositoryID, ProviderID: descriptor.ID, Operation: &operation})
-		if resultErr == nil {
+		{
+			// Refresh after success, cancellation, or partial failure.
 			// The status recompute can cost a full VCS scan (Fossil hashes the
 			// whole checkout); do it off the request path. Clients already
 			// reconcile via the pushed source_control_status event.
@@ -316,9 +321,15 @@ func (s *Service) Subscribe(ctx context.Context, workspaceID string) error {
 	}
 	for _, provider := range s.providerSnapshot() {
 		if watcher, ok := provider.(WatchProvider); ok {
+			// One unavailable provider must not stop healthy providers' watches.
 			if err := watcher.Subscribe(ctx, workspaceID); err != nil {
-				s.Unsubscribe(workspaceID)
-				return err
+				id := provider.Descriptor(ctx, "").ID
+				s.mu.Lock()
+				if s.diagnostics[workspaceID] == nil {
+					s.diagnostics[workspaceID] = map[string]string{}
+				}
+				s.diagnostics[workspaceID][id] = err.Error()
+				s.mu.Unlock()
 			}
 		}
 	}
@@ -382,14 +393,15 @@ func (s *Service) ResetWorkspace(ctx context.Context, workspaceID string) error 
 	s.mu.Lock()
 	delete(s.repositories, workspaceID)
 	s.mu.Unlock()
+	var failures []error
 	for _, provider := range s.providerSnapshot() {
 		if watcher, ok := provider.(WatchProvider); ok {
 			if err := watcher.ResetWorkspace(ctx, workspaceID); err != nil {
-				return err
+				failures = append(failures, err)
 			}
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 func (s *Service) RemoveWorkspace(workspaceID string) {

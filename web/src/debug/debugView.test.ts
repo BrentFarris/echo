@@ -3,12 +3,12 @@ import type { DAPStackFrame, DebugPersistentState, DebugSession, DebugSource, De
 import type { DebugViewOptions } from "./debugView";
 
 const mocks = vi.hoisted(() => ({ request: vi.fn(), save: vi.fn(), prompt: vi.fn(), openSource: vi.fn(), openVirtualSource: vi.fn() }));
-vi.mock("../../js/ws.js", () => ({ on: () => () => {}, onState: () => () => {}, send: vi.fn() }));
+vi.mock("./events", () => ({ subscribeDebug: () => () => {} }));
 vi.mock("../code/language", () => ({ monaco: { languages: { getLanguages: () => [] } } }));
 vi.mock("../code/ui", () => ({
   escapeHTML: (value: string) => value, promptDialog: mocks.prompt, toast: vi.fn(),
 }));
-vi.mock("../terminal", () => ({ registerWorkbenchPanel: () => () => {}, openWorkbenchPanel: vi.fn() }));
+vi.mock("../terminal/index", () => ({ registerWorkbenchPanel: () => () => {}, openWorkbenchPanel: vi.fn() }));
 vi.mock("./api", () => ({ dapRequest: mocks.request, saveDebugState: mocks.save }));
 
 import { DebugView } from "./debugView";
@@ -24,6 +24,7 @@ const internals = () => view as unknown as {
   invalidateInspection(): void;
   receiveEvent(event: DebugEvent): void;
   frameSelection: { frame: DAPStackFrame; threadId: number } | null;
+  threads: Map<string, Array<{ id: number; name: string }>>;
   frames: Map<string, DAPStackFrame[]>;
   savedFrame: { sessionId: string; threadId: number; frameId: number; stopGeneration: number };
 };
@@ -41,7 +42,7 @@ beforeEach(() => {
   controller = new AbortController();
   const disposable = () => ({ dispose() {} });
   view = new DebugView({
-    workspaceId: "workspace", host, toolbarHost: document.querySelector("header")!, signal: controller.signal,
+    openConfiguration: vi.fn(), installDebugger: vi.fn(), workspaceId: "workspace", host, toolbarHost: document.querySelector("header")!, signal: controller.signal,
     editor: {
       onMouseDown: disposable, onContextMenu: disposable, onDidChangeModel: disposable,
       onDidChangeModelContent: disposable, getModel: () => null, deltaDecorations: () => [],
@@ -98,6 +99,26 @@ it("discards scope results from a frame selected earlier in the same stop", asyn
   await old;
   expect(host.textContent).toContain("Go locals");
   expect(host.textContent).not.toContain("Stale C locals");
+});
+
+it("keeps the sidebar's current scroll position while switching frames and loading scopes", async () => {
+  let finishScopes!: (value: unknown) => void;
+  const frames = [{ id: 10, name: "main.first", line: 8, column: 1 }, { id: 11, name: "main.second", line: 1, column: 1 }];
+  internals().threads.set("session", [{ id: 1, name: "Main" }]);
+  internals().frames.set("session:1", frames);
+  mocks.request.mockResolvedValue({ body: { scopes: [] } });
+  await internals().selectFrameByID("session", 1, 10);
+  host.querySelector<HTMLElement>(".debug-sidebar-scroll")!.scrollTop = 180;
+  mocks.request.mockImplementation(() => new Promise(resolve => { finishScopes = resolve; }));
+
+  const select = internals().selectFrameByID("session", 1, 11);
+  expect(host.querySelector<HTMLElement>(".debug-sidebar-scroll")!.scrollTop).toBe(180);
+  // Scrolling during the request should win over the position at selection.
+  host.querySelector<HTMLElement>(".debug-sidebar-scroll")!.scrollTop = 260;
+  finishScopes({ body: { scopes: [{ name: "Second frame locals", variablesReference: 0 }] } });
+  await select;
+  expect(host.textContent).toContain("Second frame locals");
+  expect(host.querySelector<HTMLElement>(".debug-sidebar-scroll")!.scrollTop).toBe(260);
 });
 
 it("opens an adapter source before its echoRef and carries the exact source position", async () => {
@@ -158,4 +179,10 @@ it("omits terminated and failed sessions from the call stack", () => {
 
   view.acceptExternalSnapshot({ workspaceId: "workspace", sequence: 3, sessions: [terminated, failed], groups: [], state: { revision: 0 } });
   expect(callStack()).toContain("No debug sessions.");
+});
+
+it("ignores a launch snapshot that arrives after a newer stopped event", () => {
+  view.acceptExternalSnapshot({ workspaceId: "workspace", sequence: 4, sessions: [session], groups: [], state: { revision: 0 } });
+  view.acceptExternalSnapshot({ workspaceId: "workspace", sequence: 3, sessions: [{ ...session, status: "running" }], groups: [], state: { revision: 0 } });
+  expect(document.querySelector('[data-debug-control=continue]')).not.toBeNull();
 });

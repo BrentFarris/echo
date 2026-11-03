@@ -113,7 +113,7 @@ func TestSandboxCheckoutFailureHasActionableDiagnostic(t *testing.T) {
 	if code := classifyCommandError(message, true); code != "fossil_checkout_unavailable_in_sandbox" {
 		t.Fatalf("sandbox checkout error code = %q", code)
 	}
-	if !strings.Contains(sandboxCheckoutDiagnostic, "disable the sandbox") || !strings.Contains(sandboxCheckoutDiagnostic, "workspace folder") {
+	if !strings.Contains(sandboxCheckoutDiagnostic, "parent folder") || !strings.Contains(sandboxCheckoutDiagnostic, "bot's workspace") {
 		t.Fatalf("sandbox diagnostic is not actionable: %q", sandboxCheckoutDiagnostic)
 	}
 }

@@ -8,7 +8,9 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -89,7 +91,7 @@ func (c *Client) Generate(ctx context.Context, params TemplateParams, workflow m
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
@@ -103,6 +105,9 @@ func (c *Client) Generate(ctx context.Context, params TemplateParams, workflow m
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
+	}
+	if result.PromptID == "" {
+		return nil, fmt.Errorf("ComfyUI returned an empty prompt ID")
 	}
 
 	// Wait for generation to complete by polling history.
@@ -144,7 +149,7 @@ func (c *Client) UploadImage(ctx context.Context, filename string, data []byte) 
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)
 	}
@@ -154,10 +159,17 @@ func (c *Client) UploadImage(ctx context.Context, filename string, data []byte) 
 	}
 
 	var result struct {
-		Name string `json:"name"`
+		Name      string `json:"name"`
+		Subfolder string `json:"subfolder"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return "", fmt.Errorf("parse upload response: %w", err)
+	}
+	if result.Name == "" {
+		return "", fmt.Errorf("ComfyUI returned an empty upload name")
+	}
+	if result.Subfolder != "" {
+		return strings.TrimRight(result.Subfolder, "/") + "/" + result.Name, nil
 	}
 	return result.Name, nil
 }
@@ -165,8 +177,8 @@ func (c *Client) UploadImage(ctx context.Context, filename string, data []byte) 
 // GetHistory fetches the execution history for a prompt ID from ComfyUI.
 // Returns an *ExecutionError if the workflow failed during execution.
 func (c *Client) GetHistory(ctx context.Context, promptID string) (*GenerateResult, error) {
-	url := strings.TrimRight(c.BaseURL, "/") + "/history/" + promptID
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	historyURL := strings.TrimRight(c.BaseURL, "/") + "/history/" + url.PathEscape(promptID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, historyURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -184,13 +196,13 @@ func (c *Client) GetHistory(ctx context.Context, promptID string) (*GenerateResu
 	}
 
 	var history map[string]map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&history); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&history); err != nil {
 		return nil, fmt.Errorf("parse history: %w", err)
 	}
 
 	entry, ok := history[promptID]
 	if !ok {
-		return nil, fmt.Errorf("prompt ID %s not found in history", promptID)
+		return nil, fmt.Errorf("prompt ID %s: %w", promptID, ErrPending)
 	}
 
 	// Check for node-level errors in outputs first — they contain the real failure details.
@@ -363,6 +375,8 @@ func (c *Client) GetHistory(ctx context.Context, promptID string) (*GenerateResu
 		}
 	}
 
+	sort.Strings(images)
+	sort.Strings(videos)
 	return &GenerateResult{
 		PromptID:     promptID,
 		OutputImages: images,

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	workspacefs "github.com/brent/echo/internal/editorfs"
 	"github.com/brent/echo/internal/sourcecontrol"
 	"github.com/brent/echo/internal/sourcecontrol/checkpoint"
-	"github.com/brent/echo/internal/workspacefs"
 )
 
 func (p *Provider) Diff(ctx context.Context, workspaceID, repositoryID string, target sourcecontrol.DiffTarget) (sourcecontrol.DiffDocument, error) {
@@ -278,7 +278,7 @@ func (p *Provider) readWorkingFile(state *repositoryState, pathValue string) ([]
 		}
 		return []byte(target), true, nil
 	}
-	data, err := os.ReadFile(hostPath)
+	data, err := p.fs.ReadSourceControlFile(state.workspaceID, hostPath)
 	if os.IsNotExist(err) {
 		return nil, false, nil
 	}

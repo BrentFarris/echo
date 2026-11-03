@@ -73,11 +73,13 @@ export function installMenuDismissal(signal: AbortSignal): void {
 }
 
 export function choiceDialog(options: {
+  signal?: AbortSignal;
   title: string;
   message: string;
   detail?: string;
   choices: Array<{ id: string; label: string; primary?: boolean; danger?: boolean }>;
 }): Promise<string | null> {
+  if (options.signal?.aborted) return Promise.resolve(null);
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "code-modal-overlay";
@@ -92,9 +94,12 @@ export function choiceDialog(options: {
       </section>
     `;
     const finish = (choice: string | null) => {
+      options.signal?.removeEventListener('abort', cancel);
       overlay.remove();
       resolve(choice);
     };
+    const cancel = () => finish(null);
+    options.signal?.addEventListener('abort', cancel, { once: true });
     overlay.addEventListener("click", (event) => {
       const button = (event.target as Element).closest<HTMLButtonElement>("[data-choice]");
       if (button) finish(button.dataset.choice || null);
@@ -109,20 +114,23 @@ export function choiceDialog(options: {
 }
 
 export function promptDialog(options: {
+  signal?: AbortSignal;
   title: string;
   label: string;
   initial?: string;
   placeholder?: string;
+  type?: "text" | "password";
   confirmLabel?: string;
   required?: boolean;
 }): Promise<string | null> {
+  if (options.signal?.aborted) return Promise.resolve(null);
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "code-modal-overlay";
     overlay.innerHTML = `
       <form class="code-modal code-prompt-modal" role="dialog" aria-modal="true">
         <h2>${escapeHTML(options.title)}</h2>
-        <label>${escapeHTML(options.label)}<input name="value" value="${escapeHTML(options.initial || "")}" placeholder="${escapeHTML(options.placeholder || "")}" ${options.required === false ? "" : "required"}></label>
+        <label>${escapeHTML(options.label)}<input name="value" type="${options.type || "text"}" autocomplete="off" value="${escapeHTML(options.initial || "")}" placeholder="${escapeHTML(options.placeholder || "")}" ${options.required === false ? "" : "required"}></label>
         <p class="code-modal-error" data-prompt-error></p>
         <div class="code-modal-actions">
           <button type="button" data-cancel>Cancel</button>
@@ -132,7 +140,9 @@ export function promptDialog(options: {
     `;
     const form = overlay.querySelector<HTMLFormElement>("form")!;
     const input = form.elements.namedItem("value") as HTMLInputElement;
-    const finish = (value: string | null) => { overlay.remove(); resolve(value); };
+    const finish = (value: string | null) => { options.signal?.removeEventListener('abort', cancel); overlay.remove(); resolve(value); };
+    const cancel = () => finish(null);
+    options.signal?.addEventListener('abort', cancel, { once: true });
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       const value = input.value.trim();

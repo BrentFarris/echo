@@ -81,6 +81,6 @@ describe("debug editor state", () => {
     expect(debugKeyAction({ key: "F8", ctrlKey: false, metaKey: false, shiftKey: false, altKey: false }, clear)).toBeNull();
     expect(debugKeyAction({ key: "F5", ctrlKey: false, metaKey: false, shiftKey: false, altKey: false }, { ...clear, inputFocused: true })).toBeNull();
     expect(debugKeyAction({ key: "F9", ctrlKey: false, metaKey: false, shiftKey: false, altKey: false }, { ...clear, inputFocused: true })).toBeNull();
-    expect(debugKeyAction({ key: "d", ctrlKey: true, metaKey: false, shiftKey: true, altKey: false }, clear)).toBeNull();
+    expect(debugKeyAction({ key: "d", ctrlKey: true, metaKey: false, shiftKey: true, altKey: false }, clear)).toBe("view");
   });
 });

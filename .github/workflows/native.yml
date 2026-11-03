@@ -1,0 +1,60 @@
+name: Native platform acceptance
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main, echo2]
+permissions:
+  contents: read
+jobs:
+  unix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install Linux containment
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Native build, Go, frontend and browser acceptance
+        run: sh build.sh --test --native-tests --browser-tests
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: acceptance-${{ runner.os }}
+          path: web/test-results
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build and regression suites
+        shell: pwsh
+        run: ./build.ps1 -Test -BrowserTests
+      - name: Native containment and available toolchains
+        shell: pwsh
+        env:
+          ECHO2_NATIVE_TESTS: '1'
+        run: go test ./internal/broker ./internal/server ./internal/credentials -run 'TestNative' -count=1 -timeout=5m
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: acceptance-Windows
+          path: web/test-results

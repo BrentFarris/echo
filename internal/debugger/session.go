@@ -7,58 +7,13 @@ import (
 	"io"
 	"strings"
 	"time"
-
-	"github.com/brent/echo/internal/debugconfig"
 )
 
 func (s *Service) runSession(current *session) {
-	workspace, err := s.workspace(current.workspaceID)
-	if err != nil {
-		s.failSession(current.workspaceID, current.id, err)
-		return
-	}
-	currentFile := ""
-	if current.startRequest.CurrentFile != nil {
-		currentFile, err = s.resolveSource(current.workspaceID, *current.startRequest.CurrentFile)
-		if err != nil {
-			s.failSession(current.workspaceID, current.id, err)
-			return
-		}
-	}
-	options, err := s.executionOptions(workspace, currentFile, current.startRequest.Inputs, current.startRequest.SelectedText)
-	if err != nil {
-		s.failSession(current.workspaceID, current.id, err)
-		return
-	}
-	arguments := cloneMap(current.configuration.Arguments)
-	arguments["name"] = current.configuration.Name
-	arguments["type"] = current.profile.AdapterID
-	arguments["request"] = current.configuration.Request
-	if current.startRequest.NoDebug {
-		arguments["noDebug"] = true
-	}
-	expanded, err := debugconfig.ExpandValue(arguments, options)
-	if err != nil {
-		s.failSession(current.workspaceID, current.id, err)
-		return
-	}
-	launchArguments, _ := expanded.(map[string]any)
-	prepareLaunchArguments(current.profile, current.configuration.Request, launchArguments)
-	adapterWorkingDirectory := launchAdapterWorkingDirectory(current.profile, current.configuration.Request, launchArguments, options)
-	sandboxed := workspace.Sandbox.Enabled
-	if delveBuildsBinary(current.profile, current.configuration.Request, launchArguments) {
-		s.mu.Lock()
-		current.debugBinDir = adapterWorkingDirectory
-		current.debugBinSandbox = sandboxed
-		s.mu.Unlock()
-		s.sweepDelveBinaries(current.workspaceID, adapterWorkingDirectory, sandboxed)
-	}
-	logOutput := func(category, output string) { s.appendOutput(current.workspaceID, current.id, category, output, nil) }
-	if err := s.runHook(current.ctx, workspace, current.configuration.PreLaunch, options, "lifecycle", logOutput); err != nil {
-		s.failSession(current.workspaceID, current.id, fmt.Errorf("pre-launch hook: %w", err))
-		return
-	}
-	handle, err := s.startAdapter(current.ctx, workspace, current.profile, options, adapterWorkingDirectory, logOutput)
+	defer close(current.done)
+	defer current.readyOnce.Do(func() { close(current.ready) })
+	launchArguments := current.launch.Arguments
+	handle, err := current.launch.Start(current.ctx, func(category, output string) { s.appendOutput(current.workspaceID, current.id, category, output, nil) })
 	if err != nil {
 		s.failSession(current.workspaceID, current.id, err)
 		return
@@ -67,12 +22,12 @@ func (s *Service) runSession(current *session) {
 	active, activeErr := s.sessionLocked(current.workspaceID, current.id)
 	if activeErr != nil || active != current || isStoppingOrTerminal(current.status) {
 		s.mu.Unlock()
-		handle.stop()
+		handle.Stop()
 		return
 	}
 	current.handle = handle
 	s.mu.Unlock()
-	connection := newDAPConnection(handle.transport, func(event dapEnvelope) { s.handleDAPEvent(current.workspaceID, current.id, event) }, func(ctx context.Context, request dapEnvelope) (any, error) {
+	connection := newDAPConnection(handle.Transport, func(event dapEnvelope) { s.handleDAPEvent(current.workspaceID, current.id, event) }, func(ctx context.Context, request dapEnvelope) (any, error) {
 		return s.handleReverseRequest(ctx, current.workspaceID, current.id, request)
 	}, func(closeErr error) { s.handleDAPClose(current.workspaceID, current.id, closeErr) })
 	connection.setTrace(func(direction string, data []byte) {
@@ -83,7 +38,7 @@ func (s *Service) runSession(current *session) {
 	if activeErr != nil || active != current || isStoppingOrTerminal(current.status) {
 		s.mu.Unlock()
 		_ = connection.Close()
-		handle.stop()
+		handle.Stop()
 		return
 	}
 	current.conn = connection
@@ -92,7 +47,7 @@ func (s *Service) runSession(current *session) {
 	initializeCtx, cancel := context.WithTimeout(current.ctx, requestTimeout)
 	initialize, err := connection.request(initializeCtx, "initialize", map[string]any{
 		"clientID": "echo", "clientName": "Echo", "adapterID": current.profile.AdapterID, "locale": "en-us", "pathFormat": "path", "linesStartAt1": true, "columnsStartAt1": true,
-		"supportsVariableType": true, "supportsVariablePaging": true, "supportsRunInTerminalRequest": s.supportsRunInTerminal(), "supportsMemoryReferences": true, "supportsProgressReporting": true, "supportsInvalidatedEvent": true, "supportsMemoryEvent": true, "supportsArgsCanBeInterpretedByShell": false, "supportsStartDebuggingRequest": true,
+		"supportsVariableType": true, "supportsVariablePaging": true, "supportsRunInTerminalRequest": s.supportsRunInTerminal(), "supportsMemoryReferences": false, "supportsProgressReporting": true, "supportsInvalidatedEvent": true, "supportsMemoryEvent": false, "supportsArgsCanBeInterpretedByShell": false, "supportsStartDebuggingRequest": false,
 	})
 	cancel()
 	if err != nil {
@@ -103,17 +58,22 @@ func (s *Service) runSession(current *session) {
 	_ = json.Unmarshal(initialize.Body, &capabilities)
 	connection.setSupportsCancel(boolCapability(capabilities, "supportsCancelRequest"))
 	s.mu.Lock()
-	if active, _ := s.sessionLocked(current.workspaceID, current.id); active == current {
+	if active, _ := s.sessionLocked(current.workspaceID, current.id); active == current && !isStoppingOrTerminal(current.status) {
 		current.capabilities = capabilities
 		current.status = StatusConfiguring
 		current.revision++
+	} else {
+		s.mu.Unlock()
+		return
 	}
 	s.mu.Unlock()
 	s.publishSession(current.workspaceID, current.id, "session_configuring", initialize.Body, "")
 
+	startupCtx, startupCancel := context.WithTimeout(current.ctx, 60*time.Second)
+	defer startupCancel()
 	launchResult := make(chan error, 1)
 	go func() {
-		_, callErr := connection.request(current.ctx, current.configuration.Request, launchArguments)
+		_, callErr := connection.request(startupCtx, current.configuration.Request, launchArguments)
 		launchResult <- callErr
 	}()
 	launchFinished := false
@@ -129,21 +89,27 @@ func (s *Service) runSession(current *session) {
 				return
 			}
 			launchResult = nil
-		case <-current.ctx.Done():
+			if current.startRequest.NoDebug {
+				waitingForInitialized = false
+			}
+		case <-startupCtx.Done():
+			s.failSession(current.workspaceID, current.id, fmt.Errorf("debug startup: %w", startupCtx.Err()))
 			return
 		}
 	}
-	if err := s.sendAllBreakpoints(current); err != nil {
-		s.failSession(current.workspaceID, current.id, err)
-		return
-	}
-	if boolCapability(capabilities, "supportsConfigurationDoneRequest") {
-		configureCtx, configureCancel := context.WithTimeout(current.ctx, requestTimeout)
-		_, err = connection.request(configureCtx, "configurationDone", map[string]any{})
-		configureCancel()
-		if err != nil {
-			s.failSession(current.workspaceID, current.id, fmt.Errorf("finish debug configuration: %w", err))
+	if !current.startRequest.NoDebug {
+		if err := s.sendAllBreakpoints(current); err != nil {
+			s.failSession(current.workspaceID, current.id, err)
 			return
+		}
+		if boolCapability(capabilities, "supportsConfigurationDoneRequest") {
+			configureCtx, configureCancel := context.WithTimeout(current.ctx, requestTimeout)
+			_, err = connection.request(configureCtx, "configurationDone", map[string]any{})
+			configureCancel()
+			if err != nil {
+				s.failSession(current.workspaceID, current.id, fmt.Errorf("finish debug configuration: %w", err))
+				return
+			}
 		}
 	}
 	if !launchFinished {
@@ -153,7 +119,8 @@ func (s *Service) runSession(current *session) {
 				s.failSession(current.workspaceID, current.id, fmt.Errorf("%s debugger: %w", current.configuration.Request, launchErr))
 				return
 			}
-		case <-current.ctx.Done():
+		case <-startupCtx.Done():
+			s.failSession(current.workspaceID, current.id, fmt.Errorf("debug startup: %w", startupCtx.Err()))
 			return
 		}
 	}
@@ -202,7 +169,7 @@ func (s *Service) handleDAPEvent(workspaceID, sessionID string, event dapEnvelop
 			current.stopGeneration++
 			current.revision++
 			current.location = nil
-			current.cFrames = nil
+			current.frames = nil
 			updated = true
 		}
 		s.mu.Unlock()
@@ -265,75 +232,9 @@ func (s *Service) handleDAPEvent(workspaceID, sessionID string, event dapEnvelop
 		s.publishSession(workspaceID, sessionID, event.Event, s.translateEventBody(workspaceID, sessionID, event.Body), "")
 	case "thread", "process", "module", "loadedSource", "memory", "progressStart", "progressUpdate", "progressEnd":
 		s.publishRaw(workspaceID, sessionID, event.Event, s.translateEventBody(workspaceID, sessionID, event.Body))
-	case "debugpyAttach":
-		go s.startDebugpyChild(workspaceID, sessionID, event.Body)
 	default:
 		s.publishRaw(workspaceID, sessionID, event.Event, s.translateEventBody(workspaceID, sessionID, event.Body))
 	}
-}
-
-func (s *Service) handleReverseRequest(ctx context.Context, workspaceID, sessionID string, request dapEnvelope) (any, error) {
-	switch request.Command {
-	case "runInTerminal":
-		s.mu.Lock()
-		run := s.runInTerminal
-		s.mu.Unlock()
-		if run == nil {
-			return nil, fmt.Errorf("%w: integrated debug terminals are unavailable", ErrUnsupported)
-		}
-		var arguments map[string]any
-		if err := json.Unmarshal(request.Arguments, &arguments); err != nil {
-			return nil, err
-		}
-		kind, _ := arguments["kind"].(string)
-		if kind == "external" {
-			return nil, fmt.Errorf("external GUI terminals are not supported; use integratedTerminal")
-		}
-		return run(ctx, workspaceID, sessionID, arguments)
-	case "startDebugging":
-		var arguments struct {
-			Configuration map[string]any `json:"configuration"`
-			Request       string         `json:"request"`
-		}
-		if err := json.Unmarshal(request.Arguments, &arguments); err != nil {
-			return nil, err
-		}
-		return s.startChildConfiguration(workspaceID, sessionID, arguments.Configuration, arguments.Request)
-	default:
-		return nil, fmt.Errorf("%w: adapter reverse request %s", ErrUnsupported, request.Command)
-	}
-}
-
-func (s *Service) startChildConfiguration(workspaceID, parentID string, arguments map[string]any, request string) (any, error) {
-	s.mu.Lock()
-	parent, err := s.sessionLocked(workspaceID, parentID)
-	if err != nil {
-		s.mu.Unlock()
-		return nil, err
-	}
-	configuration := debugconfig.Configuration{ID: "", Name: stringValue(arguments["name"], "Child process"), AdapterProfileID: parent.profile.ID, Request: firstNonEmpty(request, stringValue(arguments["request"], "attach")), Arguments: cloneMap(arguments)}
-	delete(configuration.Arguments, "name")
-	delete(configuration.Arguments, "request")
-	workspace, workspaceErr := s.workspace(workspaceID)
-	groupID := parent.groupID
-	startRequest := parent.startRequest
-	s.mu.Unlock()
-	if workspaceErr != nil {
-		return nil, workspaceErr
-	}
-	id, err := s.createSession(workspace, configuration, groupID, parentID, startRequest)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{"sessionId": id}, nil
-}
-
-func (s *Service) startDebugpyChild(workspaceID, parentID string, body json.RawMessage) {
-	var configuration map[string]any
-	if json.Unmarshal(body, &configuration) != nil {
-		return
-	}
-	_, _ = s.startChildConfiguration(workspaceID, parentID, configuration, "attach")
 }
 
 func (s *Service) handleDAPClose(workspaceID, sessionID string, closeErr error) {
@@ -343,7 +244,12 @@ func (s *Service) handleDAPClose(workspaceID, sessionID string, closeErr error) 
 		s.mu.Unlock()
 		return
 	}
+	starting := current.status == StatusStarting || current.status == StatusConfiguring
 	s.mu.Unlock()
+	if starting {
+		s.failSession(workspaceID, sessionID, fmt.Errorf("debug adapter closed during startup: %w", closeErr))
+		return
+	}
 	if isDAPClosed(closeErr) || closeErr == io.EOF {
 		s.finishSession(workspaceID, sessionID, StatusTerminated, "", 0)
 		return
@@ -365,118 +271,13 @@ func (s *Service) failSession(workspaceID, sessionID string, failure error) {
 	s.finishSession(workspaceID, sessionID, StatusFailed, failure.Error(), 0)
 }
 
-func (s *Service) finishSession(workspaceID, sessionID, status, message string, minimumRevision uint64) {
-	s.mu.Lock()
-	current, err := s.sessionLocked(workspaceID, sessionID)
-	if err != nil || isTerminalStatus(current.status) {
-		s.mu.Unlock()
-		return
-	}
-	current.status = status
-	current.err = message
-	current.threadID = 0
-	current.location = nil
-	current.revision++
-	if current.revision < minimumRevision {
-		current.revision = minimumRevision
-	}
-	ended := time.Now().UTC()
-	current.endedAt = &ended
-	connection, handle, cancel := current.conn, current.handle, current.cancel
-	stopTerminals := s.stopTerminals
-	current.conn = nil
-	current.handle = nil
-	current.step = nil
-	current.cFrames = nil
-	runPost := !current.postStarted
-	current.postStarted = true
-	configuration := current.configuration
-	startRequest := current.startRequest
-	groupID := current.groupID
-	debugBinDir, debugBinSandbox := current.debugBinDir, current.debugBinSandbox
-	var postContext context.Context
-	var postCancel context.CancelFunc
-	if runPost && configuration.PostDebug != nil {
-		postContext, postCancel = context.WithTimeout(context.Background(), time.Duration(configuration.PostDebug.TimeoutMS)*time.Millisecond)
-		current.postCancel = postCancel
-		current.postDone = make(chan struct{})
-	}
-	postDone := current.postDone
-	s.mu.Unlock()
-	cancel()
-	if connection != nil {
-		_ = connection.Close()
-	}
-	if handle != nil {
-		handle.stop()
-	}
-	if stopTerminals != nil {
-		stopTerminals(workspaceID, sessionID)
-	}
-	if debugBinDir != "" {
-		// The compiled __debug_bin* is deleted in the background: the process
-		// tree above has exited, but Windows may still hold the file lock for
-		// a moment. Removing it here keeps every stop path — the stop button,
-		// disconnect, the debuggee exiting, or server shutdown — from leaving
-		// debris behind. Failed removals are retried and then left alone.
-		go s.removeDelveBinariesAfterSession(workspaceID, sessionID, debugBinDir, debugBinSandbox)
-	}
-	s.publishSession(workspaceID, sessionID, status, nil, message)
-	if runPost && configuration.PostDebug != nil {
-		go func() {
-			defer close(postDone)
-			defer postCancel()
-			defer func() {
-				s.mu.Lock()
-				if active, lookupErr := s.sessionLocked(workspaceID, sessionID); lookupErr == nil && active == current {
-					active.postCancel = nil
-				}
-				s.mu.Unlock()
-			}()
-			workspace, workspaceErr := s.workspace(workspaceID)
-			if workspaceErr != nil {
-				return
-			}
-			currentFile := ""
-			if startRequest.CurrentFile != nil {
-				currentFile, _ = s.resolveSource(workspaceID, *startRequest.CurrentFile)
-			}
-			options, optionsErr := s.executionOptions(workspace, currentFile, startRequest.Inputs, startRequest.SelectedText)
-			if optionsErr != nil {
-				return
-			}
-			s.appendOutput(workspaceID, sessionID, "lifecycle", "Running post-debug hook…\n", nil)
-			if hookErr := s.runHook(postContext, workspace, configuration.PostDebug, options, "lifecycle", func(category, output string) { s.appendOutput(workspaceID, sessionID, category, output, nil) }); hookErr != nil {
-				s.appendOutput(workspaceID, sessionID, "lifecycle", hookErr.Error()+"\n", nil)
-			}
-		}()
-	}
-	if groupID != "" {
-		s.handleGroupCompletion(workspaceID, groupID, sessionID, status)
-	}
-}
-
-func (s *Service) handleGroupCompletion(workspaceID, groupID, sessionID, status string) {
-	s.mu.Lock()
-	runtime := s.runtimeLocked(workspaceID)
-	group := runtime.groups[groupID]
-	if group == nil {
-		s.mu.Unlock()
-		return
-	}
-	stopAll := group.stopAll && status == StatusFailed
-	ids := append([]string(nil), group.sessionIDs...)
-	s.mu.Unlock()
-	if stopAll {
-		for _, id := range ids {
-			if id != sessionID {
-				_ = s.Stop(workspaceID, id, nil)
-			}
-		}
-	}
-}
-
 func (s *Service) appendOutput(workspaceID, sessionID, category, output string, data map[string]any) {
+	if len(output) > outputReplayBytes-65536 {
+		output = output[len(output)-(outputReplayBytes-65536):]
+	}
+	if raw, err := json.Marshal(data); err != nil || len(raw) > 32768 {
+		data = map[string]any{"truncated": true}
+	}
 	if output == "" && len(data) == 0 {
 		return
 	}
@@ -490,15 +291,16 @@ func (s *Service) appendOutput(workspaceID, sessionID, category, output string, 
 	current.outputSequence++
 	entry := OutputEntry{Sequence: current.outputSequence, Category: firstNonEmpty(category, "console"), Output: output, Timestamp: time.Now().UTC(), Data: data}
 	current.output = append(current.output, entry)
-	current.outputBytes += len(output)
+	current.outputBytes += outputSize(entry)
 	truncated := false
-	for current.outputBytes > outputReplayBytes && len(current.output) > 1 {
-		current.outputBytes -= len(current.output[0].Output)
+	for (current.outputBytes > outputReplayBytes-256 || len(current.output) > 4095) && len(current.output) > 1 {
+		current.outputBytes -= outputSize(current.output[0])
 		current.output = current.output[1:]
 		truncated = true
 	}
 	if truncated && len(current.output) > 0 && current.output[0].Category != "echo" {
 		current.output = append([]OutputEntry{{Sequence: current.output[0].Sequence - 1, Category: "echo", Output: "Earlier debug output was truncated.\n", Timestamp: time.Now().UTC()}}, current.output...)
+		current.outputBytes += outputSize(current.output[0])
 	}
 	runtime.sequence++
 	notification := Event{Type: "debug_event", WorkspaceID: workspaceID, SessionID: sessionID, GroupID: current.groupID, Sequence: runtime.sequence, Revision: current.revision, Event: "output", Output: &entry}
@@ -562,7 +364,7 @@ func setSessionRunning(current *session) {
 	current.stoppedReason = ""
 	current.stoppedText = ""
 	current.allThreadsStopped = false
-	current.cFrames = nil
+	current.frames = nil
 	current.stopGeneration++
 	current.revision++
 }
@@ -578,6 +380,28 @@ func (s *Service) markRunningIfGeneration(workspaceID, sessionID, reason string,
 	if changed {
 		s.publishSession(workspaceID, sessionID, "continued", nil, reason)
 	}
+}
+
+func (s *Service) supportsRunInTerminal() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runInTerminal != nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func stringValue(value any, fallback string) string {
+	if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+		return text
+	}
+	return fallback
 }
 
 func (s *Service) hydrateLocation(workspaceID, sessionID string) {
@@ -619,23 +443,7 @@ func (s *Service) hydrateLocation(workspaceID, sessionID string) {
 	s.publishSession(workspaceID, sessionID, "location", nil, "")
 }
 
-func (s *Service) supportsRunInTerminal() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.runInTerminal != nil
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-func stringValue(value any, fallback string) string {
-	if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
-		return text
-	}
-	return fallback
+func outputSize(entry OutputEntry) int {
+	data, _ := json.Marshal(entry.Data)
+	return len(entry.Output) + len(data) + len(entry.Category) + 64
 }

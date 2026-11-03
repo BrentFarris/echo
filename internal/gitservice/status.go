@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/brent/echo/internal/workspacefs"
+	workspacefs "github.com/brent/echo/internal/editorfs"
 )
 
 type statusRecord struct {

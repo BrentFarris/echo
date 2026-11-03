@@ -7,8 +7,8 @@ const mocks = vi.hoisted(() => ({
   events: new Map<string, (value: object) => void>(),
   created: null as null | ((model: unknown) => void),
 }));
-vi.mock("../../js/api.js", () => ({ api: mocks.api }));
-vi.mock("../../js/ws.js", () => ({
+vi.mock("./api", () => ({ api: mocks.api }));
+vi.mock("./events", () => ({
   on: (event: string, listener: (value: object) => void) => { mocks.events.set(event, listener); return () => mocks.events.delete(event); },
   onState: () => () => {},
 }));

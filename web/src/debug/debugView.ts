@@ -1,24 +1,21 @@
 import type { editor as MonacoEditor, IDisposable } from "monaco-editor";
-import { on as onSocket, onState as onSocketState, send as sendSocket } from "../../js/ws.js";
+import { subscribeDebug } from "./events";
 import type { FileRef } from "../code/types";
 import { refKey } from "../code/types";
-import { debugHoverExpression, debugSourceKey } from "./sources";
+import { debugSourceKey } from "./sources";
 import { monaco } from "../code/language";
 import { copyText, escapeHTML, promptDialog, showContextMenu, toast } from "../code/ui";
-import { openWorkbenchPanel, registerWorkbenchPanel } from "../terminal";
+import { openWorkbenchPanel, registerWorkbenchPanel } from "../terminal/index";
 import {
-  addAdapterProfile, addAdapterTemplate, dapRequest, deleteAdapterProfile, diagnoseAdapter, disconnectDebug, listDebugProcesses, loadDebugConfig,
-  loadDebugSnapshot, previewVSCodeImport, restartDebug, restartDebugGroup, saveDebugConfig, saveDebugState, setDebugTrace,
-  startDebug, stopDebug, stopDebugGroup, terminateDebug, updateAdapterProfile,
+  dapRequest, disconnectDebug, listDebugProcesses, loadDebugConfig,
+  loadDebugSnapshot, restartDebug, restartDebugGroup, saveDebugState, setDebugTrace,
+  startDebug, stopDebug, stopDebugGroup, terminateDebug,
 } from "./api";
 import {
   activeDebugSession, applyDebugEvent, breakpointDecorationClass, capability,
   commandSupported, debugKeyAction, isTerminalSession,
 } from "./state";
-import {
-  debugStopNotificationPermission, debugStopNotificationsEnabled,
-  requestDebugStopNotificationPermission, setDebugStopNotificationsEnabled,
-} from "./debugNotifications";
+
 import type {
   AdapterProfile, DAPScope, DAPStackFrame, DAPThread, DAPVariable, DataBreakpoint, DebugConfiguration,
   DebugEvent, DebugInput, DebugOutput, DebugPersistentState, DebugSession, DebugSnapshot,
@@ -31,6 +28,10 @@ export type DebugViewOptions = {
   toolbarHost: HTMLElement;
   editor: MonacoEditor.IStandaloneCodeEditor;
   signal: AbortSignal;
+  openConfiguration(file: "launch.json" | "settings.json", rootId?: string): Promise<void>;
+  debuggerStatus?(provider: string): Promise<void>;
+  installDebugger(provider: string): Promise<void>;
+  hoverExpression?(provider: string, line: string, column: number): string;
   activeFile(): FileRef | null;
   selectedText(): string;
   saveAll(requireActiveFile?: boolean): Promise<boolean>;
@@ -58,7 +59,9 @@ export class DebugView {
   private readonly options: DebugViewOptions;
   private config: WorkspaceDebugConfig = { version: 1 };
   private profiles: AdapterProfile[] = [];
-  private templates: Array<{ id: string; description: string; installGuide: string; profile: AdapterProfile }> = [];
+  private configTimer = 0;
+  private disposed = false;
+  private configurationLoading: Promise<void> | null = null;
   private snapshot: DebugSnapshot;
   private selectedSessionId = "";
   private selectedLaunchId = "";
@@ -120,7 +123,7 @@ export class DebugView {
       if (this.options.signal.aborted) return;
       this.config = configResult.config || { version: 1 };
       this.profiles = configResult.profiles || [];
-      this.templates = configResult.templates || [];
+
       this.applySnapshot(snapshot);
       this.selectedLaunchId = snapshot.state.selectedConfigurationId
         || this.config.configurations?.[0]?.id
@@ -136,12 +139,13 @@ export class DebugView {
 
   dispose(): void {
     window.clearTimeout(this.breakpointPersistTimer);
+    this.disposed = true; window.clearInterval(this.configTimer);
     this.inspectionGeneration++;
     this.clearInlineValues();
     for (const dispose of this.disposables) dispose.dispose();
     for (const unregister of this.unregisterPanels) unregister();
     for (const unsubscribe of this.unsubscribeSocket) unsubscribe();
-    sendSocket({ type: "debug_unsubscribe", workspaceId: this.options.workspaceId });
+
     this.options.toolbarHost.innerHTML = "";
     this.persistBrowserPreferences();
   }
@@ -159,13 +163,14 @@ export class DebugView {
     const action = debugKeyAction(event, {
       codeActive: true,
       modalOpen: Boolean(document.querySelector(".code-modal-overlay, .code-picker-overlay, .debug-settings-overlay")),
-      inputFocused: Boolean(target?.closest("input, textarea, select, [contenteditable=true]")),
+      inputFocused: Boolean(target?.closest("input, textarea, select, [contenteditable=true]")) && !target?.closest(".monaco-editor"),
       sessionActive: Boolean(session && !isTerminalSession(session)),
     });
     if (!action) return false;
     event.preventDefault();
     event.stopPropagation();
     if (action === "view") this.options.showSidebar();
+    else if (action === "without") void this.launch(true);
     else if (action === "toggle") void this.toggleLifecycle();
     else if (action === "stop") void this.stopActive();
     else if (action === "restart") void this.restartActive();
@@ -201,13 +206,17 @@ export class DebugView {
       return;
     }
     if (!(await this.options.saveAll(this.launchRequiresActiveFile()))) return;
+    try { await this.refreshConfiguration(); } catch (error) { toast(errorMessage(error)); return; }
+    await this.persistMovedBreakpoints();
     const configuration = this.config.configurations?.find((item) => item.id === this.selectedLaunchId);
     const compound = this.config.compounds?.find((item) => item.id === this.selectedLaunchId);
     if (!configuration && !compound) {
       toast("Select a debug configuration or compound.");
       return;
     }
-    const inputs = await this.collectInputs(this.config.inputs || []);
+    const selected = compound ? this.config.configurations?.filter(c => compound.configurationIds.includes(c.id)) : [configuration];
+    const used = JSON.stringify(selected);
+    const inputs = await this.collectInputs((this.config.inputs || []).filter(input => used.includes("${input:" + input.id + "}")));
     if (inputs === null) return;
     const request = {
       ...(configuration ? { configurationId: configuration.id } : { compoundId: compound!.id }),
@@ -249,8 +258,8 @@ export class DebugView {
 
   async restartActiveCompound(): Promise<void> {
     const groupId = this.activeSession()?.groupId;
-    if (!groupId) return;
-    try { this.applySnapshot(await restartDebugGroup(this.options.workspaceId, groupId, this.groupRevisions(groupId))); this.render(); }
+    if (!groupId || !(await this.options.saveAll(false))) return;
+    try { const fresh = await this.restartInputs(this.snapshot.sessions.filter(s => s.groupId === groupId)); if (!fresh) return; this.applySnapshot(await restartDebugGroup(this.options.workspaceId, groupId, this.groupRevisions(groupId), fresh)); this.render(); }
     catch (error) { await this.handleRequestError(error); }
   }
 
@@ -275,11 +284,22 @@ export class DebugView {
 
   async restartActive(): Promise<void> {
     const session = this.activeSession();
-    if (!session) return;
+    if (!session || !(await this.options.saveAll(false))) return;
     try {
-      this.applySnapshot(await restartDebug(this.options.workspaceId, session.id, session.revision));
+      const fresh = await this.restartInputs([session]);
+      if (!fresh) return;
+      this.applySnapshot(await restartDebug(this.options.workspaceId, session.id, session.revision, fresh));
       this.render();
     } catch (error) { await this.handleRequestError(error); }
+  }
+
+  private async restartInputs(sessions: DebugSession[]): Promise<import('./api').RestartInputs | null> {
+    await this.refreshConfiguration();
+    await this.persistMovedBreakpoints();
+    const ids = new Set(sessions.map(s => s.configurationId));
+    const used = JSON.stringify((this.config.configurations || []).filter(c => ids.has(c.id)));
+    const inputs = await this.collectInputs((this.config.inputs || []).filter(input => used.includes("${input:" + input.id + "}")));
+    return inputs === null ? null : { inputs, currentFile: this.options.activeFile() || undefined, selectedText: this.options.selectedText() };
   }
 
   async toggleBreakpointAtCursor(): Promise<void> {
@@ -300,14 +320,27 @@ export class DebugView {
   }
 
   private subscribe(): void {
-    this.unsubscribeSocket.push(onSocket("debug_event", (raw: object) => this.receiveEvent(raw as DebugEvent)));
-    this.unsubscribeSocket.push(onSocket("debug_subscribed", (raw: object) => {
-      if ((raw as { workspaceId?: string }).workspaceId === this.options.workspaceId) void this.resync();
-    }));
-    this.unsubscribeSocket.push(onSocketState((state) => {
-      if (state === "open") sendSocket({ type: "debug_subscribe", workspaceId: this.options.workspaceId });
-    }));
-    sendSocket({ type: "debug_subscribe", workspaceId: this.options.workspaceId });
+    for (const dispose of this.unsubscribeSocket.splice(0)) dispose();
+    this.unsubscribeSocket.push(subscribeDebug(this.options.workspaceId, event => this.receiveEvent(event), () => { void this.resync(); }));
+    window.clearInterval(this.configTimer);
+    this.configTimer = window.setInterval(() => { void this.refreshConfiguration().catch(() => {}); }, 3000);
+  }
+  async refreshConfiguration(): Promise<void> {
+    if (this.disposed) return;
+    if (this.configurationLoading) await this.configurationLoading;
+    this.configurationLoading = (async () => {
+      try {
+        const result = await loadDebugConfig(this.options.workspaceId);
+        if (!this.disposed && JSON.stringify(result.config) !== JSON.stringify(this.config)) { this.config = result.config; this.profiles = result.profiles; this.render(); }
+      } finally { this.configurationLoading = null; }
+    })();
+    await this.configurationLoading;
+  }
+  async remap(previous: FileRef, next: FileRef): Promise<void> {
+    const marks = this.snapshot.state.sourceBreakpoints || [];
+    const sourceBreakpoints = marks.map(mark => mark.source.rootId === previous.rootId && (mark.source.path === previous.path || mark.source.path.startsWith(previous.path + '/'))
+      ? { ...mark, source: { rootId: next.rootId, path: next.path + mark.source.path.slice(previous.path.length) } } : mark);
+    if (sourceBreakpoints.some((mark, i) => mark !== marks[i])) await this.persistState({ ...this.snapshot.state, sourceBreakpoints });
   }
 
   private receiveEvent(event: DebugEvent): void {
@@ -372,6 +405,7 @@ export class DebugView {
   }
 
   private applySnapshot(snapshot: DebugSnapshot): void {
+    if (snapshot && snapshot.sequence < this.snapshot.sequence) return;
     this.snapshot = snapshot ? {
       ...snapshot,
       sessions: snapshot.sessions || [],
@@ -391,11 +425,20 @@ export class DebugView {
   }
 
   private render(): void {
+    const scroll = this.options.host.querySelector<HTMLElement>(".debug-sidebar-scroll");
+    const scrollTop = scroll?.scrollTop || 0;
+    const scrollLeft = scroll?.scrollLeft || 0;
+    const viewport = scroll?.getBoundingClientRect();
+    const stack = scroll?.querySelector<HTMLElement>("[data-debug-section=callstack]")?.getBoundingClientRect();
+    // Keep a visible call stack in place as scopes and watches above it resize.
+    const stackOffset = scrollTop > 0 && viewport && stack && stack.bottom > viewport.top && stack.top < viewport.bottom
+      ? stack.top - viewport.top : null;
     const session = this.activeSession();
     const launches = [
       ...(this.config.configurations || []).map((item) => ({ id: item.id, name: item.name, kind: item.request })),
       ...(this.config.compounds || []).map((item) => ({ id: item.id, name: item.name, kind: "compound" })),
     ];
+    if (!launches.some(item => item.id === this.selectedLaunchId)) this.selectedLaunchId = launches[0]?.id || "";
     this.options.host.innerHTML = `
       <header class="debug-sidebar-header">
         <span>RUN AND DEBUG</span>
@@ -408,7 +451,8 @@ export class DebugView {
         <button type="button" class="debug-start" title="Start Debugging (F5)" aria-label="Start Debugging" data-debug-action="start" ${launches.length ? "" : "disabled"}><span class="codicon codicon-debug-start"></span></button>
         <button type="button" title="Start Without Debugging" aria-label="Start Without Debugging" data-debug-action="start-without" ${launches.length ? "" : "disabled"}><span class="codicon codicon-run"></span></button>
       </div>
-      ${launches.length ? "" : `<div class="debug-empty"><span class="codicon codicon-debug-alt"></span><p>Create or import a launch configuration for this workspace.</p><button type="button" data-debug-action="settings">Configure Debugging</button></div>`}
+      ${launches.length ? "" : `<div class="debug-empty"><span class="codicon codicon-debug-alt"></span><p>Create a .vscode/launch.json configuration for this folder.</p><button type="button" data-debug-action="settings">Configure Debugging</button></div>`}
+      ${(this.config.diagnostics || []).map(message => `<p class="debug-error">${escapeHTML(message)}</p>`).join("")}
       ${session ? this.renderSessionPicker(session) : ""}
       <div class="debug-sidebar-scroll">
         ${this.renderSection("variables", "VARIABLES", this.renderVariables(), session?.status === "stopped")}
@@ -420,6 +464,15 @@ export class DebugView {
       </div>`;
     this.renderToolbar();
     this.refreshEditorDecorations();
+    const restoredScroll = this.options.host.querySelector<HTMLElement>(".debug-sidebar-scroll");
+    if (restoredScroll) {
+      restoredScroll.scrollTop = scrollTop;
+      restoredScroll.scrollLeft = scrollLeft;
+      const restoredStack = restoredScroll.querySelector<HTMLElement>("[data-debug-section=callstack]");
+      if (stackOffset !== null && restoredStack) {
+        restoredScroll.scrollTop += restoredStack.getBoundingClientRect().top - restoredScroll.getBoundingClientRect().top - stackOffset;
+      }
+    }
   }
 
   private renderSection(id: string, label: string, content: string, visible: boolean, actions = ""): string {
@@ -455,7 +508,7 @@ export class DebugView {
       <button type="button" title="Step Out (Shift+F11)" aria-label="Step Out" data-debug-control="stepOut" ${stopped ? "" : "disabled"}><span class="codicon codicon-debug-step-out"></span></button>
       ${commandSupported(session, "stepBack") ? `<button type="button" title="Step Back" aria-label="Step Back" data-debug-control="stepBack" ${stopped ? "" : "disabled"}><span class="codicon codicon-debug-step-back"></span></button>` : ""}
       ${commandSupported(session, "reverseContinue") ? `<button type="button" title="Reverse Continue" aria-label="Reverse Continue" data-debug-control="reverseContinue" ${stopped ? "" : "disabled"}><span class="codicon codicon-debug-continue-small"></span></button>` : ""}
-      <button type="button" title="Restart (Ctrl+Shift+F8)" aria-label="Restart" data-debug-action="restart" ${controllable ? "" : "disabled"}><span class="codicon codicon-debug-restart"></span></button>
+      <button type="button" title="Restart (Ctrl+Shift+F5)" aria-label="Restart" data-debug-action="restart" ${controllable ? "" : "disabled"}><span class="codicon codicon-debug-restart"></span></button>
       <button type="button" title="${session.request === "attach" ? "Disconnect" : "Stop"} (Shift+F5)" aria-label="${session.request === "attach" ? "Disconnect" : "Stop"}" data-debug-action="stop"><span class="codicon codicon-debug-${session.request === "attach" ? "disconnect" : "stop"}"></span></button>
       ${session.request === "attach" && canTerminateDebuggee ? `<button type="button" title="Terminate Process" aria-label="Terminate Process" data-debug-action="terminate-debuggee"><span class="codicon codicon-debug-stop"></span></button>` : ""}
       ${session.groupId ? `<button type="button" title="Stop Compound" aria-label="Stop Compound" data-debug-action="stop-group" data-group-id="${session.groupId}"><span class="codicon codicon-circle-slash"></span></button>` : ""}
@@ -521,9 +574,9 @@ export class DebugView {
       ...(this.activeSession() ? this.sessionDataBreakpoints.get(this.activeSession()!.id) || [] : []),
     ];
     const configuredExceptions = this.snapshot.state.exceptionBreakpoints || [];
-    const advertisedExceptions = (this.activeSession()?.capabilities?.exceptionBreakpointFilters || []) as Array<{ filter: string; label?: string; description?: string }>;
+    const advertisedExceptions = (this.activeSession()?.capabilities?.exceptionBreakpointFilters || []) as Array<{ filter: string; label?: string; description?: string; default?: boolean }>;
     const exceptions = [...configuredExceptions];
-    for (const advertised of advertisedExceptions) if (!exceptions.some((item) => item.filter === advertised.filter)) exceptions.push({ filter: advertised.filter, enabled: false });
+    for (const advertised of advertisedExceptions) if (!exceptions.some((item) => item.filter === advertised.filter)) exceptions.push({ filter: advertised.filter, enabled: advertised.default === true });
     if (!source.length && !functions.length && !instructions.length && !data.length && !exceptions.length) return `<p class="debug-section-empty">No breakpoints.</p>`;
     const sourceRows = source.map((item) => `<div class="debug-breakpoint-row"><input type="checkbox" data-debug-action="toggle-breakpoint-enabled" data-breakpoint-id="${item.id}" ${item.enabled ? "checked" : ""}><button type="button" data-debug-action="open-breakpoint" data-breakpoint-id="${item.id}"><span class="debug-breakpoint-dot ${breakpointDecorationClass(item, this.snapshot.sessions)}"></span><strong>${escapeHTML(item.source.path.split("/").pop() || item.source.path)}</strong><span>:${item.line}</span>${item.condition ? `<small>if ${escapeHTML(item.condition)}</small>` : ""}${item.hitCondition ? `<small>hit ${escapeHTML(item.hitCondition)}</small>` : ""}${item.logMessage ? `<small>${escapeHTML(item.logMessage)}</small>` : ""}</button><button type="button" aria-label="Edit Breakpoint" data-debug-action="edit-breakpoint" data-breakpoint-id="${item.id}"><span class="codicon codicon-edit"></span></button><button type="button" aria-label="Remove Breakpoint" data-debug-action="remove-breakpoint" data-breakpoint-id="${item.id}"><span class="codicon codicon-close"></span></button></div>`).join("");
     const functionRows = functions.map((item) => `<div class="debug-breakpoint-row"><input type="checkbox" data-debug-action="toggle-function-breakpoint" data-breakpoint-id="${item.id}" ${item.enabled ? "checked" : ""}><span class="codicon codicon-symbol-function"></span><strong>${escapeHTML(item.name)}</strong><button type="button" aria-label="Edit Function Breakpoint" data-debug-action="edit-function-breakpoint" data-breakpoint-id="${item.id}"><span class="codicon codicon-edit"></span></button><button type="button" aria-label="Remove Function Breakpoint" data-debug-action="remove-function-breakpoint" data-breakpoint-id="${item.id}"><span class="codicon codicon-close"></span></button></div>`).join("");
@@ -683,6 +736,7 @@ export class DebugView {
       if (session?.status === "stopped" && this.frameSelection) void this.loadInlineValues(session, this.frameSelection.frame, this.inspectionGeneration);
     }));
     this.disposables.push(this.options.editor.onDidChangeModelContent(() => {
+      this.captureMovedBreakpoints();
       window.clearTimeout(this.breakpointPersistTimer);
       this.breakpointPersistTimer = window.setTimeout(() => void this.persistMovedBreakpoints(), 450);
     }));
@@ -696,14 +750,16 @@ export class DebugView {
           const selection = this.options.editor.getSelection();
           const expression = selection && !selection.isEmpty() && selection.containsPosition(position)
             ? model.getValueInRange(selection)
-            : debugHoverExpression(model.getLineContent(position.lineNumber), position.column);
+            : this.options.hoverExpression?.(session.adapterProfileId, model.getLineContent(position.lineNumber), position.column) || model.getWordAtPosition(position)?.word || "";
           if (!expression) return null;
           const generation = this.inspectionGeneration;
+          const abort = new AbortController();
+          const cancellation = token.onCancellationRequested(() => abort.abort());
           try {
-            const result = await dapRequest<{ result?: string; type?: string }>(this.options.workspaceId, session.id, "evaluate", session.revision, session.stopGeneration, { expression, frameId: frame.id, context: "hover" });
+            const result = await dapRequest<{ result?: string; type?: string }>(this.options.workspaceId, session.id, "evaluate", session.revision, session.stopGeneration, { expression, frameId: frame.id, context: "hover" }, abort.signal);
             if (token.isCancellationRequested || !this.inspectionCurrent(session, generation) || frame !== this.frameSelection?.frame || model !== this.options.editor.getModel()) return null;
             return { range: selection && !selection.isEmpty() ? selection : undefined, contents: [{ value: `**${escapeMarkdown(expression)}**${result.body.type ? ` · \`${escapeMarkdown(result.body.type)}\`` : ""}\n\n\`${escapeMarkdown(result.body.result || "") }\`` }] };
-          } catch { return null; }
+          } catch { return null; } finally { cancellation.dispose(); }
         },
       }));
     }
@@ -717,7 +773,7 @@ export class DebugView {
     if (model && ref) {
       for (const breakpoint of this.snapshot.state.sourceBreakpoints || []) {
         if (refKey(breakpoint.source) !== refKey(ref)) continue;
-        decorations.push({ range: new monaco.Range(breakpoint.line, 1, breakpoint.line, 1), options: { isWholeLine: false, glyphMarginClassName: breakpointDecorationClass(breakpoint, this.snapshot.sessions), glyphMarginHoverMessage: { value: breakpointTooltip(breakpoint, this.snapshot.sessions) }, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges } });
+        decorations.push({ range: new monaco.Range(this.movedBreakpoints.get(breakpoint.id) ?? breakpoint.line, 1, this.movedBreakpoints.get(breakpoint.id) ?? breakpoint.line, 1), options: { isWholeLine: false, glyphMarginClassName: breakpointDecorationClass(breakpoint, this.snapshot.sessions), glyphMarginHoverMessage: { value: breakpointTooltip(breakpoint, this.snapshot.sessions) }, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges } });
         ids.push(breakpoint.id);
       }
       const session = this.activeSession();
@@ -752,20 +808,24 @@ export class DebugView {
     ids.forEach((id, index) => this.breakpointDecorationIDs.set(id, this.breakpointDecorations[index]));
   }
 
-  private async persistMovedBreakpoints(): Promise<void> {
+  private movedBreakpoints = new Map<string, number>();
+  private captureMovedBreakpoints(): void {
     const model = this.options.editor.getModel();
     const ref = this.options.activeFile();
     if (!model || !ref) return;
-    let changed = false;
-    const source = (this.snapshot.state.sourceBreakpoints || []).map((breakpoint) => {
-      if (refKey(breakpoint.source) !== refKey(ref)) return breakpoint;
+    for (const breakpoint of this.snapshot.state.sourceBreakpoints || []) {
+      if (refKey(breakpoint.source) !== refKey(ref)) continue;
       const decoration = this.breakpointDecorationIDs.get(breakpoint.id);
       const range = decoration ? model.getDecorationRange(decoration) : null;
-      if (!range || range.startLineNumber === breakpoint.line) return breakpoint;
-      changed = true;
-      return { ...breakpoint, line: range.startLineNumber };
-    });
-    if (changed) await this.persistState({ ...this.snapshot.state, sourceBreakpoints: source });
+      if (range && range.startLineNumber !== (this.movedBreakpoints.get(breakpoint.id) ?? breakpoint.line)) this.movedBreakpoints.set(breakpoint.id, range.startLineNumber);
+    }
+  }
+  private async persistMovedBreakpoints(): Promise<void> {
+    this.captureMovedBreakpoints();
+    if (!this.movedBreakpoints.size) return;
+    const changes = new Map(this.movedBreakpoints); this.movedBreakpoints.clear();
+    const sourceBreakpoints = (this.snapshot.state.sourceBreakpoints || []).map(bp => changes.has(bp.id) ? { ...bp, line: changes.get(bp.id)! } : bp);
+    await this.persistState({ ...this.snapshot.state, sourceBreakpoints });
   }
 
   private async toggleSourceBreakpoint(ref: FileRef | null, line: number): Promise<void> {
@@ -1158,8 +1218,6 @@ export class DebugView {
       { label: "Copy as Expression", icon: "symbol-variable", disabled: !variable.evaluateName, run: () => variable.evaluateName && copyText(variable.evaluateName) },
       { label: "Set Value…", icon: "edit", disabled: !capability(session, "supportsSetVariable"), run: () => this.setVariable(parentReference, variable) },
       { label: "Add Data Breakpoint", icon: "debug-breakpoint-data", disabled: !capability(session, "supportsDataBreakpoints"), run: () => this.discoverDataBreakpoint(parentReference, variable) },
-      { label: "View Memory", icon: "database", disabled: !variable.memoryReference || !capability(session, "supportsReadMemoryRequest"), run: () => this.viewMemory(variable.memoryReference || "") },
-      { label: "Disassemble", icon: "symbol-numeric", separatorBefore: true, disabled: !variable.memoryReference || !capability(session, "supportsDisassembleRequest"), run: () => this.viewDisassembly(variable.memoryReference || "") },
     ]);
   }
 
@@ -1225,72 +1283,6 @@ export class DebugView {
         toast(`Session-only data breakpoint added for ${breakpoint.name}.`);
       }
     } catch (error) { await this.handleRequestError(error); }
-  }
-
-  private async viewMemory(memoryReference: string): Promise<void> {
-    const session = this.activeSession();
-    if (!session || !memoryReference) return;
-    try {
-      const response = await dapRequest<{ address?: string; data?: string; unreadableBytes?: number }>(this.options.workspaceId, session.id, "readMemory", session.revision, session.stopGeneration, { memoryReference, offset: 0, count: 256 });
-      const bytes = response.body.data ? Uint8Array.from(atob(response.body.data), (character) => character.charCodeAt(0)) : new Uint8Array();
-      if (capability(session, "supportsWriteMemoryRequest")) this.showMemoryViewer(session, memoryReference, response.body.address || memoryReference, bytes, response.body.unreadableBytes || 0);
-      else {
-        const content = [...bytes].map((byte, index) => `${index % 16 === 0 ? `${(index).toString(16).padStart(8, "0")}: ` : ""}${byte.toString(16).padStart(2, "0")}${index % 16 === 15 ? "\n" : " "}`).join("");
-        await this.options.openVirtualSource(`Memory ${response.body.address || memoryReference}`, content, "text/plain");
-      }
-    } catch (error) { await this.handleRequestError(error); }
-  }
-
-  private async viewDisassembly(memoryReference: string): Promise<void> {
-    const session = this.activeSession();
-    if (!session || !memoryReference) return;
-    try {
-      const response = await dapRequest<{ instructions?: Array<{ address: string; instruction: string; symbol?: string; location?: DebugSource; line?: number }> }>(this.options.workspaceId, session.id, "disassemble", session.revision, session.stopGeneration, { memoryReference, instructionOffset: -32, instructionCount: 96, resolveSymbols: true });
-      const instructions = response.body.instructions || [];
-      if (capability(session, "supportsInstructionBreakpoints")) this.showDisassemblyViewer(instructions);
-      else await this.options.openVirtualSource(`Disassembly ${memoryReference}`, instructions.map((item) => `${item.address.padEnd(18)} ${item.instruction}${item.symbol ? ` ; ${item.symbol}` : ""}`).join("\n"), "text/x-asm");
-    } catch (error) { await this.handleRequestError(error); }
-  }
-
-  private showMemoryViewer(session: DebugSession, memoryReference: string, address: string, bytes: Uint8Array, unreadableBytes: number): void {
-    const overlay = document.createElement("div");
-    overlay.className = "debug-settings-overlay";
-    overlay.innerHTML = `<form class="debug-memory-viewer" role="dialog" aria-modal="true"><header><div><h2>Memory ${escapeHTML(address)}</h2><p>Edit hexadecimal bytes. ${unreadableBytes ? `${unreadableBytes} trailing bytes were unreadable.` : ""}</p></div><button type="button" data-cancel aria-label="Close"><span class="codicon codicon-close"></span></button></header><textarea name="bytes" spellcheck="false" aria-label="Memory bytes">${[...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join(" ")}</textarea><p data-error></p><footer><button type="button" data-cancel>Cancel</button><button type="submit" class="is-primary">Write Memory</button></footer></form>`;
-    const close = () => overlay.remove();
-    overlay.querySelectorAll("[data-cancel]").forEach((button) => button.addEventListener("click", close));
-    overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
-    overlay.querySelector("form")?.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const errorHost = overlay.querySelector<HTMLElement>("[data-error]")!;
-      const text = (new FormData(event.currentTarget as HTMLFormElement).get("bytes") || "").toString().trim();
-      if (text && !/^(?:[0-9a-fA-F]{2})(?:\s+[0-9a-fA-F]{2})*$/.test(text)) { errorHost.textContent = "Use two hexadecimal digits per byte."; return; }
-      const data = text ? Uint8Array.from(text.split(/\s+/), (value) => Number.parseInt(value, 16)) : new Uint8Array();
-      let binary = ""; for (const byte of data) binary += String.fromCharCode(byte);
-      try {
-        await dapRequest(this.options.workspaceId, session.id, "writeMemory", session.revision, session.stopGeneration, { memoryReference, offset: 0, data: btoa(binary), allowPartial: false });
-        close(); toast(`${data.length} memory bytes written.`);
-      } catch (error) { errorHost.textContent = errorMessage(error); }
-    });
-    document.body.appendChild(overlay);
-  }
-
-  private showDisassemblyViewer(instructions: Array<{ address: string; instruction: string; symbol?: string }>): void {
-    const overlay = document.createElement("div");
-    overlay.className = "debug-settings-overlay";
-    overlay.innerHTML = `<section class="debug-disassembly-viewer" role="dialog" aria-modal="true"><header><div><h2>Disassembly</h2><p>Select an address to add an instruction breakpoint.</p></div><button type="button" data-cancel aria-label="Close"><span class="codicon codicon-close"></span></button></header><div role="list">${instructions.map((item) => `<button type="button" role="listitem" data-instruction-address="${escapeHTML(item.address)}"><code>${escapeHTML(item.address)}</code><span>${escapeHTML(item.instruction)}</span><small>${escapeHTML(item.symbol || "")}</small></button>`).join("") || `<p>No instructions returned.</p>`}</div></section>`;
-    const close = () => overlay.remove();
-    overlay.querySelector("[data-cancel]")?.addEventListener("click", close);
-    overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
-    overlay.addEventListener("click", async (event) => {
-      const row = (event.target as Element).closest<HTMLElement>("[data-instruction-address]");
-      if (!row) return;
-      const instructionReference = row.dataset.instructionAddress || "";
-      if (!instructionReference) return;
-      await this.persistState({ ...this.snapshot.state, instructionBreakpoints: [...(this.snapshot.state.instructionBreakpoints || []), { id: crypto.randomUUID(), instructionReference, enabled: true }] });
-      row.classList.add("is-selected");
-      toast(`Instruction breakpoint added at ${instructionReference}.`);
-    });
-    document.body.appendChild(overlay);
   }
 
   private async evaluateWatches(session: DebugSession, generation = this.inspectionGeneration): Promise<void> {
@@ -1411,7 +1403,7 @@ export class DebugView {
     const entries = this.allOutput().filter((entry) => ["adapter", "lifecycle", "echo", "telemetry", "dap"].includes(entry.category) && Date.parse(entry.timestamp) >= this.outputClearedAt);
     const progress = [...this.progress.values()].map((item) => `<div class="debug-progress-row"><span class="codicon codicon-loading codicon-modifier-spin"></span><strong>${escapeHTML(item.title)}</strong><span>${escapeHTML(item.message || "")}${item.percentage !== undefined ? ` ${Math.max(0, Math.min(100, item.percentage))}%` : ""}</span>${item.cancellable ? `<button type="button" data-debug-cancel-progress data-session-id="${item.sessionId}" data-progress-id="${escapeHTML(item.progressId)}">Cancel</button>` : ""}</div>`).join("");
     const content = progress + entries.map(renderOutputEntry).join("");
-    host.innerHTML = `<section class="debug-panel-view"><header><span>Debugger lifecycle, adapter stderr, hooks, telemetry, and optional redacted protocol tracing</span><input type="search" class="debug-panel-filter" aria-label="Filter Debug Output" placeholder="Filter" value="${escapeHTML(this.outputFilter)}" data-debug-output-filter><label class="debug-trace-toggle"><input type="checkbox" data-debug-trace ${session?.traceDAP ? "checked" : ""} ${session && !isTerminalSession(session) ? "" : "disabled"}> Trace Protocol</label><button type="button" data-output-action="clear"><span class="codicon codicon-clear-all"></span> Clear</button></header><div class="debug-console-output">${content || `<p class="debug-section-empty">No debugger diagnostics.</p>`}</div></section>`;
+    host.innerHTML = `<section class="debug-panel-view"><header><span>Debugger lifecycle, adapter stderr, telemetry, and optional redacted protocol tracing</span><input type="search" class="debug-panel-filter" aria-label="Filter Debug Output" placeholder="Filter" value="${escapeHTML(this.outputFilter)}" data-debug-output-filter><label class="debug-trace-toggle"><input type="checkbox" data-debug-trace ${session?.traceDAP ? "checked" : ""} ${session && !isTerminalSession(session) ? "" : "disabled"}> Trace Protocol</label><button type="button" data-output-action="clear"><span class="codicon codicon-clear-all"></span> Clear</button></header><div class="debug-console-output">${content || `<p class="debug-section-empty">No debugger diagnostics.</p>`}</div></section>`;
     this.applyPanelFilter(host, this.outputFilter);
   }
 
@@ -1509,8 +1501,8 @@ export class DebugView {
   }
 
   private async restartGroup(groupId: string): Promise<void> {
-    if (!groupId) return;
-    try { this.applySnapshot(await restartDebugGroup(this.options.workspaceId, groupId, this.groupRevisions(groupId))); this.render(); }
+    if (!groupId || !(await this.options.saveAll(false))) return;
+    try { const fresh = await this.restartInputs(this.snapshot.sessions.filter(s => s.groupId === groupId)); if (!fresh) return; this.applySnapshot(await restartDebugGroup(this.options.workspaceId, groupId, this.groupRevisions(groupId), fresh)); this.render(); }
     catch (error) { await this.handleRequestError(error); }
   }
 
@@ -1564,13 +1556,14 @@ export class DebugView {
         const value = await choiceInput(input);
         if (value === null) return null;
         values[input.id] = value;
-      } else if (input.type === "pickProcess") {
+      } else if ((input.type === "pickProcess" || input.type === "pickGoProcess")) {
         try {
-          const value = await processInput(input, await listDebugProcesses(this.options.workspaceId));
+          const value = await processInput(input, await listDebugProcesses(this.options.workspaceId, input));
           if (value === null) return null;
           values[input.id] = value;
         } catch (error) { toast(errorMessage(error), { sticky: true }); return null; }
       } else {
+        if (!["promptString", "secret"].includes(input.type)) { toast(`Unsupported launch input type: ${input.type}`); return null; }
         const value = await debugPrompt(input);
         if (value === null) return null;
         values[input.id] = value;
@@ -1590,187 +1583,19 @@ export class DebugView {
       values.push(configuration);
       const profile = this.profiles.find((item) => item.id === configuration.adapterProfileId);
       if (profile) values.push(profile);
-      if (this.config.overrides?.[configuration.adapterProfileId]) values.push(this.config.overrides[configuration.adapterProfileId]);
     }
     return values.some((value) => fileVariable.test(JSON.stringify(value)));
   }
 
-  private showSettings(draft: WorkspaceDebugConfig = this.config): void {
-    document.querySelector(".debug-settings-overlay")?.remove();
-    const overlay = document.createElement("div");
-    overlay.className = "debug-settings-overlay";
-    const configurations = draft.configurations || [];
-    const notificationPermission = debugStopNotificationPermission();
-    const notificationStatus = notificationPermission === "granted"
-      ? "Browser notifications are allowed."
-      : notificationPermission === "denied"
-        ? "Browser notifications are blocked in browser or operating-system settings."
-        : notificationPermission === "unsupported"
-          ? "Browser notifications are unavailable in this environment."
-          : `Browser permission is required. <button type="button" data-settings-action="allow-stop-notifications">Allow notifications</button>`;
-    overlay.innerHTML = `<section class="debug-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="debug-settings-title"><header><div><h2 id="debug-settings-title">Workspace Debugging</h2><p>Adapter executables stay user-installed. Workspace launches are saved in <code>.echo/workspace.json</code>; breakpoints and watches stay machine-local.</p></div><button type="button" aria-label="Close" data-settings-action="close"><span class="codicon codicon-close"></span></button></header><div class="debug-settings-body"><section><h3>Adapter profiles</h3><div class="debug-profile-list">${this.profiles.map((profile) => `<div><span class="codicon codicon-extensions"></span><div><strong>${escapeHTML(profile.name)}</strong><small>${escapeHTML(profile.adapterId)} · ${escapeHTML(profile.transport.kind)} · ${escapeHTML(profile.command || `${profile.transport.host}:${profile.transport.port}`)}</small></div><button type="button" data-settings-action="test-profile" data-profile-id="${profile.id}">Test</button><button type="button" data-settings-action="edit-profile" data-profile-id="${profile.id}">Edit</button><button type="button" data-settings-action="delete-profile" data-profile-id="${profile.id}" aria-label="Delete ${escapeHTML(profile.name)}"><span class="codicon codicon-trash"></span></button></div>`).join("") || `<p>No machine adapter profiles yet.</p>`}</div><div class="debug-template-list">${this.templates.filter((template) => !this.profiles.some((profile) => profile.id === template.profile.id)).map((template) => `<button type="button" data-settings-action="add-template" data-template-id="${template.id}" title="${escapeHTML(template.installGuide)}"><span class="codicon codicon-add"></span>${escapeHTML(template.profile.name)}</button>`).join("")}</div><div class="debug-stop-notification-setting"><h4>Debugger attention</h4><label><input type="checkbox" data-debug-stop-notifications ${debugStopNotificationsEnabled() ? "checked" : ""}> Notify when the debugger stops while Echo is in the background</label><small>${notificationStatus}</small></div></section><section class="debug-config-editor"><div><h3>Workspace configuration</h3><button type="button" data-settings-action="import">Preview VS Code Import</button></div><textarea aria-label="Workspace debug configuration" spellcheck="false" data-debug-config-json>${escapeHTML(JSON.stringify(this.config, null, 2))}</textarea><p class="debug-settings-error" data-settings-error></p></section></div><footer><button type="button" data-settings-action="close">Cancel</button><button type="button" class="is-primary" data-settings-action="save">Save Workspace Configuration</button></footer></section>`;
-    overlay.querySelector<HTMLTextAreaElement>("[data-debug-config-json]")!.value = JSON.stringify(draft, null, 2);
-    const profileHeading = overlay.querySelector<HTMLElement>(".debug-settings-body > section:first-child h3")!;
-    const profileHeadingRow = document.createElement("div");
-    profileHeadingRow.className = "debug-settings-section-title";
-    profileHeading.parentElement!.insertBefore(profileHeadingRow, profileHeading);
-    profileHeadingRow.append(profileHeading);
-    profileHeadingRow.insertAdjacentHTML("beforeend", `<button type="button" data-settings-action="new-profile"><span class="codicon codicon-add"></span>New Profile</button>`);
-    const configList = document.createElement("div");
-    configList.className = "debug-configuration-list";
-    configList.innerHTML = `<header><strong>Launch and attach configurations</strong><button type="button" data-settings-action="add-configuration"><span class="codicon codicon-add"></span>Add</button></header>${configurations.map((entry) => `<div><span class="codicon codicon-debug-alt"></span><div><strong>${escapeHTML(entry.name)}</strong><small>${escapeHTML(entry.request)} · ${escapeHTML(entry.adapterProfileId)}</small></div><button type="button" data-settings-action="edit-configuration" data-configuration-id="${escapeHTML(entry.id)}">Edit</button><button type="button" aria-label="Remove ${escapeHTML(entry.name)}" data-settings-action="remove-configuration" data-configuration-id="${escapeHTML(entry.id)}"><span class="codicon codicon-trash"></span></button></div>`).join("") || `<p>No configurations yet. Add one with the common-fields editor, or edit the complete JSON below.</p>`}`;
-    const configTextarea = overlay.querySelector<HTMLTextAreaElement>("[data-debug-config-json]")!;
-    configTextarea.parentElement!.insertBefore(configList, configTextarea);
-    const close = () => overlay.remove();
-    overlay.addEventListener("click", (event) => {
-      if (event.target === overlay) close();
-      const button = (event.target as Element).closest<HTMLElement>("[data-settings-action]");
-      if (!button) return;
-      const action = button.dataset.settingsAction;
-      if (action === "close") close();
-      else if (action === "save") void this.saveSettingsOverlay(overlay, close);
-      else if (action === "new-profile") void this.createProfile(overlay);
-      else if (action === "add-template") void this.addTemplate(button.dataset.templateId || "", overlay);
-      else if (action === "test-profile") void this.testProfile(button.dataset.profileId || "", button);
-      else if (action === "edit-profile") void this.editProfile(button.dataset.profileId || "", overlay);
-      else if (action === "delete-profile") void this.deleteProfile(button.dataset.profileId || "", overlay);
-      else if (action === "add-configuration") void this.editConfiguration("", overlay);
-      else if (action === "edit-configuration") void this.editConfiguration(button.dataset.configurationId || "", overlay);
-      else if (action === "remove-configuration") this.removeConfiguration(button.dataset.configurationId || "", overlay);
-      else if (action === "import") void this.importVSCode(overlay);
-      else if (action === "allow-stop-notifications") void requestDebugStopNotificationPermission().then(() => { if (overlay.isConnected) { const latest = this.settingsDraft(overlay); overlay.remove(); this.showSettings(latest); } });
-    });
-    overlay.querySelector<HTMLInputElement>("[data-debug-stop-notifications]")?.addEventListener("change", (event) => {
-      const enabled = (event.currentTarget as HTMLInputElement).checked;
-      setDebugStopNotificationsEnabled(enabled);
-      if (enabled && debugStopNotificationPermission() === "default") {
-        void requestDebugStopNotificationPermission().then(() => { if (overlay.isConnected) { const latest = this.settingsDraft(overlay); overlay.remove(); this.showSettings(latest); } });
-      }
-    });
-    overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
-    document.body.appendChild(overlay);
-    requestAnimationFrame(() => overlay.querySelector<HTMLTextAreaElement>("textarea")?.focus());
+  private showSettings(): void {
+    showContextMenu(this.options.host.getBoundingClientRect().left + 15, this.options.host.getBoundingClientRect().top + 45, [
+      { label: 'Open launch.json', run: () => this.options.openConfiguration('launch.json', this.config.configurations?.find(c => c.id === this.selectedLaunchId)?.rootId) },
+      { label: 'Open settings.json', run: () => this.options.openConfiguration('settings.json', this.config.configurations?.find(c => c.id === this.selectedLaunchId)?.rootId) },
+      ...this.profiles.map(profile => ({ label: `${profile.name}: Debugger Status`, run: () => this.options.debuggerStatus?.(profile.id) })),
+      ...this.profiles.map(profile => ({ label: `${profile.name}: Install / Update Debugger`, run: () => this.options.installDebugger(profile.id) })),
+    ]);
   }
 
-  private async saveSettingsOverlay(overlay: HTMLElement, close: () => void): Promise<void> {
-    const errorHost = overlay.querySelector<HTMLElement>("[data-settings-error]")!;
-    try {
-      const config = JSON.parse(overlay.querySelector<HTMLTextAreaElement>("[data-debug-config-json]")!.value) as WorkspaceDebugConfig;
-      this.config = await saveDebugConfig(this.options.workspaceId, config);
-      close();
-      this.selectedLaunchId = this.config.configurations?.[0]?.id || this.config.compounds?.[0]?.id || "";
-      this.render();
-      toast("Workspace debug configuration saved.");
-    } catch (error) { errorHost.textContent = errorMessage(error); }
-  }
-
-  private settingsDraft(overlay: HTMLElement): WorkspaceDebugConfig {
-    return JSON.parse(overlay.querySelector<HTMLTextAreaElement>("[data-debug-config-json]")!.value) as WorkspaceDebugConfig;
-  }
-
-  private async createProfile(overlay: HTMLElement): Promise<void> {
-    let id = "custom-adapter";
-    for (let suffix = 2; this.profiles.some((profile) => profile.id === id); suffix++) id = `custom-adapter-${suffix}`;
-    const raw = await promptLargeJSON("Create Adapter Profile", {
-      id, name: "Custom Adapter", adapterId: "custom", command: "debug-adapter",
-      args: [], environment: {}, selectors: [], transport: { kind: "stdio", startupTimeoutMs: 15000 },
-    });
-    if (!raw) return;
-    try {
-      const draft = this.settingsDraft(overlay);
-      this.profiles.push(await addAdapterProfile(raw as unknown as AdapterProfile));
-      overlay.remove();
-      this.showSettings(draft);
-    } catch (error) { toast(errorMessage(error), { sticky: true }); }
-  }
-
-  private async editConfiguration(id: string, overlay: HTMLElement): Promise<void> {
-    const errorHost = overlay.querySelector<HTMLElement>("[data-settings-error]")!;
-    try {
-      const draft = this.settingsDraft(overlay);
-      const existing = (draft.configurations || []).find((entry) => entry.id === id);
-      let generatedID = "debug";
-      for (let suffix = 2; (draft.configurations || []).some((entry) => entry.id === generatedID); suffix++) generatedID = `debug-${suffix}`;
-      const edited = await promptDebugConfiguration(existing || {
-        id: generatedID, name: "New Debug Configuration", adapterProfileId: this.profiles[0]?.id || "", request: "launch", arguments: {},
-      }, this.profiles, Boolean(existing));
-      if (!edited) return;
-      draft.configurations = existing
-        ? (draft.configurations || []).map((entry) => entry.id === id ? edited : entry)
-        : [...(draft.configurations || []), edited];
-      if (edited.adapterProfileId && !(draft.enabledAdapterProfileIds || []).includes(edited.adapterProfileId)) {
-        draft.enabledAdapterProfileIds = [...(draft.enabledAdapterProfileIds || []), edited.adapterProfileId];
-      }
-      overlay.remove();
-      this.showSettings(draft);
-    } catch (error) { errorHost.textContent = errorMessage(error); }
-  }
-
-  private removeConfiguration(id: string, overlay: HTMLElement): void {
-    const errorHost = overlay.querySelector<HTMLElement>("[data-settings-error]")!;
-    try {
-      const draft = this.settingsDraft(overlay);
-      const existing = (draft.configurations || []).find((entry) => entry.id === id);
-      if (!existing || !window.confirm(`Remove ${existing.name}? Compound references to it will also be removed.`)) return;
-      draft.configurations = (draft.configurations || []).filter((entry) => entry.id !== id);
-      draft.compounds = (draft.compounds || [])
-        .map((compound) => ({ ...compound, configurationIds: compound.configurationIds.filter((configurationID) => configurationID !== id) }))
-        .filter((compound) => compound.configurationIds.length > 0);
-      overlay.remove();
-      this.showSettings(draft);
-    } catch (error) { errorHost.textContent = errorMessage(error); }
-  }
-
-  private async addTemplate(id: string, overlay: HTMLElement): Promise<void> {
-    try {
-      const draft = this.settingsDraft(overlay);
-      this.profiles.push(await addAdapterTemplate(id));
-      overlay.remove();
-      this.showSettings(draft);
-    } catch (error) { toast(errorMessage(error)); }
-  }
-
-  private async testProfile(id: string, button: HTMLElement): Promise<void> {
-    button.textContent = "Testing…";
-    try {
-      const diagnostic = await diagnoseAdapter(this.options.workspaceId, id);
-      toast(`${diagnostic.available ? "Ready" : "Unavailable"} in ${diagnostic.execution}: ${diagnostic.message}`, { sticky: !diagnostic.available });
-    } catch (error) { toast(errorMessage(error), { sticky: true }); }
-    button.textContent = "Test";
-  }
-
-  private async editProfile(id: string, overlay: HTMLElement): Promise<void> {
-    const profile = this.profiles.find((item) => item.id === id);
-    if (!profile) return;
-    const raw = await promptLargeJSON("Edit Adapter Profile", profile);
-    if (!raw) return;
-    try {
-      const draft = this.settingsDraft(overlay);
-      const updated = await updateAdapterProfile(raw as AdapterProfile);
-      this.profiles = this.profiles.map((item) => item.id === updated.id ? updated : item);
-      overlay.remove(); this.showSettings(draft);
-    } catch (error) { toast(errorMessage(error), { sticky: true }); }
-  }
-
-  private async deleteProfile(id: string, overlay: HTMLElement): Promise<void> {
-    try {
-      const draft = this.settingsDraft(overlay);
-      await deleteAdapterProfile(id);
-      this.profiles = this.profiles.filter((item) => item.id !== id);
-      overlay.remove(); this.showSettings(draft);
-    }
-    catch (error) { toast(errorMessage(error), { sticky: true }); }
-  }
-
-  private async importVSCode(overlay: HTMLElement): Promise<void> {
-    const errorHost = overlay.querySelector<HTMLElement>("[data-settings-error]")!;
-    try {
-      const preview = await previewVSCodeImport(this.options.workspaceId);
-      const warnings = preview.warnings || [];
-      const accepted = window.confirm(`${warnings.length ? warnings.map((warning) => `• ${warning.message}`).join("\n") : "No import warnings."}\n\nLoad this preview into the editor? Nothing is saved until you choose Save.`);
-      if (accepted) { overlay.remove(); this.showSettings(preview.config); }
-    } catch (error) { errorHost.textContent = errorMessage(error); }
-  }
 }
 
 function renderOutputEntry(entry: DebugOutput): string {
@@ -1819,7 +1644,7 @@ function debugPrompt(input: DebugInput): Promise<string | null> {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "code-modal-overlay";
-    overlay.innerHTML = `<form class="code-modal code-prompt-modal" role="dialog" aria-modal="true"><h2>${escapeHTML(input.description || input.id)}</h2><label>${input.type === "pickProcess" ? "Process ID" : "Value"}<input name="value" type="${input.type === "secret" ? "password" : "text"}" value="${escapeHTML(input.default || "")}" required autocomplete="${input.type === "secret" ? "off" : "on"}"></label>${input.type === "pickProcess" ? `<p class="code-modal-detail">Enter a PID from the workspace's ${"host or sandbox"} process list.</p>` : ""}<div class="code-modal-actions"><button type="button" data-cancel>Cancel</button><button type="submit" class="is-primary">Continue</button></div></form>`;
+    overlay.innerHTML = `<form class="code-modal code-prompt-modal" role="dialog" aria-modal="true"><h2>${escapeHTML(input.description || input.id)}</h2><label>${(input.type === "pickProcess" || input.type === "pickGoProcess") ? "Process ID" : "Value"}<input name="value" type="${input.type === "secret" ? "password" : "text"}" value="${escapeHTML(input.default || "")}" required autocomplete="${input.type === "secret" ? "off" : "on"}"></label>${(input.type === "pickProcess" || input.type === "pickGoProcess") ? `<p class="code-modal-detail">Enter a PID from the workspace's ${"host or sandbox"} process list.</p>` : ""}<div class="code-modal-actions"><button type="button" data-cancel>Cancel</button><button type="submit" class="is-primary">Continue</button></div></form>`;
     const finish = (value: string | null) => { overlay.remove(); resolve(value); };
     overlay.querySelector("[data-cancel]")?.addEventListener("click", () => finish(null));
     overlay.querySelector("form")?.addEventListener("submit", (event) => { event.preventDefault(); finish((new FormData(event.currentTarget as HTMLFormElement).get("value") || "").toString()); });
@@ -1864,59 +1689,6 @@ function processInput(input: DebugInput, processes: Array<{ pid: number; name: s
     overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") finish(null); });
     document.body.appendChild(overlay);
     requestAnimationFrame(() => overlay.querySelector<HTMLInputElement>("[type=search]")?.focus());
-  });
-}
-
-function promptDebugConfiguration(value: DebugConfiguration, profiles: AdapterProfile[], lockID: boolean): Promise<DebugConfiguration | null> {
-  return new Promise((resolve) => {
-    const overlay = document.createElement("div");
-    overlay.className = "debug-settings-overlay";
-    overlay.innerHTML = `<form class="debug-configuration-dialog" role="dialog" aria-modal="true" aria-labelledby="debug-configuration-title">
-      <header><div><h2 id="debug-configuration-title">${lockID ? "Edit" : "Add"} Debug Configuration</h2><p>Common launch fields are structured here. Adapter-specific arguments and lifecycle hooks remain validated JSON.</p></div><button type="button" aria-label="Close" data-cancel><span class="codicon codicon-close"></span></button></header>
-      <div class="debug-configuration-fields">
-        <label>ID<input name="id" required pattern="[a-z0-9][a-z0-9._-]{0,63}" value="${escapeHTML(value.id)}" ${lockID ? "readonly" : ""}></label>
-        <label>Name<input name="name" required value="${escapeHTML(value.name)}"></label>
-        <label>Adapter profile<select name="profile" required>${profiles.map((profile) => `<option value="${escapeHTML(profile.id)}" ${profile.id === value.adapterProfileId ? "selected" : ""}>${escapeHTML(profile.name)} · ${escapeHTML(profile.adapterId)}</option>`).join("")}</select></label>
-        <label>Request<select name="request"><option value="launch" ${value.request === "launch" ? "selected" : ""}>Launch</option><option value="attach" ${value.request === "attach" ? "selected" : ""}>Attach</option></select></label>
-        <label class="is-wide">Adapter arguments (JSON object)<textarea name="arguments" spellcheck="false">${escapeHTML(JSON.stringify(value.arguments || {}, null, 2))}</textarea></label>
-        <label class="is-wide">Pre-launch hook (JSON object or blank)<textarea name="preLaunch" spellcheck="false" placeholder='{"command":"go","args":["build","./..."]}'>${escapeHTML(value.preLaunch ? JSON.stringify(value.preLaunch, null, 2) : "")}</textarea></label>
-        <label class="is-wide">Post-debug hook (JSON object or blank)<textarea name="postDebug" spellcheck="false" placeholder='{"command":"cleanup","args":[]}'>${escapeHTML(value.postDebug ? JSON.stringify(value.postDebug, null, 2) : "")}</textarea></label>
-      </div>
-      <p class="debug-settings-error" data-error></p>
-      <footer><button type="button" data-cancel>Cancel</button><button type="submit" class="is-primary">Apply to Draft</button></footer>
-    </form>`;
-    const form = overlay.querySelector<HTMLFormElement>("form")!;
-    const finish = (result: DebugConfiguration | null) => { overlay.remove(); resolve(result); };
-    overlay.addEventListener("click", (event) => {
-      if (event.target === overlay || (event.target as Element).closest("[data-cancel]")) finish(null);
-    });
-    overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") finish(null); });
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const data = new FormData(form);
-      const parseObject = (field: string, label: string, optional = false): Record<string, unknown> | undefined => {
-        const raw = String(data.get(field) || "").trim();
-        if (!raw && optional) return undefined;
-        const parsed = JSON.parse(raw || "{}");
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`${label} must be a JSON object.`);
-        return parsed as Record<string, unknown>;
-      };
-      try {
-        const id = String(data.get("id") || "").trim().toLowerCase();
-        const name = String(data.get("name") || "").trim();
-        if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(id)) throw new Error("ID must start with a letter or number and use at most 64 lowercase letters, numbers, dots, underscores, or dashes.");
-        if (!name) throw new Error("Name is required.");
-        const preLaunch = parseObject("preLaunch", "Pre-launch hook", true) as DebugConfiguration["preLaunch"];
-        const postDebug = parseObject("postDebug", "Post-debug hook", true) as DebugConfiguration["postDebug"];
-        finish({
-          id, name, adapterProfileId: String(data.get("profile") || ""), request: String(data.get("request")) as "launch" | "attach",
-          arguments: parseObject("arguments", "Adapter arguments") || {},
-          ...(preLaunch ? { preLaunch } : {}), ...(postDebug ? { postDebug } : {}),
-        });
-      } catch (error) { overlay.querySelector<HTMLElement>("[data-error]")!.textContent = errorMessage(error); }
-    });
-    document.body.appendChild(overlay);
-    requestAnimationFrame(() => form.querySelector<HTMLInputElement>(lockID ? "[name=name]" : "[name=id]")?.focus());
   });
 }
 

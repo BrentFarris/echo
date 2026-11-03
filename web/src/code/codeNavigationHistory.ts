@@ -1,7 +1,7 @@
 import {
   CODE_NAVIGATION_HISTORY_STATE_KEY,
   isCodeNavigationHistoryState,
-} from "../navigation";
+} from "./navigation";
 import type { FileRef } from "./types";
 import { isRefWithin } from "./types";
 
@@ -44,6 +44,7 @@ type HistoryLike = {
 type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 type NavigationHistoryOptions = {
+  local?: boolean;
   history?: HistoryLike;
   storage?: StorageLike;
   currentURL?: () => string;
@@ -130,11 +131,13 @@ export class CodeNavigationHistory {
   private readonly currentURL: () => string;
   private readonly createId: () => string;
   private readonly locations = new Map<string, CodeNavigationLocation>();
+  private localHistory?: LocalHistory;
   private currentEntry: CodeNavigationEntry | null = null;
 
   constructor(workspaceId: string, options: NavigationHistoryOptions = {}) {
     this.workspaceId = workspaceId;
-    this.browserHistory = options.history || window.history;
+    this.localHistory = options.local ? new LocalHistory() : undefined;
+    this.browserHistory = this.localHistory || options.history || window.history;
     this.storage = options.storage === undefined ? window.sessionStorage : options.storage;
     this.currentURL = options.currentURL || (() => window.location.href);
     this.createId = options.createId || (() => crypto.randomUUID());
@@ -143,6 +146,11 @@ export class CodeNavigationHistory {
       this.currentEntry = current;
       this.locations.set(current.entryId, this.loadLocation(current) || current.location);
     }
+  }
+
+  traverse(direction: number, departing: CodeNavigationLocation | null): CodeNavigationLocation | null {
+    const state = this.localHistory?.go(direction);
+    return state ? this.beginTraversal(state, departing)?.location || null : null;
   }
 
   initialLocation(): CodeNavigationLocation | null {
@@ -294,4 +302,12 @@ export class CodeNavigationHistory {
       // Ignore storage quotas; the browser entry still has its original fallback.
     }
   }
+}
+
+class LocalHistory implements HistoryLike {
+ private entries: unknown[] = [null]; private index = 0;
+ get state() { return this.entries[this.index]; }
+ pushState(data: unknown) { this.entries.splice(++this.index); this.entries.push(data); }
+ replaceState(data: unknown) { this.entries[this.index] = data; }
+ go(direction: number) { const next=this.index+direction; if(next<0||next>=this.entries.length)return null; this.index=next;return this.state; }
 }

@@ -13,9 +13,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	workspacefs "github.com/brent/echo/internal/editorfs"
+	"github.com/brent/echo/internal/scmexec"
 	"github.com/brent/echo/internal/sourcecontrol"
 	"github.com/brent/echo/internal/sourcecontrol/hunk"
-	"github.com/brent/echo/internal/workspacefs"
 )
 
 func (p *Provider) Diff(ctx context.Context, workspace, id string, target sourcecontrol.DiffTarget) (result sourcecontrol.DiffDocument, resultErr error) {
@@ -96,7 +97,7 @@ func (p *Provider) Diff(ctx context.Context, workspace, id string, target source
 		}
 		doc.Original.Exists = true
 	}
-	file, readErr := os.Open(path)
+	file, readErr := p.fs.OpenSourceControlFile(r.workspace, path)
 	if readErr == nil {
 		modified, err = io.ReadAll(io.LimitReader(file, workspacefs.MaxEditableBytes+1))
 		_ = file.Close()
@@ -160,26 +161,7 @@ func (p *Provider) printBaseline(ctx context.Context, connection connection, rev
 	if size > workspacefs.MaxEditableBytes {
 		return nil, errOutputLimit
 	}
-	file, err := os.CreateTemp("", "echo-p4-baseline-*")
-	if err != nil {
-		return nil, err
-	}
-	name := file.Name()
-	file.Close()
-	defer func() { _ = os.Chmod(name, 0600); _ = os.Remove(name) }()
-	argument, err := outputFileArgument(connection.Directory, name)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := p.command(ctx, connection, []byte(revision+"\n"), false, "print", "-q", "-o", argument); err != nil {
-		return nil, err
-	}
-	file, err = os.Open(name)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	return io.ReadAll(io.LimitReader(file, workspacefs.MaxEditableBytes+1))
+	return p.command(ctx, connection, []byte(revision+"\n"), false, "print", "-q", "-o", scmexec.OutputFileToken)
 }
 
 func relativeOutputPath(directory, name string) string {

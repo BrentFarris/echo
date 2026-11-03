@@ -1,0 +1,13 @@
+.brand-identity{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
+.brand-avatars{display:flex;align-items:center;flex:none;isolation:isolate}
+.bot-avatar{display:inline-grid;place-items:center;flex:none;width:34px;height:34px;border-radius:10px;background:var(--bot-color);color:#18202b;font-size:13px;font-weight:700;line-height:1;user-select:none}
+.brand-avatars .bot-avatar{position:relative;border:2px solid var(--bg)}
+.brand-avatars .bot-avatar:nth-child(1){z-index:3}
+.brand-avatars .bot-avatar:nth-child(2){z-index:2}
+.brand-avatars .bot-avatar:nth-child(3){z-index:1}
+.brand-avatars .bot-avatar+.bot-avatar{margin-left:-12px}
+.bot-avatar-overflow{background:var(--muted);color:var(--subtle);font-size:10px}
+.brand-copy{display:flex;flex-direction:column;gap:2px;min-width:0}
+.brand-name,.brand-peers{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brand-peers{color:var(--subtle);font-size:11px;font-weight:400}
+.bot-tabs .bot-avatar{width:20px;height:20px;border-radius:6px;font-size:9px}

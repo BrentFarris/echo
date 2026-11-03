@@ -5,23 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/brent/echo/internal/debugconfig"
+	"github.com/brent/echo/internal/editorfs"
 	"sort"
-	"strings"
 	"sync"
 	"time"
-
-	"github.com/brent/echo/internal/debugconfig"
-	"github.com/brent/echo/internal/sandbox"
-	"github.com/brent/echo/internal/workspacefs"
-	"github.com/brent/echo/internal/workspaces"
-	"github.com/google/uuid"
 )
-
-type workspaceResolver interface {
-	Get(string) (workspaces.Workspace, bool, error)
-	List() ([]workspaces.Workspace, error)
-	SetDebugConfig(string, debugconfig.WorkspaceConfig) (workspaces.Workspace, error)
-}
 
 type workspaceRuntime struct {
 	sequence uint64
@@ -43,6 +32,13 @@ type session struct {
 	parentID             string
 	configuration        debugconfig.Configuration
 	profile              debugconfig.AdapterProfile
+	provider             Provider
+	launch               *Launch
+	release              func()
+	done                 chan struct{}
+	cleaned              chan struct{}
+	ready                chan struct{}
+	readyOnce            sync.Once
 	startRequest         StartRequest
 	status               string
 	revision             uint64
@@ -61,120 +57,54 @@ type session struct {
 	initialized          chan struct{}
 	initializedOnce      sync.Once
 	conn                 *dapConnection
-	handle               *adapterHandle
+	handle               *Adapter
 	output               []OutputEntry
 	outputBytes          int
 	outputSequence       uint64
 	breakpointSources    map[string]bool
 	breakpointStatuses   map[string]BreakpointStatus
 	adapterBreakpointIDs map[int]string
-	postStarted          bool
-	postCancel           context.CancelFunc
-	postDone             chan struct{}
 	traceDAP             bool
 	controlMu            sync.Mutex
 	step                 *stepOperation
 	sources              map[string]adapterSource
-	cFrames              map[int]bool
-	debugBinDir          string
-	debugBinSandbox      bool
+	frames               map[int]Frame
 }
 
-// Service owns every active debug adapter. Browser clients are observers of
-// these server-side sessions, so disconnecting a tab never kills a debuggee.
 type Service struct {
-	profiles      *debugconfig.ProfileStore
+	closed        bool
+	lifetimes     sync.WaitGroup
+	options       Options
 	state         *debugconfig.StateStore
-	workspaces    workspaceResolver
-	fs            *workspacefs.Service
+	fs            *editorfs.Service
 	mu            sync.Mutex
 	runtimes      map[string]*workspaceRuntime
-	sandbox       *sandbox.Manager
 	notify        func(Event)
 	runInTerminal func(context.Context, string, string, map[string]any) (map[string]any, error)
 	stopTerminals func(string, string)
 }
 
-func New(profiles *debugconfig.ProfileStore, state *debugconfig.StateStore, workspaceManager workspaceResolver, fs *workspacefs.Service) *Service {
-	return &Service{profiles: profiles, state: state, workspaces: workspaceManager, fs: fs, runtimes: map[string]*workspaceRuntime{}}
+func New(options Options) *Service {
+	return &Service{options: options, state: options.State, fs: options.FS, runtimes: map[string]*workspaceRuntime{}}
 }
-
-func (s *Service) SetSandbox(manager *sandbox.Manager) {
-	s.mu.Lock()
-	s.sandbox = manager
-	s.mu.Unlock()
-}
-func (s *Service) sandboxManager() *sandbox.Manager {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.sandbox
+func (s *Service) workspace(id string) (string, error) {
+	if s.options.Resolve == nil {
+		return id, nil
+	}
+	return id, s.options.Resolve(id)
 }
 func (s *Service) SetNotifier(notify func(Event)) { s.mu.Lock(); s.notify = notify; s.mu.Unlock() }
+
 func (s *Service) SetRunInTerminal(run func(context.Context, string, string, map[string]any) (map[string]any, error)) {
 	s.mu.Lock()
 	s.runInTerminal = run
 	s.mu.Unlock()
 }
+
 func (s *Service) SetStopDebugTerminals(stop func(string, string)) {
 	s.mu.Lock()
 	s.stopTerminals = stop
 	s.mu.Unlock()
-}
-
-func (s *Service) Profiles() ([]debugconfig.AdapterProfile, error) { return s.profiles.Profiles() }
-func (s *Service) Templates() []debugconfig.Template               { return debugconfig.Templates() }
-func (s *Service) AddProfile(profile debugconfig.AdapterProfile) (debugconfig.AdapterProfile, error) {
-	return s.profiles.Add(profile)
-}
-func (s *Service) AddTemplate(id string) (debugconfig.AdapterProfile, error) {
-	return s.profiles.AddTemplate(id)
-}
-func (s *Service) UpdateProfile(id string, profile debugconfig.AdapterProfile) (debugconfig.AdapterProfile, error) {
-	return s.profiles.Update(id, profile)
-}
-func (s *Service) DeleteProfile(id string) error { return s.profiles.Delete(id, s.profileInUse) }
-
-func (s *Service) profileInUse(id string) bool {
-	list, err := s.workspaces.List()
-	if err != nil {
-		return true
-	}
-	for _, workspace := range list {
-		for _, enabled := range workspace.Debug.EnabledAdapterProfileIDs {
-			if enabled == id {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func (s *Service) WorkspaceConfig(workspaceID string) (debugconfig.WorkspaceConfig, []debugconfig.AdapterProfile, error) {
-	workspace, err := s.workspace(workspaceID)
-	if err != nil {
-		return debugconfig.WorkspaceConfig{}, nil, err
-	}
-	profiles, err := s.profiles.Profiles()
-	if err != nil {
-		return debugconfig.WorkspaceConfig{}, nil, err
-	}
-	return workspace.Debug.Normalized(), profiles, nil
-}
-
-func (s *Service) SetWorkspaceConfig(workspaceID string, config debugconfig.WorkspaceConfig) (debugconfig.WorkspaceConfig, []debugconfig.AdapterProfile, error) {
-	profiles, err := s.profiles.Profiles()
-	if err != nil {
-		return debugconfig.WorkspaceConfig{}, nil, err
-	}
-	config = config.Normalized()
-	if err := config.Validate(profiles); err != nil {
-		return debugconfig.WorkspaceConfig{}, profiles, err
-	}
-	workspace, err := s.workspaces.SetDebugConfig(workspaceID, config)
-	if err != nil {
-		return debugconfig.WorkspaceConfig{}, profiles, err
-	}
-	return workspace.Debug, profiles, nil
 }
 
 func (s *Service) State(workspaceID string) (debugconfig.State, error) {
@@ -222,59 +152,6 @@ func (s *Service) SetTrace(workspaceID, sessionID string, expectedRevision uint6
 	return snapshot, nil
 }
 
-func (s *Service) Diagnostic(ctx context.Context, workspaceID, profileID string) (Diagnostic, error) {
-	workspace, err := s.workspace(workspaceID)
-	if err != nil {
-		return Diagnostic{}, err
-	}
-	profile, err := s.effectiveProfile(workspace, profileID)
-	if err != nil {
-		return Diagnostic{}, err
-	}
-	result := Diagnostic{ProfileID: profile.ID, Execution: "host", Command: profile.Command}
-	if workspace.Sandbox.Enabled {
-		result.Execution = "sandbox"
-	}
-	options, err := s.executionOptions(workspace, "", nil, "")
-	if err != nil {
-		return result, err
-	}
-	if profile.Command != "" {
-		if command, expandErr := debugconfig.ExpandString(profile.Command, options); expandErr == nil {
-			result.Command = command
-		} else {
-			return result, expandErr
-		}
-	}
-	timeout := time.Duration(profile.Transport.StartupTimeoutMS)*time.Millisecond + requestTimeout
-	testContext, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	handle, startErr := s.startAdapter(testContext, workspace, profile, options, "", func(string, string) {})
-	if startErr != nil {
-		result.Message = fmt.Sprintf("Adapter could not start in the workspace %s: %v", result.Execution, startErr)
-		return result, nil
-	}
-	defer handle.stop()
-	connection := newDAPConnection(handle.transport, nil, nil, nil)
-	defer connection.Close()
-	initializeContext, initializeCancel := context.WithTimeout(testContext, requestTimeout)
-	_, initializeErr := connection.request(initializeContext, "initialize", map[string]any{
-		"clientID": "echo-diagnostic", "clientName": "Echo Adapter Test", "adapterID": profile.AdapterID,
-		"locale": "en-us", "pathFormat": "path", "linesStartAt1": true, "columnsStartAt1": true,
-	})
-	initializeCancel()
-	if initializeErr != nil {
-		result.Message = fmt.Sprintf("Adapter started but did not complete a DAP initialize handshake: %v", initializeErr)
-		return result, nil
-	}
-	disconnectContext, disconnectCancel := context.WithTimeout(testContext, 2*time.Second)
-	_, _ = connection.request(disconnectContext, "disconnect", map[string]any{"terminateDebuggee": false})
-	disconnectCancel()
-	result.Available = true
-	result.Message = fmt.Sprintf("DAP initialize handshake succeeded in the workspace %s", result.Execution)
-	return result, nil
-}
-
 func (s *Service) Snapshot(workspaceID string) (Snapshot, error) {
 	if _, err := s.workspace(workspaceID); err != nil {
 		return Snapshot{}, err
@@ -287,127 +164,6 @@ func (s *Service) Snapshot(workspaceID string) (Snapshot, error) {
 	defer s.mu.Unlock()
 	runtime := s.runtimeLocked(workspaceID)
 	return s.snapshotLocked(workspaceID, runtime, state), nil
-}
-
-func (s *Service) Start(ctx context.Context, workspaceID string, request StartRequest) (Snapshot, error) {
-	workspace, err := s.workspace(workspaceID)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	profiles, err := s.profiles.Profiles()
-	if err != nil {
-		return Snapshot{}, err
-	}
-	config := workspace.Debug.Normalized()
-	if err := config.Validate(profiles); err != nil {
-		return Snapshot{}, err
-	}
-	if (request.ConfigurationID == "") == (request.CompoundID == "") {
-		return Snapshot{}, fmt.Errorf("exactly one configurationId or compoundId is required")
-	}
-	if request.ConfigurationID != "" {
-		entry, ok := config.Configuration(request.ConfigurationID)
-		if !ok {
-			return Snapshot{}, fmt.Errorf("debug configuration %q was not found", request.ConfigurationID)
-		}
-		_, err = s.createSession(workspace, entry, "", "", request)
-		if err != nil {
-			return Snapshot{}, err
-		}
-	} else {
-		compound, ok := config.Compound(request.CompoundID)
-		if !ok {
-			return Snapshot{}, fmt.Errorf("debug compound %q was not found", request.CompoundID)
-		}
-		groupID := uuid.NewString()
-		entries := make([]debugconfig.Configuration, 0, len(compound.ConfigurationIDs))
-		for _, id := range compound.ConfigurationIDs {
-			entry, _ := config.Configuration(id)
-			if _, err := s.effectiveProfile(workspace, entry.AdapterProfileID); err != nil {
-				return Snapshot{}, err
-			}
-			entries = append(entries, entry)
-		}
-		s.mu.Lock()
-		runtime := s.runtimeLocked(workspaceID)
-		runtime.groups[groupID] = &sessionGroup{id: groupID, name: compound.Name, compoundID: compound.ID, stopAll: compound.StopAll}
-		s.mu.Unlock()
-		for _, entry := range entries {
-			if _, err := s.createSession(workspace, entry, groupID, "", request); err != nil {
-				if compound.StopAll {
-					s.StopGroup(workspaceID, groupID)
-				}
-				return Snapshot{}, err
-			}
-		}
-	}
-	return s.Snapshot(workspaceID)
-}
-
-// EnabledAdapterProfile returns the first enabled, effective profile for an
-// adapter. Workspace order is significant and mirrors the Debug settings UI.
-func (s *Service) EnabledAdapterProfile(workspaceID, adapterID string) (debugconfig.AdapterProfile, error) {
-	workspace, err := s.workspace(workspaceID)
-	if err != nil {
-		return debugconfig.AdapterProfile{}, err
-	}
-	for _, profileID := range workspace.Debug.Normalized().EnabledAdapterProfileIDs {
-		profile, profileErr := s.effectiveProfile(workspace, profileID)
-		if profileErr != nil {
-			return debugconfig.AdapterProfile{}, profileErr
-		}
-		if strings.EqualFold(profile.AdapterID, strings.TrimSpace(adapterID)) {
-			return profile, nil
-		}
-	}
-	return debugconfig.AdapterProfile{}, fmt.Errorf("no enabled %s debug adapter profile is configured", strings.TrimSpace(adapterID))
-}
-
-// StartTransient launches a validated configuration without persisting it in
-// workspace.json. It is used by contextual editor actions such as Go CodeLens.
-func (s *Service) StartTransient(ctx context.Context, workspaceID string, configuration debugconfig.Configuration, request StartRequest) (Snapshot, error) {
-	workspace, err := s.workspace(workspaceID)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	profiles, err := s.profiles.Profiles()
-	if err != nil {
-		return Snapshot{}, err
-	}
-	config := debugconfig.WorkspaceConfig{
-		EnabledAdapterProfileIDs: append([]string(nil), workspace.Debug.EnabledAdapterProfileIDs...),
-		Overrides:                workspace.Debug.Overrides,
-		Configurations:           []debugconfig.Configuration{configuration},
-	}.Normalized()
-	if err := config.Validate(profiles); err != nil {
-		return Snapshot{}, err
-	}
-	entry := config.Configurations[0]
-	if _, err := s.createSession(workspace, entry, "", "", request); err != nil {
-		return Snapshot{}, err
-	}
-	return s.Snapshot(workspaceID)
-}
-
-func (s *Service) createSession(workspace workspaces.Workspace, configuration debugconfig.Configuration, groupID, parentID string, request StartRequest) (string, error) {
-	profile, err := s.effectiveProfile(workspace, configuration.AdapterProfileID)
-	if err != nil {
-		return "", err
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	current := &session{id: uuid.NewString(), workspaceID: workspace.ID, groupID: groupID, parentID: parentID, configuration: configuration, profile: profile, startRequest: request, status: StatusStarting, revision: 1, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, initialized: make(chan struct{}), capabilities: map[string]any{}, breakpointSources: map[string]bool{}, breakpointStatuses: map[string]BreakpointStatus{}, adapterBreakpointIDs: map[int]string{}}
-	s.mu.Lock()
-	runtime := s.runtimeLocked(workspace.ID)
-	runtime.sessions[current.id] = current
-	if groupID != "" {
-		if group := runtime.groups[groupID]; group != nil {
-			group.sessionIDs = append(group.sessionIDs, current.id)
-		}
-	}
-	s.mu.Unlock()
-	s.publishSession(workspace.ID, current.id, "session_started", nil, "")
-	go s.runSession(current)
-	return current.id, nil
 }
 
 func (s *Service) Request(ctx context.Context, workspaceID, sessionID, command string, request ControlRequest) (RequestResponse, error) {
@@ -472,9 +228,9 @@ func (s *Service) Request(ctx context.Context, workspaceID, sessionID, command s
 	}
 	if command == "evaluate" {
 		s.mu.Lock()
-		if strings.EqualFold(current.profile.AdapterID, "go") && current.cFrames[intValue(arguments["frameId"])] {
+		if current.launch != nil && current.launch.Expression != nil {
 			if expression, ok := arguments["expression"].(string); ok {
-				arguments["expression"] = delveCExpression(expression)
+				arguments["expression"] = current.launch.Expression(current.frames[intValue(arguments["frameId"])], expression)
 			}
 		}
 		s.mu.Unlock()
@@ -522,14 +278,14 @@ func (s *Service) Request(ctx context.Context, workspaceID, sessionID, command s
 	// change how expressions in the new stop's selected frame are parsed.
 	if command == "stackTrace" && generation == current.stopGeneration {
 		var stack struct {
-			Frames []stepFrame `json:"stackFrames"`
+			Frames []Frame `json:"stackFrames"`
 		}
 		if json.Unmarshal(response.Body, &stack) == nil {
-			if current.cFrames == nil {
-				current.cFrames = map[int]bool{}
+			if current.frames == nil {
+				current.frames = map[int]Frame{}
 			}
 			for _, frame := range stack.Frames {
-				current.cFrames[frame.ID] = strings.HasPrefix(frame.Name, "C.")
+				current.frames[frame.ID] = frame
 			}
 		}
 	}
@@ -545,6 +301,7 @@ func (s *Service) Stop(workspaceID, sessionID string, terminate *bool) error {
 // StopChecked prevents a browser from stopping a session after it has acted on
 // a stale snapshot. Internal lifecycle cleanup uses Stop, which intentionally
 // bypasses the browser revision precondition.
+
 func (s *Service) StopChecked(workspaceID, sessionID string, expectedRevision uint64, terminate *bool) error {
 	return s.stopWithMode(workspaceID, sessionID, expectedRevision, terminate, false)
 }
@@ -614,306 +371,6 @@ func (s *Service) stopWithMode(workspaceID, sessionID string, expectedRevision u
 	return nil
 }
 
-func (s *Service) Restart(ctx context.Context, workspaceID, sessionID string) (Snapshot, error) {
-	return s.RestartChecked(ctx, workspaceID, sessionID, 0)
-}
-
-func (s *Service) RestartChecked(ctx context.Context, workspaceID, sessionID string, expectedRevision uint64) (Snapshot, error) {
-	s.mu.Lock()
-	current, err := s.sessionLocked(workspaceID, sessionID)
-	if err != nil {
-		s.mu.Unlock()
-		return Snapshot{}, err
-	}
-	if expectedRevision != 0 && current.revision != expectedRevision {
-		actual := current.revision
-		s.mu.Unlock()
-		return Snapshot{}, &RevisionError{Expected: expectedRevision, Actual: actual}
-	}
-	nativeRestart := current.conn != nil && current.step == nil && boolCapability(current.capabilities, "supportsRestartRequest") && !isTerminalStatus(current.status)
-	s.mu.Unlock()
-	if nativeRestart {
-		return s.restartInAdapter(ctx, workspaceID, sessionID, expectedRevision, current)
-	}
-	s.mu.Lock()
-	current, err = s.sessionLocked(workspaceID, sessionID)
-	if err != nil {
-		s.mu.Unlock()
-		return Snapshot{}, err
-	}
-	if expectedRevision != 0 && current.revision != expectedRevision {
-		actual := current.revision
-		s.mu.Unlock()
-		return Snapshot{}, &RevisionError{Expected: expectedRevision, Actual: actual}
-	}
-	configuration := current.configuration
-	request := current.startRequest
-	groupID := current.groupID
-	workspace, workspaceErr := s.workspace(workspaceID)
-	s.mu.Unlock()
-	if workspaceErr != nil {
-		return Snapshot{}, workspaceErr
-	}
-	if err := s.StopChecked(workspaceID, sessionID, expectedRevision, nil); err != nil {
-		return Snapshot{}, err
-	}
-	if _, err := s.createSession(workspace, configuration, groupID, "", request); err != nil {
-		return Snapshot{}, err
-	}
-	return s.Snapshot(workspaceID)
-}
-
-func (s *Service) restartInAdapter(ctx context.Context, workspaceID, sessionID string, expectedRevision uint64, target *session) (Snapshot, error) {
-	target.controlMu.Lock()
-	defer target.controlMu.Unlock()
-	s.mu.Lock()
-	current, err := s.sessionLocked(workspaceID, sessionID)
-	if err != nil || current != target {
-		s.mu.Unlock()
-		if err != nil {
-			return Snapshot{}, err
-		}
-		return Snapshot{}, ErrSessionNotFound
-	}
-	if expectedRevision != 0 && current.revision != expectedRevision {
-		actual := current.revision
-		s.mu.Unlock()
-		return Snapshot{}, &RevisionError{Expected: expectedRevision, Actual: actual}
-	}
-	if current.conn == nil || !boolCapability(current.capabilities, "supportsRestartRequest") {
-		s.mu.Unlock()
-		return Snapshot{}, fmt.Errorf("%w: restart", ErrUnsupported)
-	}
-	connection := current.conn
-	previousStatus := current.status
-	current.status = StatusConfiguring
-	current.location = nil
-	current.threadID = 0
-	current.revision++
-	sessionContext := current.ctx
-	s.mu.Unlock()
-	s.publishSession(workspaceID, sessionID, "session_restarting", nil, "")
-
-	requestContext, cancel := context.WithCancel(ctx)
-	defer cancel()
-	stopSessionCancel := context.AfterFunc(sessionContext, cancel)
-	defer stopSessionCancel()
-	if _, err := connection.request(requestContext, "restart", map[string]any{}); err != nil {
-		s.mu.Lock()
-		active, lookupErr := s.sessionLocked(workspaceID, sessionID)
-		stopping := lookupErr == nil && active == current && isStoppingOrTerminal(current.status)
-		restored := false
-		if lookupErr == nil && active == current && current.status == StatusConfiguring {
-			current.status = previousStatus
-			current.revision++
-			restored = true
-		}
-		s.mu.Unlock()
-		if stopping && errors.Is(err, context.Canceled) {
-			return s.Snapshot(workspaceID)
-		}
-		if restored {
-			s.publishSession(workspaceID, sessionID, "restart_failed", nil, err.Error())
-		}
-		return Snapshot{}, err
-	}
-	s.mu.Lock()
-	restarted := false
-	if active, lookupErr := s.sessionLocked(workspaceID, sessionID); lookupErr == nil && active == current && current.status == StatusConfiguring {
-		current.status = StatusRunning
-		current.stopGeneration++
-		current.revision++
-		restarted = true
-	}
-	s.mu.Unlock()
-	if restarted {
-		go s.applyWorkspaceBreakpoints(workspaceID)
-		s.publishSession(workspaceID, sessionID, "session_restarted", nil, "")
-	}
-	return s.Snapshot(workspaceID)
-}
-
-func (s *Service) StopGroup(workspaceID, groupID string) {
-	s.mu.Lock()
-	runtime := s.runtimeLocked(workspaceID)
-	group := runtime.groups[groupID]
-	ids := []string{}
-	if group != nil {
-		ids = append(ids, group.sessionIDs...)
-	}
-	s.mu.Unlock()
-	for _, id := range ids {
-		_ = s.Stop(workspaceID, id, nil)
-	}
-}
-
-func (s *Service) StopGroupChecked(workspaceID, groupID string, expected map[string]uint64) error {
-	s.mu.Lock()
-	runtime := s.runtimes[workspaceID]
-	group := (*sessionGroup)(nil)
-	if runtime != nil {
-		group = runtime.groups[groupID]
-	}
-	if group == nil {
-		s.mu.Unlock()
-		return fmt.Errorf("debug compound group %q was not found", groupID)
-	}
-	ids := append([]string(nil), group.sessionIDs...)
-	for _, id := range ids {
-		current := runtime.sessions[id]
-		want, ok := expected[id]
-		if !ok || current == nil || want != current.revision {
-			actual := uint64(0)
-			if current != nil {
-				actual = current.revision
-			}
-			s.mu.Unlock()
-			return &RevisionError{Expected: want, Actual: actual}
-		}
-	}
-	s.mu.Unlock()
-	for _, id := range ids {
-		if err := s.StopChecked(workspaceID, id, expected[id], nil); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Service) RestartGroup(ctx context.Context, workspaceID, groupID string, expected map[string]uint64) (Snapshot, error) {
-	s.mu.Lock()
-	runtime := s.runtimes[workspaceID]
-	group := (*sessionGroup)(nil)
-	var request StartRequest
-	if runtime != nil {
-		group = runtime.groups[groupID]
-	}
-	if group != nil && len(group.sessionIDs) > 0 {
-		if current := runtime.sessions[group.sessionIDs[0]]; current != nil {
-			request = current.startRequest
-		}
-	}
-	compoundID := ""
-	if group != nil {
-		compoundID = group.compoundID
-	}
-	s.mu.Unlock()
-	if group == nil || compoundID == "" {
-		return Snapshot{}, fmt.Errorf("debug compound group %q was not found", groupID)
-	}
-	if err := s.StopGroupChecked(workspaceID, groupID, expected); err != nil {
-		return Snapshot{}, err
-	}
-	request.ConfigurationID = ""
-	request.CompoundID = compoundID
-	return s.Start(ctx, workspaceID, request)
-}
-
-func (s *Service) StopWorkspace(workspaceID string) {
-	s.mu.Lock()
-	runtime := s.runtimes[workspaceID]
-	ids := []string{}
-	if runtime != nil {
-		for id := range runtime.sessions {
-			ids = append(ids, id)
-		}
-	}
-	s.mu.Unlock()
-	for _, id := range ids {
-		_ = s.Stop(workspaceID, id, nil)
-	}
-	done := s.cancelPostHooks(workspaceID)
-	for _, finished := range done {
-		<-finished
-	}
-	s.mu.Lock()
-	delete(s.runtimes, workspaceID)
-	s.mu.Unlock()
-}
-
-func (s *Service) Shutdown(ctx context.Context) error {
-	s.mu.Lock()
-	targets := map[string][]string{}
-	for workspaceID, runtime := range s.runtimes {
-		for id := range runtime.sessions {
-			targets[workspaceID] = append(targets[workspaceID], id)
-		}
-	}
-	s.mu.Unlock()
-	for workspaceID, ids := range targets {
-		for _, id := range ids {
-			_ = s.Stop(workspaceID, id, nil)
-		}
-	}
-	s.mu.Lock()
-	workspaceIDs := make([]string, 0, len(s.runtimes))
-	for workspaceID := range s.runtimes {
-		workspaceIDs = append(workspaceIDs, workspaceID)
-	}
-	s.mu.Unlock()
-	for _, workspaceID := range workspaceIDs {
-		for _, finished := range s.cancelPostHooks(workspaceID) {
-			select {
-			case <-finished:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-	}
-	return nil
-}
-
-func (s *Service) cancelPostHooks(workspaceID string) []<-chan struct{} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	runtime := s.runtimes[workspaceID]
-	if runtime == nil {
-		return nil
-	}
-	done := make([]<-chan struct{}, 0)
-	for _, current := range runtime.sessions {
-		if current.postCancel != nil {
-			current.postCancel()
-		}
-		if current.postDone != nil {
-			done = append(done, current.postDone)
-		}
-	}
-	return done
-}
-
-func (s *Service) workspace(id string) (workspaces.Workspace, error) {
-	id = strings.TrimSpace(id)
-	workspace, ok, err := s.workspaces.Get(id)
-	if err != nil {
-		return workspaces.Workspace{}, err
-	}
-	if !ok {
-		return workspaces.Workspace{}, fmt.Errorf("%w: %s", ErrWorkspaceNotFound, id)
-	}
-	return workspace, nil
-}
-
-func (s *Service) effectiveProfile(workspace workspaces.Workspace, id string) (debugconfig.AdapterProfile, error) {
-	profiles, err := s.profiles.Profiles()
-	if err != nil {
-		return debugconfig.AdapterProfile{}, err
-	}
-	id = strings.ToLower(strings.TrimSpace(id))
-	for _, profile := range profiles {
-		if profile.ID == id {
-			if override, ok := workspace.Debug.Overrides[id]; ok {
-				profile = debugconfig.ApplyOverride(profile, override)
-			}
-			if err := profile.Validate(); err != nil {
-				return debugconfig.AdapterProfile{}, err
-			}
-			return profile, nil
-		}
-	}
-	return debugconfig.AdapterProfile{}, fmt.Errorf("debug adapter profile %q was not found", id)
-}
-
 func (s *Service) runtimeLocked(workspaceID string) *workspaceRuntime {
 	runtime := s.runtimes[workspaceID]
 	if runtime == nil {
@@ -922,6 +379,7 @@ func (s *Service) runtimeLocked(workspaceID string) *workspaceRuntime {
 	}
 	return runtime
 }
+
 func (s *Service) sessionLocked(workspaceID, sessionID string) (*session, error) {
 	runtime := s.runtimes[workspaceID]
 	if runtime == nil || runtime.sessions[sessionID] == nil {
@@ -1014,6 +472,7 @@ func cloneMap[T any](input map[string]T) map[string]T {
 	}
 	return result
 }
+
 func cloneLocation(input *SourceLocation) *SourceLocation {
 	if input == nil {
 		return nil
@@ -1025,6 +484,7 @@ func cloneLocation(input *SourceLocation) *SourceLocation {
 	}
 	return &result
 }
+
 func usesThread(command string) bool {
 	switch command {
 	case "continue", "pause", "next", "stepIn", "stepOut", "stepBack", "reverseContinue", "stackTrace", "terminateThreads":
@@ -1032,6 +492,7 @@ func usesThread(command string) bool {
 	}
 	return false
 }
+
 func isSerializedCommand(command string) bool {
 	switch command {
 	case "continue", "pause", "next", "stepIn", "stepOut", "stepBack", "reverseContinue", "goto", "restartFrame", "terminateThreads", "setVariable", "setExpression", "writeMemory", "setBreakpoints", "setFunctionBreakpoints", "setExceptionBreakpoints", "setDataBreakpoints", "setInstructionBreakpoints":
@@ -1039,6 +500,7 @@ func isSerializedCommand(command string) bool {
 	}
 	return false
 }
+
 func isStopSensitiveResponse(command string) bool {
 	switch command {
 	case "continue", "next", "stepIn", "stepOut", "stepBack", "reverseContinue", "goto", "pause":
@@ -1046,6 +508,7 @@ func isStopSensitiveResponse(command string) bool {
 	}
 	return true
 }
+
 func requireCapability(current *session, command string) error {
 	capability := map[string]string{"stepBack": "supportsStepBack", "reverseContinue": "supportsStepBack", "restartFrame": "supportsRestartFrame", "goto": "supportsGotoTargetsRequest", "gotoTargets": "supportsGotoTargetsRequest", "terminateThreads": "supportsTerminateThreadsRequest", "setVariable": "supportsSetVariable", "setExpression": "supportsSetExpression", "completions": "supportsCompletionsRequest", "modules": "supportsModulesRequest", "loadedSources": "supportsLoadedSourcesRequest", "exceptionInfo": "supportsExceptionInfoRequest", "inlineValues": "supportsInlineValues", "readMemory": "supportsReadMemoryRequest", "writeMemory": "supportsWriteMemoryRequest", "disassemble": "supportsDisassembleRequest", "cancel": "supportsCancelRequest", "breakpointLocations": "supportsBreakpointLocationsRequest", "dataBreakpointInfo": "supportsDataBreakpoints", "setDataBreakpoints": "supportsDataBreakpoints", "setInstructionBreakpoints": "supportsInstructionBreakpoints", "setFunctionBreakpoints": "supportsFunctionBreakpoints"}[command]
 	if capability != "" && !boolCapability(current.capabilities, capability) {
@@ -1053,16 +516,20 @@ func requireCapability(current *session, command string) error {
 	}
 	return nil
 }
+
 func boolCapability(values map[string]any, key string) bool {
 	value, _ := values[key].(bool)
 	return value
 }
+
 func isTerminalStatus(status string) bool {
 	return status == StatusTerminated || status == StatusFailed
 }
+
 func isStoppingOrTerminal(status string) bool {
 	return status == StatusTerminating || isTerminalStatus(status)
 }
+
 func errorIsStale(err error) bool {
 	return errors.Is(err, ErrStaleSession) || errors.Is(err, ErrStaleStop)
 }

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/brent/echo/internal/workspacefs"
+	workspacefs "github.com/brent/echo/internal/editorfs"
 )
 
 type blobResult struct {
@@ -57,7 +57,13 @@ func (s *Service) diffState(ctx context.Context, state *repositoryState, reposit
 		Ref: fileRef, Revision: state.revision.Load(), Kind: "text",
 	}
 
-	if submodule, subErr := isGitlink(ctx, state, path); subErr == nil && submodule {
+	// Share this request's index snapshot with hunk validation. Re-read it on
+	// every new diff/mutation so external index changes still invalidate tokens.
+	index, err := readHunkGit(ctx, state, "ls-files", "--stage", "-z", "--", path)
+	if err != nil {
+		return DiffDocument{}, err
+	}
+	if bytes.HasPrefix(index, []byte("160000 ")) {
 		document.Kind = "submodule"
 		document.UnavailableReason = "Submodule changes are represented by commit IDs and cannot be edited as text."
 		return document, nil
@@ -72,25 +78,9 @@ func (s *Service) diffState(ctx context.Context, state *repositoryState, reposit
 		}
 		document.Editable = false
 	case "unstaged":
-		original, err = readBlob(ctx, state, ":"+path, "Index")
+		original, err = readFilteredBlob(ctx, state, ":"+path, "Index")
 		if err == nil && !original.side.Exists && oldPath != path {
-			original, err = readBlob(ctx, state, ":"+oldPath, "Index")
-		}
-		if err == nil && original.side.Exists && original.kind == "" {
-			indexPath := path
-			if oldPath != path {
-				if current, readErr := readBlob(ctx, state, ":"+path, "Index"); readErr == nil && !current.side.Exists {
-					indexPath = oldPath
-				}
-			}
-			var filtered []byte
-			filtered, err = readHunkGit(ctx, state, "cat-file", "--filters", ":"+indexPath)
-			if err == nil {
-				original = textBlob("Index", filtered)
-				if int64(len(filtered)) > workspacefs.MaxEditableBytes {
-					original.kind = "too-large"
-				}
-			}
+			original, err = readFilteredBlob(ctx, state, ":"+oldPath, "Index")
 		}
 		if err == nil {
 			modified, err = s.readWorktreeFile(workspaceID, fileRef, path)
@@ -130,7 +120,7 @@ func (s *Service) diffState(ctx context.Context, state *repositoryState, reposit
 			document.Modified.Content = ""
 		}
 	}
-	s.describeHunks(ctx, state, &document)
+	s.describeHunks(ctx, state, &document, index)
 	return document, nil
 }
 
@@ -203,6 +193,14 @@ func shortGitRevision(revision string) string {
 }
 
 func readBlob(parent context.Context, state *repositoryState, specification, label string) (blobResult, error) {
+	return readBlobContent(parent, state, specification, label, false)
+}
+
+func readFilteredBlob(parent context.Context, state *repositoryState, specification, label string) (blobResult, error) {
+	return readBlobContent(parent, state, specification, label, true)
+}
+
+func readBlobContent(parent context.Context, state *repositoryState, specification, label string, filtered bool) (blobResult, error) {
 	ctx, cancel := context.WithTimeout(parent, localCommandTimeout)
 	defer cancel()
 	sizeOutput, err := runGit(ctx, state.root, nil, true, "cat-file", "-s", specification)
@@ -218,9 +216,18 @@ func readBlob(parent context.Context, state *repositoryState, specification, lab
 	if size > workspacefs.MaxEditableBytes {
 		return blobResult{side: DiffSide{Label: label, Exists: true, EOL: "lf"}, kind: "too-large"}, nil
 	}
-	content, err := runGit(ctx, state.root, nil, true, "cat-file", "blob", specification)
+	mode := "blob"
+	if filtered {
+		// Produce the worktree-form baseline directly: reading the raw blob
+		// first only repeats I/O. Keep the size probe before running filters.
+		mode = "--filters"
+	}
+	content, err := runGit(ctx, state.root, nil, true, "cat-file", mode, specification)
 	if err != nil {
 		return blobResult{}, err
+	}
+	if int64(len(content)) > workspacefs.MaxEditableBytes {
+		return blobResult{side: DiffSide{Label: label, Exists: true, EOL: "lf"}, kind: "too-large"}, nil
 	}
 	return textBlob(label, content), nil
 }
@@ -277,14 +284,4 @@ func validateCommitRef(parent context.Context, state *repositoryState, ref strin
 		return "", &Error{Code: "invalid_git_ref", Message: "Git revision was not found", Cause: err}
 	}
 	return strings.TrimSpace(string(output)), nil
-}
-
-func isGitlink(parent context.Context, state *repositoryState, path string) (bool, error) {
-	ctx, cancel := context.WithTimeout(parent, localCommandTimeout)
-	defer cancel()
-	output, err := runGit(ctx, state.root, nil, true, "ls-files", "--stage", "--", path)
-	if err != nil {
-		return false, err
-	}
-	return strings.HasPrefix(string(output), "160000 "), nil
 }

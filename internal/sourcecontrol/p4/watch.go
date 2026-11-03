@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
+	workspacefs "github.com/brent/echo/internal/editorfs"
 	"github.com/brent/echo/internal/sourcecontrol"
-	"github.com/brent/echo/internal/workspacefs"
 )
 
 func (p *Provider) SetNotifier(notify func(sourcecontrol.Event)) {
@@ -51,20 +51,20 @@ func (p *Provider) updateWatch(workspace string) {
 	}
 }
 func (p *Provider) HandleFileEvent(event workspacefs.WatchEvent) {
-	if p.disabled(event.WorkspaceID) {
+	if p.disabled(event.BotID) {
 		return
 	}
 	p.mu.Lock()
-	states := append([]*repository{}, p.discovery[event.WorkspaceID].repos...)
+	states := append([]*repository{}, p.discovery[event.BotID].repos...)
 	p.mu.Unlock()
-	settings := p.Settings(event.WorkspaceID)
+	settings := p.Settings(event.BotID)
 	if len(states) == 0 && len(event.Changes) > 0 {
 		enabled := false
 		for _, setting := range settings.Repositories {
 			enabled = enabled || setting.Tracking
 		}
 		if enabled {
-			states, _ = p.discover(context.Background(), event.WorkspaceID)
+			states, _ = p.discover(context.Background(), event.BotID)
 		}
 	}
 	for _, r := range states {

@@ -1,3 +1,4 @@
+import type { MenuAction } from './ui';
 import type {
   SourceControlActionRequest, SourceControlActionResult, SourceControlCapability,
   SourceControlChange, SourceControlChangeGroup, SourceControlRepository, SourceControlStatus,
@@ -5,6 +6,7 @@ import type {
 import { shouldShowSyncAction } from "./gitPrimaryAction";
 import { predictGitStatus } from "./gitState";
 import { predictFossilStatus } from "./fossilState";
+import { normalizeStatus } from "./sourceControlTypes";
 
 export type CommitPresentation = {
   action: string;
@@ -42,6 +44,7 @@ export interface SourceControlPresentationAdapter {
   commit(repository: SourceControlRepository, status: SourceControlStatus, selected: SourceControlChange[]): CommitPresentation;
   groupAction(repository: SourceControlRepository, group: SourceControlChangeGroup): ChangeActionPresentation | null;
   changeAction(repository: SourceControlRepository, group: SourceControlChangeGroup, change: SourceControlChange): ChangeActionPresentation | null;
+  repositoryMenu?(context: { repository: SourceControlRepository; status?: SourceControlStatus; selected: SourceControlChange[]; busy: boolean; run(request: Omit<SourceControlActionRequest, 'requestId'>): Promise<void> }): MenuAction[];
   repositoryActions?(repository: SourceControlRepository): RepositoryActionPresentation[];
 }
 
@@ -63,7 +66,14 @@ const gitPresentation: SourceControlPresentationAdapter = {
   promotesPendingSync: true,
   showSync(status) { return shouldShowSyncAction(status as never); },
   predictStatus(current, request, result) {
-    return predictGitStatus(current as never, request as never, result as never) as SourceControlStatus;
+    const predicted = predictGitStatus(current as never, request as never, result as never) as SourceControlStatus;
+    if (predicted === current) return current;
+    // The shared view renders provider groups; keep those synchronized with
+    // the legacy Git arrays used by the proven membership predictor.
+    return normalizeStatus({ ...predicted, groups: current.groups.map(group => {
+      const scope = group.role === "conflicts" ? "conflicts" : group.role === "included" ? "staged" : "unstaged";
+      return { ...group, changes: predicted[scope].map(change => ({ ...change, groupId: group.id, scope })) };
+    }) });
   },
   commit(_repository, status) {
     return {
@@ -79,8 +89,8 @@ const gitPresentation: SourceControlPresentationAdapter = {
     if (group.role === "included" && !group.actions.includes("unstage")) return null;
     if (group.role !== "included" && !group.actions.includes("stage")) return null;
     return group.role === "included"
-      ? { action: "unstage_all", label: "Unstage All Changes", icon: "remove", pathSource: "none" }
-      : { action: "stage_all", label: "Stage All Changes", icon: "add", pathSource: "none" };
+      ? { action: "unstage", label: "Unstage All Changes in Section", icon: "remove", pathSource: "group" }
+      : { action: "stage", label: "Stage All Changes in Section", icon: "add", pathSource: "group" };
   },
   changeAction(repository, group) {
     if (!supports(repository, "stage")) return null;
@@ -115,7 +125,7 @@ const fossilPresentation: SourceControlPresentationAdapter = {
     return predictFossilStatus(current, request, result);
   },
   repositoryActions(repository) {
-    return supports(repository, "webUI") ? [{ action: "open_ui", label: "Fossil UI", icon: "globe" }] : [];
+    return supports(repository, "webUI") ? [{ action: "open_ui", label: "Fossil UI (Read Only)", icon: "globe" }] : [];
   },
   commit(repository, status, selected) {
     const protectedGroup = status.groups.find((group) => group.role === "included" && group.actions.includes("unprotect"));
@@ -142,29 +152,14 @@ const fossilPresentation: SourceControlPresentationAdapter = {
         : supports(repository, "commitAll") && tracked.length > 0 && !status.hiddenChangeCount),
     };
   },
-  groupAction(repository, group) {
-    if (!supports(repository, "protect")) return null;
-    if (group.role === "included" && group.actions.includes("unprotect")) return {
-      action: "unprotect_all", label: "Clear Protection", icon: "remove", pathSource: "none",
-      confirmation: {
-        title: "Clear Protected Changes?",
-        message: "The working files will not be changed. Their frozen versions will no longer be kept for the next commit.",
-        confirmLabel: "Clear Protection",
-      },
-    };
-    if ((group.role === "working" || group.role === "untracked") && group.actions.includes("protect")) {
-      return { action: "protect_all", label: "Protect All in Group", icon: "add", pathSource: "group" };
-    }
+  groupAction(_repository, group) {
+    if(group.actions.includes('track'))return {action:'track',label:'Track All Files',icon:'add',pathSource:'group'};
+    if(group.actions.includes('remove'))return {action:'remove',label:'Register All Removals',icon:'add',pathSource:'group'};
     return null;
   },
-  changeAction(repository, group) {
-    if (!supports(repository, "protect")) return null;
-    if (group.role === "included" && group.actions.includes("unprotect")) {
-      return { action: "unprotect", label: "Remove Protection", icon: "remove", pathSource: "selection" };
-    }
-    if ((group.role === "working" || group.role === "untracked") && group.actions.includes("protect")) {
-      return { action: "protect", label: "Protect This Version", icon: "add", pathSource: "selection" };
-    }
+  changeAction(_repository,group,change) {
+    if(change.kind==='untracked' && group.actions.includes('track'))return {action:'track',label:'Track Selected Files',icon:'add',pathSource:'selection'};
+    if(change.statusCode==='MISSING' && group.actions.includes('remove'))return {action:'remove',label:'Register Selected Removals',icon:'add',pathSource:'selection'};
     return null;
   },
 };

@@ -1,10 +1,9 @@
-import { api } from "../../js/api.js";
-import { toast } from "./ui";
+import { resourceURL } from '../instances';
+import { api } from "./api";
 import type {
   FileRef, FileSnapshot, FsEntry, SearchResult, TextReplaceResponse, TextReplaceTarget, TextReplaceUpdate,
   TextSearchRequest, TextSearchResponse, TrashItem, WorkspaceRoot,
 } from "./types";
-import type { LSPProfile, WorkspaceLSPConfig, WorkspaceLSPResponse } from "./lspTypes";
 
 export type APIError = Error & {
   status?: number;
@@ -12,7 +11,7 @@ export type APIError = Error & {
 };
 
 function base(workspaceId: string): string {
-  return `/api/workspaces/${encodeURIComponent(workspaceId)}/fs`;
+  return `/api/v1/plugins/monaco-editor/bots/${encodeURIComponent(workspaceId)}/fs`;
 }
 
 export async function getRoots(workspaceId: string): Promise<WorkspaceRoot[]> {
@@ -35,7 +34,7 @@ export async function readFile(workspaceId: string, ref: FileRef, signal?: Abort
 // It is fetched by <img>/<video>/<audio> elements, not the JSON envelope helpers.
 export function mediaURL(workspaceId: string, ref: FileRef): string {
   const query = new URLSearchParams({ rootId: ref.rootId, path: ref.path });
-  return `${base(workspaceId)}/media?${query}`;
+  return resourceURL(`${base(workspaceId)}/media?${query}`);
 }
 
 export async function saveFile(workspaceId: string, request: {
@@ -45,8 +44,7 @@ export async function saveFile(workspaceId: string, request: {
   createOnly?: boolean;
   hasBom?: boolean;
 }): Promise<FileSnapshot> {
-	const result = await api(`${base(workspaceId)}/file`, { method: "PUT", body: request }) as FileSnapshot;
-	showRegistration(result); return result;
+	const result = await api(`${base(workspaceId)}/file`, { method: "PUT", body: request }) as FileSnapshot; return result;
 }
 
 export async function createEntry(workspaceId: string, request: {
@@ -56,27 +54,22 @@ export async function createEntry(workspaceId: string, request: {
   content?: string;
   hasBom?: boolean;
 }): Promise<{ entry: FsEntry; file?: FileSnapshot }> {
-	const result = await api(`${base(workspaceId)}/entries`, { method: "POST", body: request });
-	showRegistration(result.file || result.entry); return result;
+	const result = await api(`${base(workspaceId)}/entries`, { method: "POST", body: request }); return result;
 }
 
 export async function renameEntry(workspaceId: string, ref: FileRef, newName: string): Promise<{ entry: FsEntry; previousRef: FileRef }> {
-	const result = await api(`${base(workspaceId)}/entry`, { method: "PATCH", body: { ref, newName } }); showRegistration(result.entry); return result;
+	const result = await api(`${base(workspaceId)}/entry`, { method: "PATCH", body: { ref, newName } }); return result;
 }
 
 export async function moveEntry(workspaceId: string, ref: FileRef, destinationParent: FileRef): Promise<{ entry: FsEntry; previousRef: FileRef }> {
-	const result = await api(`${base(workspaceId)}/entry`, { method: "PATCH", body: { ref, destinationParent } }); showRegistration(result.entry); return result;
+	const result = await api(`${base(workspaceId)}/entry`, { method: "PATCH", body: { ref, destinationParent } }); return result;
 }
 
 export async function trashEntry(workspaceId: string, ref: FileRef): Promise<TrashItem> {
   const result = await api(`${base(workspaceId)}/entry`, { method: "DELETE", body: { ref } });
-  showRegistration(result.trash);
   return result.trash;
 }
 
-function showRegistration(result: { registration?: { pending: boolean; diagnostic?: string } } | undefined): void {
-	if (result?.registration?.pending) toast(result.registration.diagnostic || "File saved; P4 registration is awaiting review in Source Control.", { sticky: true });
-}
 
 export async function listTrash(workspaceId: string): Promise<TrashItem[]> {
   const result = await api(`${base(workspaceId)}/trash`, { method: "GET" });
@@ -85,7 +78,6 @@ export async function listTrash(workspaceId: string): Promise<TrashItem[]> {
 
 export async function restoreTrash(workspaceId: string, id: string): Promise<FsEntry> {
   const result = await api(`${base(workspaceId)}/trash/${encodeURIComponent(id)}/restore`, { method: "POST", body: {} });
-  showRegistration(result.entry);
   return result.entry;
 }
 
@@ -130,28 +122,5 @@ export async function replaceText(workspaceId: string, request: {
   scope: "match" | "file" | "all";
   targets: TextReplaceTarget[];
 }): Promise<TextReplaceResponse> {
-  try {
-    const result = await api(`${base(workspaceId)}/text-replace`, { method: "POST", body: request });
-    for (const update of result.updated || []) showRegistration(update);
-    return result;
-  } catch (error) {
-    for (const update of (error as APIError).payload?.details?.updated || []) showRegistration(update);
-    throw error;
-  }
-}
-
-export async function getLSPProfiles(): Promise<{ profiles: LSPProfile[]; templates: Array<{ id: string; description: string; profile: LSPProfile }> }> {
-  return api("/api/lsp/profiles", { method: "GET" });
-}
-
-export async function getWorkspaceLSPConfig(workspaceId: string): Promise<WorkspaceLSPResponse> {
-  return api(`/api/workspaces/${encodeURIComponent(workspaceId)}/lsp/config`, { method: "GET" });
-}
-
-export async function saveWorkspaceLSPConfig(workspaceId: string, config: WorkspaceLSPConfig): Promise<WorkspaceLSPResponse> {
-  return api(`/api/workspaces/${encodeURIComponent(workspaceId)}/lsp/config`, { method: "PUT", body: { config } });
-}
-
-export async function restartLanguageServer(workspaceId: string, profileId: string): Promise<void> {
-  await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/lsp/${encodeURIComponent(profileId)}/restart`, { method: "POST", body: {} });
+  return api(`${base(workspaceId)}/text-replace`, { method: "POST", body: request });
 }

@@ -1,153 +1,300 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/brent/echo/internal/llm"
-	"github.com/brent/echo/internal/workspacefs"
+	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/editorfs"
+	"github.com/brent/echo/internal/model"
 )
 
-type inlineScriptStreamer struct {
-	requests []llm.ChatRequest
-	rounds   [][]llm.StreamEvent
-}
-
-func (s *inlineScriptStreamer) StreamChat(_ context.Context, request llm.ChatRequest) *llm.Stream {
-	s.requests = append(s.requests, request)
-	var events []llm.StreamEvent
-	if len(s.rounds) > 0 {
-		events, s.rounds = s.rounds[0], s.rounds[1:]
-	} else {
-		events = []llm.StreamEvent{{Type: llm.EventToken, Content: "Done."}, {Type: llm.EventComplete, FinishReason: "stop"}}
-	}
-	ch := make(chan llm.StreamEvent, len(events))
-	for _, event := range events {
-		ch <- event
-	}
-	close(ch)
-	return &llm.Stream{Events: ch}
-}
-
-func inlineToolEvents(name, arguments string) []llm.StreamEvent {
-	return []llm.StreamEvent{
-		{Type: llm.EventToolCall, ToolCall: &llm.ToolCallDelta{Index: 0, ID: "call-1", Type: "function", Function: llm.FunctionCallDelta{Name: name, Arguments: arguments}}},
-		{Type: llm.EventComplete, FinishReason: "tool_calls"},
-	}
-}
-
-func inlineRequest(t *testing.T, s *Server, workspaceID string, input inlineChatRequest) (*httptest.ResponseRecorder, []inlineChatEvent) {
+func inlineFixture(t *testing.T, s *Server) (domain.Bot, inlineChatRequest, string) {
 	t.Helper()
-	data, err := json.Marshal(input)
+	root := t.TempDir()
+	path := filepath.Join(root, "code.ts")
+	if err := os.WriteFile(path, []byte("const value = 0;\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bot, err := s.saveBot(domain.Bot{Handle: "inline-bot", Name: "Inline Bot", Prompt: "Use the selected bot's special conventions.", Roots: []string{root}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := httptest.NewRequest("POST", "/api/workspaces/"+workspaceID+"/inline-chat", bytes.NewReader(data))
-	w := httptest.NewRecorder()
-	s.routes().ServeHTTP(w, r)
-	events := []inlineChatEvent{}
-	if w.Code == http.StatusOK {
-		for _, line := range strings.Split(strings.TrimSpace(w.Body.String()), "\n") {
-			var event inlineChatEvent
-			if err := json.Unmarshal([]byte(line), &event); err != nil {
-				t.Fatalf("bad stream %q: %v", w.Body.String(), err)
-			}
-			events = append(events, event)
-		}
+	roots, err := s.EditorFS.Roots(bot.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return w, events
+	return bot, inlineChatRequest{Message: "edit", File: inlineChatFile{Title: "code.ts", Ref: &editorfs.FileRef{RootID: roots[0].ID, Path: "code.ts"}, Content: "const value = 1;\n", Selections: []inlineSelection{{StartLine: 1, StartColumn: 1, EndLine: 1, EndColumn: 17, Text: "const value = 1;"}}}}, path
 }
 
-func TestInlineChatPreviewContextAndNoDiskMutation(t *testing.T) {
-	s, _ := newTestServer(t)
-	workspace := createChatWorkspace(t, s, "inline")
-	path := filepath.Join(workspace.MainPath, "main.txt")
-	if err := os.WriteFile(path, []byte("disk version\n"), 0600); err != nil {
-		t.Fatal(err)
+func inlineHTTP(s *Server, bot domain.Bot, input inlineChatRequest, cookie *http.Cookie, ctx context.Context) *httptest.ResponseRecorder {
+	data, _ := json.Marshal(input)
+	r := httptest.NewRequest("POST", "https://echo.example/api/v1/plugins/monaco-editor/bots/"+bot.ID+"/inline-chat", strings.NewReader(string(data))).WithContext(ctx)
+	r.RemoteAddr = "192.0.2.10:54321"
+	r.Header.Set("Origin", "https://echo.example")
+	if cookie != nil {
+		r.AddCookie(cookie)
 	}
-	if err := os.WriteFile(filepath.Join(workspace.MainPath, "context.txt"), []byte("reference context"), 0600); err != nil {
-		t.Fatal(err)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	return w
+}
+
+func inlineEvents(t *testing.T, w *httptest.ResponseRecorder) []inlineChatEvent {
+	t.Helper()
+	if w.Code != 200 {
+		t.Fatalf("HTTP %d: %s", w.Code, w.Body.String())
 	}
-	roots, err := s.fs.Roots(workspace.ID)
-	if err != nil {
-		t.Fatal(err)
+	events := []inlineChatEvent{}
+	for _, line := range strings.Split(strings.TrimSpace(w.Body.String()), "\n") {
+		var event inlineChatEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err, w.Body.String())
+		}
+		events = append(events, event)
 	}
-	ref := workspacefs.FileRef{RootID: roots[0].ID, Path: "main.txt"}
-	streamer := &inlineScriptStreamer{rounds: [][]llm.StreamEvent{inlineToolEvents(inlineEditTool, `{"edits":[{"oldText":"unsaved","newText":"proposed"}]}`)}}
-	s.llm = streamer
-	input := inlineChatRequest{Message: "Improve this", File: inlineChatFile{Title: "main.txt", Ref: &ref, Content: "unsaved\n", Selections: []editorContextSelection{{StartLine: 1, StartColumn: 1, EndLine: 1, EndColumn: 8, Text: "unsaved"}}},
-		References: []chatReferenceInput{{Ref: workspacefs.FileRef{RootID: roots[0].ID, Path: "context.txt"}, Kind: "file", ReferencePath: "ignored-spoof", Label: "context.txt"}},
+	return events
+}
+
+func TestInlineChatBotGenerationPreviewAndFollowUp(t *testing.T) {
+	s := testServer(t)
+	bot, input, path := inlineFixture(t, s)
+	setRemotePassword(t, s)
+	cookie := remoteLogin(t, s)
+	var turns atomic.Int32
+	input.Generation = attachModel(t, s, func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model       string          `json:"model"`
+			Thinking    string          `json:"reasoning_effort"`
+			Temperature float64         `json:"temperature"`
+			Messages    []model.Message `json:"messages"`
+			Tools       []struct {
+				Function domain.Tool `json:"function"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		if body.Model != "chosen-model" || body.Thinking != "high" || body.Temperature != .23 {
+			t.Errorf("generation not forwarded: %+v", body)
+		}
+		if !strings.Contains(body.Messages[0].Content, bot.Prompt) || !strings.Contains(body.Messages[0].Content, "@inline-bot") {
+			t.Error("wrong bot instructions")
+		}
+		for _, tool := range body.Tools {
+			if tool.Function.Name == "file_write" || tool.Function.Name == "bot_save" {
+				t.Error("mutating tool exposed")
+			}
+		}
+		if body.Messages[len(body.Messages)-1].Role == "tool" {
+			stream(w, "Preview ready.", nil)
+			return
+		}
+		before, after := "const value = 1;", "const value = 2;"
+		if turns.Add(1) == 2 {
+			before, after = after, "const value = 3;"
+		}
+		context := body.Messages[len(body.Messages)-2].Content
+		if !strings.Contains(context, before) {
+			t.Error("candidate missing from context", context)
+		}
+		args, _ := json.Marshal(map[string]any{"edits": []any{map[string]string{"oldText": before, "newText": after}}})
+		stream(w, "", []domain.ToolCall{{ID: "edit", Function: domain.FunctionCall{Name: inlineEditTool, Arguments: string(args)}}})
+	})
+	input.Generation.Model = "chosen-model"
+	input.Generation.Thinking = "high"
+	input.Generation.Temperature = .23
+	for i := 0; i < 2; i++ {
+		events := inlineEvents(t, inlineHTTP(s, bot, input, cookie, context.Background()))
+		if events[len(events)-1].Type != "done" {
+			t.Fatal(events)
+		}
+		found := false
+		for _, event := range events {
+			if event.Type == "proposal" {
+				found = true
+				input.Proposal = event.Content
+				if len(event.Changes) == 0 {
+					t.Fatal("missing line preview")
+				}
+			}
+		}
+		if !found {
+			t.Fatal("no proposal", events)
+		}
+		input.History = append(input.History, inlineChatMessage{Role: "user", Content: input.Message}, inlineChatMessage{Role: "assistant", Content: "Preview ready."})
+		input.Message = "follow up"
 	}
-	w, events := inlineRequest(t, s, workspace.ID, input)
-	if w.Code != 200 || !strings.HasPrefix(w.Header().Get("Content-Type"), "application/x-ndjson") {
-		t.Fatalf("response: %d %s", w.Code, w.Body.String())
-	}
-	if events[0].Type != "proposal" || events[0].Content == nil || *events[0].Content != "proposed\n" || len(events[0].Changes) != 1 || events[len(events)-1].Type != "done" {
-		t.Fatalf("events: %+v", events)
+	if input.Proposal == nil || *input.Proposal != "const value = 3;\n" {
+		t.Fatal(input.Proposal)
 	}
 	data, _ := os.ReadFile(path)
-	if string(data) != "disk version\n" {
-		t.Fatal("preview modified disk")
+	if string(data) != "const value = 0;\n" {
+		t.Fatal("inline chat changed disk")
 	}
-	requestJSON, _ := json.Marshal(streamer.requests[0].Messages)
-	for _, expected := range []string{"unsaved", "reference context", "originalSelections"} {
-		if !strings.Contains(string(requestJSON), expected) {
-			t.Fatalf("missing %q in context", expected)
-		}
+	chats, _ := s.Store.Chats()
+	if len(chats) != 0 {
+		t.Fatal("inline chat created durable history")
 	}
-	for _, tool := range streamer.requests[0].Tools {
-		if tool.Function.Name != inlineEditTool && !strings.HasPrefix(tool.Function.Name, "filesystem_") {
-			t.Fatalf("unexpected tool %s", tool.Function.Name)
-		}
-		if strings.Contains(tool.Function.Name, "edit") && tool.Function.Name != inlineEditTool {
-			t.Fatal("mutation tool exposed")
-		}
-	}
-	proposal := "proposed\n"
-	input.Proposal = &proposal
-	input.History = []inlineChatMessage{{Role: "user", Content: "Improve this"}, {Role: "assistant", Content: "Done."}}
-	input.Message = "Add a heading"
-	streamer.rounds = [][]llm.StreamEvent{inlineToolEvents(inlineEditTool, `{"edits":[{"oldText":"proposed","newText":"heading\nproposed"}]}`)}
-	_, events = inlineRequest(t, s, workspace.ID, input)
-	if events[0].Content == nil || *events[0].Content != "heading\nproposed\n" {
-		t.Fatalf("followup lost proposal: %+v", events)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.dispatches) != 0 || len(s.botReservations) != 0 {
+		t.Fatal("inline reservation leaked")
 	}
 }
 
-func TestInlineChatRejectsMutationAndReadsUnsavedCandidate(t *testing.T) {
-	s, _ := newTestServer(t)
-	workspace := createChatWorkspace(t, s, "inline-tools")
-	path := filepath.Join(workspace.MainPath, "main.txt")
-	_ = os.WriteFile(path, []byte("disk"), 0600)
-	roots, _ := s.fs.Roots(workspace.ID)
-	ref := workspacefs.FileRef{RootID: roots[0].ID, Path: "main.txt"}
-	labeled := roots[0].ReferenceLabel + "/main.txt"
-	args, _ := json.Marshal(map[string]string{"path": labeled})
-	streamer := &inlineScriptStreamer{rounds: [][]llm.StreamEvent{
-		inlineToolEvents("filesystem_read_text", string(args)),
-		inlineToolEvents("filesystem_delete_file", string(args)),
-	}}
-	s.llm = streamer
-	w, events := inlineRequest(t, s, workspace.ID, inlineChatRequest{Message: "explain", File: inlineChatFile{Title: "main.txt", Ref: &ref, Content: "unsaved"}})
-	if w.Code != 200 || events[len(events)-1].Type != "done" {
-		t.Fatal(w.Body.String())
+func TestInlineChatRejectsMutationAndReadsCandidate(t *testing.T) {
+	s := testServer(t)
+	bot, input, path := inlineFixture(t, s)
+	setRemotePassword(t, s)
+	cookie := remoteLogin(t, s)
+	candidate := "candidate from preceding proposal"
+	input.Proposal = &candidate
+	input.Generation = attachModel(t, s, func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []model.Message `json:"messages"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if body.Messages[len(body.Messages)-1].Role == "tool" {
+			if !strings.Contains(body.Messages[len(body.Messages)-1].Content, candidate) {
+				t.Error("read did not use candidate")
+			}
+			if !strings.Contains(body.Messages[len(body.Messages)-2].Content, "not available in inline chat") {
+				t.Error("mutation was not rejected")
+			}
+			stream(w, "Done", nil)
+			return
+		}
+		args, _ := json.Marshal(map[string]string{"path": path})
+		stream(w, "", []domain.ToolCall{{ID: "bad", Function: domain.FunctionCall{Name: "file_delete", Arguments: string(args)}}, {ID: "read", Function: domain.FunctionCall{Name: "file_read", Arguments: string(args)}}})
+	})
+	events := inlineEvents(t, inlineHTTP(s, bot, input, cookie, context.Background()))
+	if events[len(events)-1].Type != "done" {
+		t.Fatal(events)
 	}
-	second, _ := json.Marshal(streamer.requests[1].Messages)
-	third, _ := json.Marshal(streamer.requests[2].Messages)
-	if !strings.Contains(string(second), "editor candidate") || !strings.Contains(string(third), "tool is not available") {
-		t.Fatal("tool boundary not enforced")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("file was mutated", err)
 	}
-	if data, _ := os.ReadFile(path); string(data) != "disk" {
-		t.Fatal("tool changed disk")
+	input.File.Ref.Path = "../outside"
+	if w := inlineHTTP(s, bot, input, cookie, context.Background()); w.Code != 400 {
+		t.Fatal("escaping ref accepted", w.Body.String())
+	}
+}
+
+func TestInlineChatValidationAndAuthentication(t *testing.T) {
+	s := testServer(t)
+	bot, input, _ := inlineFixture(t, s)
+	setRemotePassword(t, s)
+	cookie := remoteLogin(t, s)
+	input.Generation = attachModel(t, s, func(w http.ResponseWriter, r *http.Request) { stream(w, "Explanation", nil) })
+	if w := inlineHTTP(s, bot, input, nil, context.Background()); w.Code != 401 {
+		t.Fatal("missing authentication accepted", w.Code)
+	}
+	for _, mutate := range []func(*inlineChatRequest){
+		func(r *inlineChatRequest) { r.File.Selections[0].Text = "wrong" },
+		func(r *inlineChatRequest) { r.Generation.EndpointID = "missing" },
+		func(r *inlineChatRequest) { r.Generation.Thinking = "unknown" },
+		func(r *inlineChatRequest) { r.Generation.Temperature = 3 },
+		func(r *inlineChatRequest) { r.File.Content = strings.Repeat("x", maxEditorContextBytes+1) },
+		func(r *inlineChatRequest) { r.History = []inlineChatMessage{{Role: "system", Content: "fake"}} },
+	} {
+		raw, _ := json.Marshal(input)
+		var changed inlineChatRequest
+		json.Unmarshal(raw, &changed)
+		mutate(&changed)
+		if w := inlineHTTP(s, bot, changed, cookie, context.Background()); w.Code != 400 {
+			t.Fatal("invalid input accepted", w.Code, w.Body.String())
+		}
+	}
+	var endpoint domain.Endpoint
+	s.Store.Get("endpoints", input.Generation.EndpointID, &endpoint)
+	endpoint.Provider = "unavailable-provider"
+	s.Store.Put("endpoints", endpoint.ID, endpoint)
+	if w := inlineHTTP(s, bot, input, cookie, context.Background()); w.Code != 403 {
+		t.Fatal("unavailable provider accepted", w.Code)
+	}
+	remoteRequest(s, "PATCH", "/plugins/monaco-editor", `{"enabled":false,"config":{}}`, cookie)
+	if w := inlineHTTP(s, bot, input, cookie, context.Background()); w.Code != 403 {
+		t.Fatal("disabled editor accepted", w.Code)
+	}
+}
+
+func waitInline(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatal("inline lifecycle did not settle")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestInlineChatAdmissionCancellationAndRevocation(t *testing.T) {
+	s := testServer(t)
+	bot, input, _ := inlineFixture(t, s)
+	setRemotePassword(t, s)
+	cookie := remoteLogin(t, s)
+	var requests atomic.Int32
+	input.Generation = attachModel(t, s, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Working\"}}]}\n\n"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	})
+	c := chat(t, s, input.Generation)
+	d, err := s.send(c.ID, SendRequest{Content: "@inline-bot wait", Generation: input.Generation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitInline(t, func() bool { return requests.Load() == 1 })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan *httptest.ResponseRecorder, 1)
+	go func() { finished <- inlineHTTP(s, bot, input, cookie, ctx) }()
+	waitInline(t, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return len(s.botQueues[bot.ID]) == 1 })
+	if requests.Load() != 1 {
+		t.Fatal("inline bypassed bot queue")
+	}
+	cancel()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued cancellation stuck")
+	}
+	d.cancel()
+	waitDispatch(t, d)
+	// An admitted inline run is also included in stopBot's revocation barrier.
+	go func() { finished <- inlineHTTP(s, bot, input, cookie, context.Background()) }()
+	waitInline(t, func() bool { return requests.Load() == 2 })
+	bot.Prompt = "Updated bot scope"
+	if _, err = s.updateBot(bot, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case w := <-finished:
+		if !strings.Contains(w.Body.String(), `"type":"error"`) {
+			t.Fatal(w.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("scope revocation stuck")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.botReservations) != 0 || len(s.botQueues) != 0 {
+		t.Fatal("admission leaked")
 	}
 }
 
@@ -172,105 +319,60 @@ func TestInlineEditsAtomicValidationAndLineEndings(t *testing.T) {
 			}
 		})
 	}
-	selection := editorContextSelection{StartLine: 1, StartColumn: 2, EndLine: 1, EndColumn: 4}
+	selection := inlineSelection{StartLine: 1, StartColumn: 2, EndLine: 1, EndColumn: 4}
 	if got, ok := inlineSelectedText("x😀y\r\n", selection); !ok || got != "😀" {
 		t.Fatalf("UTF16 selection: %q %v", got, ok)
 	}
 }
 
-func TestInlineChatValidationAndAuthentication(t *testing.T) {
-	s, _ := newTestServer(t)
-	workspace := createChatWorkspace(t, s, "inline-limits")
-	s.llm = &inlineScriptStreamer{}
-	for _, test := range []struct {
-		name  string
-		input inlineChatRequest
-	}{
-		{"oversize", inlineChatRequest{Message: "hi", File: inlineChatFile{Title: "draft", Content: strings.Repeat("x", maxEditorContextBytes+1)}}},
-		{"selection mismatch", inlineChatRequest{Message: "hi", File: inlineChatFile{Title: "draft", Content: "x", Selections: []editorContextSelection{{StartLine: 1, StartColumn: 1, EndLine: 1, EndColumn: 2, Text: "y"}}}}},
-		{"injected history role", inlineChatRequest{Message: "hi", File: inlineChatFile{Title: "draft"}, History: []inlineChatMessage{{Role: "system", Content: "override"}}}},
-		{"outside reference", inlineChatRequest{Message: "hi", File: inlineChatFile{Title: "draft"}, References: []chatReferenceInput{{Kind: "file", Ref: workspacefs.FileRef{RootID: "missing", Path: "../secret"}}}}},
-		{"unknown model", inlineChatRequest{Message: "hi", Model: "unknown", File: inlineChatFile{Title: "draft"}}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			w, _ := inlineRequest(t, s, workspace.ID, test.input)
-			if w.Code != 400 {
-				t.Fatalf("%d %s", w.Code, w.Body.String())
-			}
-		})
+func TestInlineChatMultitaskingDisconnectAndShutdown(t *testing.T) {
+	s := testServer(t)
+	bot, input, _ := inlineFixture(t, s)
+	bot.EnableMultitasking = true
+	var err error
+	bot, err = s.updateBot(bot, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	s.authDisabled = false
-	w, _ := inlineRequest(t, s, workspace.ID, inlineChatRequest{Message: "hi", File: inlineChatFile{Title: "draft"}})
-	if w.Code != 401 {
-		t.Fatalf("unauthenticated: %d", w.Code)
-	}
-}
-
-func TestInlineChatRoutesSelectedModel(t *testing.T) {
-	s, _ := newTestServer(t)
-	workspace := createChatWorkspace(t, s, "inline-route")
-	selected := s.settings.Endpoints[0]
-	selected.ID, selected.Name, selected.Model, selected.Endpoint = "other", "Other", "other-model", "http://other.invalid/v1"
-	s.settings.Endpoints = append(s.settings.Endpoints, selected)
-	defaultStream, otherStream := &inlineScriptStreamer{}, &inlineScriptStreamer{}
-	s.llm = defaultStream
-	s.endpointLLMs[selected.ID] = otherStream
-	w, _ := inlineRequest(t, s, workspace.ID, inlineChatRequest{Message: "hi", Model: selected.Model, File: inlineChatFile{Title: "draft"}})
-	if w.Code != 200 || len(defaultStream.requests) != 0 || len(otherStream.requests) != 1 || otherStream.requests[0].Model != selected.Model {
-		t.Fatalf("routing: %d %s", w.Code, w.Body.String())
-	}
-}
-
-func TestInlineChatContextWindowAndStreamErrors(t *testing.T) {
-	s, _ := newTestServer(t)
-	workspace := createChatWorkspace(t, s, "inline-errors")
-	input := inlineChatRequest{Message: "change", File: inlineChatFile{Title: "draft", Content: "before"}}
-	fake := &inlineScriptStreamer{}
-	s.llm = fake
-	s.llmSettings.ContextLength, s.llmSettings.MaxTokens = 128, 64
-	w, events := inlineRequest(t, s, workspace.ID, input)
-	if w.Code != 200 || len(events) != 1 || events[0].Type != "error" || !strings.Contains(events[0].Text, "context window") || len(fake.requests) != 0 {
-		t.Fatalf("oversized context reached provider: %s", w.Body.String())
-	}
-
-	s.llmSettings.ContextLength = 65536
-	fake.rounds = [][]llm.StreamEvent{
-		inlineToolEvents(inlineEditTool, `{"edits":[{"oldText":"before","newText":"after"}]}`),
-		{{Type: llm.EventToken, Content: "Partial explanation"}, {Type: llm.EventError, Error: "provider disconnected"}},
-	}
-	_, events = inlineRequest(t, s, workspace.ID, input)
-	if len(events) != 3 || events[0].Type != "proposal" || events[0].Content == nil || *events[0].Content != "after" ||
-		events[1].Type != "delta" || events[2].Type != "error" || events[2].Text != "provider disconnected" {
-		t.Fatalf("complete preview or partial answer was lost: %+v", events)
-	}
-}
-
-func TestInlineStreamCancellationAndIncompleteArguments(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	ch := make(chan llm.StreamEvent)
-	finished := make(chan error, 1)
-	go func() {
-		_, _, err := collectInlineStream(ctx, &llm.Stream{Events: ch}, func(inlineChatEvent) error { return nil })
-		finished <- err
-	}()
-	cancel()
+	setRemotePassword(t, s)
+	cookie := remoteLogin(t, s)
+	var requests atomic.Int32
+	input.Generation = attachModel(t, s, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Working\"}}]}\n\n"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	})
+	ctx, disconnect := context.WithCancel(context.Background())
+	defer disconnect()
+	finished := make(chan struct{}, 2)
+	go func() { inlineHTTP(s, bot, input, cookie, ctx); finished <- struct{}{} }()
+	go func() { inlineHTTP(s, bot, input, cookie, context.Background()); finished <- struct{}{} }()
+	waitInline(t, func() bool { return requests.Load() == 2 })
+	disconnect()
 	select {
-	case err := <-finished:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("cancel did not release stream")
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("disconnect did not release inline execution")
 	}
-	for _, events := range [][]llm.StreamEvent{
-		{{Type: llm.EventToken, Content: "partial"}},
-		{{Type: llm.EventError, Error: "provider error"}},
-		{{Type: llm.EventToolCall, ToolCall: &llm.ToolCallDelta{Function: llm.FunctionCallDelta{Name: inlineEditTool, Arguments: `{"edits":`}}}, {Type: llm.EventComplete, FinishReason: "length"}},
-	} {
-		fake := &inlineScriptStreamer{rounds: [][]llm.StreamEvent{events}}
-		_, _, err := collectInlineStream(context.Background(), fake.StreamChat(context.Background(), llm.ChatRequest{}), func(inlineChatEvent) error { return nil })
-		if err == nil {
-			t.Fatal("incomplete stream was accepted")
-		}
+	s.mu.Lock()
+	remaining := len(s.botReservations[bot.ID])
+	s.mu.Unlock()
+	if remaining != 1 {
+		t.Fatalf("reservations after disconnect: %d", remaining)
+	}
+	closed := make(chan struct{})
+	go func() { s.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not release inline execution")
+	}
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("inline handler did not exit on shutdown")
 	}
 }

@@ -1,0 +1,30 @@
+package main
+
+import (
+ "encoding/json"
+ "fmt"
+ "io"
+ "os"
+ "unsafe"
+)
+
+//go:wasmimport echo call
+func hostCall(input unsafe.Pointer, length uint32, output unsafe.Pointer, capacity uint32) uint32
+
+// call is the only route to host resources. Declare each method in capabilities.
+func call(method string,params any) json.RawMessage {
+ request,_:=json.Marshal(map[string]any{"method":method,"params":params})
+ length:=hostCall(unsafe.Pointer(&request[0]),uint32(len(request)),nil,0)
+ if length==0 || length>2<<20{return json.RawMessage(`{"error":"invalid broker response"}`)}
+ response:=make([]byte,length)
+ if hostCall(nil,0,unsafe.Pointer(&response[0]),length)!=length{return json.RawMessage(`{"error":"incomplete broker response"}`)}
+ return response
+}
+
+func main() {
+ var input struct { Tool string `json:"tool"`; Params map[string]any `json:"params"` }
+ data,_:=io.ReadAll(io.LimitReader(os.Stdin,4<<20))
+ if json.Unmarshal(data,&input)!=nil{fmt.Print(`{"error":"invalid tool input"}`);return}
+ // Replace this body with your tool. Always emit {"result":...} or {"error":...}.
+ json.NewEncoder(os.Stdout).Encode(map[string]any{"result":input.Params})
+}

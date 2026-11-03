@@ -172,7 +172,27 @@ func (s *Service) sendBreakpoints(current *session, state debugconfig.State) err
 	}
 	filters := []string{}
 	filterOptions := []map[string]any{}
-	for _, breakpoint := range state.ExceptionBreakpoints {
+	exceptions := append([]debugconfig.ExceptionBreakpoint{}, state.ExceptionBreakpoints...)
+	if advertised, ok := capabilities["exceptionBreakpointFilters"].([]any); ok {
+		for _, raw := range advertised {
+			filter, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			id, _ := filter["filter"].(string)
+			present := false
+			for _, existing := range exceptions {
+				if existing.Filter == id {
+					present = true
+					break
+				}
+			}
+			if !present && id != "" && filter["default"] == true {
+				exceptions = append(exceptions, debugconfig.ExceptionBreakpoint{Filter: id, Enabled: true})
+			}
+		}
+	}
+	for _, breakpoint := range exceptions {
 		if !breakpoint.Enabled {
 			continue
 		}

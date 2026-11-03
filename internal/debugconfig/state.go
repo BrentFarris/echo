@@ -1,12 +1,10 @@
 package debugconfig
 
 import (
-	"encoding/json"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
-
-	"github.com/brent/echo/internal/appdata"
 )
 
 type SourceRef struct {
@@ -73,12 +71,12 @@ type State struct {
 }
 
 func (state State) Normalized() State {
-	state.SelectedConfiguration = strings.ToLower(strings.TrimSpace(state.SelectedConfiguration))
+	state.SelectedConfiguration = strings.TrimSpace(state.SelectedConfiguration)
 	for index := range state.SourceBreakpoints {
 		bp := &state.SourceBreakpoints[index]
 		bp.ID = strings.TrimSpace(bp.ID)
 		bp.Source.RootID = strings.TrimSpace(bp.Source.RootID)
-		bp.Source.Path = strings.Trim(strings.ReplaceAll(bp.Source.Path, "\\", "/"), "/")
+		bp.Source.Path = strings.ReplaceAll(bp.Source.Path, "\\", "/")
 		bp.Condition = strings.TrimSpace(bp.Condition)
 		bp.HitCondition = strings.TrimSpace(bp.HitCondition)
 	}
@@ -139,7 +137,7 @@ func (state State) Validate() error {
 		if err := reserveStateID(ids, bp.ID, "source breakpoint"); err != nil {
 			return err
 		}
-		if bp.Source.RootID == "" || bp.Source.Path == "" || bp.Line < 1 {
+		if bp.Source.RootID == "" || bp.Source.Path == "" || bp.Line < 1 || strings.HasPrefix(bp.Source.Path, "/") || bp.Source.Path == ".." || strings.HasPrefix(bp.Source.Path, "../") || path.Clean(bp.Source.Path) != bp.Source.Path || strings.ContainsAny(bp.Source.Path, "\x00:") {
 			return fmt.Errorf("source breakpoint %q has an invalid source or line", bp.ID)
 		}
 		if bp.Column < 0 {
@@ -199,65 +197,6 @@ func reserveStateID(ids map[string]bool, id, kind string) error {
 	}
 	ids[id] = true
 	return nil
-}
-
-type StateStore struct{ data *appdata.Store }
-
-func NewStateStore(data *appdata.Store) *StateStore { return &StateStore{data: data} }
-
-func (s *StateStore) Load(workspaceID string) (State, error) {
-	file, err := s.data.Load()
-	if err != nil {
-		return State{}, err
-	}
-	raw := file.DebugState[strings.TrimSpace(workspaceID)]
-	if len(raw) == 0 {
-		return State{}, nil
-	}
-	var state State
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return State{}, fmt.Errorf("parse workspace debug state: %w", err)
-	}
-	return state.Normalized(), state.Validate()
-}
-
-func (s *StateStore) Save(workspaceID string, expectedRevision uint64, state State) (State, error) {
-	workspaceID = strings.TrimSpace(workspaceID)
-	if workspaceID == "" {
-		return State{}, fmt.Errorf("workspace id is required")
-	}
-	state = state.Normalized()
-	if err := state.Validate(); err != nil {
-		return State{}, err
-	}
-	var saved State
-	err := s.data.Update(func(file *appdata.File) error {
-		if file.DebugState == nil {
-			file.DebugState = map[string]json.RawMessage{}
-		}
-		var current State
-		if raw := file.DebugState[workspaceID]; len(raw) > 0 {
-			if err := json.Unmarshal(raw, &current); err != nil {
-				return err
-			}
-		}
-		if current.Revision != expectedRevision {
-			return &RevisionConflict{Expected: expectedRevision, Actual: current.Revision}
-		}
-		state.Revision = current.Revision + 1
-		raw, err := json.Marshal(state)
-		if err != nil {
-			return err
-		}
-		file.DebugState[workspaceID] = raw
-		saved = state
-		return nil
-	})
-	return saved, err
-}
-
-func (s *StateStore) Delete(workspaceID string) error {
-	return s.data.Update(func(file *appdata.File) error { delete(file.DebugState, strings.TrimSpace(workspaceID)); return nil })
 }
 
 type RevisionConflict struct {

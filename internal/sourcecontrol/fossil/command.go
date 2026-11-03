@@ -3,10 +3,7 @@ package fossil
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"regexp"
 	"runtime"
 	"strings"
@@ -14,7 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/brent/echo/internal/sandbox"
+	"github.com/brent/echo/internal/scmexec"
 	"github.com/brent/echo/internal/sourcecontrol"
 )
 
@@ -91,56 +88,16 @@ func (p *Provider) runLimited(parent context.Context, workspaceID, root string, 
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	environment := fossilCommandEnvironment()
-	if p.sandbox != nil && p.sandbox.IsEnabled(workspaceID) {
-		guestRoot, err := p.sandbox.HostToGuest(workspaceID, root)
-		if err != nil {
-			return nil, false, &sourcecontrol.Error{Code: "sandbox_path_mapping_failed", Message: "Fossil checkout could not be mapped into the sandbox", Cause: err}
-		}
-		result, executeErr := p.sandbox.Execute(ctx, workspaceID, sandbox.ExecRequest{
-			Command: append([]string{"fossil"}, args...), WorkingDirectory: guestRoot,
-			Environment: environment, OutputLimit: outputLimit,
-		})
-		if executeErr != nil {
-			return nil, false, &sourcecontrol.Error{Code: sandbox.ErrorCode(executeErr), Message: executeErr.Error(), Cause: executeErr}
-		}
-		if result.ExitCode != 0 {
-			message := commandMessage(result.Stderr, result.Stdout, result.ExitCode)
-			code := classifyCommandError(message, true)
-			if code == "fossil_checkout_unavailable_in_sandbox" {
-				message = sandboxCheckoutDiagnostic
-			}
-			return result.Stdout, result.StdoutTruncated, &sourcecontrol.Error{Code: code, Message: sanitizeOutput(message, root)}
-		}
-		return result.Stdout, result.StdoutTruncated, nil
-	}
-
-	command := exec.CommandContext(ctx, "fossil", args...)
-	command.Dir = root
-	command.Env = append(os.Environ(), environment...)
-	var stdout, stderr cappedBuffer
-	stdout.limit = outputLimit
-	stderr.limit = 4 << 20
-	command.Stdout = &stdout
-	command.Stderr = &stderr
-	err := command.Run()
+	ctx, stop := p.executionContext(ctx, workspaceID)
+	defer stop()
+	result, err := p.runner.Execute(ctx, workspaceID, scmexec.Request{Command: append([]string{"fossil"}, args...), WorkingDirectory: root, Environment: fossilCommandEnvironment(), OutputLimit: outputLimit})
 	if err != nil {
-		message := strings.TrimSpace(strings.ToValidUTF8(stderr.String(), "\uFFFD"))
-		if message == "" {
-			message = strings.TrimSpace(strings.ToValidUTF8(stdout.String(), "\uFFFD"))
-		}
-		if message == "" {
-			message = err.Error()
-		}
-		code := classifyCommandError(message, false)
-		if ctx.Err() != nil {
-			code, message = "fossil_timeout", "Fossil operation timed out or was cancelled"
-		} else if errors.Is(err, exec.ErrNotFound) {
-			code, message = "fossil_unavailable", "Fossil is not installed or is not available on PATH"
-		}
-		return stdout.Bytes(), stdout.Truncated(), &sourcecontrol.Error{Code: code, Message: sanitizeOutput(message, root), Cause: err}
+		return nil, false, err
 	}
-	return stdout.Bytes(), stdout.Truncated(), nil
+	if result.ExitCode != 0 {
+		return result.Stdout, result.StdoutTruncated, &sourcecontrol.Error{Code: classifyCommandError(string(result.Stderr), false), Message: sanitizeOutput(commandMessage(result.Stderr, result.Stdout, result.ExitCode), root)}
+	}
+	return result.Stdout, result.StdoutTruncated, nil
 }
 
 func commandMessage(stderr, stdout []byte, exitCode int) string {
@@ -206,7 +163,7 @@ type checkoutInfo struct {
 	Parent     string
 }
 
-const sandboxCheckoutDiagnostic = "Fossil cannot open this checkout's repository database inside the sandbox; disable the sandbox or reopen the checkout with its repository database inside a workspace folder"
+const sandboxCheckoutDiagnostic = "Fossil cannot access this checkout's repository database; place it in the checkout's parent folder or add its folder to the bot's workspace"
 
 func (p *Provider) checkoutInfo(ctx context.Context, workspaceID, root string) (checkoutInfo, error) {
 	output, err := p.run(ctx, workspaceID, root, false, "info")
@@ -217,14 +174,17 @@ func (p *Provider) checkoutInfo(ctx context.Context, workspaceID, root string) (
 	if info.LocalRoot == "" {
 		return checkoutInfo{}, &sourcecontrol.Error{Code: "invalid_fossil_checkout", Message: "Fossil did not report a checkout root"}
 	}
-	if p.sandbox != nil && p.sandbox.IsEnabled(workspaceID) {
-		hostRoot, mapErr := p.sandbox.GuestToHost(workspaceID, info.LocalRoot)
+	if p.runner != nil {
+		hostRoot, mapErr := p.runner.ValidatePath(workspaceID, info.LocalRoot)
 		if mapErr != nil {
 			return checkoutInfo{}, &sourcecontrol.Error{Code: "fossil_checkout_unavailable_in_sandbox", Message: "Fossil checkout is outside the sandbox workspace mounts", Cause: mapErr}
 		}
 		info.LocalRoot = hostRoot
 		if info.Repository != "" {
-			hostRepository, repositoryErr := p.sandbox.GuestToHost(workspaceID, info.Repository)
+			hostRepository, repositoryErr := p.runner.ValidatePath(workspaceID, info.Repository)
+			if p.runner.ValidateFossilRepository != nil {
+				hostRepository, repositoryErr = p.runner.ValidateFossilRepository(ctx, workspaceID, hostRoot, info.Repository)
+			}
 			if repositoryErr != nil {
 				return checkoutInfo{}, &sourcecontrol.Error{Code: "fossil_checkout_unavailable_in_sandbox", Message: sandboxCheckoutDiagnostic, Cause: repositoryErr}
 			}
@@ -275,4 +235,24 @@ func firstField(value string) string {
 		return fields[0]
 	}
 	return ""
+}
+
+func (p *Provider) executionContext(parent context.Context, workspace string) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	p.execMu.Lock()
+	if p.closed {
+		p.execMu.Unlock()
+		cancel()
+		return ctx, cancel
+	}
+	lifetime := p.execContexts[workspace]
+	if lifetime == nil {
+		var stop context.CancelFunc
+		lifetime, stop = context.WithCancel(context.Background())
+		p.execContexts[workspace] = lifetime
+		p.execStops[workspace] = stop
+	}
+	p.execMu.Unlock()
+	stop := context.AfterFunc(lifetime, cancel)
+	return ctx, func() { stop(); cancel() }
 }

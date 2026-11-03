@@ -380,7 +380,7 @@
 .debug-output-entry { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 6px; }
 .debug-output-entry > span { color: var(--code-muted); font-size: 10px; text-transform: uppercase; }
 .debug-output-entry pre,
-.debug-console-entry pre { margin: 0; overflow: visible; white-space: pre-wrap; word-break: break-word; }
+.debug-console-entry pre { margin: 0; padding: 0; border-radius: 0; background: transparent; font: inherit; overflow: visible; white-space: pre-wrap; word-break: break-word; }
 .debug-output-source { grid-column: 2; justify-self: start; border: 0; background: transparent; color: var(--code-accent); cursor: pointer; }
 .debug-output-entry.is-stderr pre,
 .debug-console-entry.is-error pre { color: var(--code-diagnostic-error); }
@@ -492,7 +492,8 @@
 @media (max-width: 720px) {
   .code-sidebar > .code-debug-view { position: static; width: 100%; height: 100%; box-shadow: none; transform: none; }
   .debug-floating-toolbar { position: fixed; right: 8px; bottom: calc(55px + env(safe-area-inset-bottom)); left: 8px; justify-content: center; }
-  .debug-toolbar-host { position: static; transform: none; }
+  /* Keep the host out of the editor grid while its toolbar uses viewport positioning. */
+  .debug-toolbar-host { transform: none; }
   .debug-toolbar-label { display: none; }
   .terminal-panel-tabs button { padding: 0 5px; }
   .terminal-panel-tabs button .codicon { display: none; }

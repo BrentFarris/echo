@@ -1,376 +1,372 @@
 # Echo
 
-<p align="center">
-  <strong>A local-first AI coding workspace that runs in your browser.</strong>
-</p>
+The chat-first Echo application now lives at the repository root. Echo, named bots, model streaming, scoped file operations and deterministic bot coordination form the core. Features are installed plugins. The previous application is kept temporarily in the Git-ignored `OLD/` folder for reference; its source, scripts, dependencies and local files are archived there.
 
-<p align="center">
-  <a href="https://github.com/BrentFarris/echo/actions/workflows/nightly-builds.yml"><img alt="Nightly builds" src="https://github.com/BrentFarris/echo/actions/workflows/nightly-builds.yml/badge.svg"></a>
-  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2563eb.svg"></a>
-  <img alt="Go" src="https://img.shields.io/badge/backend-Go-00ADD8.svg">
-  <img alt="TypeScript" src="https://img.shields.io/badge/frontend-TypeScript-3178C6.svg">
-</p>
+Open **Apps → Monaco Editor** for the built-in code editor. Choose a bot above the explorer to browse its configured folders; each bot keeps separate tabs, pins, drafts and undo history. A single click opens an italic preview, double-click keeps it open, and pinning protects it from closing. **Open in Window** and **Open Embedded** switch any app's presentation while retaining its contents. **Back to chat** hides the editor; **Close** asks about unsaved work. Editor Settings stores preferences in the Monaco plugin configuration. The editor includes bundled language services, search/replace, bookmarks, outline, Markdown and media previews, with inline AI chat; the old side chat, debugger and external-language-server integrations remain absent. The Terminal plugin supplies the persistent bottom dock across chat and apps.
 
-<p align="center">
-  <a href="#quick-start">Quick start</a> ·
-  <a href="#configure-a-model">Model setup</a> ·
-  <a href="#linux-sandbox">Linux sandbox</a> ·
-  <a href="#build-from-source">Build from source</a> ·
-  <a href="#security">Security</a>
-</p>
+Press **Ctrl+I** (**Cmd+I** on macOS) in an editable file or untitled buffer to open inline chat at your cursor or selection. The bot selected above the explorer answers and proposes changes using its own instructions and folders. Attach read-only file/folder context with `@`, ask follow-up questions, and review the original red/green inline previews. The checkmark accepts one undoable change into the editor buffer; **Ctrl+S** saves it. **X** discards the proposal, and **Stop** ends generation while retaining the last complete preview. Editing or changing the file invalidates an old proposal; use **Regenerate from current file** after resolving any disk conflict.
 
-![Echo Chat](docs/screenshots/echo-chat.png)
+Inline chat uses the same model connection, model identifier, thinking, and temperature controls as the main chat. Editor choices are remembered separately per bot and machine in this browser, initially copied from the current chat's choices for that machine (or its first configured connection). Remote editors use their owning machine's connections. Inline conversations stay with their open tabs across bot switches and embedded/window presentation changes, and are cleared on acceptance, rejection, tab/editor closure, or reload. They do not create sidebar chats. Bot multitasking and admission rules also apply to inline requests.
 
-Echo brings chat, code editing, source control, and terminals together in one responsive web interface. The Go server works directly with folders on its machine, persists each workspace's conversations and agent configuration, and serves the TypeScript application as part of a single binary.
+## Slash commands
 
-Connect Echo to a local or remote provider that exposes an OpenAI-compatible `/chat/completions` API. Echo supports streamed responses, reasoning content, and tool calls without requiring an Echo account or hosted Echo service.
+Type `/` in the main chat prompt to search commands, then click a suggestion or press Enter on the selected option. Space, Tab, and Escape dismiss the list without invoking anything. Sending, pasting, or restoring slash text never invokes a command. `/approve` and `/missed` are now ordinary text; their existing settings and missed-job controls remain available.
 
-> **Project status:** Echo is under active development. Nightly builds are unsigned snapshots of the current `master` branch.
+`/plan` removes the command and visibly appends `\n\n You are to plan this request out, do not make any changes until the plan is approved`. The caret stays where the command was removed, and Undo restores the whole edit. Each invocation appends another copy.
 
-## What Echo can do
+In **Settings → General → Slash commands**, create, edit, or delete custom commands, and remove or restore built-ins. Definitions belong to the selected settings machine and are shared across browsers. Chat suggestions follow the selected bot’s machine, or the chat’s home machine before a bot is selected.
 
-| Area | Current capabilities |
-| --- | --- |
-| **Chat** | Persistent workspace conversations, multiple chat tabs, per-chat model and agent-mode selection, streamed Markdown, reasoning, tool activity, stop and clear controls, skill creation, and an inspectable Trajectory event stream |
-| **Agent modes** | Built-in General, read-only Plan, and durable autonomous Goal modes plus workspace-defined system instructions, tool allowlists, and path restrictions |
-| **Code** | Monaco editing, generic opt-in LSP and DAP debugging, file tabs, workspace trees, quick open, text and file search, create/rename/save operations, external-change detection, recoverable trash, and browser hot-exit buffers |
-| **Git** | Repository discovery, working-tree status, staged and unstaged diffs, staging, commits, branches, remotes, fetch/pull/push/sync, history, tags, and stashes |
-| **Perforce** | Default and pending changelists, shared diffs, opt-in checkout and file-operation tracking, targeted reconciliation, and recoverable revert; see the [P4 guide](docs/p4-source-control.md) |
-| **Terminal** | Workspace-aware PTY sessions powered by xterm.js, resize, restart, stop, and reusable saved commands |
-| **Linux sandbox** | Optional per-workspace Docker runtime with a shared shell and visible Xfce/Chromium desktop, browser takeover, persistent Linux/browser state, and deny-by-default egress |
-| **Agent tools** | Workspace-scoped file inspection and editing, shell commands, text and file search, image/video reads, web fetch/search, image generation, and reusable workspace skills |
-| **Plugins** | Reviewed local/GitHub packages with sandboxed page or floating views, optional native JSON-RPC tools, typed settings, secret references, immutable snapshots, and chat-driven authoring |
-| **Connections** | Multiple OpenAI-compatible LLM endpoints, custom HTTP headers, interaction routing, optional SearXNG research, and optional ComfyUI image generation |
-| **Access** | Owner-password authentication, remembered browser sessions, session revocation, WebSocket updates, and desktop/mobile browser layouts |
+Text commands insert literal text at the command location, beginning, or end of the prompt. Plugin commands run a selected standalone tool with saved JSON arguments and existing bot permissions; progress and results appear separately from the draft. Chat-dependent tools such as media generation are unavailable. App commands open an Echo app view and an optional declared feature, including the editor’s Explorer, Search, Bookmarks, Run and Debug, or Source Control. Plugin/app commands use the selected bot by default or a fixed bot saved with the command. Inline editor chat and external application links are not supported.
 
-### Workspace-scoped agents
+## Run on Windows
 
-Echo gives the selected model tools for the active workspace rather than unrestricted filesystem context. The built-in Plan mode exposes inspection and research tools without mutation tools. Goal mode keeps a fixed objective and model running across durable checkpoints until it verifies completion, reaches a genuine blocker, or is paused or cleared. Custom modes can change the system instructions, choose exactly which tools are available, and limit path-aware tools with workspace-relative glob patterns.
-
-Reusable skills live in `.echo/skills/` inside a workspace. Echo can search and read them during a chat, record new skills through tool calls, or synthesize a skill from the current conversation.
-
-Echo also ships the read-only `builtin/echo-plugins` skill. You can ask Chat to scaffold, implement, validate, and stage an optional plugin; Echo then presents a trusted owner approval card before any generated or downloaded code can run. See the [Plugin API v1 guide](docs/plugins/README.md).
-
-### Editor, Git, and terminal in one place
-
-![Echo Code and Source Control](docs/screenshots/echo-code-git.png)
-
-The Code view uses Monaco for editing and reviewing diffs. Its explorer watches the filesystem for changes, keeps unsaved browser buffers recoverable, and moves deleted entries into Echo's restorable trash. The source-control view supports common repository workflows without leaving the browser, while the integrated terminal provides a full PTY on the Echo server.
-
-Press **Ctrl+I** (**Cmd+I** on macOS) in an editable file to open inline AI chat at the selection or cursor. Ask questions, attach workspace files with `@`, or request changes. Green/red previews remain separate from your buffer until you accept with the checkmark; acceptance is undoable and leaves the file unsaved. Stop ends generation and keeps the latest preview, while X discards it. Inline conversations stay with their open file through tab switches and are cleared when accepted, canceled, closed, or the page is reloaded.
-
-### Optional Linux sandbox and desktop
-
-On Windows x64 with Docker Desktop in Linux-container mode, or Linux x86-64 with Docker Engine, a workspace can opt into one isolated Ubuntu runtime sharing its shell environment with the visible Xfce/Chromium desktop. Commands, terminals, Git, LSPs, builds, tests, and web fetches then run through the sandbox with no host fallback; registered workspace files remain canonical host bind mounts. The user can watch the AI, take over the desktop to sign in without logging keystrokes, and return the same persistent browser profile to the AI. See the [Linux sandbox guide](docs/sandbox.md) for setup, persistence, network grants, reset boundaries, and the container-isolation security model.
-
-### Language servers
-
-Open **Settings → Language Servers** to copy the built-in `gopls`, `clangd`, or `lua-language-server` template, edit its executable, arguments, selectors, environment, initialization options, and settings, then enable it for the current workspace. Echo starts enabled servers in the workspace's main folder and does not install or download executables.
-
-Profiles are reusable and stored globally in `echo.json`; workspace enablement, replacement overrides, and formatting controls are stored in `.echo/workspace.json`. Custom servers use the same profile fields, so adding another stdio LSP server requires no Echo code changes. Commands and arguments are executed directly without shell expansion. Format on save is off by default and fails open with a three-second default timeout.
-
-When the same file is open in multiple browsers, the first active editor owns its unsaved LSP document. The other browser can use **Take Over** in the Code status bar when it intentionally needs language-server control.
-
-### Testing and coverage
-
-Go tests and framework-free C test executables share CodeLens Run/Debug actions and the reconnectable **Test Output** panel. C workspaces can define multiple named GCC/gcov or Clang/LLVM coverage targets without adopting a test library or build-system convention. See [Testing and coverage](docs/testing.md) for instrumentation, target configuration, path rules, and coverage behavior.
-
-### Debugging
-
-Open **Run and Debug** in Echo Code to configure a user-installed Delve, debugpy, js-debug, CodeLLDB, or custom DAP adapter. Debug profiles are machine-local; launch/attach configurations and compounds are portable workspace settings; personal breakpoints and watches remain outside the repository. Echo supports concurrent and child sessions, revision-safe multi-browser controls, reconnectable debug terminals, the standard stepping and inspection workflow, and capability-gated advanced breakpoints, mutation, reverse execution, memory, disassembly, modules, and virtual sources. See [Debugging in Echo](docs/debugging.md) for configuration, VS Code import, keybindings, sandbox behavior, and cleanup guarantees.
-
-## Quick start
-
-### Run from source with one click
-
-After cloning the repository or downloading and extracting its source archive, use the launcher for your operating system:
-
-| Platform | Double-click this file |
-| --- | --- |
-| Windows | `install-echo-windows.cmd` |
-| Linux | `install-echo-linux.sh` |
-| macOS | `install-echo-macos.command` |
-
-The launcher checks for Go 1.26+ and Node.js 22+ with npm. If a requirement is missing or outdated, it downloads a checksum-verified, portable copy into the ignored `.echo-tools/` directory without changing the system Go or Node.js installation. Build caches also stay in that directory. It then installs the locked frontend packages, builds the embedded web application and Echo server, and starts Echo at [http://localhost:3740](http://localhost:3740). Leave the terminal window open while using Echo. On a minimal Linux installation that lacks basic download/archive utilities, the launcher may ask for `sudo` so the system package manager can install them.
-
-On Linux, choose **Run** if the file manager asks whether to display or execute the script. Git checkouts preserve the executable bit; if an extracted archive does not, run `chmod +x install-echo-linux.sh` once. The launchers can also be run from a terminal and pass command-line options through to Echo, for example `./install-echo-linux.sh -port 8080`.
-
-### Download a nightly build
-
-Open [GitHub Releases](https://github.com/BrentFarris/echo/releases) and download the nightly archive for your platform.
-
-| Platform | Release asset |
-| --- | --- |
-| Windows | `echo-windows-nightly.zip` |
-| Linux | `echo-linux-nightly.tar.gz` |
-| macOS | `echo-macos-nightly.tar.gz` |
-
-Echo is now a standalone web server. It does not require Wails, WebView2, GTK, or WebKitGTK.
-
-On Windows PowerShell:
+Run `echo.exe`. Echo opens the installed desktop app when available, falling back to **http://localhost:3740** in your browser. This happens only on the initial launch; Development reloads, rebuilds and updates keep the existing window. Use `-no-open` or `ECHO_NO_OPEN=1` for headless startup. The app is named Echo; data continues to use `%LOCALAPPDATA%\Echo2` and its existing database and credential identifiers. Additive, versioned storage migrations preserve existing bots, chats, model settings and credentials. Stop the console with Ctrl+C to flush active streams and terminate child processes. Only one server may open a data directory.
 
 ```powershell
-Expand-Archive .\echo-windows-nightly.zip -DestinationPath .\Echo
-.\Echo\echo.exe
+.\echo.exe
+# Optional separate test profile:
+.\echo.exe -port 3740 -data C:\path\to\echo-data
 ```
 
-On Linux or macOS:
+## Media review
 
-```bash
-tar -xzf echo-linux-nightly.tar.gz # use echo-macos-nightly.tar.gz on macOS
-chmod +x echo
-./echo
-```
+Expand **Media** beneath an assistant response to review that turn's uploaded images, pasted screenshots, image-file reads and tool-produced media across all rounds. The gallery loads thumbnails; click an image for a full-screen original, then close with Escape, the close button or the backdrop. Downloads preserve the recorded bytes, even when the source file later changes. Galleries retain their expansion while the assistant works and when switching bot threads; reloading collapses them.
 
-The nightly binaries are not currently code-signed or notarized. Your operating system may ask you to confirm that you trust the downloaded file.
+Bots can inspect workspace PNG, JPEG, GIF and WebP files using `file_read_image` (up to 32 MiB and 64 megapixels). Existing generated videos remain playable in the same gallery.
 
-### Complete first-run setup
+## Notes
 
-1. Start Echo and leave its terminal window open. It prints the web address and a one-time authentication setup code.
-2. Open [http://localhost:3740](http://localhost:3740) in a modern browser.
-3. Enter the setup code, name the browser or device, and choose an owner password between 12 and 128 characters.
-4. Open **Settings → LLM Endpoints** and configure a model provider.
-5. Add a workspace by giving Echo a name and one or more existing folders on the server machine.
-6. Return to Chat, choose a model and agent mode, and ask Echo to inspect or change the workspace.
+Open **Apps → Notes** for a global Markdown notebook. Notes starts enabled and supports the app dock, embedded view and floating windows. Each note stays on its chosen Echo machine, outside workspaces; the combined list includes authorized swarm machines with Notes enabled. Use **New note on** to choose where to create one, and filter the list by machine, hashtag or bot. Search matches titles and Markdown bodies.
 
-If the owner password is lost, stop Echo and restart it with `-reset-auth`. This clears the password and all remembered sessions, then prints a new setup code.
+Existing notes open in rendered view. Click task checkboxes to check or uncheck individual items; each toggle updates the note's Markdown between `- [ ]` and `- [x]` and autosaves. Checkboxes are disabled while the note's machine is unavailable or the note has a conflict. **Edit** enables the title and Markdown source; **Done** saves pending changes and returns to rendered view. Changes autosave after 750 ms, and Ctrl/Cmd+S saves immediately. Notes supports sanitized GitHub-flavored Markdown, including tables and task lists. Web links and images work; workspace-relative files and attachments are not supported. Titles allow 120 characters and Markdown bodies up to 1 MiB.
 
-### Install Echo as a desktop app
+Write `#hashtags`, `@bot` or `@machine.bot` to organize notes. Autocomplete supports arrow keys, Enter/Tab and Escape. Hashtags are case-insensitive and allow letters, numbers, underscores and hyphens; code, escaped markers, HTML and URL destinations do not create tags. Bare bot handles refer to the note's owning machine. Existing resolved mentions retain stable bot identities through renames; unavailable bots retain their historical label. Click a tag or bot chip to filter the list. Mentions do not contact bots, and notes are not exposed to model tools or model context.
 
-With the Echo server running, open [http://localhost:3740](http://localhost:3740) in Chrome or Edge and select the **Install Echo** icon in the address bar. The installed app opens in its own window without the browser toolbar. If Windows does not pin it automatically, right-click Echo in the taskbar and choose **Pin to taskbar**.
+Previously loaded notes remain readable from this browser's cache when their machine is unavailable. Editing waits for reconnection; existing unsaved drafts are retained across reloads in that tab's browser recovery storage. Separate Notes windows and tabs cannot clear each other's recovery drafts. Conflicting saves never overwrite newer content: choose **Load latest** to discard the local draft or **Save draft as new note** to retain both versions. Browser recovery is not a backup; clearing site data removes cached notes and unsaved recovery drafts. Disabling Notes retains saved notes on its machine. Revoked machines disappear from the app and its cache. There is no cross-machine replication, automatic movement or old-workspace note import.
 
-The installed icon opens the web app but does not start the Echo server. Continue to start Echo with the launcher and leave its terminal window running while you use the installed app. Browser installation is available from `localhost`, `127.0.0.1`, or an HTTPS origin; a plain HTTP LAN address is not eligible.
+## Terminal
 
-## Linux sandbox
+The built-in **Terminal** plugin restores the original bottom dock and starts enabled. Expand its compact bar from any main view, use **Apps → Terminal**, or press **Ctrl+`** (**Cmd+`** on macOS). Drag its upper edge or use the focused separator's arrow keys to resize; maximize/restore and collapse keep the shell alive. **Kill** ends it; **Restart**, or Enter after exit, starts another shell.
 
-Echo can opt an individual workspace into a Docker-backed Ubuntu environment with a browser-accessible Linux desktop. It is disabled by default, and workspaces that do not enable it continue running exactly as before without requiring Docker.
+Choose a bot in the bar to switch between independent sessions and saved-command lists. Remote bots show their machine name and require that machine's `native-terminal/1` capability. A **Change folder** dropdown appears only for bots with multiple folders. It sends a safely quoted directory-change command to the existing shell, just like typing it; use it at a shell prompt. The shortcut does not track manually entered directory changes. New sessions start in the first available configured folder, or the server user's home if the bot has no folders.
 
-| Host platform | Sandbox requirement | Support |
-| --- | --- | --- |
-| Windows x64 | Docker Desktop running Linux containers | Supported |
-| Linux x86-64 | An accessible Docker Engine | Supported |
-| macOS | Docker Desktop | Experimental |
+**Saved** adds, edits, deletes and runs named commands in their saved order. Commands persist on the owning server across restarts; no old Echo data is imported. Ctrl+C copies highlighted terminal text and clears the selection after success; without a selection it sends an interrupt. Ctrl+V pastes through xterm, retaining bracketed-paste behavior. Native clipboard events and a copy fallback support browsers without the clipboard API. The terminal retains clickable links, 5,000 lines of scrollback and light/dark colors.
 
-Echo checks and diagnoses Docker but never installs or reconfigures it. The initial images are `linux/amd64`; ARM hosts and Podman are not currently supported. This is container isolation rather than a hardware virtual machine, so Docker Engine and the host kernel remain trusted components.
+These are owner-operated shells with the normal permissions of the Echo server user. Bot folder settings supply starting directories and shortcuts, not containment for the Terminal plugin. AI shell tools retain their separate restrictions. Browsers viewing the same bot share its server-owned shell. Collapse, navigation, browser closure and temporary network loss leave it running; reconnect restores buffered output without replaying input. Plugin disablement, bot deletion and server shutdown stop affected processes. Dock preferences are browser-local; processes and the bounded output replay do not survive a server restart.
 
-Official nightly binaries pin both images by immutable digest. Builds made directly from the source tree use the public `protocol-3` image channel so the one-click source launchers can install the matching images; release builds never rely on a mutable tag.
+## Connect machines with Swarm
 
-### Enable a workspace sandbox
+Swarm is a built-in, app-scoped plugin and starts inactive. On each remote machine, run Echo and configure **Settings → Hosted Server** with a reachable listening address and owner password. Use HTTPS when the connection crosses an untrusted network: the initial URL/password pairing uses the chosen HTTP or HTTPS origin.
 
-1. Install and start Docker Desktop or Docker Engine.
-2. Select the workspace, then open **Linux Sandbox** from Echo's activity bar.
-3. Pull the pinned Workbench, Desktop, and Egress images when prompted.
-4. Choose CPU, memory, and idle-stop limits, then select **Enable sandbox**.
+Open **Settings → Swarm** on the machine serving your browser. Enter the remote Echo origin, its owner password, and an optional shared machine name such as `linux`. Explicit connection enables the installed Swarm plugin on both ends, creates reciprocal access, and remembers it across restarts. The password is required even for a loopback URL. Edit the advertised name in that machine's Swarm settings. Names use lowercase letters, digits, underscores and hyphens; duplicate names gain a stable node-ID suffix. Saved references survive renaming.
 
-Before enabling, Echo verifies the Docker engine, Linux mode, x86-64 architecture, image compatibility, every workspace mount, write access, and the read-only `.echo` mask. A failed preflight leaves the workspace disabled. The default allocation is 4 CPUs, 6144 MiB of memory, and a 30-minute idle timeout; an idle timeout of zero keeps the sandbox running until it is stopped explicitly.
-
-The sandbox starts lazily when a terminal, agent command, Git or LSP operation, web fetch, GUI tool, or Desktop visit needs it. If Docker later becomes unavailable, Echo reports the failure and does **not** silently run the operation on the host. Disabling the sandbox stops active sandbox processes before returning that workspace to normal host execution.
-
-### Runtime layout
-
-| Component | Runs |
-| --- | --- |
-| **Echo host** | Authentication, UI/API serving, path-confined file editing and search, file watching, and the canonical workspace files |
-| **Workbench** | Ubuntu 24.04, Bash and PTYs, Git, LSPs, builds, tests, formatters, Python, Node 22, Go 1.26, and common development tools |
-| **Desktop** | Xfce, headed Chromium, Playwright browser automation, a file manager, and a text editor |
-| **Egress gateway** | The sandbox's only external network route, with filtered DNS, HTTP proxying, and SOCKS5 |
-
-Registered host folders are mounted read-write at stable `/workspace/<root-id>` paths and remain the source of truth. Their `.echo` directories are masked read-only. A persistent `/exchange` volume is shared by shell and desktop applications; Chromium downloads are saved under `/exchange/downloads`.
-
-Echo does not give the containers the host home directory, SSH configuration, host credentials, devices, host namespaces, or the Docker socket. Integrated terminals, `shell_command`, Git subprocesses, LSPs, builds, tests, formatting, and `web_fetch` use the sandbox target. Host-side file editing, search, and watching continue against the confined bind mounts.
-
-### Desktop access and AI takeover
-
-The Sandbox view displays the live Xfce desktop through an authenticated noVNC connection, so the user can watch browser and desktop actions directly in Echo. One workspace-wide lease controls graphical input:
-
-- An AI GUI action acquires control for its chat turn.
-- **Take Control** pauses new AI actions across workspace chats and research, and cancels in-flight GUI interactions. Existing applications, terminals, and background jobs keep running.
-- **Return Control** resumes waiting tasks automatically with refreshed context. Pending actions from before takeover are discarded, and files must be reread before edits.
-- Other authenticated devices remain view-only; a disconnected controller has a two-minute reconnect grace period.
-
-Human VNC keystrokes, including passwords, are not copied into chat requests, tool arguments, or Trajectory logs. However, after control is returned, the AI can use the same persistent Chromium profile and therefore the authority of any signed-in website sessions. Browser data is protected by host and Docker storage permissions rather than Echo encryption.
-
-### Network access
-
-The runtime container has no direct external route. The gateway blocks loopback, host, LAN/private, link-local, carrier-grade NAT, reserved, and cloud-metadata destinations, rechecking every DNS result to prevent rebinding.
-
-The owner can grant one exact hostname or IP and TCP port from the Sandbox view. Wildcards and subnets are not accepted, and revocation takes effect without recreating the containers. Configured SearXNG and ComfyUI endpoints remain explicit Echo host services and are not exposed to the sandbox automatically.
-
-### Persistence, setup, and resets
-
-The unified home, Chromium profile, and `/exchange` use separate Docker volumes. **Reset environment** resets the home/container while retaining browser, exchange, recovery data, and host workspace files. **Reset browser data** removes only the browser profile. Only **Delete sandbox data** removes retained upgrade backups; it preserves host workspace files.
-
-Protocol-2 sandboxes require an explicit **Upgrade sandbox** action. Echo stops sandbox processes, copies data into new versioned volumes, validates the candidate, and commits atomically. The original volumes and stopped containers remain available for recovery. Home conflicts preserve both versions under `~/sandbox-migration-conflicts-*/`, with a report. Failed upgrades can be retried.
-
-For reproducible customization, add `.echo/sandbox/setup.sh`. Approval is tied to its digest and sandbox protocol. Review old scripts before running them once with `ECHO_SANDBOX_ROLE=runtime`; old operating-system layers are not merged, so additional system packages must be installed again. Approved recipes rerun after relevant resets or recreation.
-
-Portable resource settings live in `.echo/workspace.json`; image digests, approved setup state, network grants, and volume names are machine-local beside Echo's global configuration. Runtime VNC, agent, lease, and proxy credentials remain memory-only.
-
-See the [Echo Workspace Linux Sandbox guide](docs/sandbox.md) for the full security model, setup recipe behavior, image build instructions, diagnostics, and implementation details.
-
-## Configure a model
-
-Echo appends `/chat/completions` to the endpoint URL unless it is already present. The provider must accept OpenAI-compatible chat-completion requests and, for interactive chat, streamed server-sent events and OpenAI-style tool calls.
-
-Common local base URLs include:
-
-| Provider | Typical base URL |
-| --- | --- |
-| Ollama | `http://localhost:11434/v1` |
-| LM Studio | `http://localhost:1234/v1` |
-| llama.cpp server | `http://localhost:8080/v1` |
-| Remote provider | The provider's OpenAI-compatible HTTPS URL |
-
-Each endpoint profile has its own model name, generation settings, request timeout, stream-idle timeout, optional system-prompt appendage, and custom headers. **Reasoning Effort** sends the OpenAI-compatible `reasoning_effort` request field; named efforts take precedence over Echo's local-model thinking-token budget. Use **Provider default / token budget** for servers that instead support `chat_template_kwargs.thinking_token_budget`. Echo does not detect supported effort levels or retry with a lower value when a provider rejects one. The stream-idle watchdog resets on provider data and SSE heartbeats; set it to `-1` for providers that legitimately remain silent for longer than the configured interval. Custom headers can carry provider-specific authentication such as `Authorization: Bearer ...`.
-
-Endpoint routing lets Chat, Research, Vision, and Inline Code use different profiles. The model picker in Chat can override the routed Chat model for the next conversation turn.
-
-Optional connections are configured under **Settings → External Connections**:
-
-- A SearXNG URL enables the `web_search` agent tool.
-- A ComfyUI URL and workflow files enable text-to-image and image-to-image tool calls.
-
-## Command-line options
+Use one composer to address bots on any authorized machine:
 
 ```text
--port int
-    HTTP port to listen on (default 3740)
--web string
-    Serve SPA assets from this directory instead of the embedded production build
--data string
-    Use this application-data JSON file instead of the platform config directory
--reset-auth
-    Clear the owner password and remembered sessions and issue a new setup code
--safe-mode
-    Start with all optional plugins disabled while keeping plugin management available
+@kaiju @linux.kaiju @mac.kaiju pull the latest and ensure the engine is still building
+@linux.echo Create a kaiju bot that works in the workspace /path/to/workspace
 ```
 
-Echo listens on the selected port, including non-loopback interfaces. Control network access with the host firewall or a reverse proxy.
+Bare handles always refer to the machine serving your browser, including when you open a remote chat. A remote Echo manages only its own bots and folders. Every worker uses its own model connection, credentials, plugins, tools and filesystem permissions. Use the machine selector in Model Settings to override each machine's model for a shared chat. A remote-only request does not require a model connection on the entry machine. Bot handoffs can address only participants selected in the current user message.
 
-## Build from source
+The combined sidebar includes existing remote chats and machine chips, with an optional machine filter. Each chat retains one home machine; new chats belong to the entry machine. Settings has an explicit machine selector. Apps, dock entries and Monaco windows stay bound to their owning machine, including their editor buffers, recovery drafts, bookmarks and file subscriptions. Remote Development controls restart and reconnect their selected machine without reloading the entire interface. File references retain their owning machine; attach a file explicitly when it needs to be transferred. Native file reveal remains restricted to a local connection on the file's host.
 
-### Requirements
+Remote inventory refreshes in the background, so an offline or slow machine does not delay local chat actions. Cached bots and chats remain visible with an Offline label. Offline bots cannot be selected or sent work; a message mentioning both available and offline bots is rejected before any bot starts, preserving the draft. Reconnection happens automatically in the background. Previously opened remote transcripts remain readable while their machine is offline.
 
-- Go 1.26 or newer
-- Node.js 22 and npm
-- Git
-- A modern browser
+Swarm discovers topology through connected peers, with direct links preferred and encrypted relay transport when necessary. Peers with matching passwords can authenticate automatically. A different-password destination requires its own password from each entry point: access through an intermediate machine does not grant access to that destination. No network scan is performed. **Disconnect** retains credentials but prevents automatic reconnection; **Reconnect** reverses it. **Revoke access**, a password change, or disabling Swarm invalidates or suspends access. Automatic discovery cannot reactivate disabled or revoked connections; explicit pairing can.
 
-Docker is optional. Sandbox-enabled workspaces require Docker Desktop (Windows x64, Linux-container mode) or Docker Engine (Linux x86-64); Echo diagnoses but does not install Docker.
+Reachable workers continue when another worker disconnects. Running workers can finish if their chat home disappears; results reconcile when it returns. Opened transcripts remain readable from the entry machine's cache, while new messages require the home to be reachable. There is no ownership failover. Accepted execution is durable and retries do not rerun tools; a worker crash leaves interrupted work. Stop and deletion persist pending cancellation during outages, and deletion tombstones prevent late results from recreating history. Mixed-machine work reserves its bots across hosts before starting; busy reservations are released and retried without holding a partial set indefinitely.
 
-Clone the repository, build the frontend, and then compile the Go server so the production assets are embedded in the executable:
+## Run on Linux or macOS
 
-```bash
-git clone https://github.com/BrentFarris/echo.git
-cd echo/web
-npm ci
-npm run build
-cd ..
-go build .
-./echo
+Build with `sh build.sh` or use the native `echo` executable, then run `./echo -port 3740`. The default profile is `$XDG_CONFIG_HOME/Echo2` (normally `~/.config/Echo2`) on Linux and `~/Library/Application Support/Echo2` on macOS. Override it with `-data /absolute/profile/path`. SIGTERM and Ctrl+C shut down gracefully.
+
+Linux native tools require [bubblewrap](https://github.com/containers/bubblewrap) and working user namespaces. On Debian/Ubuntu, install the `bubblewrap` package. Distribution policies may restrict unprivileged user namespaces; Echo reports containment failures instead of running unconfined. macOS uses the system Seatbelt launcher, `/usr/bin/sandbox-exec`; absence or policy failure is explicit. Native macOS acceptance must be run on an actual Mac before distributing a macOS release; cross-compilation alone is insufficient.
+
+Windows uses Credential Manager. Unix stores credentials in an unattended per-profile AES-GCM vault: owner-only directories/files, atomic writes, and a protected encryption key in the profile. Ordinary restarts need no interactive unlock or repeated peer passwords. Keep the complete profile protected and backed up together; copying only its encrypted credential files cannot recover them.
+
+Background startup is optional and never installed by building or pairing:
+
+```powershell
+# Windows: explicitly opt into startup at your login.
+.\scripts\startup.ps1 -Install -Executable C:\path\to\echo.exe
+# Remove that login task:
+.\scripts\startup.ps1 -Uninstall
 ```
 
-On Windows, `go build .` creates `echo.exe`; run it with `.\echo.exe`.
-
-### Development
-
-Run the backend and Vite development server in separate terminals.
-
-Terminal 1, from the repository root:
-
-```bash
-go run .
+```sh
+# Linux user systemd service / macOS user LaunchAgent:
+sh scripts/startup.sh --install /absolute/path/to/echo /absolute/profile/path 3740
 ```
 
-Terminal 2:
+The service definitions contain no owner password. Linux startup before login additionally requires user lingering configured by the system administrator. Manage the installed service with `systemctl --user`, or the macOS LaunchAgent with `launchctl`.
 
-```bash
-cd web
-npm ci
-npm run dev
+## Model connections
+
+Chat runs, plugin invocations, and bot handoff waits have no automatic duration limit. Stop, chat deletion, bot/plugin revocation, and server shutdown still cancel active work and child processes.
+
+Connect an existing compatible model server in **Settings → Local Models**, using its API base URL, for example `http://127.0.0.1:1234/v1`. Echo does not download or launch models. Model Settings contains connection/model selection, thinking and temperature; each send snapshots the selection for recipients on that machine. Proactive context compaction can be enabled per connection and never deletes stored history. Both regular and inline editor chats use provider-reported input tokens when available, estimating newly added context until the next response. Context-overflow recovery remains enabled even when proactive compression is off: Echo summarizes older context and retries the model request without rerunning tools. A tool response that cannot fit in minimal context is replaced with a model-facing notice to request smaller output; the original tool output and attachments remain in the regular chat transcript.
+
+### Install Echo on your desktop
+
+Open **http://localhost:3740** in Edge or Chrome and choose **Install Echo** in the sidebar when offered, or use the browser's app installation option. Echo opens in its own desktop window with the artwork from `echo.png` as its app icon and favicon. Keep using the same address and port for the installed app. Remote installations require HTTPS; local `localhost` and `127.0.0.1` addresses work over HTTP.
+
+Keep `echo.exe` running when using the installed app. If the server is unreachable, Echo shows a reconnect page. Only that public page is cached for offline use; chats, credentials, attachments and API responses are not cached by the service worker. App code is fetched from the server on each launch so builds and relaunches load the current version.
+
+The icon files in `web/public/icons` are generated from the repository's `echo.png`. After replacing the source image, run `powershell -File .\scripts\generate-icons.ps1` and rebuild.
+
+### Chat notifications and sounds
+
+Open **Settings → Notifications** on each browser or installed Echo app. Completion notifications, question notifications, and their two original sounds have independent controls. **Enable notifications on this device** requests browser permission and registers background push; enabling one device does not enable another. Use the notification and sound test buttons to check the setup.
+
+Each bot's successful final reply produces its own completion alert, even while other bots in the group are working. Structured questions alert immediately. Clicking an alert opens its chat, selects the bot tab, and reveals the reply or question. When you are already viewing that conversation, Echo plays the sound without a popup. Elsewhere in Echo it shows a clickable toast; in the background it uses system notifications. Failed, stopped, interrupted, and intermediate tool responses do not produce completion alerts.
+
+Mobile background delivery requires HTTPS, notification permission, internet access, and an Echo server that remains running. On iPhone/iPad, add Echo to the Home Screen and enable notifications inside that installed app. Android supports push through compatible browsers/installations. A plain HTTP LAN address does not support push; HTTP localhost works on the computer hosting Echo. The original WAV sounds play when a running page can play audio. Closed or suspended apps use the operating system's notification sound and notification settings; websites cannot select those custom WAV sounds for a locked phone.
+
+Each enabled device receives its own alerts, including remote Swarm chats while no browser is open. The entry server must remain running and connected to the authorized chat-home machine. Delivery retries temporary push-service failures, expires after 24 hours, and stops for revoked or expired device sessions. Reopening Echo refreshes its subscription. A push already accepted by the platform may still appear after you return to the chat. Notification previews include the bot/chat identity and a short reply or question excerpt.
+
+The notification journal, device registrations, and delivery state use an additive database migration. VAPID signing keys remain in the profile's credential store. Existing completed history is not replayed on upgrade. The service worker still caches only the public offline page; its notification deduplication database stores alert IDs/timestamps, not transcripts.
+
+The composer follows the original Echo layout: compact controls, upward-opening menus, a single paper-plane/stop icon, and a text area that grows until the composer occupies half the chat height. Enter sends; Shift+Enter inserts a new line. Use **+ → Image / Video / File**, paste an image from the clipboard, or drop files onto the composer. Attachment cards show previews, filenames and sizes; click a preview to enlarge it, or remove it before sending. Draft attachments stay with their chat while switching conversations.
+
+Uploads support PNG, JPEG, GIF, WebP, MP4, WebM, MOV, PDF, and UTF-8 text/code files. Limits are eight files, 32 MiB per file, 64 MiB per message, and 1 MiB for text. Images/video/PDFs are sent using the compatible provider's multimodal content format; the selected model must support that format. Unsupported media capabilities return the provider's error. Text files are included as text. Accepted attachments persist once as compressed blobs, survive reload/restart, and are deleted with their chat. Unsent uploaded files expire after 24 hours when uploads next run. Custom WASI providers retain their 4 MiB input limit.
+
+The endpoint editor includes temperature defaults, Top K/P, Min P, context length, compression threshold, max output tokens, frequency/presence/repetition penalties, reasoning effort, thinking-token budget, and request/stream idle timeouts. Blank optional sampling fields are omitted from requests. Named reasoning effort overrides the local `thinking_token_budget`; unsupported settings are never silently downgraded. Requests have no time limit by default. Blank or `0` request and stream idle timeouts disable their limits; `-1` also disables the idle limit. Positive values opt into an overall request limit or an inactivity limit, which arriving data and SSE heartbeats reset. Upgrading clears the former saved defaults of 600 seconds for requests and 120 seconds for stream inactivity once; other custom values are retained.
+
+Add a compatible cloud endpoint in **Settings → Cloud Models**, then select the connection and model in the chat just like a local model. No global or per-bot enable switch is required; the chat's selection applies to recipients on that machine. Enter API keys in its password field; keys use Windows Credential Manager or the Unix profile vault. Changing the destination clears the existing credential binding unless a replacement key is supplied.
+
+Installed model providers appear in the connection editor's Provider field. The `provider` authoring template delegates to the streaming client; other protocols can use bounded, endpoint-confined host requests without receiving credentials. The `renderer` template formats assistant replies inside an isolated frame. Both extension points support per-bot toggles.
+
+Named bots receive the installed plugin defaults when created. Plugins added later stay off for those bots until selected in **Settings → Bots → Edit → Plugins**. Upgrades preserve selections for previously installed plugins. Echo automatically receives new plugins and generated apps unless explicitly disabled for Echo; app-scoped plugins use their global settings.
+
+## Work through chat
+
+Press **Ctrl+N** to create a chat and **Ctrl+W** to close the current chat. Closing with Ctrl+W or the sidebar **X** permanently deletes the chat; busy or unread chats ask for confirmation first. Cancel keeps the chat and its work intact. While the code editor has focus, these shortcuts continue to create and close editor tabs.
+
+Choose a bot beside **New chat** to start chats with its mention already in the composer. The selector includes local and Swarm bots; **Echo** is the default and leaves the composer empty. Your selection applies to **Ctrl+N** too and stays selected until you change it or reload the page. New chats stay on this machine, including when you choose a Swarm bot.
+
+Completed agent responses show a small footer with elapsed time, provider-reported input/output tokens, tool calls, and model calls across the run. **Settings → General → Show turn statistics** controls the footer for this browser and defaults on. Token tracking continues when the footer is hidden.
+
+Input tokens are cumulative across model calls, including repeated conversation context; they are not the current context-window size. The footer and General's input-token details split reported input into **cached** (read from cache) and **uncached** (the remainder, including cache writes). If only some requests report cache usage, the remaining known input is labeled **cache unknown**. Older history and providers that omit cache usage show **cache breakdown unavailable**, never an assumed zero. These counts are not a cost estimate; providers can price ordinary input, cache reads, and cache writes differently.
+
+General also shows combined input/output totals for online machines, including chat, inline editing, and context summaries. Hover, focus, or tap a total to see exact counts and the machine breakdown without moving the layout. Missing usage is marked partial; tracking starts fresh when this feature is installed. **Settings → Development → Reset token totals…** asks for confirmation and resets reachable machines, preserving historical chat statistics. Offline machines keep their counts and contribute them again when reconnected.
+
+Bots are instructed to ask clarifying questions whenever unresolved ambiguity would materially affect a plan or result, during both planning and implementation. They check the conversation and workspace first and proceed independently when the request is clear or a low-impact assumption is sufficient. In chat, questions use interactive cards with optional suggested answers and free text; bots wait for your answers and continue, or use their best judgment if you skip. Inline code chat asks in its reply before proposing edits that depend on your answer. No separate Pair Programming mode is needed, and `/plan` uses the same clarification guidance while still requiring approval before changes.
+
+Chats have no turn limit, and bots can ask clarifying questions as often as needed. Model/tool rounds and bot-to-bot questions and handoffs have no count limit. Use Stop to end active work.
+
+- Ask Echo to create, list, configure or delete bots. Unmentioned messages go to Echo even inside a named-bot chat.
+- **Settings → Bots → Edit → Enable Multitasking** lets a bot work in several chats simultaneously. It defaults to off for new and existing bots, including Echo; requests then queue in arrival order. You can also ask “Create a bot named kaiju with multitasking enabled” or ask Echo to change an existing bot’s setting. Available bots in a group request start immediately while busy bots wait. A bot stays reserved until the whole request finishes, including handoffs. Changing only this checkbox preserves active work: enabling releases queued requests; disabling waits for already active requests to finish. Stop cancels queued work, and unfinished requests are marked interrupted after a server restart.
+- Mention `@kaiju` anywhere to address that bot. Mention several bots for independent work or explicit handoffs. Unknown handles are rejected before execution.
+- Type `#` to choose files from the recipients' accessible folders. Suggestions label which bots can access each file. Both references and permissions are checked again on submission.
+- Ask a bot to schedule work: “Every day at 3pm, have @kaiju report how many tests pass.” Schedules retain the prompt, model settings and resolved timezone and survive deletion of the source chat.
+- Custom plugins can request HTTP APIs, remote assets and WebSockets. **Settings → Plugins → the plugin → Network access** lists exact destinations and highlights local/private addresses. Approve new destinations before activation; each origin grant covers all paths, including private-network addresses. API calls and WebSockets connect from the plugin’s Echo machine; assets load from your viewing device. Older custom plugins using `web.get` need an updated manifest with `network.origins` before their network calls work.
+- Ask Echo to create a draggable calculator or another plugin. UI packages need no compiler; Go/WASI backends need an installed Go toolchain. `plugin_template` supplies working source and the bridge contract.
+
+The sidebar shows every chat once under its accumulated named-bot combination. Echo management replies do not add another group. Stop or delete a chat to cancel its entire dispatch, including handoffs and native child processes. Deleting a bot removes its schedules and stops its work; historical author names remain.
+
+When a bot finishes its final reply, its progress messages, reasoning, handoffs and tool activity fold into **Show work** above that reply. Each bot has its own group in a shared chat. Expand it to inspect the complete activity; the stored transcript is unchanged. Running, failed and interrupted work stays visible. Chat cards use compact spacing, omit routine completion badges, and show tool names once.
+
+Hover over a finished message, focus it with the keyboard, or tap it on touch screens to reveal **Copy, Fork, Edit, Rerun, Delete** in its top-right corner. Copy preserves raw Markdown; a grouped response copies only its final answer. Actions are unavailable while the chat is running.
+
+**Rerun** uses the circular refresh icon. Confirming it resends the original user prompt with its uploads, file references, recipients, and recorded model settings, replacing its old response and all later messages across bot tabs. On a bot response, it reruns that response's original user message; the button is disabled if that user message was deleted. Your unsent composer draft is kept. File access is checked again, and workspace changes made by earlier tools are not undone.
+
+**Fork** opens an independent chat named `<original title> (fork)`, containing the whole chat in stored order through the selected message, including other bots and hidden work. A user-message fork ends before its answer. The source and its unsent draft are kept, and no response starts automatically. Forks inherit saved model settings and keep their own copies of uploads and generated media, so deleting the source does not break them. If required remote media cannot be copied, no partial fork is created; retry when that machine is available. Workspace files are not copied or reverted. Remote follow-ups require workers supporting `fork-history/1`; update older peers before continuing a fork on them.
+
+Editing an assistant response saves its text without generating a new answer. Editing a user message offers **Save & Resubmit**, which keeps its uploads, removes that message and everything after it, and starts a fresh response with the chat's current model settings. Use Ctrl/Cmd+Enter to save or Esc to cancel. Delete asks for confirmation and removes only the selected message (plus results belonging to its tool calls); deleting a user message keeps its responses. Changes appear in other connected browsers and in subsequent local and Swarm model context. Tool messages and items inside **Show work** have no action toolbar.
+
+**Files changed** appears below each finished response, outside Show work. It lists Created, Edited and Deleted files, combines repeated edits and omits changes that were fully reverted. Click a row (or focus it and press Enter) to open the file in the built-in code editor under the bot that changed it. Removed files show their nearest existing containing folder in the editor's explorer. When Monaco Editor is disabled, rows fall back to the host native file manager; that fallback requires a local connection to Echo on that computer. Editor access uses the bot's configured workspace folders and also works from remote browsers. Existing file permissions are checked again when clicking, including after workspace changes.
+
+File tools and plugin file capabilities record changes directly. Shell and Git/Fossil/P4 commands compare the bot's workspace folders before and after execution; unbound bots compare the command's working directory. Scans skip source-control metadata, dependency/cache folders, links and Echo's private state, and are limited to 20,000 entries and two seconds per snapshot. Small files use content fingerprints; files over 1 MiB use size, modification time and permissions. An incomplete scan is labeled. Failed or stopped work still lists observed changes. The compact metadata persists with the transcript and is removed with its chat; pre-existing transcripts are not retrospectively scanned.
+
+## Plugins and permissions
+
+**Apps**, beside Settings, lists plugins that explicitly register a GUI application. Click **Open** to launch its view (Terminal expands the bottom dock); opening the same app again focuses that window and preserves its contents. Apps opens in the main area, and selecting a chat returns to the conversation with its draft and attachments intact. A registered app is still the same plugin, with the same settings, permissions and enablement.
+
+Use **Dock** on an app card to add its square icon above Apps and Settings. The dock scrolls horizontally with touch, the mouse wheel, or keyboard navigation. Dock choices and their order are shared across browsers connected to this Echo profile and survive server restarts. Disabled apps and apps awaiting permission remain in the catalog with a Settings shortcut; their dock icons return when enabled again. **Undock** also works on inactive entries. Window positions remain local to each browser.
+
+Each installed plugin has a settings section. Bot settings include applicable per-bot switches. Web Get, SearXNG, Markdown View, Calendar, Workspaces, Shell, Git, Fossil, P4 (Perforce), Hosted Server and Plugin Authoring start enabled. Local and cloud model connections are core settings, not plugins. SearXNG requires the URL of an existing instance. Web Get allows public HTTP(S) by default; private destinations require exact origin grants in its settings.
+
+Backend plugins run in WASI with no ambient filesystem, environment, network or process access. New capabilities require a direct owner response. Approve the reviewed package in settings using the digest returned by installation. Updates keep the previous working package for rollback. Generated packages never run installation scripts.
+
+Floating views have opaque iframe origins and cannot read Echo's DOM or cookies. Echo owns window dragging, resizing, placement and theme delivery. All renderer output is sanitized before display. Disabling Markdown View restores plain text unless another renderer is enabled for that bot.
+
+Hosted Server is installed but remote listening is inactive. Set a password of at least 12 bytes, explicitly enable remote access, and restart. Optional certificate/key paths enable HTTPS. Remote APIs and WebSockets require an authenticated session. Successful sign-in is remembered with a protected browser cookie for 30 days, renewed each time you launch Echo in that browser; the password itself is not saved in browser storage. **Settings → Hosted Server → Connected devices** lists saved browser sessions, addresses, sign-in/last-active times, and live connection status. Use **Close session** to sign out a browser and disconnect its live connections. Password changes revoke all other sessions. Local access on the server can still sign in automatically.
+
+## Confluence search and reading
+
+Open **Settings → Confluence** and choose **Cloud** or **Data Center**. One connection is shared by the bots on that Echo machine; use the global plugin switch and each bot's Confluence switch to control access. For Cloud, save the site URL (with or without `/wiki`), account email and token type. For Data Center, save the full HTTP(S) base URL, including a context path such as `https://docs.example.com/confluence`.
+
+Create a Cloud API token in [Atlassian account settings](https://id.atlassian.com/manage-profile/security/api-tokens), or a Data Center personal access token in your Confluence profile. Save the connection settings, enter the token in the protected field, then select **Test connection**. Classic Cloud tokens use the configured site; scoped tokens require the site's Cloud ID and use `https://api.atlassian.com/ex/confluence/{cloudId}/wiki`. See [Atlassian's scoped-token setup](https://support.atlassian.com/confluence/kb/scoped-api-tokens-in-confluence-cloud/). Data Center tokens use Bearer authentication. Echo keeps tokens in the host credential vault, and changing the connection clears the saved token. No password or token belongs in chat. Clear or replace it directly in settings.
+
+For scoped Cloud tokens, grant `read:content-details:confluence` for [CQL search, user lookup](https://developer.atlassian.com/cloud/confluence/rest/v1/api-group-search/) and current-user identity, `read:content.metadata:confluence` for content ID/type lookup, `read:page:confluence` for pages and blog posts, `read:comment:confluence` for comments, and `read:attachment:confluence` for attachment metadata. The account also needs permission to view the corresponding content. Search can succeed even when an individual read lacks its required scope; the connection test verifies only CQL search.
+
+Ask a bot: “Search Confluence for `type = page AND space = ENG`, then read the full onboarding page,” or “Find blog posts about the release and read their comments.” `confluence_search` accepts CQL and a result limit (default 25, maximum 100). Follow `nextContinuation` with the same query and limit. Search returns IDs, titles, links, excerpts and available space/version metadata. `confluence_read` accepts a numeric content ID and returns Markdown by default; use `format: "storage"` for the original Confluence markup. Comments can be found through CQL, for example `type = comment AND container = 12345`.
+
+Long bodies are delivered in chunks of up to 24,000 Unicode characters. Continue with the same ID and format until `complete` is true. Continuations are bound to the connection and content version; if the page changes, restart the read. Upstream responses are limited to 16 MiB. Markdown conversion preserves common formatting and code, marks unsupported macros and retains their body text; it does not execute macros or fetch external resources. Attachments return metadata and links only. Editing, file downloads, indexing and synchronization are not provided.
+
+Confluence access uses the existing WASI capability bridge with credentials injected only by the host. The configured endpoint is the network grant, including private-network Data Center servers. HTTP redirects and pagination links outside the configured search endpoint are rejected; HTTPS uses normal certificate validation. Requests have a 30-second timeout and stop when the run is canceled, the plugin is disabled, or connection/token settings change. Errors report invalid CQL, missing permissions, unavailable content, rate limits (including `Retry-After`) and server failures without automatic retries. Swarm bots use their own machine's connection and credentials.
+
+For author requests such as “Find the last three pages Brent Farris authored,” bots use `confluence_search_users` with a partial visible full/public name, then search `type = page AND creator = "<identifier>" ORDER BY created DESC` with `limit: 3`. Cloud returns `accountId`; Data Center returns `username`/`userKey`. Multiple matches remain separate candidates so the bot can ask which person you mean. User search has its own `nextContinuation`, bound to the name, limit and connection. Cloud uses `/rest/api/search/user`; Data Center uses user CQL through its general search endpoint.
+
+`confluence_get_current_user` identifies the configured token account, which may be a service account rather than the person chatting. For that account's pages, use `creator = currentUser()` directly. Private profile fields remain absent when Confluence hides them. Cloud does not provide email-to-account-ID lookup or arbitrary legacy-username matching; try the person's visible name instead. Both tools reuse the saved token, per-bot switches, cancellation and destination restrictions; no additional connection settings are needed.
+
+## ComfyUI images and video
+
+**Settings → ComfyUI** connects an existing ComfyUI server, for example `http://127.0.0.1:8188`. Set its default checkpoint filename and optional text-to-image, image-to-image and video workflow JSON paths. Use workflows exported in **API format**. The plugin starts enabled; enable or disable it globally or for individual bots in **Settings → Bots → Edit**.
+
+Ask a bot to generate an image, edit an attached image, or animate an image into a video. The plugin preserves the original `comfyui_generate`, `comfyui_generate_video`, `save_image` and `save_video` tools. Inline `workflowJSON` overrides `workflowPath`, which overrides the configured workflow. Image inputs select the image-to-image default; video requests select the dedicated video default. Images have a built-in checkpoint workflow, including image-to-image support. Video requires a configured or explicitly supplied workflow.
+
+Workflow templates support `{{PROMPT}}`, `{{NEGATIVE_PROMPT}}`, `{{MODEL}}`, `{{IMAGE}}`, `{{WIDTH}}`, `{{HEIGHT}}`, `{{STEPS}}`, `{{CFG_SCALE}}`, `{{SEED}}`, `{{FRAMES}}`, `{{FPS}}`, `{{FORMAT}}`, `{{DURATION}}`, `{{ASPECT_RATIO}}` and `{{MEGAPIXELS}}`. Numeric placeholders become numbers. Defaults are 512×512, 20 steps, CFG 7.5, a random seed when omitted or negative, 16 frames, 8 FPS, MP4, 5 seconds, `16:9 (Widescreen)` and 0.4 megapixels. Explicit seed `0` is preserved. Duration/aspect ratio/megapixels work with workflows that compute their own dimensions and frame counts.
+
+`imagePath` uploads a workspace image and takes precedence over `attachedImageIndex`, a zero-based index into the latest image-bearing user message addressed to the bot. Pasted and attached images upload directly from chat storage. Explicit and configured workflow paths, input-image paths, and save destinations all obey the bot's current folder permissions. Relative paths use its first bound root; unbound bots use absolute paths. Workflow JSON is limited to 500 KiB, input-image files to 100 MiB, and each generated artifact to 256 MiB. Composer uploads retain their existing 32 MiB limit.
+
+Generated images, videos and animated GIFs stay visible outside **Show work**, with enlarged previews, video controls, and download links. The first output is downloaded into chat storage; the tool result lists all output paths. Results survive reload/restart and disappear when the chat is deleted. Images are supplied to the model for follow-up work; generated videos stay metadata-only in model context. Ask to save a result to a workspace using its `imageId` or `videoId`; existing files require `overwrite: true`, and saves appear in **Files changed**. Supported playback depends on the browser's codec support.
+
+Only the owner settings can change the server URL, and HTTP redirects are rejected. ComfyUI tools run through the WASI plugin capability bridge. Stop, plugin disable, and scope revocation cancel Echo's HTTP requests and polling; they do not issue a global interrupt to the shared ComfyUI server. Generation waits until completion or cancellation and reports workflow execution errors. Echo does not install ComfyUI, models, or custom nodes. The old application's settings/data are not imported automatically; copy the five connection/workflow settings into this plugin.
+
+## Jira
+
+Open **Settings → Jira** on the intended machine, choose **Jira Cloud** or **Jira Data Center**, enter the Jira site base URL, and save settings. Cloud requires HTTPS and your Atlassian account email. For a scoped Cloud API token, also enter the Cloud ID; Echo sends API requests through `https://api.atlassian.com/ex/jira/{cloudId}`. Data Center uses a personal access token and supports installation paths such as `https://jira.example.com/jira`, including explicitly configured HTTP sites. TLS certificate verification remains enabled.
+
+Save your API token/PAT in the protected field, use **Test connection** to verify the authenticated identity, and enable Jira. The plugin starts disabled. One connection is shared per Echo machine, and **Bots → Edit → Jira** controls each bot's access. Settings machine selection also applies to token saving and connection testing. Tokens use the host credential vault and are never provided to bots or plugin code. Changing deployment, URL, email or Cloud ID clears the saved token; unrelated enable/disable changes preserve it. Use **Clear credential** to remove it.
+
+Ask a bot “Search Jira for `project = APP AND statusCategory != Done`” or “Read APP-123 and its full discussion.” The `jira_search`, `jira_get_issue`, and `jira_get_comments` tools read accessible standard/custom fields, descriptions, comments, issue links and attachment metadata. Cloud rich text retains its structure and includes readable text. Search/comment pages default to 50 items, with a maximum of 100. Full-ticket reads gather comments until complete or the 1 MiB result budget is reached; explicit continuation cursors let the bot retrieve the rest. Very large fields require selecting fewer fields; very large comment pages require a smaller page size. Permission failures and incomplete discussions are reported explicitly.
+
+Jira access is read-only: ticket edits, posting comments, transitions, attachment downloads and complete change history are not exposed. Account permissions and token scopes determine visibility. Requests reject redirects and stop with the run or a plugin/settings change. Echo does not store a separate Jira index; retrieved information remains in the chat's normal tool history.
+
+## Git, Fossil and Perforce
+
+These built-ins run the installed native CLIs through the same process broker as Shell, with independent per-bot switches. Each exposes `*_command`, `*_status`, and `*_diff`. Command tools take a subcommand, an array of literal arguments, a working directory, optional standard input, and an optional `timeoutSeconds` limit. Commands run until exit or cancellation when the timeout is omitted or `0`; positive values set an explicit limit. They stream output and cancel with the chat; Shell need not be enabled. For example, ask “@kaiju show the Git diff,” “@kaiju commit the Fossil changes with message …,” or “@backend open shield.cpp for edit in Perforce.”
+
+Install `git`, `fossil`, or `p4` on PATH (`.exe` on Windows), or choose its absolute executable in that plugin's settings. Use a dedicated CLI folder; its runtime folder receives read/execute access. Additional runtime folders can be granted in settings. Set Git author name/email or Fossil user there. Fossil checkouts must be within the bot's folders. Their linked repository databases may also live in the checkout's immediate parent folder; Echo grants that folder to Fossil commands for database and journal access without expanding the bot's file/editor access. Run commands from the checkout or a subdirectory; databases in other locations must be within the bot's folders. Editors and interactive prompts are unavailable; supply commit messages and Perforce `-i` forms explicitly. Read [Git's command reference](https://git-scm.com/docs/git) and [Fossil's environment documentation](https://fossil-scm.org/home/doc/004c5507/www/env-opts.md) for native behavior.
+
+P4 settings include server, user, client and optional charset/trust file. Save a ticket or password through the separate protected field after saving the server/user. Echo stores it in the host credential vault, injects it only into P4's process environment, and redacts it from streaming/final output. Changing the server/user clears the saved credential. P4's `login`, `tickets`, `passwd`, and `set` commands are excluded to keep authentication out of chat; obtain a ticket outside Echo, then save it in settings. The plugin supports workspace operations against the configured server; DVCS/bootstrap commands and shell transports are excluded so they cannot redirect the saved credential. SSL trust files must be within the bot's folders. See [P4 global options](https://help.perforce.com/helix-core/server-apps/cmdref/current/Content/CmdRef/global.options.html) and [ticket authentication](https://help.perforce.com/helix-core/server-apps/cmdref/current/Content/CmdRef/P4PASSWD.html).
+
+Workspace-bound source-control commands start without network access. Grant Internet and/or private-network access directly in the relevant plugin's settings for remote operations. These grants include native descendants; the private-network Windows capability permits both connections and listeners. Filesystem restrictions remain enforced. Chat tools cannot enlarge these grants. Windows loopback isolation can still prevent bound bots from reaching a server on the same machine; Echo does not add machine-wide exemptions or fall back to an unconfined process. Unbound bots retain their unrestricted host scope. [Microsoft's AppContainer isolation reference](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) describes these OS boundaries.
+
+## Workspace skills
+
+Reusable project guidance lives in `<workspace>/skills/<skill-name>/SKILL.md`. Each workspace owns its skills; bots with access to the same folder share them. Root ordering does not select a skill destination or give one workspace precedence. Skills are ordinary files that can be reviewed and committed with the repository, subject to its ignore rules.
+
+At the start of a run, bound bots receive up to three relevant skill summaries from all their roots. They read full instructions with `workspace_skill_read` before using them and can use `workspace_skill_search` for further discovery. Search accepts an optional `workspace`, `query`, and `limit` (default 10, maximum 50); an empty query lists skills. Only immediate `skills/<name>/SKILL.md` entries are discovered. Scans inspect at most 256 entries per workspace and report malformed files, inaccessible directories, or truncation without blocking other roots. Changes made outside Echo are visible on the next search or read.
+
+`workspace_skill_read` requires `workspace` and `name`, and returns metadata, body, absolute path, and a revision. `workspace_skill_save` requires `workspace`, `name`, `description`, and `body`, with optional `triggers` and `revision`. Omitting the revision means create-only; updating an existing file requires its current revision. Conflicting saves fail instead of silently replacing another bot's work. Saves appear in **Files changed**, and the existing workspace editor can open and edit the files.
+
+Reads and saves require an explicit absolute workspace path. For bound bots, it must match a configured root. Unbound bots must also provide a workspace for searches; Echo does not scan their computer. Bots choose the destination from the task context and ask when it is ambiguous. Remote bots use folders on their own host. Existing scope restrictions and private-state protections still apply, including links that would escape the selected workspace.
+
+For example, `skills/build-project/SKILL.md` could contain:
+
+```markdown
+---
+name: build-project
+description: Build and verify this project before release.
+triggers:
+  - release checks
+---
+
+Run the project's documented build and acceptance checks before packaging.
 ```
 
-Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api` and `/ws` to the Go server on port 3740.
+Names must match their directory and use lowercase kebab-case (at most 64 characters). Descriptions are required and limited to 500 characters. Optional triggers allow up to 12 nonempty phrases of 120 characters each. The Markdown body must be nonempty, and the complete UTF-8 file must not exceed 64 KiB. Supporting scripts, references, and assets may live alongside `SKILL.md` and are accessed through ordinary file tools.
 
-### Tests
+Bots may save stable guidance useful across future tasks during authorized work. Skills are reference material, not permission grants: user instructions take precedence, and stale guidance must be checked against the current project. Secrets, temporary task status, and raw conversations should not be saved as skills.
 
-Run the Go and frontend suites:
+Legacy `.echo/skills` directories are not read or migrated automatically. To retain an old skill, deliberately move its complete folder from `.echo/skills/<name>/` to `skills/<name>/`, review its contents, and resolve any existing destination before moving. No special Echo root or built-in plugin-authoring skill is required.
 
-```bash
-go test ./...
-cd web
-npm test
-npm run build
+## Native workspace restrictions
+
+### Go plugin
+
+The built-in **Go** plugin exposes `go_command` independently of Shell. Use it for `build`, `test`, `run`, `generate`, `fmt`, `vet`, `list`, `doc`, `env`, `mod`, `work`, `get`, `install`, `tool`, and `version`. Arguments are separate strings, with no shell quoting. Select a working directory in the bot's folders; commands run until exit or cancellation by default. An optional positive `timeoutSeconds` sets a limit; omitted or `0` disables it. `go test -json` retains its JSON event output.
+
+In **Settings → Go**, configure the executable if Go is not on PATH. Discovery inspects the installation without executing it; wrappers must be configured to point to the actual installed `bin/go` (`bin/go.exe` on Windows). For folder-bound bots, grant Internet access to download public dependencies or Go-selected toolchains; private-network access is a separate setting for internal services. Grants also apply to tests, generators, and programs started by Go. Only the owner can expand these grants or change executable/runtime access. Additional toolchain directories can provide Git or C compilers. The existing unbound-bot host-access behavior is retained.
+
+Go automatically creates persistent `.cache/go-mod`, `.cache/go-build`, `.cache/go-bin`, and `.cache/go-path` directories beside the nearest accessible `go.mod`, or in the working directory before a module exists. Include `.cache/` in the project's ignore rules. Installed commands persist in `go-bin` and are available to subsequent Go invocations and generators. Existing caches are reused; a bot can download dependencies once and then compile/test offline. In-scope `go.work` files and local replacements are supported; external folders must be added to the bot's scope. Cache symlinks and junctions are rejected.
+
+The proxy setting maps to `GOPROXY`, and private-module patterns map to `GOPRIVATE`, including Go's normal bypass of public proxies/checksum services for those patterns. Blank settings use Go's defaults. Public modules and unauthenticated custom HTTP(S)/file proxies are supported; dedicated authenticated-proxy/private-repository credentials and SSH agents are not provided. Ambient user Go/Git configuration is excluded. `go env -w/-u` is unavailable: use Go settings. Checksum verification stays enabled; the plugin never disables it in response to a download failure.
+
+Missing downloads, toolchains, or folder grants are environment failures and retain the native diagnostic in tool output. Compiler and test failures retain their exit status and streamed output. Cancellation, timeout, plugin disablement/settings changes, and bot scope changes terminate active commands and their children.
+
+#### Go language services
+
+Open a saved Go file in Monaco, then choose **Go: Install / Update Language Server** in the command palette or click the Go status indicator. Installation explicitly runs `go install golang.org/x/tools/gopls@v0.24.0` through the Go sandbox. Enable the owner's Go Internet grant for the initial download; an installed server and cached dependencies work offline. Opening a file never installs or updates tools automatically. Settings can disable language services independently of Go commands or select an owner-configured absolute gopls executable.
+
+Monaco provides diagnostics for unsaved text, completion, hover, signature help, definitions/references, Outline symbols, workspace symbol search, formatting, and symbol rename. Formatting and rename leave changed files open and unsaved, with undo and normal save/conflict handling. Standard-library and module-cache navigation opens read-only source. Package/file renames, general code actions, and semantic tokens are not included in language services. Debugging is supplied independently by the Go plugin.
+
+`go_inspect` provides read-only diagnostics, symbols, definitions, references, and hover for **saved files**, independently of Shell and Monaco. Pass explicit `files` for diagnostics; positional queries use one-based lines and UTF-16 columns. Separate browser sessions and bot analysis never share unsaved overlays. Analysis results report incomplete loading separately from code errors and do not replace `go build` or `go test`.
+
+Language services use the same Go caches and permissions. For a `go.work` workspace, installation and language-service caches live under its directory's `.cache`; otherwise they use the nearest module. A remote workspace runs gopls on its owning host. **Go: Restart Language Services** reconnects and resends open buffers; the status indicator explains installation/loading failures. Settings or scope changes revoke active sessions. Windows uses temporary drive aliases for already-authorized folders so gopls can validate paths without reading denied parent folders; aliases and sandbox grants are removed on exit or recovered after interruption. Available drive letters bound concurrent Windows sessions. Native Linux/macOS acceptance must be run on those platforms before claiming support there.
+
+
+#### Go and CGO debugging
+
+Open **Run and Debug** in Monaco and select a configuration from a bot folder's `.vscode/launch.json`. **Debug Settings** opens that file or `.vscode/settings.json`, creates a missing launch file from Go templates, and provides **Go: Debugger Status** and **Go: Install / Update Debugger**. Files accept JSONC comments and trailing commas, and remain shared with VS Code. Echo stores only breakpoint/watch/selection state; it does not import OLD launch profiles or synchronize breakpoints with VS Code.
+
+Delve resolution uses `go.alternateTools.dlv`, then the project's managed Go tool installation, then PATH. Explicit managed installation pins Delve to **v1.27.2** and uses the existing Go Internet grant. Opening Monaco never installs tools. The Go **Debugging** setting is independent of language services. Interactive debugging runs with the owner's host permissions, like Terminal; AI Go commands and gopls retain their existing policies.
+
+Supported configurations include Go `auto`, `debug`, `test`, `exec`, local `attach`, platform overrides, multi-folder compounds, prompt/pick inputs and Go process selection. `go.delveConfig`, `go.toolsEnvVars`, `envFile`, `env`, arguments, build flags, runtime `cwd` and `substitutePath` are consumed directly. Launch values override Go defaults; environment precedence is host/project, Go tools, env files, then launch `env`. See the [VS Code Go reference](https://github.com/golang/vscode-go/blob/master/docs/debugging.md). Lifecycle tasks, external terminals, legacy adapters and external Delve servers return an unsupported-feature error before launch.
+
+F5 starts/continues/pauses, F9 toggles a gutter breakpoint, F10 steps over, F11 steps in, Shift+F11 steps out, Shift+F5 stops/detaches, Ctrl/Cmd+Shift+F5 restarts, and Ctrl/Cmd+F5 launches without debugging. Named dirty files are saved before start/restart; save conflicts abort the launch. Scopes, paged variables, watches, hover values, goroutines, stacks, conditional/hit-count/function breakpoints, logpoints and exception filters are available. Debug Console evaluates in the selected frame. `integratedTerminal` creates its own terminal and preserves the normal shell.
+
+Sessions survive browser reloads and disconnections on their owning Echo host. Launch sessions terminate their target on Stop; attached sessions detach by default. Plugin disablement, root changes, bot deletion and host shutdown stop sessions. External/virtual adapter sources open read-only with session-qualified identities. Remote Echo hosts need `editor-debug/1`; older hosts still support ordinary editing.
+
+CGO traversal and inspection are provided by the Go plugin, including native C frames, pointers and callbacks into Go. No C plugin is needed. Build C code with debug information and optimization disabled, for example `CGO_CFLAGS="-O0 -g"` in your launch `env`; Echo does not silently change project settings. Prebuilt Go executables should use `-gcflags=all="-N -l"`. See `ACCEPTANCE.md` for the native platform gate.
+
+### Shell and other native tools
+
+Unbound bots have the requested host filesystem scope, except Echo's protected private profile. Binding folders confines filesystem tools through `os.Root` and native commands through the platform sandbox. Windows uses a separate AppContainer identity and cancellable Job Object; Echo journals its own ACL entries and cleans them after execution or at startup after a crash. Linux uses bubblewrap namespaces, and macOS uses Seatbelt. Workspaces being disabled never removes these restrictions.
+
+Linux/macOS network access uses a filtered HTTP(S)/SOCKS proxy and checks the destination against the bot's Internet/private-network grants. Direct network connections remain denied. HTTP-based Git operations can use these proxy settings; tools and protocols that ignore them, including direct SSH or Perforce transports, cannot connect through this sandbox. Native tool compatibility must be checked on the destination OS.
+
+Installed Go, Git, Node and .NET toolchain directories are detected once and displayed in Shell settings as read/execute grants. Toolchains that cannot admit an AppContainer may use a read-only private copy, limited to 512 MiB. Build dependencies must already be present: scoped Shell processes have no network capability. Source-control plugins can receive the explicit network grants described above. Unsupported configurations return errors and never fall back to unrestricted execution.
+
+Echo's build scripts prepare Go dependencies in the checkout's `.cache/go-mod` and compiled packages in `.cache/go-build`. Scoped commands reuse these caches for the nearest `go.mod` when the directories already exist inside the bot's folders. Run a normal build after dependency changes to refresh them; the bot can then compile and run Go tests offline. Caches outside its folders, including caches reached through links or Windows junctions, are excluded. Test commands have no execution time limit unless a positive `timeoutSeconds` is supplied. Some server integration tests exercise Git clones and nested folder grants that require ancestor metadata denied by AppContainer; those tests still require a local run outside the scoped shell.
+
+Frontend unit tests use `cd web; npm test`. Their separate native JavaScript configuration preserves symlink paths and uses isolated worker threads, avoiding the child-process pipe hang in older Node/libuv versions under Windows AppContainer. The scoped Windows dependency check uses Node's resolver because Vitest's install probe inspects denied ancestor folders; missing dependencies still fail normally. Run `npm ci --ignore-scripts` outside the scoped shell when frontend dependencies change.
+
+**Compatibility:** the Windows acceptance suite exercises PowerShell, Git init/add/commit/status with **reftable**, a Go build/run, a Node program and a .NET SDK/MSBuild build/run. Scoped commands default new Git repositories to reftable and configure Node's loader to preserve symlinks; Windows still enforces target access. Git's older loose-ref backend and programs that demand metadata access to denied ancestor folders can fail in this sandbox. Existing repositories are never converted automatically. Validate each project's toolchain before relying on it for unattended work.
+
+## Calendar and downtime
+
+Supported recurrences are `daily HH:MM`, `weekly MON HH:MM`, `every N minutes/hours/days`, and an RFC3339 one-time instant. Daily/weekly schedules preserve local wall time through DST; a nonexistent wall time is skipped and an ambiguous wall time runs once. The server's Windows timezone is resolved to an IANA name when saving.
+
+After downtime, every missed occurrence awaits review. Select jobs, set concurrency (default `1`; `0` means unlimited), then choose **Run selected**. Unselected jobs are skipped. **Skip all** dismisses the entire pending batch. Use the missed-jobs panel to review these jobs; typed slash text is ordinary message content. Reviews survive restart; intentionally paused/disabled schedules do not accumulate missed work. Interrupted work is identified and never automatically replays uncertain tools.
+
+## Development settings
+
+**Settings → Development** lets you develop Echo using Echo. Save the absolute path to the new Echo Git checkout on the server computer; a valid checkout beside the executable or at its working directory is suggested automatically. Git worktrees are supported. These controls are available to local owners and authenticated Hosted Server users.
+
+**Check for Updates** pins the selected machine’s configured upstream commit and checks each participating machine. **Update scope** defaults to **Connected swarm** when Swarm is enabled; choose **This machine only** for an individual update. Updating is offered when any eligible machine needs that revision, even if the selected machine is already current. The confirmation lists the commit, machines and exclusions. Each machine fetches its own upstream and must be able to fast-forward to the same commit with a clean checkout, including no untracked files outside ignored build directories. Echo never resets, stashes, switches branches, changes remotes, or discards edits.
+
+The browser’s entry machine coordinates using its own owner grants. Updates include authorized connected peers, including relayed peers; offline machines are reported, and disconnected/revoked connections are excluded. Machines build independently, then restart one at a time, with relay destinations first and the entry machine last. Before restarting, a machine temporarily refuses new chat work and defers schedules while accepted work and handoffs finish. It never force-stops bots for a coordinated update. Progress, logs and verified running revisions survive browser closure and process replacement.
+
+Failures do not stop other eligible machines. **Retry unsuccessful machines** retries the same pinned commit; **Cancel pending updates** releases drains and cancels unlaunched builds. A completed checkout fast-forward remains in place, and an already-launched replacement finishes. Offline machines are not silently updated when they reconnect. Older peers without `development-update/1` require a one-time local update using their existing updater before joining coordinated rollouts.
+
+**Build & Relaunch** builds the current checkout (including local edits), its plugin runtime, and frontend, then launches the repository's `echo.exe` on Windows or `echo` on Unix. It requires Git, Go, Node.js, npm, and PowerShell on Windows or `/bin/sh` on Unix. **Relaunch** restarts the current executable without building; **Terminate Echo** stops it without restarting. Neither requires a source checkout. Restarting and stopping interrupt active work. Echo remains available during builds and closes gracefully only after a successful build and launcher preparation. The browser waits for a replacement process; an entry-host restart reloads the tab, while a remote restart refreshes that instance's resources.
+
+Build, relaunch and terminate remain selected-machine actions; their interruption behavior does not apply to the coordinated updater’s wait-until-idle flow. The panel shows progress and the latest 16 KiB of operation output. Full logs live under the existing data directory’s `development/<operation-id>/` folder, alongside launcher diagnostics and replacement-process stdout/stderr. If a build fails after an update, the checkout stays updated and the previous Echo process stays running. If a restart fails, inspect those logs and start Echo manually. Operations are serialized across browsers. Enable **Automatically search for updates** to check the saved repository at launch and every hour, even with no browser open. This setting is saved per machine and starts disabled; enabling it also checks immediately. Checks never install or restart Echo. A green dot on Settings, Development, and the update controls guides you to available updates. The settings machine selector identifies machines with updates; the dot clears when a check confirms the running build is current.
+
+## Build and validate
+
+Requires Go 1.26+, Node.js compatible with Vite 8, and npm. Windows release acceptance additionally requires Git with reftable support, Fossil, Node and a .NET SDK on PATH, plus Perforce client/server binaries. Put `p4.exe` and `p4d.exe` on PATH or set `ECHO2_TEST_P4` and `ECHO2_TEST_P4D` to portable copies. Perforce tests start a temporary loopback-only depot and remove it afterward; no real depot is modified. These external CLIs are not bundled into the Echo ZIP.
+
+```powershell
+.\build.ps1                         # Build echo.exe from the repository root
+.\build.ps1 -OutputPath .\staged.exe # Build to an alternate path
+.\build.ps1 -Test -BrowserTests     # Go, type checking, unit tests, Playwright
+.\build.ps1 -Release                # All checks, required native tests, release ZIP
+.\scripts\test-development.ps1      # Isolated real build/relaunch/terminate acceptance
+.\scripts\test-development.ps1 -Coordinated # Also verify a real pinned update and recovery
 ```
 
-The authenticated browser acceptance tests use Playwright and build an isolated Echo runtime:
+The Windows build reinstalls frontend dependencies with `npm ci`. Before installation, `build.ps1` logs and stops Node processes holding native modules from this checkout's `web/node_modules`, then waits for their file locks to be released. This can stop this checkout's Vite or Vitest sessions; restart them after building if needed. Other checkouts' Node processes are left running. **Build & Relaunch** keeps Echo running while building a staged executable and replaces it after graceful shutdown. If a locking process cannot be stopped, installation does not begin and the build reports its process ID.
 
-```bash
-cd web
-npx playwright install chromium
-npm run test:e2e
+```sh
+sh build.sh                           # Native Linux/macOS executable
+sh build.sh --output /tmp/staged-echo  # Alternate output
+sh build.sh --test --native-tests --browser-tests
+sh build.sh --release                 # Full native gates and .tar.gz archive
 ```
 
-The [Browser Acceptance workflow](.github/workflows/browser-acceptance.yml) runs this suite daily and can also be started manually from GitHub Actions. Failures remain visible in that workflow, with traces, screenshots, and videos retained for 14 days. It runs independently of nightly publishing. The nightly release gates remain Go tests, frontend type checking and unit tests, builds, and sandbox validation. The long browser scenarios need to be split into isolated tests before any subset becomes a release gate again.
-
-## Architecture
-
-| Layer | Implementation |
-| --- | --- |
-| **Host** | Go HTTP server with JSON endpoints, authenticated WebSockets, embedded production assets, and graceful shutdown |
-| **Frontend** | Frameworkless TypeScript and Vite, with Monaco for editing and diffs and xterm.js for PTY terminals |
-| **LLM** | OpenAI-compatible chat-completions client with streaming, reasoning, tool-call orchestration, model routing, and configurable headers |
-| **Workspace services** | Path-scoped filesystem operations, indexed search, file watching, recoverable trash, Git, terminals, custom agent modes, and skills |
-| **Sandbox runtime** | Per-workspace Docker lifecycle, authenticated Linux agents and PTYs, Xfce/Chromium desktop bridging, graphical control leases, path translation, and deny-by-default egress |
-| **Plugin host** | Server-owned package/lifecycle manager, dynamic tool registry, supervised stdio JSON-RPC runtimes, sandboxed iframe sessions, and host-owned plugin navigation/windows |
-| **Persistence** | Atomic JSON stores for global configuration and workspace-owned state |
-
-The same SPA is served in production from the Go binary. During development, Vite serves the frontend and proxies API and WebSocket traffic to the backend.
-
-## Data and storage
-
-Echo's global data is stored in `Echo/echo.json` under the current user's platform configuration directory. It contains settings, endpoint profiles, registered workspaces, authentication records, and saved terminal commands. Use `-data` to choose a different file for testing or isolated installations.
-
-The main folder of each workspace owns a `.echo/` directory. Current workspace files include:
-
-```text
-.echo/
-├── workspace.json
-├── chat-workspace.json
-├── agent-modes.json
-├── plugins.json
-├── trajectories/
-│   └── <chat-id>.jsonl
-└── skills/
-    └── <skill-name>/SKILL.md
-```
-
-`workspace.json` is the authoritative workspace configuration. Its paths are
-stored relative to the `.echo` directory when possible (`mainPath` and the
-main `folders` entry are `../`), then resolved to absolute host paths whenever
-Echo opens the workspace or supplies paths to tools and other services.
-
-Machine-local plugin packages, immutable snapshots, logs, namespaced data, approvals, and non-secret global configuration live in a `plugins/` directory beside `echo.json`. Workspace `plugins.json` contains only portable public-GitHub pins, activation, non-secret configuration, and secret-source references; it never contains a local source path or secret value.
-
-Configuration and transcript snapshots are written atomically. Long-running Chat, Code Chat, vision, and research-agent loops use configurable provider-portable [context compression](docs/context-compression.md) while retaining canonical raw history. Trajectory logs are append-only JSONL audit streams containing the exact secret-free model requests, raw provider chunks, reasoning, tool activity, usage, and timing observed by Echo. Custom endpoint headers and credentials are never copied into trajectory records. Clearing or closing a chat deletes its trajectory; otherwise logs currently have no automatic retention limit. See [Trajectory storage and behavior](docs/trajectory.md) for the event model, APIs, legacy behavior, and current limitations.
-
-Deleted workspace entries are moved to a separate trash store beside the global data file so they can be restored from the Code view. Browser hot-exit state is local to that browser and is cleared when signing out.
-
-## Security
-
-Echo is a single-owner development tool, not a multi-tenant service.
-
-- The first process start prints a memory-only setup code. Completing setup creates an Argon2id-protected owner password.
-- Browser sessions are remembered, expire over time, and can be reviewed or revoked under **Settings → Security**.
-- Authentication controls access but does not encrypt plain HTTP. Use Echo only on a trusted network unless a TLS reverse proxy protects the connection.
-- Every authenticated device can edit workspace files, run Git operations, and execute arbitrary commands through terminals and enabled agent tools.
-- Agent modes reduce what is offered to a model, but the General mode is intentionally powerful. Use trusted models, keep work in version control, and expose only the folders Echo needs.
-- Custom endpoint headers may contain secrets and are stored in the local application-data file. Protect that file with the same care as other developer credentials.
-- Sandboxed plugin views cannot access Echo's DOM or APIs directly, but optional native plugin backends run with the Echo owner's OS permissions. Permissions are review disclosures rather than OS containment; install native plugins only from code you trust.
-- The optional workspace Linux sandbox isolates command and GUI execution from host files outside registered roots, but containers are not hardware VMs. Protect Docker and Echo's machine-local sandbox volumes; a signed-in browser profile can be used by the AI after control is returned.
-
-## Contributing
-
-Issues and focused pull requests are welcome. Keep backend and frontend changes covered by their respective tests, run the production frontend build before compiling a distributable binary, and include Playwright coverage for important authenticated browser workflows.
-
-Echo is available under the [MIT License](LICENSE).
+The browser tests use three isolated Echo fixtures on ports 3742, 3744 and 3745 and a deterministic model on 3743. They do not contact a cloud model or use your application data. Fixture names `linux` and `mac` identify simulated peers; the browser fixture does not prove native execution on those operating systems. For frontend iteration, run the backend on 3740 and `npm run dev` from `web` (Vite proxies `/api`). Run commands from the repository root. Releases are `echo-windows-amd64.zip` or `echo-<os>-<architecture>.tar.gz`; external CLIs are not bundled. `OLD/` is excluded. See [architecture](ARCHITECTURE.md) and [acceptance](ACCEPTANCE.md).

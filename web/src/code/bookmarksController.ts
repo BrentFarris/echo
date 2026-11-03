@@ -1,6 +1,6 @@
 import type { editor as Editor, IDisposable } from "monaco-editor";
-import { api } from "../../js/api.js";
-import { on as onSocket, onState as onSocketState } from "../../js/ws.js";
+import { api } from "./api";
+import { on as onSocket, onState as onSocketState } from "./events";
 import { monaco } from "./language";
 import { bookmarkLabel, type Bookmark, type BookmarkAction, type BookmarkPosition, type BookmarkState } from "./bookmarkTypes";
 import { refKey, type FileRef } from "./types";
@@ -60,7 +60,7 @@ export class BookmarksController {
 
   async refresh(): Promise<void> {
     try {
-      const state = await api("/api/plugins/bookmarks/state", { query: { workspaceId: this.options.workspaceId } }) as BookmarkState;
+      const state = await api(`/api/v1/plugins/monaco-editor/bots/${encodeURIComponent(this.options.workspaceId)}/bookmarks`, { query: { workspaceId: this.options.workspaceId } }) as BookmarkState;
       if (!this.disposed) {
         this.accept(state);
         if (!this.pending.size && !this.retryActions.length) this.error = "";
@@ -93,7 +93,7 @@ export class BookmarksController {
         this.retryActions = this.retryActions.filter(retry => !("id" in retry) || retry.id !== action.id);
       }
       try {
-        const state = await api("/api/plugins/bookmarks/state", {
+        const state = await api(`/api/v1/plugins/monaco-editor/bots/${encodeURIComponent(this.options.workspaceId)}/bookmarks`, {
           method: "POST", query: { workspaceId: this.options.workspaceId }, body: action, keepalive: true,
         }) as BookmarkState;
         if (!this.retryActions.length && (action.action === "positions" || !this.pending.size)) this.error = "";

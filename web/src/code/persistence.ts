@@ -1,7 +1,7 @@
 import type { PersistedWorkspaceSession } from "./types";
 
-const databaseName = "echo-code-editor";
-const storeName = "workspace-sessions";
+const databaseName = "echo2-monaco-editor";
+const storeName = "bot-sessions";
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {

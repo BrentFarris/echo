@@ -1,12 +1,17 @@
 import type { editor as Editor, IDisposable } from "monaco-editor";
-import { api } from "../../js/api.js";
+import { GenerationSettings, generationSettingsMarkup } from '../generationSettings';
+import { InstanceClient, machineName } from '../instances';
+import { InlineGeneration } from './inlineGeneration';
 import { monaco } from "./language";
 import { readFile } from "./editorApi";
-import { replacementEdit } from "./diffHunks";
+import { replacementEdit } from "./inlineEdit";
 import type { FileRef } from "./types";
-import { createReferenceChip, installMentionPicker } from "../chatMentionPicker";
-import { composerText, snapshotComposer, restoreComposer } from "../chatMentions";
-import { patchMarkdownElement } from "../markdown";
+import { createReferenceChip, installMentionPicker } from "./chatMentionPicker";
+import { composerText, snapshotComposer, restoreComposer } from "./chatMentions";
+import { marked } from 'marked';
+import { patchRenderedContent } from '../messageContent';
+const patchMarkdownElement = (element: HTMLElement, text: string) => patchRenderedContent(element, marked.parse(text, { async: false }));
+let nextInlineID = 0;
 import {
   closeInlineChat, findInlineChat, inlineChatKey, openInlineChat,
   type InlineChatFile, type InlineChatSession, type InlineChatChange,
@@ -24,7 +29,7 @@ export class InlineChatController {
   private mounted: {
     session: InlineChatSession; target: InlineChatTarget; node: HTMLElement; input: HTMLElement;
     log: HTMLElement; status: HTMLElement; send: HTMLButtonElement; accept: HTMLButtonElement;
-    regenerate: HTMLButtonElement; model: HTMLSelectElement;
+    regenerate: HTMLButtonElement; settings: GenerationSettings;
     zone: string; zoneSpec: Editor.IViewZone; abort: AbortController; unsubscribe: () => void; observer: ResizeObserver;
     previewZones: string[]; decorations: string[]; preview: InlineChatChange[] | null;
     height: number; accepting: boolean; renderGeneration: number;
@@ -32,7 +37,7 @@ export class InlineChatController {
   } | null = null;
 
   constructor(private editor: Editor.IStandaloneCodeEditor, private options: {
-    workspaceId: string; target(): InlineChatTarget | null; keepOpen(): void;
+    workspaceId: string; generation: InlineGeneration; target(): InlineChatTarget | null; keepOpen(): void;
     activateReference(ref: FileRef): void | Promise<void>;
   }) {
     this.disposables.push(
@@ -63,6 +68,7 @@ export class InlineChatController {
     if (!target || this.editor.getModel() !== target.model) return;
     this.options.keepOpen();
     const session = openInlineChat(this.options.workspaceId, this.key(target), this.snapshot(target));
+    session.diskRevision ??= target.revision;
     this.refresh();
     const mounted = this.mounted;
     if (!mounted || mounted.session !== session) return;
@@ -106,7 +112,7 @@ export class InlineChatController {
           <button type="submit" data-inline-send title="Send message" aria-label="Send message"><span class="codicon codicon-send"></span></button>
           <button type="button" data-inline-close title="Cancel and close" aria-label="Cancel and close"><span class="codicon codicon-close"></span></button>
         </div>
-        <div class="inline-chat-toolbar"><select aria-label="Inline chat model"><option value="">Default chat model</option></select><span class="inline-chat-context"></span></div>
+        <div class="inline-chat-toolbar">${generationSettingsMarkup(`inline-${++nextInlineID}-`)}<span class="inline-chat-context"></span></div>
       </form>
       <div class="inline-chat-footer"><span role="status"></span><button type="button" data-inline-regenerate>Regenerate from current file</button></div>`;
     const abort = new AbortController(), { signal } = abort;
@@ -145,6 +151,7 @@ export class InlineChatController {
       input.replaceChildren();
       session.draft = [];
       mentions.clear();
+      session.generation = { ...this.options.generation.value };
       void session.send(text, references);
       input.focus();
     };
@@ -164,15 +171,21 @@ export class InlineChatController {
       const latest = this.options.target();
       if (!latest || latest.conflict || latest.deleted) return;
       const file = this.snapshot(latest);
+      session.generation = { ...this.options.generation.value };
+      session.diskRevision = latest.revision;
       session.regenerate(file);
     }, { signal });
-    const model = node.querySelector<HTMLSelectElement>("select")!;
-    model.addEventListener("change", () => { session.model = model.value; }, { signal });
-    void api("/api/settings", { method: "GET" }).then((data: { settings: { endpoints?: { model: string; name?: string }[] } }) => {
-      if (signal.aborted) return;
-      for (const endpoint of data.settings.endpoints || []) if (endpoint.model) model.add(new Option(endpoint.name || endpoint.model, endpoint.model));
-      model.value = session.model;
-    }).catch(() => { /* The default model remains usable without the selector. */ });
+    const preferences = this.options.generation;
+    let settings: GenerationSettings;
+    const refreshSettings = () => { void preferences.refresh().then(() => { if (!signal.aborted) settings.render(); }).catch(error => { if (!signal.aborted) { session.error = String(error); this.render(); } }); };
+    settings = new GenerationSettings(node.querySelector<HTMLDetailsElement>('[data-generation-settings]')!, {
+      state: () => ({ generation: preferences.value, endpoints: preferences.endpoints, node: preferences.node, machines: [{ id: preferences.node, name: machineName(preferences.node) }] }),
+      change: value => preferences.save(value),
+      manage: () => preferences.context.openModelSettings?.(preferences.node),
+      discover: async endpoint => (await new InstanceClient(preferences.node).json<{ data: { id: string }[] }>(`/endpoints/${encodeURIComponent(endpoint.id.split(':').at(-1)!)}/models`)).data?.map(model => model.id) || [],
+      opened: refreshSettings,
+    });
+    refreshSettings();
     const line = Math.min(session.file.selections[0]?.startLine || 1, target.model.getLineCount());
     let zone = "";
     const zoneSpec: Editor.IViewZone = { afterLineNumber: line-1, heightInPx: 100, domNode: node, ordinal: 0, showInHiddenAreas: true, suppressMouseDown: false };
@@ -184,7 +197,7 @@ export class InlineChatController {
     const observer = new ResizeObserver(() => this.layout());
     this.mounted = {
       session, target: { ...target }, node, input, log: node.querySelector(".inline-chat-log")!, status: node.querySelector("[role=status]")!,
-      send: node.querySelector("[data-inline-send]")!, accept, regenerate, model, zone, zoneSpec, abort, observer,
+      send: node.querySelector("[data-inline-send]")!, accept, regenerate, settings, zone, zoneSpec, abort, observer,
       unsubscribe: session.subscribe(() => this.render()), previewZones: [], decorations: [], preview: null,
       height: 100, accepting: false, renderGeneration: 0,
       zoneHost, zoneHostHidden,
@@ -198,7 +211,7 @@ export class InlineChatController {
     const m = this.mounted, target = this.options.target();
     if (!m || !target || this.key(target) !== m.session.key) return "The file is no longer active.";
     if (target.ref?.rootId !== m.session.file.ref?.rootId || target.ref?.path !== m.session.file.ref?.path) return "The file location has changed. Regenerate to use the current file.";
-    if (target.conflict || target.deleted || m.session.diskConflict) return "The file changed on disk. Resolve or reload the file before regenerating.";
+    if (target.conflict || target.deleted || m.session.diskConflict || target.revision !== m.session.diskRevision) return "The file changed on disk. Resolve or reload the file before regenerating.";
     if (target.model.getValue() !== m.session.file.content) return "The file has changed. Regenerate to use your latest edits.";
     return "";
   }
@@ -215,10 +228,10 @@ export class InlineChatController {
     m.send.disabled = m.accepting || Boolean(stale && !busy);
     m.accept.hidden = !session.hasProposal;
     m.accept.disabled = busy || m.accepting || Boolean(stale);
-    m.model.disabled = busy || m.accepting;
+    m.settings.setDisabled(busy || m.accepting);
     m.regenerate.hidden = !stale;
     m.regenerate.disabled = busy || m.accepting || Boolean(this.options.target()?.conflict || this.options.target()?.deleted);
-    m.status.textContent = stale || session.error || (busy ? "Working…" : session.status === "stopped" ? "Stopped" : session.hasProposal ? "Review changes, accept, or send a follow-up." : "");
+    m.status.textContent = stale || session.error || (busy ? session.activity || "Working…" : session.status === "stopped" ? "Stopped" : session.hasProposal ? "Review changes, accept, or send a follow-up." : "");
     m.node.querySelector<HTMLElement>(".inline-chat-footer")!.hidden = !m.status.textContent;
     const selection = session.file.selections[0];
     m.node.querySelector<HTMLElement>(".inline-chat-context")!.textContent = `${session.file.title} · ${selection?.text ? `lines ${selection.startLine}–${selection.endLine}` : `line ${selection?.startLine || 1}`}`;
@@ -312,7 +325,7 @@ export class InlineChatController {
       const target = this.options.target()!;
       if (target.ref) {
         const snapshot = await readFile(this.options.workspaceId, target.ref);
-        if (snapshot.revision !== target.revision) { m.session.diskConflict = true; return; }
+        if (snapshot.revision !== m.session.diskRevision) { m.session.diskConflict = true; return; }
       }
       if (this.mounted !== m || this.staleReason()) return;
       const replacement = replacementEdit(target.model.getValue(), m.session.proposal!);
@@ -342,12 +355,14 @@ export class InlineChatController {
     const m = this.mounted;
     if (!m) return;
     m.session.draft = snapshotComposer(m.input);
-    m.unsubscribe(); m.abort.abort(); m.observer.disconnect();
+    m.unsubscribe(); m.abort.abort(); m.observer.disconnect(); m.settings.dispose();
     if (m.zoneHostHidden !== null) m.zoneHost?.setAttribute("aria-hidden", m.zoneHostHidden);
     this.clearPreview();
     this.mounted = null;
     this.editor.changeViewZones(accessor => accessor.removeZone(m.zone));
   }
+
+  hideSettings(): void { this.mounted?.settings.close(); }
 
   dispose(): void { this.detach(); this.disposables.forEach(item => item.dispose()); }
 }

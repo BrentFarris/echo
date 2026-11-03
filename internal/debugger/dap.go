@@ -38,7 +38,7 @@ type reverseHandler func(context.Context, dapEnvelope) (any, error)
 type dapConnection struct {
 	transport      io.ReadWriteCloser
 	reader         *bufio.Reader
-	writeMu        sync.Mutex
+	writeGate      chan struct{}
 	mu             sync.Mutex
 	nextSeq        int
 	pending        map[int]chan dapResult
@@ -54,7 +54,7 @@ type dapConnection struct {
 }
 
 func newDAPConnection(transport io.ReadWriteCloser, onEvent func(dapEnvelope), onReverse reverseHandler, onClose func(error)) *dapConnection {
-	c := &dapConnection{transport: transport, reader: bufio.NewReader(transport), pending: map[int]chan dapResult{}, onEvent: onEvent, onReverse: onReverse, onClose: onClose, done: make(chan struct{})}
+	c := &dapConnection{transport: transport, writeGate: make(chan struct{}, 1), reader: bufio.NewReader(transport), pending: map[int]chan dapResult{}, onEvent: onEvent, onReverse: onReverse, onClose: onClose, done: make(chan struct{})}
 	go c.readLoop()
 	return c
 }
@@ -81,7 +81,7 @@ func (c *dapConnection) request(ctx context.Context, command string, arguments a
 	response := make(chan dapResult, 1)
 	c.pending[seq] = response
 	c.mu.Unlock()
-	if err := c.write(dapEnvelope{Seq: seq, Type: "request", Command: command, Arguments: args}); err != nil {
+	if err := c.writeContext(ctx, dapEnvelope{Seq: seq, Type: "request", Command: command, Arguments: args}); err != nil {
 		c.removePending(seq)
 		c.fail(err)
 		return dapEnvelope{}, fmt.Errorf("send DAP %s request: %w", command, err)
@@ -97,7 +97,7 @@ func (c *dapConnection) request(ctx context.Context, command string, arguments a
 		return result.message, nil
 	case <-ctx.Done():
 		c.removePending(seq)
-		c.sendCancel(seq)
+		go c.sendCancel(seq)
 		return dapEnvelope{}, ctx.Err()
 	case <-c.done:
 		c.mu.Lock()
@@ -137,6 +137,11 @@ func dapFailureMessage(message dapEnvelope) string {
 }
 
 func (c *dapConnection) write(message any) error {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	return c.writeContext(ctx, message)
+}
+func (c *dapConnection) writeContext(ctx context.Context, message any) error {
 	data, err := json.Marshal(message)
 	if err != nil {
 		return err
@@ -145,8 +150,21 @@ func (c *dapConnection) write(message any) error {
 		return fmt.Errorf("DAP message exceeds %d bytes", maxDAPMessageBytes)
 	}
 	c.emitTrace("client → adapter", data)
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	select {
+	case c.writeGate <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.done:
+		return io.ErrClosedPipe
+	}
+	defer func() { <-c.writeGate }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// A blocked transport write must remain interruptible even before a response
+	// can be awaited. Closing the stream also wakes queued requests.
+	stop := context.AfterFunc(ctx, func() { _ = c.transport.Close() })
+	defer stop()
 	header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(data))
 	if _, err = io.WriteString(c.transport, header); err != nil {
 		return err
@@ -290,7 +308,9 @@ func (c *dapConnection) fail(err error) {
 	if err == nil {
 		err = io.EOF
 	}
+	closed := false
 	c.closeOnce.Do(func() {
+		closed = true
 		_ = c.transport.Close()
 		c.mu.Lock()
 		c.closed = true
@@ -302,10 +322,10 @@ func (c *dapConnection) fail(err error) {
 			response <- dapResult{err: err}
 		}
 		close(c.done)
-		if c.onClose != nil {
-			c.onClose(err)
-		}
 	})
+	if closed && c.onClose != nil {
+		c.onClose(err)
+	}
 }
 func (c *dapConnection) Close() error { c.fail(io.ErrClosedPipe); return nil }
 func isDAPClosed(err error) bool      { return errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) }

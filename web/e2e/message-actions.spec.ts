@@ -1,0 +1,200 @@
+import { test, expect, type Page } from '@playwright/test';
+
+async function setup(page: Page) {
+  await page.goto('/');
+  await page.request.post('/api/v1/session', { data: {} });
+  await page.request.post('/api/v1/endpoints', { data: { endpoint: { id: 'actions-model', name: 'Actions model', url: 'http://127.0.0.1:3743/v1', model: 'echo-test', contextTokens: 32768 } } });
+  const response = await page.request.post('/api/v1/chats'); const chat = await response.json();
+  await page.request.put(`/api/v1/chats/${chat.id}/generation`, { data: { endpointId: 'actions-model', model: 'echo-test', temperature: .6 } });
+  await page.goto('/#' + chat.id); await page.reload();
+  await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Original **message**');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.locator('.response-group > .message-actions')).toHaveCount(1);
+  await expect(page.locator('.chat-log > .message.user [data-action="edit"]')).toHaveAttribute('aria-disabled', 'false');
+  return chat.id as string;
+}
+
+test('hover, final-only copy, assistant edit, user resubmit and deletion persist', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const chat = await setup(page);
+  const observer = await context.newPage(); await observer.goto('/#' + chat);
+  await expect(observer.locator('.response-group')).toHaveCount(1);
+  const user = page.locator('.chat-log > .message.user').first(), response = page.locator('.response-group').first();
+  const actions = user.locator(':scope > .message-actions');
+  await page.getByRole('textbox', { name: 'Message', exact: true }).focus(); await page.mouse.move(0, 0);
+  await expect(actions).toHaveCSS('opacity', '0'); await user.hover(); await expect(actions).toHaveCSS('opacity', '1');
+  await user.getByRole('button', { name: 'Copy message', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Original **message**');
+  const before = await (await page.request.get(`/api/v1/chats/${chat}/messages`)).json();
+  const final = before.filter((m: any) => m.role === 'assistant').at(-1);
+  await response.hover(); await response.getByRole('button', { name: 'Copy final response' }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(final.content);
+  await expect(page.locator('.work-content .message-actions')).toHaveCount(0);
+  await response.getByRole('button', { name: 'Edit response', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Edit response text' }).fill('Edited **response**');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.locator('.message-edit-form')).toHaveCount(0);
+  await expect(response).toContainText('Edited response');
+  await expect(observer.locator('.response-group')).toContainText('Edited response');
+  const edited = await (await page.request.get(`/api/v1/chats/${chat}/messages`)).json();
+  expect(edited).toHaveLength(before.length); expect(edited.at(-1).content).toBe('Edited **response**');
+  await page.reload(); await expect(response).toContainText('Edited response');
+  await user.hover(); await user.getByRole('button', { name: 'Edit message', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Edit message text' }).fill('Replacement message');
+  await page.getByRole('button', { name: 'Save & Resubmit', exact: true }).click();
+  await expect(user).toContainText('Replacement message');
+  await expect(user.locator('[data-action="trash"]')).toHaveAttribute('aria-disabled', 'false');
+  await expect(page.locator('.chat-log')).not.toContainText('Edited response');
+  const resubmitted = await (await page.request.get(`/api/v1/chats/${chat}/messages`)).json();
+  expect(resubmitted.some((m: any) => m.id === final.id)).toBe(false);
+  page.once('dialog', dialog => dialog.dismiss()); await response.hover(); await response.getByRole('button', { name: 'Delete response' }).click();
+  await expect(response).toHaveCount(1);
+  page.once('dialog', dialog => dialog.accept()); await response.getByRole('button', { name: 'Delete response' }).click();
+  await expect(page.locator('.response-group > .message-actions')).toHaveCount(0);
+  await expect(user).toContainText('Replacement message');
+  page.once('dialog', dialog => dialog.accept()); await user.hover(); await user.getByRole('button', { name: 'Delete message', exact: true }).click();
+  await expect(page.locator('.chat-log > .message.user')).toHaveCount(0);
+  await expect(observer.locator('.chat-log > .message.user')).toHaveCount(0);
+  await observer.close();
+});
+
+test.describe('touch', () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+  test('tap toggles the top-right toolbar and an outside tap closes it', async ({ page }) => {
+    await setup(page);
+    const user = page.locator('.chat-log > .message.user').first(), actions = user.locator(':scope > .message-actions');
+    await expect(actions).toHaveCSS('opacity', '0');
+    await user.locator('.message-content').tap({ position: { x: 8, y: 8 } }); await expect(actions).toHaveCSS('opacity', '1');
+    const card = await user.boundingBox(), toolbar = await actions.boundingBox();
+    expect(Math.abs(card!.x + card!.width - toolbar!.x - toolbar!.width)).toBeLessThan(12);
+    expect(toolbar!.y - card!.y).toBeLessThan(12);
+    await user.locator('.message-content').tap({ position: { x: 8, y: 8 } }); await expect(actions).toHaveCSS('opacity', '0');
+    await user.locator('.message-content').tap({ position: { x: 8, y: 8 } }); await page.getByRole('textbox', { name: 'Message', exact: true }).tap(); await expect(actions).toHaveCSS('opacity', '0');
+    const source = new URL(page.url()).hash;
+    await user.locator('.message-content').tap({ position: { x: 8, y: 8 } }); await user.getByRole('button', { name: 'Fork chat from this message' }).tap();
+    await expect.poll(() => new URL(page.url()).hash).not.toBe(source);
+    await expect(page.locator('.chat-log > .message.user')).toHaveCount(1);
+    await expect(page.locator('.response-group')).toHaveCount(0);
+    const copiedUser = page.locator('.chat-log > .message.user').first();
+    await copiedUser.locator('.message-content').tap({ position: { x: 8, y: 8 } });
+    page.once('dialog', dialog => dialog.accept());
+    await copiedUser.getByRole('button', { name: 'Rerun from message', exact: true }).tap();
+    await expect(page.locator('.response-group > .message-actions')).toHaveCount(1);
+  });
+});
+
+for (const role of ['user', 'assistant']) {
+  test(`rerun from ${role} confirms, replaces later history and preserves the composer draft`, async ({ page, context }) => {
+    const source = await setup(page);
+    const original = await (await page.request.get(`/api/v1/chats/${source}/messages`)).json();
+    const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+    await composer.fill('Later prompt'); await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    await expect(page.locator('.response-group > .message-actions')).toHaveCount(2);
+    const target = role === 'user' ? page.locator('.chat-log > .message.user').first() : page.locator('.response-group').first();
+    const button = target.getByRole('button', { name: role === 'user' ? 'Rerun from message' : 'Rerun response', exact: true });
+    await expect(button).toHaveAttribute('aria-disabled', 'false');
+    await composer.fill('Unsent draft');
+    const observer = await context.newPage(); await observer.goto('/#' + source);
+    await button.focus(); page.once('dialog', dialog => dialog.dismiss()); await button.press('Enter');
+    await expect(page.locator('.response-group')).toHaveCount(2);
+    page.once('dialog', dialog => dialog.accept()); await button.press('Enter');
+    await expect(page.locator('.response-group')).toHaveCount(1);
+    await expect(page.locator('.chat-log')).not.toContainText('Later prompt');
+    await expect(page.locator('.chat-log > .message.user [data-action="rerun"]')).toHaveAttribute('aria-disabled', 'false');
+    await expect(composer).toContainText('Unsent draft');
+    await expect(observer.locator('.response-group')).toHaveCount(1);
+    await expect(observer.locator('.chat-log')).not.toContainText('Later prompt');
+    const updated = await (await page.request.get(`/api/v1/chats/${source}/messages`)).json();
+    expect(updated).toHaveLength(2); expect(updated[0].content).toBe(original[0].content);
+    expect(updated.some((m: any) => original.some((old: any) => old.id === m.id))).toBe(false);
+    await page.request.delete(`/api/v1/chats/${source}/messages/${updated[0].id}`);
+    await expect(page.getByRole('button', { name: 'Cannot rerun without the original user message', exact: true })).toBeDisabled();
+    await observer.close();
+  });
+}
+
+test('fork opens copied history, preserves the source draft and leaves other tabs in place', async ({ page, context }) => {
+  const source = await setup(page);
+  const observer = await context.newPage(); await observer.goto('/#' + source);
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await composer.fill('Later prompt'); await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.locator('.response-group > .message-actions')).toHaveCount(2);
+  const first = page.locator('.response-group').first();
+  await expect(first.locator('[data-action="fork"]')).toHaveAttribute('aria-disabled', 'false');
+  await composer.fill('Unsent source draft');
+  const fork = first.getByRole('button', { name: 'Fork chat from this message' });
+  await fork.focus(); await fork.press('Enter');
+  await expect.poll(() => new URL(page.url()).hash).not.toBe('#' + source);
+  const destination = new URL(page.url()).hash.slice(1);
+  await expect(page.locator('.response-group')).toHaveCount(1);
+  await expect(page.locator('.chat-log')).not.toContainText('Later prompt');
+  await expect(composer).not.toHaveText('Unsent source draft');
+  await expect(observer).toHaveURL(new RegExp('#' + source + '$'));
+  await expect(observer.locator(`button[data-chat="${destination}"]`)).toBeVisible();
+  const state = await (await page.request.get('/api/v1/state')).json();
+  const created = state.chats.find((c: any) => c.id === destination);
+  expect(created.title).toMatch(/ \(fork\)$/); expect(created.forkedFrom.chatId).toBe(source);
+  const copied = await (await page.request.get(`/api/v1/chats/${destination}/messages`)).json();
+  expect(copied).toHaveLength(2);
+  await page.locator(`button[data-chat="${source}"]`).click(); await expect(composer).toContainText('Unsent source draft');
+  await page.locator(`button[data-chat="${destination}"]`).click();
+  await page.request.delete(`/api/v1/chats/${source}`); await page.reload();
+  await expect(page.locator('.chat-log')).toContainText('Original **message**');
+  await expect(page.locator('.response-group')).toHaveCount(1);
+  await observer.close();
+});
+
+test('fork retries a lost response without duplicate creation and does not steal later navigation', async ({ page }) => {
+  const source = await setup(page);
+  const keys: string[] = [];
+  let attempts = 0;
+  await page.route('**/messages/*/fork', async route => {
+    keys.push(route.request().postDataJSON().requestId);
+    const response = await route.fetch();
+    if (++attempts === 1) await route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"Lost response"}' });
+    else await route.fulfill({ response });
+  });
+  const response = page.locator('.response-group').first();
+  await response.hover(); await response.getByRole('button', { name: 'Fork chat from this message' }).click();
+  await expect(page.getByRole('alert')).toHaveText('Lost response');
+  await response.hover(); await response.getByRole('button', { name: 'Fork chat from this message' }).click();
+  await expect.poll(() => new URL(page.url()).hash).not.toBe('#' + source);
+  expect(keys).toHaveLength(2); expect(keys[0]).toBe(keys[1]);
+  const state = await (await page.request.get('/api/v1/state')).json();
+  expect(state.chats.filter((c: any) => c.forkedFrom?.chatId === source)).toHaveLength(1);
+  await page.unroute('**/messages/*/fork');
+  await page.locator(`button[data-chat="${source}"]`).click();
+  let release!: () => void, requested = false;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/messages/*/fork', async route => { requested = true; await pending; await route.continue(); });
+  await response.hover(); await response.getByRole('button', { name: 'Fork chat from this message' }).click();
+  await expect.poll(() => requested).toBe(true);
+  await expect(response.getByRole('toolbar')).toHaveAttribute('aria-busy', 'true');
+  await page.getByRole('button', { name: '＋ New chat', exact: true }).click();
+  await expect.poll(() => new URL(page.url()).hash).not.toBe('#' + source);
+  const newChat = page.url(); release();
+  await expect(page.getByRole('status')).toHaveText('Fork created. It is available in the chat list.');
+  await expect(page).toHaveURL(newChat);
+});
+
+test('fork retains the selected bot tab while copying every bot through the cutoff', async ({ page }) => {
+  const source = await setup(page);
+  const botResponse = await page.request.post('/api/v1/bots', { data: { id: 'fork-other', handle: 'fork_other', name: 'Fork Other', prompt: 'Reply briefly.', roots: [], plugins: {} } });
+  expect(botResponse.ok()).toBe(true);
+  await page.getByRole('textbox', { name: 'Message', exact: true }).fill('@echo @fork_other work');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  const tab = page.getByRole('tab', { name: 'Fork Other', exact: true });
+  await expect(tab).toBeVisible(); await tab.click();
+  const response = page.locator('.response-group').last();
+  await expect(response.locator('[data-action="fork"]')).toHaveAttribute('aria-disabled', 'false');
+  const stored = await (await page.request.get(`/api/v1/chats/${source}/messages`)).json();
+  const target = stored.filter((m: any) => m.botId === 'fork-other' && m.role === 'assistant').at(-1);
+  const prefix = stored.slice(0, stored.findIndex((m: any) => m.id === target.id) + 1);
+  await response.hover(); await response.getByRole('button', { name: 'Fork chat from this message' }).click();
+  await expect.poll(() => new URL(page.url()).hash).not.toBe('#' + source);
+  await expect(page.getByRole('tab', { name: 'Fork Other', exact: true })).toHaveAttribute('aria-selected', 'true');
+  const destination = new URL(page.url()).hash.slice(1);
+  const copied = await (await page.request.get(`/api/v1/chats/${destination}/messages`)).json();
+  expect(copied.map((m: any) => [m.role, m.content, m.botId])).toEqual(prefix.map((m: any) => [m.role, m.content, m.botId]));
+  expect(copied.some((m: any) => m.botId === 'echo')).toBe(true);
+});

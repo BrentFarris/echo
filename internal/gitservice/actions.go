@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/brent/echo/internal/workspacefs"
+	workspacefs "github.com/brent/echo/internal/editorfs"
 )
 
 var simpleGitName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/@{}+-]*$`)
@@ -243,12 +243,15 @@ func (s *Service) commit(ctx context.Context, state *repositoryState, request Ac
 func runNetworkAction(ctx context.Context, state *repositoryState, request ActionRequest) error {
 	remote := optionalGitName(request.Remote, "origin")
 	ref := strings.TrimSpace(request.Ref)
+	if err := requireSimpleName(remote, "remote"); err != nil {
+		return err
+	}
 	switch request.Action {
 	case "pull":
-		_, err := runGitWithTimeout(ctx, state, true, nil, "pull")
+		_, err := runGitWithTimeout(ctx, state, true, nil, "pull", remote)
 		return err
 	case "pull_rebase":
-		_, err := runGitWithTimeout(ctx, state, true, nil, "pull", "--rebase")
+		_, err := runGitWithTimeout(ctx, state, true, nil, "pull", "--rebase", remote)
 		return err
 	case "pull_from":
 		if err := requireSimpleName(remote, "remote"); err != nil {
@@ -264,7 +267,7 @@ func runNetworkAction(ctx context.Context, state *repositoryState, request Actio
 		_, err := runGitWithTimeout(ctx, state, true, nil, args...)
 		return err
 	case "push":
-		_, err := runGitWithTimeout(ctx, state, true, nil, "push")
+		_, err := runGitWithTimeout(ctx, state, true, nil, "push", remote)
 		return err
 	case "push_to":
 		if err := requireSimpleName(remote, "remote"); err != nil {
@@ -280,19 +283,19 @@ func runNetworkAction(ctx context.Context, state *repositoryState, request Actio
 		_, err := runGitWithTimeout(ctx, state, true, nil, args...)
 		return err
 	case "fetch":
-		_, err := runGitWithTimeout(ctx, state, true, nil, "fetch")
+		_, err := runGitWithTimeout(ctx, state, true, nil, "fetch", remote)
 		return err
 	case "fetch_prune":
-		_, err := runGitWithTimeout(ctx, state, true, nil, "fetch", "--prune")
+		_, err := runGitWithTimeout(ctx, state, true, nil, "fetch", "--prune", remote)
 		return err
 	case "fetch_all":
 		_, err := runGitWithTimeout(ctx, state, true, nil, "fetch", "--all")
 		return err
 	case "sync":
-		if _, err := runGitWithTimeout(ctx, state, true, nil, "pull"); err != nil {
+		if _, err := runGitWithTimeout(ctx, state, true, nil, "pull", remote); err != nil {
 			return err
 		}
-		_, err := runGitWithTimeout(ctx, state, true, nil, "push")
+		_, err := runGitWithTimeout(ctx, state, true, nil, "push", remote)
 		return err
 	}
 	return nil

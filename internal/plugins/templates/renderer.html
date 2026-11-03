@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8"><script>
+let nonce;
+const escape = text => String(text).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+addEventListener('message', event => {
+  if (event.source !== parent || !event.data) return;
+  if (event.data.type === 'init') { nonce = event.data.nonce; return; }
+  if (event.data.type === 'render' && nonce && event.data.nonce === nonce) {
+    parent.postMessage({type:'rendered', nonce, id:event.data.id, html:'<p>'+escape(event.data.text).replace(/\n/g, '<br>')+'</p>'}, '*');
+  }
+});
+parent.postMessage({type:'renderer-ready'}, '*');
+</script>

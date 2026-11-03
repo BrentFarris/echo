@@ -191,26 +191,15 @@ func (p *Provider) queueStatusRefresh(state *repositoryState) {
 }
 
 func (p *Provider) loadStatus(ctx context.Context, state *repositoryState) (sourcecontrol.StatusSnapshot, error) {
-	// `fossil info` and `fossil changes` are independent; run them concurrently
-	// so a status refresh costs one spawn latency instead of two.
-	type checkoutInfoResult struct {
-		info checkoutInfo
-		err  error
-	}
-	infoResultCh := make(chan checkoutInfoResult, 1)
-	go func() {
-		info, err := p.checkoutInfo(ctx, state.workspaceID, state.root)
-		infoResultCh <- checkoutInfoResult{info, err}
-	}()
-	records, err := p.rawStatus(ctx, state)
-	infoResult := <-infoResultCh
+	info, err := p.checkoutInfo(ctx, state.workspaceID, state.root)
 	if err != nil {
 		return sourcecontrol.StatusSnapshot{}, err
 	}
-	if infoResult.err != nil {
-		return sourcecontrol.StatusSnapshot{}, infoResult.err
+	records, err := p.rawStatus(ctx, state)
+	if err != nil {
+		return sourcecontrol.StatusSnapshot{}, err
 	}
-	return p.buildStatus(ctx, state, infoResult.info, records)
+	return p.buildStatus(ctx, state, info, records)
 }
 
 func (p *Provider) buildStatus(ctx context.Context, state *repositoryState, info checkoutInfo, records []statusRecord) (sourcecontrol.StatusSnapshot, error) {
@@ -221,7 +210,7 @@ func (p *Provider) buildStatus(ctx context.Context, state *repositoryState, info
 	protectedEntries := checkpointEntries(manifest)
 	protectedDiagnostic := checkpointStale(manifest, state, info.Checkout)
 
-	groups := map[string][]sourcecontrol.Change{"conflicts": {}, protectedGroupID: {}, "working": {}, "untracked": {}}
+	groups := map[string][]sourcecontrol.Change{"conflicts": {}, protectedGroupID: {}, "working": {}, "untracked": {}, "missing": {}}
 	hidden := 0
 	seen := make(map[string]bool)
 	seenProtected := make(map[string]bool)
@@ -272,7 +261,12 @@ func (p *Provider) buildStatus(ctx context.Context, state *repositoryState, info
 			Path: record.path, OldPath: record.oldPath, Ref: ref, Status: statusLabel(record.code),
 			StatusCode: record.code, Kind: record.kind, GroupID: record.group,
 		}
-		groups[record.group] = append(groups[record.group], change)
+		if record.code == "MISSING" {
+			change.GroupID = "missing"
+			groups["missing"] = append(groups["missing"], change)
+		} else {
+			groups[record.group] = append(groups[record.group], change)
+		}
 	}
 	for _, entry := range protectedEntries {
 		groups[protectedGroupID] = append(groups[protectedGroupID], protectedChange(entry, state))
@@ -300,7 +294,7 @@ func (p *Provider) buildStatus(ctx context.Context, state *repositoryState, info
 	truncated := total > sourcecontrol.StatusLimit
 	if truncated {
 		remaining := sourcecontrol.StatusLimit
-		for _, id := range []string{"conflicts", protectedGroupID, "working", "untracked"} {
+		for _, id := range []string{"conflicts", protectedGroupID, "working", "untracked", "missing"} {
 			if len(groups[id]) > remaining {
 				groups[id] = groups[id][:remaining]
 			}
@@ -310,8 +304,8 @@ func (p *Provider) buildStatus(ctx context.Context, state *repositoryState, info
 			}
 		}
 	}
-	workingActions := []string{"discard", "protect", "untrack"}
-	untrackedActions := []string{"protect", "track", "discard"}
+	workingActions := []string{"discard", "untrack"}
+	untrackedActions := []string{"track", "discard"}
 	protectedActions := []string{}
 	if manifest == nil {
 		workingActions = append(workingActions, "commit_selected")
@@ -322,21 +316,22 @@ func (p *Provider) buildStatus(ctx context.Context, state *repositoryState, info
 		protectedActions = append(protectedActions, "unprotect")
 		if protectedDiagnostic == "" {
 			protectedActions = append(protectedActions, "commit_protected")
-			} else {
-				// Keep these as empty slices, never nil: a nil slice marshals
-				// to JSON null and the frontend calls .includes on actions.
-				workingActions = []string{}
-				untrackedActions = []string{}
-			}
+		} else {
+			// Keep these as empty slices, never nil: a nil slice marshals
+			// to JSON null and the frontend calls .includes on actions.
+			workingActions = []string{}
+			untrackedActions = []string{}
 		}
-		conflictActions := []string{"discard"}
-		if protectedDiagnostic != "" {
-			conflictActions = []string{}
-		}
+	}
+	conflictActions := []string{"discard"}
+	if protectedDiagnostic != "" {
+		conflictActions = []string{}
+	}
 	return sourcecontrol.StatusSnapshot{
 		WorkspaceID: state.workspaceID, RepositoryID: sourcecontrol.RepositoryID(state.workspaceID, ID, state.root), ProviderID: ID,
 		Revision: state.revision.Load(), Branch: info.Branch, Head: info.Checkout,
 		Groups: []sourcecontrol.ChangeGroup{
+			{ID: "missing", Label: "Missing Files", Role: "working", Changes: groups["missing"], Actions: []string{"remove", "discard"}},
 			{ID: "conflicts", Label: "Merge Changes", Role: "conflicts", Changes: groups["conflicts"], Actions: conflictActions},
 			{ID: protectedGroupID, Label: "Protected Changes", Role: "included", Changes: groups[protectedGroupID], Actions: protectedActions, Diagnostic: protectedDiagnostic},
 			{ID: "working", Label: "Changes", Role: "working", Changes: groups["working"], Actions: workingActions},

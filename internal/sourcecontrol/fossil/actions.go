@@ -31,20 +31,12 @@ func (p *Provider) Action(ctx context.Context, workspaceID, repositoryID string,
 	if request.ExpectedRevision != 0 && request.ExpectedRevision != state.revision.Load() {
 		return sourcecontrol.ActionResult{}, &sourcecontrol.Error{Code: "stale_source_control_revision", Message: "source control changed; refresh and try again", Details: map[string]any{"revision": state.revision.Load()}}
 	}
-	// Opening Fossil's local web UI does not change checkout state. Keep it out
-	// of the mutating action path so it neither advances the revision token nor
-	// applies Protected Changes' checkout-changing restrictions.
-	if request.Action == "open_ui" {
-		if err := p.openFossilUI(state); err != nil {
-			return sourcecontrol.ActionResult{}, err
-		}
-		return sourcecontrol.ActionResult{RequestID: request.RequestID, RepositoryID: repositoryID, Revision: state.revision.Load()}, nil
-	}
 	// A failed VCS command may still have changed checkout state (for example,
 	// a merge that stops on conflicts), so every accepted mutation attempt
 	// advances the token. Stale requests return above without changing it.
 	defer func() {
 		revision := state.revision.Add(1)
+		state.invalidateCaches()
 		result.Revision = revision
 		if resultErr == nil {
 			p.afterMutation(ctx, state, request, revision)
@@ -104,6 +96,20 @@ func (p *Provider) executeAction(ctx context.Context, state *repositoryState, re
 			return nil, nil, err
 		}
 		_, err = p.run(ctx, state.workspaceID, state.root, false, append([]string{"add", "--force"}, fossilPaths(paths)...)...)
+		return paths, nil, err
+	case "remove":
+		paths, err := state.validatePaths(request.Paths)
+		if err != nil {
+			return nil, nil, err
+		}
+		records, err := p.rawStatus(ctx, state)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err = requireFossilPathState(paths, records, func(record statusRecord) bool { return record.code == "MISSING" }, "only missing files can be registered for removal"); err != nil {
+			return nil, nil, err
+		}
+		_, err = p.run(ctx, state.workspaceID, state.root, false, append([]string{"rm", "--soft"}, fossilPaths(paths)...)...)
 		return paths, nil, err
 	case "untrack":
 		paths, err := state.validatePaths(request.Paths)
@@ -402,11 +408,14 @@ func (p *Provider) commit(ctx context.Context, state *repositoryState, request s
 			missing[pathIdentity(record.path)] = record.path
 		}
 	}
-	if protected > 0 {
-		return nil, nil, &sourcecontrol.Error{Code: "protected_workspace_metadata", Message: "remove Echo or source-control metadata from the Fossil change set before committing", Details: map[string]any{"count": protected}}
-	}
 	paths := visibleTracked
 	if request.Action == "commit_all" {
+		// Commit All has no path filter, so it would also commit internal
+		// files hidden from the view. Selected commits validate each requested
+		// path below and must not be blocked by unrelated internal changes.
+		if protected > 0 {
+			return nil, nil, &sourcecontrol.Error{Code: "protected_workspace_metadata", Message: "Commit All is blocked by changes to Echo settings or source-control internal files hidden from this view. Select the files you want to commit and use Commit Selected.", Details: map[string]any{"count": protected}}
+		}
 		if hidden > 0 {
 			return nil, nil, &sourcecontrol.Error{Code: "hidden_changes", Message: "this parent checkout has changes outside the workspace; select the visible files to commit", Details: map[string]any{"count": hidden}}
 		}

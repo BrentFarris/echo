@@ -88,7 +88,7 @@ func ValidateWorkflow(workflow map[string]any) error {
 		if !ok {
 			return fmt.Errorf("node %q is not an object", id)
 		}
-		if _, hasClass := node["class_type"]; !hasClass {
+		if class, ok := node["class_type"].(string); !ok || strings.TrimSpace(class) == "" {
 			return fmt.Errorf("node %q is missing class_type", id)
 		}
 	}
@@ -150,21 +150,15 @@ func substituteArray(arr []any, replaceMap map[string]string) {
 // are always substituted even when the caller omits them.
 func buildReplaceMap(params TemplateParams) map[string]string {
 	m := make(map[string]string)
-	if params.Prompt != "" {
-		m["PROMPT"] = params.Prompt
-	}
-	if params.NegativePrompt != "" {
-		m["NEGATIVE_PROMPT"] = params.NegativePrompt
-	}
+	m["PROMPT"] = params.Prompt
+	m["NEGATIVE_PROMPT"] = params.NegativePrompt
 	modelName := params.Model
 	if modelName == "" {
 		modelName = "checkpoint1" // fallback placeholder; ComfyUI will pick the default if available
 	}
 	m["MODEL"] = modelName
 
-	if params.Image != "" {
-		m["IMAGE"] = params.Image
-	}
+	m["IMAGE"] = params.Image
 
 	width := params.Width
 	if width <= 0 {
@@ -250,15 +244,20 @@ func applyReplacements(s string, replaceMap map[string]string) any {
 		return s
 	}
 
-	result := s
+	replacements := []string{}
 	for key, value := range replaceMap {
 		placeholder := "{{" + key + "}}"
-		result = strings.ReplaceAll(result, placeholder, value)
+		replacements = append(replacements, placeholder, value)
 	}
+	result := strings.NewReplacer(replacements...).Replace(s)
 
-	// Try to convert to float64 so ComfyUI receives a number, not a string.
-	if f, err := strconv.ParseFloat(result, 64); err == nil {
-		return f
+	// Text prompts and filenames remain strings even when they contain numbers.
+	for _, key := range []string{"WIDTH", "HEIGHT", "STEPS", "CFG_SCALE", "SEED", "FRAMES", "FPS", "DURATION", "MEGAPIXELS"} {
+		if s == "{{"+key+"}}" {
+			if f, err := strconv.ParseFloat(result, 64); err == nil {
+				return f
+			}
+		}
 	}
 	return result
 }
@@ -286,14 +285,6 @@ func BuildDefaultWorkflow(params TemplateParams) map[string]any {
 	if modelName == "" {
 		modelName = "checkpoint1"
 	}
-	clipName := params.Model // In ComfyUI, CLIP comes from the checkpoint loader.
-	if clipName == "" {
-		clipName = "checkpoint1"
-	}
-	vaeName := params.Model
-	if vaeName == "" {
-		vaeName = "checkpoint1"
-	}
 
 	width := params.Width
 	if width <= 0 {
@@ -312,8 +303,8 @@ func BuildDefaultWorkflow(params TemplateParams) map[string]any {
 		cfgScale = 7.5
 	}
 	seed := params.Seed
-	if seed == 0 {
-		seed = -1 // Random seed
+	if seed < 0 {
+		seed = rand.Int63n(1 << 53)
 	}
 
 	samplerName := "euler"
@@ -330,7 +321,7 @@ func BuildDefaultWorkflow(params TemplateParams) map[string]any {
 
 	// CLIPTextEncode (positive)
 	positiveID := nextID()
-	clipRef := checkpointID + "_0" // CheckpointLoaderSimple outputs model, clip, vae as 0, 1, 2
+	clipRef := []any{checkpointID, 1} // CLIP output
 	workflow[positiveID] = map[string]any{
 		"class_type": "CLIPTextEncode",
 		"inputs": map[string]any{
@@ -360,23 +351,33 @@ func BuildDefaultWorkflow(params TemplateParams) map[string]any {
 		},
 	}
 
+	if params.Image != "" {
+		imageID := nextID()
+		workflow[imageID] = map[string]any{"class_type": "LoadImage", "inputs": map[string]any{"image": params.Image}}
+		workflow[latentID] = map[string]any{"class_type": "VAEEncode", "inputs": map[string]any{"pixels": []any{imageID, 0}, "vae": []any{checkpointID, 2}}}
+	}
+
 	// KSampler
 	samplerID := nextID()
-	modelRef := checkpointID + "_0" // model output from checkpoint loader
-	vaeRef := checkpointID + "_2"    // vae output from checkpoint loader
+	modelRef := []any{checkpointID, 0} // model output
+	vaeRef := []any{checkpointID, 2}   // VAE output
+	denoise := 1.0
+	if params.Image != "" {
+		denoise = 0.75
+	}
 	workflow[samplerID] = map[string]any{
 		"class_type": "KSampler",
 		"inputs": map[string]any{
 			"model":        modelRef,
-			"positive":     positiveID + "_0",
-			"negative":     negativeID + "_0",
-			"latent_image": latentID + "_0",
+			"positive":     []any{positiveID, 0},
+			"negative":     []any{negativeID, 0},
+			"latent_image": []any{latentID, 0},
 			"seed":         seed,
 			"steps":        steps,
 			"cfg":          cfgScale,
 			"sampler_name": samplerName,
 			"scheduler":    schedulerName,
-			"denoise":      1.0,
+			"denoise":      denoise,
 		},
 	}
 
@@ -385,7 +386,7 @@ func BuildDefaultWorkflow(params TemplateParams) map[string]any {
 	workflow[decodeID] = map[string]any{
 		"class_type": "VAEDecode",
 		"inputs": map[string]any{
-			"samples": samplerID + "_0",
+			"samples": []any{samplerID, 0},
 			"vae":     vaeRef,
 		},
 	}
@@ -395,7 +396,7 @@ func BuildDefaultWorkflow(params TemplateParams) map[string]any {
 	workflow[saveID] = map[string]any{
 		"class_type": "SaveImage",
 		"inputs": map[string]any{
-			"images":          decodeID + "_0",
+			"images":          []any{decodeID, 0},
 			"filename_prefix": "ComfyUI",
 		},
 	}

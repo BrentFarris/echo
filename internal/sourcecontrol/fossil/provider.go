@@ -13,18 +13,17 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/brent/echo/internal/sandbox"
+	workspacefs "github.com/brent/echo/internal/editorfs"
+	"github.com/brent/echo/internal/scmexec"
 	"github.com/brent/echo/internal/sourcecontrol"
 	"github.com/brent/echo/internal/sourcecontrol/checkpoint"
-	"github.com/brent/echo/internal/workspacefs"
-	"github.com/brent/echo/internal/workspaces"
 )
 
 const ID = "fossil"
 
 var capabilities = []sourcecontrol.Capability{
-	sourcecontrol.CapabilityStatus, sourcecontrol.CapabilityDiff, sourcecontrol.CapabilityHistory,
-	sourcecontrol.CapabilityTrack, sourcecontrol.CapabilityProtect, sourcecontrol.CapabilityCommitAll, sourcecontrol.CapabilityCommitSelected,
+	sourcecontrol.CapabilityStatus, sourcecontrol.CapabilityDiff,
+	sourcecontrol.CapabilityTrack, sourcecontrol.CapabilityCommitAll, sourcecontrol.CapabilityCommitSelected,
 	sourcecontrol.CapabilityUpdate, sourcecontrol.CapabilitySync, sourcecontrol.CapabilityPull,
 	sourcecontrol.CapabilityPush, sourcecontrol.CapabilityBranches, sourcecontrol.CapabilityMerge,
 	sourcecontrol.CapabilityStashes, sourcecontrol.CapabilityWebUI,
@@ -65,7 +64,7 @@ type repositoryState struct {
 	lastRefresh      time.Time
 }
 
-func (r *repositoryState) public(sandboxed bool) sourcecontrol.Repository {
+func (r *repositoryState) public() sourcecontrol.Repository {
 	scopes := make([]sourcecontrol.Scope, len(r.scopes))
 	for index := range r.scopes {
 		scopes[index] = r.scopes[index].Scope
@@ -80,24 +79,17 @@ func (r *repositoryState) public(sandboxed bool) sourcecontrol.Repository {
 	if r.recoveryDiagnostic != "" {
 		diagnostic = r.recoveryDiagnostic
 	}
-	var actionAvailability map[string]sourcecontrol.ActionAvailability
-	if sandboxed {
-		actionAvailability = map[string]sourcecontrol.ActionAvailability{
-			"open_ui": {Enabled: false, Diagnostic: "Disable the workspace sandbox first"},
-		}
-	}
 	return sourcecontrol.Repository{
 		ID: sourcecontrol.RepositoryID(r.workspaceID, ID, r.root), ProviderID: ID, ProviderLabel: "Fossil",
 		Label: r.label, RootRef: rootRef, Parent: r.parent, Scopes: scopes, Revision: r.revision.Load(),
 		Available: available, Diagnostic: diagnostic, Capabilities: append([]sourcecontrol.Capability(nil), capabilities...),
-		ActionAvailability: actionAvailability,
 	}
 }
 
 type Provider struct {
-	workspaces  *workspaces.Manager
+	workspaces  *scmexec.Workspaces
 	fs          *workspacefs.Service
-	sandbox     *sandbox.Manager
+	runner      *scmexec.Runtime
 	checkpoints *checkpoint.Store
 	// protectedCommitFault is nil in production and lets integration tests
 	// simulate process interruption at durable transaction boundaries.
@@ -105,13 +97,10 @@ type Provider struct {
 	mu                   sync.RWMutex
 	repos                map[string]map[string]*repositoryState
 	rootLocks            map[string]*sync.RWMutex
-	uiMu                 sync.Mutex
-	uiProcesses          map[string]*fossilUISession
-	uiWorkspaceEpoch     map[string]uint64
-	uiStarter            fossilUIStarter
-	uiStartupGrace       time.Duration
-	uiStopTimeout        time.Duration
-	uiClosed             bool
+	execMu               sync.Mutex
+	execContexts         map[string]context.Context
+	execStops            map[string]context.CancelFunc
+	closed               bool
 	// permMu/permCache memoize immutable Fossil manifest permission lookups;
 	// see cachedManifestPermissions in hunks.go.
 	permMu    sync.Mutex
@@ -125,17 +114,15 @@ type Provider struct {
 	subscribed map[string]bool
 }
 
-func New(workspaces *workspaces.Manager, fs *workspacefs.Service, sandboxManager *sandbox.Manager, checkpointRoots ...string) *Provider {
+func New(workspaces *scmexec.Workspaces, fs *workspacefs.Service, sandboxManager *scmexec.Runtime, checkpointRoots ...string) *Provider {
 	checkpointRoot := filepath.Join(os.TempDir(), "echo-source-control-checkpoints", "fossil")
 	if len(checkpointRoots) > 0 && strings.TrimSpace(checkpointRoots[0]) != "" {
 		checkpointRoot = checkpointRoots[0]
 	}
 	return &Provider{
-		workspaces: workspaces, fs: fs, sandbox: sandboxManager,
+		workspaces: workspaces, fs: fs, runner: sandboxManager,
 		checkpoints: checkpoint.New(checkpointRoot), repos: make(map[string]map[string]*repositoryState),
-		rootLocks: make(map[string]*sync.RWMutex), uiProcesses: make(map[string]*fossilUISession),
-		uiWorkspaceEpoch: make(map[string]uint64), uiStarter: startLocalFossilUI,
-		uiStartupGrace: fossilUIStartupGrace, uiStopTimeout: fossilUIStopTimeout,
+		rootLocks: make(map[string]*sync.RWMutex), execContexts: make(map[string]context.Context), execStops: make(map[string]context.CancelFunc),
 		subscribed: make(map[string]bool),
 	}
 }
@@ -145,30 +132,20 @@ func (p *Provider) Descriptor(ctx context.Context, workspaceID string) sourcecon
 	if strings.TrimSpace(workspaceID) == "" {
 		return descriptor
 	}
-	roots, err := p.fs.Roots(workspaceID)
-	if err != nil || len(roots) == 0 {
-		descriptor.Diagnostic = "Workspace folders are unavailable"
-		return descriptor
-	}
-	output, err := p.run(ctx, workspaceID, roots[0].HostPath, false, "version")
+	err := p.runner.Available(workspaceID, ID)
 	if err != nil {
 		descriptor.Diagnostic = providerDiagnostic(err)
 		return descriptor
 	}
 	descriptor.Available = true
-	descriptor.Version = strings.TrimSpace(strings.TrimPrefix(strings.SplitN(string(output), "\n", 2)[0], "This is fossil version"))
 	return descriptor
 }
 
 func (p *Provider) Repositories(ctx context.Context, workspaceID string) ([]sourcecontrol.Repository, error) {
 	states, err := p.discover(ctx, strings.TrimSpace(workspaceID))
-	if err != nil {
-		return nil, err
-	}
 	repositories := make([]sourcecontrol.Repository, 0, len(states))
-	sandboxed := p.sandbox != nil && p.sandbox.IsEnabled(workspaceID)
 	for _, state := range states {
-		repositories = append(repositories, state.public(sandboxed))
+		repositories = append(repositories, state.public())
 	}
 	sort.SliceStable(repositories, func(i, j int) bool {
 		left, right := strings.ToLower(repositories[i].Label), strings.ToLower(repositories[j].Label)
@@ -177,7 +154,7 @@ func (p *Provider) Repositories(ctx context.Context, workspaceID string) ([]sour
 		}
 		return left < right
 	})
-	return repositories, nil
+	return repositories, err
 }
 
 func (p *Provider) discover(ctx context.Context, workspaceID string) ([]*repositoryState, error) {
@@ -199,26 +176,18 @@ func (p *Provider) discover(ctx context.Context, workspaceID string) ([]*reposit
 			rootInfos = append(rootInfos, rootInfo{Root: root, canonical: canonical})
 		}
 	}
+	var discoveryErr error
 	candidates := make(map[string]bool)
 	for _, root := range rootInfos {
 		if hasCheckoutMarker(root.canonical) {
 			candidates[root.canonical] = true
 		}
-		children, readErr := os.ReadDir(root.canonical)
-		if readErr == nil {
-			for _, child := range children {
-				if !child.IsDir() || child.Type()&os.ModeSymlink != 0 {
-					continue
-				}
-				name := strings.ToLower(child.Name())
-				if name == ".git" || name == ".echo" || name == "node_modules" {
-					continue
-				}
-				candidate := filepath.Join(root.canonical, child.Name())
-				if hasCheckoutMarker(candidate) {
-					candidates[candidate] = true
-				}
-			}
+		found, scanErr := scmexec.Discover(ctx, root.canonical, hasCheckoutMarker, func(path string) bool { _, err := p.runner.ValidatePath(workspaceID, path); return err == nil })
+		if scanErr != nil {
+			discoveryErr = scanErr
+		}
+		for _, candidate := range found {
+			candidates[candidate] = true
 		}
 		if workspace.SearchParentRepositories || workspace.SearchParentGitRepositories {
 			if ancestor := nearestCheckoutRoot(root.canonical); ancestor != "" {
@@ -266,11 +235,11 @@ func (p *Provider) discover(ctx context.Context, workspaceID string) ([]*reposit
 		id := sourcecontrol.RepositoryID(workspaceID, ID, item.root)
 		state := existing[id]
 		if state == nil {
-			state = &repositoryState{workspaceID: workspaceID, root: item.root, rootMu: p.lockForRootLocked(item.root)}
+			state = &repositoryState{workspaceID: workspaceID, root: item.root, rootMu: p.lockForRootLocked(item.repository)}
 			state.revision.Store(1)
 		}
 		if state.rootMu == nil {
-			state.rootMu = p.lockForRootLocked(item.root)
+			state.rootMu = p.lockForRootLocked(item.repository)
 		}
 		state.repository = item.repository
 		state.label = filepath.Base(item.root)
@@ -314,7 +283,7 @@ func (p *Provider) discover(ctx context.Context, workspaceID string) ([]*reposit
 		_ = p.recoverProtectedCommitState(ctx, state)
 		state.rootMu.Unlock()
 	}
-	return states, nil
+	return states, discoveryErr
 }
 
 func (p *Provider) repository(ctx context.Context, workspaceID, repositoryID string) (*repositoryState, error) {
@@ -331,6 +300,21 @@ func (p *Provider) repository(ctx context.Context, workspaceID, repositoryID str
 	}
 	if state == nil {
 		return nil, &sourcecontrol.Error{Code: "repository_not_found", Message: "Fossil checkout not found", Cause: sourcecontrol.ErrNotFound}
+	}
+	roots, err := p.fs.Roots(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, scope := range state.scopes {
+		valid := false
+		for _, root := range roots {
+			if root.ID == scope.RootID && root.BlockedReason == "" {
+				valid = true
+			}
+		}
+		if !valid {
+			return nil, &sourcecontrol.Error{Code: "stale_workspace_scope", Message: "Workspace folders changed; refresh Source Control before continuing"}
+		}
 	}
 	if !state.available {
 		return nil, &sourcecontrol.Error{Code: "fossil_unavailable", Message: state.diagnostic}
@@ -418,7 +402,14 @@ func (p *Provider) InvalidateWorkspace(workspaceID string) {
 		state.invalidateCaches()
 	}
 }
-func (p *Provider) Close()                                  { p.closeFossilUIProcesses() }
+func (p *Provider) Close() {
+	p.execMu.Lock()
+	defer p.execMu.Unlock()
+	p.closed = true
+	for _, cancel := range p.execStops {
+		cancel()
+	}
+}
 
 func (p *Provider) ResetWorkspace(ctx context.Context, workspaceID string) error {
 	p.StopWorkspaceProcesses(workspaceID)
@@ -440,7 +431,13 @@ func (p *Provider) RemoveWorkspace(workspaceID string) {
 }
 
 func (p *Provider) StopWorkspaceProcesses(workspaceID string) {
-	p.stopWorkspaceFossilUIProcesses(workspaceID)
+	p.execMu.Lock()
+	defer p.execMu.Unlock()
+	if cancel := p.execStops[workspaceID]; cancel != nil {
+		cancel()
+	}
+	delete(p.execStops, workspaceID)
+	delete(p.execContexts, workspaceID)
 }
 
 // lockForRootLocked is called while p.mu is held by discovery.

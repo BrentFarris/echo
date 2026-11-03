@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
-import { debugHoverExpression, debugSourceKey } from "./sources";
+import { debugSourceKey } from "./sources";
+import { debugHoverExpression } from "../plugins/go/debugExpressions";
 
 it.each([
   ["return ptr->items[1];", 14, "ptr->items[1]"],

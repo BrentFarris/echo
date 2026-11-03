@@ -1,47 +1,15 @@
 import type { FileRef } from "../code/types";
 
-export type DebugTransport = {
-  kind: "stdio" | "server" | "connect";
-  host?: string;
-  port?: number;
-  readyPattern?: string;
-  startupTimeoutMs?: number;
-};
-
-export type AdapterProfile = {
-  id: string;
-  name: string;
-  adapterId: string;
-  command?: string;
-  args?: string[];
-  environment?: Record<string, string>;
-  selectors?: Array<{ languageId?: string; extensions?: string[]; filenames?: string[] }>;
-  transport: DebugTransport;
-};
-
-export type AdapterTemplate = {
-  id: string;
-  description: string;
-  installGuide: string;
-  profile: AdapterProfile;
-};
-
-export type LifecycleHook = {
-  command: string;
-  args?: string[];
-  cwd?: string;
-  environment?: Record<string, string>;
-  timeoutMs?: number;
-};
+export type AdapterProfile = { pluginId?: string; id: string; name: string; adapterId: string; selectors?: Array<{languageId?:string; extensions?:string[]}> };
 
 export type DebugConfiguration = {
+  rootId?: string;
+  error?: string;
   id: string;
   name: string;
   adapterProfileId: string;
   request: "launch" | "attach";
   arguments?: Record<string, unknown>;
-  preLaunch?: LifecycleHook;
-  postDebug?: LifecycleHook;
 };
 
 export type DebugCompound = {
@@ -52,17 +20,17 @@ export type DebugCompound = {
 };
 
 export type DebugInput = {
+  pluginId?: string; filter?: string; goOnly?: boolean;
   id: string;
-  type: "promptString" | "secret" | "pickString" | "pickProcess";
+  type: "promptString" | "secret" | "pickString" | "pickProcess" | "pickGoProcess";
   description?: string;
   default?: string;
   options?: string[];
 };
 
 export type WorkspaceDebugConfig = {
+  diagnostics?: string[];
   version: number;
-  enabledAdapterProfileIds?: string[];
-  overrides?: Record<string, unknown>;
   configurations?: DebugConfiguration[];
   compounds?: DebugCompound[];
   inputs?: DebugInput[];

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
+	workspacefs "github.com/brent/echo/internal/editorfs"
 	"github.com/brent/echo/internal/mutation"
-	"github.com/brent/echo/internal/workspacefs"
 )
 
 var errUnmapped = errors.New("path is excluded from the P4 client view")

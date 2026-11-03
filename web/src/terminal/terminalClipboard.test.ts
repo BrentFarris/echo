@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => {
     selectionListeners = new Set<() => void>();
     keyHandler!: (event: KeyboardEvent) => boolean;
     constructor() { Terminal.instances.push(this); }
+    paste = vi.fn();
     loadAddon() {} onData() {} onResize() {} reset() {} write() {} writeln() {} dispose() {}
     attachCustomKeyEventHandler(handler: typeof this.keyHandler) { this.keyHandler = handler; }
     open(host: HTMLElement) {
@@ -39,18 +40,18 @@ const mocks = vi.hoisted(() => {
 vi.mock("@xterm/xterm", () => ({ Terminal: mocks.Terminal }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
-vi.mock("../../js/ws.js", () => ({
+vi.mock("./socket", () => ({
   on: (type: string, handler: (message: object) => void) => mocks.handlers.set(type, handler),
-  onState: vi.fn(), send: vi.fn(),
+  onState: vi.fn(), send: vi.fn(), closeTerminalSocket: vi.fn(),
 }));
-vi.mock("../code/ui", async (original) => ({
-  ...await original<typeof import("../code/ui")>(), toast: mocks.toast,
+vi.mock("./ui", async (original) => ({
+  ...await original<typeof import("./ui")>(), toast: mocks.toast,
 }));
 vi.mock("./terminalApi", () => ({
   startTerminal: vi.fn(), syncTerminal: vi.fn(), resizeTerminal: vi.fn(), restartTerminal: vi.fn(),
   listTerminalSessions: vi.fn(async () => []), listSavedCommands: vi.fn(async () => []),
   writeTerminal: vi.fn(), stopTerminal: vi.fn(), createSavedCommand: vi.fn(),
-  deleteSavedCommand: vi.fn(), updateSavedCommand: vi.fn(),
+  deleteSavedCommand: vi.fn(), updateSavedCommand: vi.fn(), changeTerminalFolder: vi.fn(),
 }));
 
 function ctrlC(type = "keydown", modifiers: KeyboardEventInit = {}) {
@@ -68,19 +69,19 @@ describe("terminal selection copying", () => {
     mocks.handlers.clear();
     localStorage.clear();
     sessionStorage.clear();
-    localStorage.setItem("echo.terminalDock.v1", JSON.stringify({ workspace: { open: true } }));
+    localStorage.setItem("echo2.terminalDock.v1", JSON.stringify({ bot: { open: true } }));
     vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: mocks.clipboard } });
     mocks.clipboard.mockResolvedValue(undefined);
     Object.defineProperty(document, "execCommand", { configurable: true, value: mocks.execCommand });
     dock = await import("./index");
     document.body.innerHTML = '<div id="dock"></div>';
-    dock.mountTerminalDock(document.getElementById("dock"), { id: "workspace", name: "Project", mainPath: "/project" });
+    dock.mountTerminalDock(document.getElementById("dock"), { id: "bot", name: "Project", mainPath: "/project" });
     terminal = mocks.Terminal.instances[0];
     terminal.focus();
   });
   afterEach(() => {
-    dock.detachTerminalDock();
+    dock.updateTerminalDock(document.createElement("div"), [], []); dock.detachTerminalDock();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     if (clipboardDescriptor) Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
@@ -106,6 +107,26 @@ describe("terminal selection copying", () => {
     expect(terminal.selectionListeners.size).toBe(0);
     expect(document.activeElement).toBe(terminal.textarea);
     expect(terminal.keyHandler(ctrlC())).toBe(true);
+  });
+
+  it("pastes through xterm exactly once after an asynchronous clipboard read", async () => {
+    let finish!: (text: string) => void;
+    const read = vi.fn(() => new Promise<string>(resolve => { finish = resolve; }));
+    Object.defineProperty(navigator, "clipboard", {configurable:true, value:{readText:read}});
+    // The subscription identifies the online terminal independently of clipboard availability.
+    mocks.handlers.get("terminal_subscribed")!({botId:"bot"});
+    const key = new KeyboardEvent("keydown", {key:"v",ctrlKey:true,cancelable:true});
+    expect(terminal.keyHandler(key)).toBe(false);
+    expect(key.defaultPrevented).toBe(true);
+    expect(terminal.paste).not.toHaveBeenCalled();
+    finish("line one\nline two");
+    await vi.waitFor(() => expect(terminal.paste).toHaveBeenCalledExactlyOnceWith("line one\nline two"));
+  });
+
+  it("leaves native paste available when clipboard read is unavailable", () => {
+    const key = new KeyboardEvent("keydown", {key:"v",ctrlKey:true,cancelable:true});
+    expect(terminal.keyHandler(key)).toBe(true);
+    expect(key.defaultPrevented).toBe(false);
   });
 
   it("passes Ctrl+C through when there is no selection", () => {

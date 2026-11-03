@@ -1,6 +1,7 @@
 package debugconfig
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path"
@@ -12,6 +13,8 @@ import (
 var variablePattern = regexp.MustCompile(`\$\{([^{}]+)\}`)
 
 type ExpandOptions struct {
+	Settings         map[string]any
+	Commands         map[string]string
 	WorkspaceFolder  string
 	WorkspaceFolders map[string]string
 	CurrentFile      string
@@ -92,7 +95,40 @@ func ExpandString(value string, options ExpandOptions) (string, error) {
 func expandVariable(key string, options ExpandOptions) (string, error) {
 	file := options.CurrentFile
 	switch key {
-	case "workspaceFolder":
+	case "workspaceFolderBasename":
+		return filepath.Base(options.WorkspaceFolder), nil
+	case "fileWorkspaceFolder", "fileWorkspaceFolderBasename":
+		if file == "" {
+			return "", fmt.Errorf("${%s} requires an active saved file", key)
+		}
+		folder := ""
+		for _, candidate := range options.WorkspaceFolders {
+			relative, err := filepath.Rel(candidate, file)
+			if candidate != "" && err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator)) && !filepath.IsAbs(relative) && len(candidate) > len(folder) {
+				folder = candidate
+			}
+		}
+		if folder == "" {
+			folder = options.WorkspaceFolder
+		}
+		if key == "fileWorkspaceFolderBasename" {
+			return filepath.Base(folder), nil
+		}
+		return folder, nil
+	case "fileDirnameBasename":
+		if file == "" {
+			return "", fmt.Errorf("${%s} requires an active saved file", key)
+		}
+		return filepath.Base(filepath.Dir(file)), nil
+	case "userHome":
+		return os.UserHomeDir()
+	case "relativeFileDirname":
+		if file == "" {
+			return "", fmt.Errorf("${relativeFileDirname} requires an active saved file")
+		}
+		relative, err := filepath.Rel(options.WorkspaceFolder, filepath.Dir(file))
+		return relative, err
+	case "workspaceFolder", "cwd":
 		return options.WorkspaceFolder, nil
 	case "file":
 		if file == "" {
@@ -149,7 +185,7 @@ func expandVariable(key string, options ExpandOptions) (string, error) {
 			return "", err
 		}
 		return relative, nil
-	case "pathSeparator":
+	case "pathSeparator", "/":
 		if options.SlashPaths {
 			return "/", nil
 		}
@@ -173,7 +209,7 @@ func expandVariable(key string, options ExpandOptions) (string, error) {
 		return "", fmt.Errorf("workspace folder %q was not found", name)
 	}
 	if strings.HasPrefix(key, "input:") {
-		id := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(key, "input:")))
+		id := strings.TrimSpace(strings.TrimPrefix(key, "input:"))
 		value, ok := options.Inputs[id]
 		if !ok {
 			return "", fmt.Errorf("debug input %q was not supplied", id)
@@ -190,7 +226,46 @@ func expandVariable(key string, options ExpandOptions) (string, error) {
 		return os.Getenv(name), nil
 	}
 	if strings.HasPrefix(key, "command:") {
-		return "", fmt.Errorf("debug command variables are not supported")
+		if value, ok := options.Commands[strings.TrimPrefix(key, "command:")]; ok {
+			return value, nil
+		}
+		return "", fmt.Errorf("unsupported debug command variable ${%s}", key)
+	}
+	if strings.HasPrefix(key, "config:") {
+		name := strings.TrimPrefix(key, "config:")
+		if value, ok := configurationValue(options.Settings, name); ok {
+			switch v := value.(type) {
+			case string:
+				return v, nil
+			case bool, float64, json.Number:
+				return fmt.Sprint(v), nil
+			}
+		}
+		return "", fmt.Errorf("configuration variable %q is missing or not scalar", name)
 	}
 	return "", fmt.Errorf("unsupported debug variable ${%s}", key)
+}
+
+// VS Code setting keys may contain dots themselves (go.delveConfig), while
+// a variable can also address a member of that setting object.
+func configurationValue(settings map[string]any, name string) (any, bool) {
+	if value, ok := settings[name]; ok {
+		return value, true
+	}
+	for split := strings.LastIndex(name, "."); split > 0; split = strings.LastIndex(name[:split], ".") {
+		if value, ok := settings[name[:split]]; ok {
+			for _, member := range strings.Split(name[split+1:], ".") {
+				object, ok := value.(map[string]any)
+				if !ok {
+					return nil, false
+				}
+				value, ok = object[member]
+				if !ok {
+					return nil, false
+				}
+			}
+			return value, true
+		}
+	}
+	return nil, false
 }

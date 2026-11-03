@@ -103,6 +103,9 @@ func (s *Service) Unsubscribe(workspaceID string) {
 
 func (s *Service) Close() {
 	s.mu.Lock()
+	for _, stop := range s.execStops {
+		stop()
+	}
 	watches := make([]*workspaceWatch, 0, len(s.watches))
 	for workspaceID, watch := range s.watches {
 		delete(s.watches, workspaceID)

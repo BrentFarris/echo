@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { updateSelection, type SelectionState } from "./sourceControlSelection";
+import { updateSelection, type SelectionState } from "./listSelection";
 import { canDeleteTreeNodes, runTreeOperation, topLevelTreeNodes, treeMoveDestination } from "./explorerSelection";
 import type { TreeNode } from "./explorerTree";
 import { refKey } from "./types";

@@ -168,6 +168,76 @@ describe("chat scroll following", () => {
     expect(metrics.position).toBe(900);
   });
 
+  it("does not let a queued scroll event re-enable following after upward intent", () => {
+    const log = document.createElement("div");
+    const metrics = setScrollMetrics(log, { position: 800 });
+    const follower = create(log);
+    follower.forceFollow();
+    log.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
+    // The browser can deliver the previous programmatic scroll event before
+    // applying the wheel movement, while the transcript is still at the tail.
+    log.dispatchEvent(new Event("scroll"));
+    metrics.height = 1200;
+    follower.contentChanged();
+    const writes = metrics.writes;
+    flushFrames();
+    expect(follower.isFollowing()).toBe(false);
+    expect(metrics.writes).toBe(writes);
+  });
+
+  it.each(["ArrowDown", "PageDown", "End"])("%s re-enables following at the bottom", value => {
+    const log = document.createElement("div");
+    const metrics = setScrollMetrics(log, { position: 800 });
+    const follower = create(log);
+    key(log, "ArrowUp");
+    key(log, value);
+    metrics.height = 1200;
+    follower.contentChanged();
+    flushFrames();
+    expect(metrics.position).toBe(1000);
+  });
+
+  it("resumes on a downward wheel at the bottom, but not merely near it", () => {
+    const log = document.createElement("div");
+    const metrics = setScrollMetrics(log, { position: 750 });
+    const follower = create(log);
+    log.dispatchEvent(new WheelEvent("wheel", { deltaY: 1 }));
+    expect(follower.isFollowing()).toBe(false);
+    metrics.userScrollTo(800);
+    log.dispatchEvent(new Event("scroll"));
+    expect(follower.isFollowing()).toBe(true);
+    key(log, "ArrowUp");
+    log.dispatchEvent(new WheelEvent("wheel", { deltaY: 1 }));
+    expect(follower.isFollowing()).toBe(true);
+  });
+
+  it("preserves manual mode across thread and reading-anchor restoration at the bottom", () => {
+    const log = document.createElement("div");
+    const metrics = setScrollMetrics(log, { position: 800 });
+    const follower = create(log);
+    follower.reset(false);
+    log.dispatchEvent(new Event("scroll"));
+    metrics.height = 1200;
+    follower.contentChanged();
+    flushFrames();
+    expect(metrics.writes).toBe(0);
+    expect(follower.isFollowing()).toBe(false);
+    follower.reset(true);
+    follower.contentChanged();
+    flushFrames();
+    expect(metrics.position).toBe(1000);
+  });
+
+  it("ignores cursor movement in editable transcript content", () => {
+    const log = document.createElement("div");
+    setScrollMetrics(log, { position: 800 });
+    const input = document.createElement("textarea");
+    log.append(input);
+    const follower = create(log);
+    key(input, "Home");
+    expect(follower.isFollowing()).toBe(true);
+  });
+
   it("cancels for every upward keyboard gesture and lets End re-enable at the tail", () => {
     const log = document.createElement("div");
     const metrics = setScrollMetrics(log, { position: 800 });
@@ -201,6 +271,22 @@ describe("chat scroll following", () => {
     expect(follower.isFollowing()).toBe(false);
     metrics.userScrollTo(800);
     log.dispatchEvent(new Event("scroll"));
+    expect(follower.isFollowing()).toBe(true);
+  });
+
+  it("End resumes following before a delayed native scroll event and new content growth", () => {
+    const log = document.createElement("div");
+    const metrics = setScrollMetrics(log, { position: 400 });
+    const follower = create(log);
+
+    key(log, "End");
+    expect(follower.isFollowing()).toBe(true);
+    metrics.height = 1200;
+    // The key's scroll event arrives after the transcript has already grown.
+    log.dispatchEvent(new Event("scroll"));
+    follower.contentChanged();
+    flushFrames();
+    expect(metrics.position).toBe(1000);
     expect(follower.isFollowing()).toBe(true);
   });
 

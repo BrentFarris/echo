@@ -1,828 +1,746 @@
-// Package server implements the browser-based Echo web server. It serves the
-// single-page application frontend from a static directory and exposes JSON
-// API endpoints plus a WebSocket endpoint for real-time, server-to-client push.
 package server
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
-	iofs "io/fs"
-	"log"
+	"io/fs"
+	"maps"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/brent/echo/internal/agentmodes"
-	"github.com/brent/echo/internal/appdata"
-	"github.com/brent/echo/internal/auth"
-	"github.com/brent/echo/internal/ctest"
-	"github.com/brent/echo/internal/decision"
-	"github.com/brent/echo/internal/debugconfig"
+	"github.com/brent/echo/internal/broker"
+	"github.com/brent/echo/internal/calendar"
+	"github.com/brent/echo/internal/contextmanager"
+	"github.com/brent/echo/internal/coordinator"
+	"github.com/brent/echo/internal/credentials"
 	"github.com/brent/echo/internal/debugger"
-	"github.com/brent/echo/internal/echoupdate"
+	"github.com/brent/echo/internal/development"
+	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/editorfs"
 	"github.com/brent/echo/internal/gitservice"
-	"github.com/brent/echo/internal/gotest"
-	"github.com/brent/echo/internal/llm"
-	lspruntime "github.com/brent/echo/internal/lsp"
-	"github.com/brent/echo/internal/lspconfig"
+	"github.com/brent/echo/internal/languagecontribution"
+	"github.com/brent/echo/internal/model"
 	"github.com/brent/echo/internal/plugins"
-	"github.com/brent/echo/internal/rebuild"
-	"github.com/brent/echo/internal/sandbox"
-	"github.com/brent/echo/internal/settings"
 	"github.com/brent/echo/internal/sourcecontrol"
-	fossilprovider "github.com/brent/echo/internal/sourcecontrol/fossil"
-	"github.com/brent/echo/internal/sourcecontrol/gitprovider"
-	p4provider "github.com/brent/echo/internal/sourcecontrol/p4"
-	terminalruntime "github.com/brent/echo/internal/terminal"
-	"github.com/brent/echo/internal/tools"
-	"github.com/brent/echo/internal/workspacegroups"
-	"github.com/brent/echo/internal/workspacefs"
-	"github.com/brent/echo/internal/workspaces"
-	"github.com/brent/echo/internal/workspaceskills"
-	"github.com/google/uuid"
+	"github.com/brent/echo/internal/sourcecontrol/fossil"
+	"github.com/brent/echo/internal/sourcecontrol/p4"
+	"github.com/brent/echo/internal/store"
+	"github.com/brent/echo/internal/swarm"
+	"github.com/brent/echo/internal/terminal"
+	"github.com/gorilla/websocket"
 )
 
-// Server is the Echo HTTP server. It serves the SPA frontend from a static
-// directory, hosts JSON API endpoints under /api, and runs a WebSocket hub for
-// real-time events.
 type Server struct {
-	httpServer       *http.Server
-	webDir           string
-	webAssets        iofs.FS
-	hub              *Hub
-	settingsPath     string
-	plugins          *plugins.Manager
-	tools            *tools.Registry
-	data             *appdata.Store
-	store            *settings.Store
-	workspaces       *workspaces.Manager
-	fs               *workspacefs.Service
-	watcher          *workspacefs.WatchManager
-	git              *gitservice.Service
-	sourceControl    *sourcecontrol.Service
-	p4               *p4provider.Provider
-	terminal         *terminalruntime.Service
-	lsp              *lspruntime.Service
-	lspProfiles      *lspconfig.Store
-	debugger         *debugger.Service
-	goTests          *gotest.Service
-	cTests           *ctest.Service
-	debugProfiles    *debugconfig.ProfileStore
-	debugState       *debugconfig.StateStore
-	sandbox          *sandbox.Manager
-	auth             *auth.Manager
-	authDisabled     bool
-	loginLimiter     *loginRateLimiter
-	modes            *agentmodes.Manager
-	sessions         *chatSessionManager
-	workspaceGroups  *workspacegroups.Store
-	orchestrator     *groupOrchestrator
-	decisionModel    *decision.Client
-	llm              chatStreamer
-	llmCompleter     chatCompleter
-	llmSettings      llm.Settings
-	researchLLM      chatStreamer
-	researchSettings llm.Settings
-	researchSeparate bool
-	visionLLM        chatStreamer
-	visionSettings   llm.Settings
-	visionSeparate   bool
-	endpointLLMs     map[string]chatStreamer
-	skillsMu         sync.Mutex
-	skills           map[string]*workspaceskills.Service
-	rebuilder        rebuildCoordinator
-	updateChecker    echoUpdateChecker
-	restartCh        chan struct{}
-	terminateCh      chan struct{}
-	instanceID       string
-	processID        int
-	processArgs      []string
-	workingDir       string
-	// settings holds the full normalized settings (all endpoints) so the chat
-	// handler can resolve a user-selected model to its owning endpoint.
-	settings llm.Settings
+	Debug           *debugger.Service
+	Languages       *languagecontribution.Registry
+	debugMu         sync.Mutex
+	debugClients    map[string]map[chan debugger.Event]bool
+	mediaPreviews   attachmentPreviewCache
+	goLanguageMu    sync.Mutex
+	goLanguages     map[string]*goLanguageSession
+	goInstallMu     sync.Mutex
+	goToolGate      chan struct{}
+	goInspectMu     sync.Mutex
+	Fossil          *fossil.Provider
+	SourceControl   *sourcecontrol.Service
+	Git             *gitservice.Service
+	P4              *p4.Provider
+	Terminal        *terminal.Service
+	terminalMu      sync.Mutex
+	terminalClients map[string]map[chan terminal.Event]bool
+
+	ContextCompressor  contextmanager.Compressor // Nil selects the bounded summarizer.
+	jiraMu             sync.Mutex
+	confluenceMu       sync.Mutex
+	confluenceActive   map[string]context.CancelFunc
+	notificationMu     sync.Mutex
+	notificationWG     sync.WaitGroup
+	notificationClient *http.Client // Injectable transport for push delivery tests.
+
+	Swarm             *swarm.Manager
+	swarmCacheMu      sync.Mutex
+	swarmCache        map[string]swarmCachedState
+	swarmRefresh      chan struct{}
+	closeOnce         sync.Once
+	ready             atomic.Bool // Publishes fully initialized services to early Swarm requests.
+	swarmMu           sync.Mutex
+	swarmWG           sync.WaitGroup
+	swarmWorkers      map[string]*swarmWorker
+	EditorFS          *editorfs.Service
+	EditorWatch       *editorfs.WatchManager
+	editorMu          sync.Mutex
+	editorClients     map[string]map[chan any]bool
+	editorBookmarkMu  sync.Mutex
+	Store             *store.Store
+	Plugins           *plugins.Host
+	Calendar          *calendar.Calendar
+	Files             *broker.Files
+	References        *broker.ReferenceIndex
+	Process           *broker.ProcessBroker
+	Model             *model.Client
+	Secrets           credentials.SecretStore
+	Dir               string
+	Assets            fs.FS
+	ctx               context.Context
+	cancel            context.CancelFunc
+	mu                sync.Mutex
+	dispatches        map[string]*dispatch
+	botQueues         map[string][]*dispatch
+	botReservations   map[string]map[string]bool
+	streams           map[string]domain.Message
+	subscribers       map[chan domain.Event]bool
+	seq               atomic.Int64
+	questionsMu       sync.Mutex
+	pendingQuestions  map[string]*pendingQuestion
+	authMu            sync.Mutex
+	appDockMu         sync.Mutex
+	slashCommandsMu   sync.Mutex
+	loginAttempts     map[string][]time.Time
+	sessionSockets    map[string]map[*websocket.Conn]bool
+	revoking          map[string]int
+	closingChats      map[string]int
+	revealFile        func(broker.RevealTarget) error
+	Development       *development.Manager
+	rollouts          *rolloutManager
+	maintenance       bool // Protected by mu; gates admission, not accepted work.
+	shutdownRequested chan struct{}
+}
+type dispatch struct {
+	id, chatID string
+	group      coordination
+	federation *swarmDispatch
+	worker     *swarmWorker
+	cancel     context.CancelFunc
+	done       chan struct{}
+	wake       map[string]chan struct{}
+	active     map[string]bool
+	mu         sync.Mutex
+	wg         sync.WaitGroup
+	err        error
+	ctx        context.Context
+	admitted   map[string]chan struct{}
+}
+type SendRequest struct {
+	GenerationByNode       map[string]domain.Generation `json:"generationByNode,omitempty"`
+	OriginNodeID           string                       `json:"originNodeId,omitempty"`
+	Permits                map[string]string            `json:"permits,omitempty"`
+	Content                string                       `json:"content"`
+	Segments               []domain.Segment             `json:"segments"`
+	Generation             domain.Generation            `json:"generation"`
+	RequestID              string                       `json:"requestId"`
+	Attachments            []string                     `json:"attachments"`
+	scheduledBot           string
+	replaceMessageID       string
+	replacementAttachments []domain.Attachment
+	rerunMessageID         string
+	rerunRecipients        []string
+	rerunFingerprint       [32]byte
 }
 
-// chatStreamer is the subset of the LLM client the chat endpoint needs. It is
-// an interface so tests can inject a fake streamer.
-type chatStreamer interface {
-	StreamChat(ctx context.Context, request llm.ChatRequest) *llm.Stream
+type coordination interface {
+	Send(string, string, string, string) (coordinator.Request, error)
+	Drain(string) []coordinator.Request
+	Pending(string) bool
+	Reply(string, string, string) error
+	Wait(context.Context, string, string) (coordinator.Request, error)
+	WaitTarget(string, string) (string, error)
+	Close()
+	Fail(string, error)
 }
 
-type chatCompleter interface {
-	Complete(ctx context.Context, request llm.ChatRequest) (llm.ChatResponse, error)
-}
-
-// New constructs a Server bound to addr that serves frontend assets from
-// webDir. It does not start listening; call ListenAndServe.
-func New(addr, webDir string) *Server {
-	return NewWithSettingsPath(addr, webDir, "")
-}
-
-// NewWithSettingsPath constructs a Server like New but with an explicit path
-// to the settings file. When settingsPath is empty, the platform default
-// (echo/echo.json under the user config dir) is used.
-func NewWithSettingsPath(addr, webDir, settingsPath string) *Server {
-	return newServer(addr, webDir, nil, settingsPath, ServerOptions{})
-}
-
-// NewWithAssets constructs a Server that serves an embedded production SPA.
-// The supplied filesystem's root must contain index.html.
-func NewWithAssets(addr string, assets iofs.FS, settingsPath string) *Server {
-	return newServer(addr, "", assets, settingsPath, ServerOptions{})
-}
-
-type ServerOptions struct {
-	SafeMode bool
-}
-
-func NewWithSettingsPathOptions(addr, webDir, settingsPath string, options ServerOptions) *Server {
-	return newServer(addr, webDir, nil, settingsPath, options)
-}
-
-func NewWithAssetsOptions(addr string, assets iofs.FS, settingsPath string, options ServerOptions) *Server {
-	return newServer(addr, "", assets, settingsPath, options)
-}
-
-func newServer(addr, webDir string, assets iofs.FS, settingsPath string, options ServerOptions) *Server {
-	workingDir, _ := os.Getwd()
-	s := &Server{
-		webDir:        webDir,
-		webAssets:     assets,
-		hub:           NewHub(),
-		skills:        make(map[string]*workspaceskills.Service),
-		rebuilder:     rebuild.NewCoordinator(),
-		updateChecker: echoupdate.NewChecker(),
-		restartCh:     make(chan struct{}, 1),
-		terminateCh:   make(chan struct{}, 1),
-		instanceID:    uuid.NewString(),
-		processID:     os.Getpid(),
-		processArgs:   append([]string(nil), os.Args[1:]...),
-		workingDir:    workingDir,
-		tools:         tools.CloneDefaultRegistry(),
+func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
+	dir, e := filepath.Abs(dir)
+	if e != nil {
+		return nil, e
 	}
-	if settingsPath == "" {
-		path, err := settings.DefaultStorePath()
-		if err != nil {
-			logf("resolve settings path: %v", err)
-			path = "echo.json"
-		}
-		settingsPath = path
+	db, e := store.Open(dir)
+	if e != nil {
+		return nil, e
 	}
-	s.settingsPath = settingsPath
-	s.data = appdata.NewStore(settingsPath)
-	s.store = settings.NewStoreWithData(s.data)
-	s.workspaces = workspaces.NewManagerWithData(s.data)
-	dockerEngine, dockerErr := sandbox.NewDockerEngine()
-	var sandboxEngine sandbox.Engine = dockerEngine
-	if dockerErr != nil {
-		sandboxEngine = sandbox.NewUnavailableEngine(dockerErr)
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &Server{Store: db, Dir: dir, Assets: assets, ctx: ctx, cancel: cancel, Files: &broker.Files{Private: dir}, Process: &broker.ProcessBroker{Dir: filepath.Join(dir, "runtime")}, Model: model.New(), Secrets: credentials.New(dir), dispatches: map[string]*dispatch{}, streams: map[string]domain.Message{}, subscribers: map[chan domain.Event]bool{}, pendingQuestions: map[string]*pendingQuestion{}, loginAttempts: map[string][]time.Time{}}
+	s.revoking = map[string]int{}
+	s.closingChats = map[string]int{}
+	s.References = broker.NewReferenceIndex(ctx, s.Files)
+	s.shutdownRequested = make(chan struct{}, 1)
+	var developmentConfig development.Config
+	if err := db.Get("settings", "development", &developmentConfig); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		db.Close()
+		cancel()
+		return nil, err
 	}
-	s.sandbox = sandbox.NewManager(
-		s.workspaces,
-		sandbox.StateRootForSettings(settingsPath),
-		sandbox.InstallationID(settingsPath),
-		sandboxEngine,
-	)
-	s.sandbox.SetNotifier(func(event sandbox.Event) {
-		s.hub.BroadcastWorkspaceSandbox(event.WorkspaceID, event)
-		if event.Event == "desktop_lease" && s.sessions != nil {
-			s.sessions.sandboxControlChanged(event.WorkspaceID)
-		}
-	})
-	s.lspProfiles = lspconfig.NewStore(s.data)
-	s.lsp = lspruntime.NewService(s.lspProfiles, s.workspaces)
-	s.lsp.SetSandbox(s.sandbox)
-	s.terminal = terminalruntime.New(s.workspaces, s.data)
-	s.terminal.SetSandbox(s.sandbox)
-	s.terminal.SetNotifier(func(event terminalruntime.Event) {
-		s.hub.BroadcastWorkspaceTerminal(event.WorkspaceID, event)
-	})
-	s.fs = workspacefs.New(s.workspaces, settingsPath)
-	s.debugProfiles = debugconfig.NewProfileStore(s.data)
-	s.debugState = debugconfig.NewStateStore(s.data)
-	s.debugger = debugger.New(s.debugProfiles, s.debugState, s.workspaces, s.fs)
-	s.debugger.SetSandbox(s.sandbox)
-	s.debugger.SetRunInTerminal(s.terminal.StartDebugDAP)
-	s.debugger.SetStopDebugTerminals(s.terminal.StopOwner)
-	s.debugger.SetNotifier(s.broadcastDebugEvent)
-	s.goTests = gotest.New(s.workspaces, s.fs, s.terminal, s.debugger)
-	s.goTests.SetCoverageNotifier(func(event gotest.CoverageEvent) {
-		s.hub.BroadcastWorkspaceTerminal(event.WorkspaceID, event)
-	})
-	s.cTests = ctest.New(s.workspaces, s.fs, s.terminal, s.debugger, s.sandbox)
-	s.cTests.SetCoverageNotifier(func(event ctest.CoverageEvent) {
-		s.hub.BroadcastWorkspaceTerminal(event.WorkspaceID, event)
-	})
-	s.git = gitservice.New(s.workspaces, s.fs)
-	s.git.SetSandbox(s.sandbox)
-	s.sourceControl = sourcecontrol.New()
-	gitProvider := gitprovider.New(s.git)
-	if err := s.sourceControl.Register(gitProvider); err != nil {
-		logf("register Git source control provider: %v", err)
-	}
-	if err := s.sourceControl.Register(fossilprovider.New(s.workspaces, s.fs, s.sandbox, filepath.Join(filepath.Dir(settingsPath), "source-control", "fossil"))); err != nil {
-		logf("register Fossil source control provider: %v", err)
-	}
-	s.sourceControl.SetNotifier(func(event sourcecontrol.Event) {
-		s.hub.BroadcastWorkspaceSourceControl(event.WorkspaceID, event)
-	})
-	s.p4 = p4provider.New(s.fs, s.sandbox, filepath.Join(filepath.Dir(settingsPath), "source-control", "p4"))
-	if err := s.sourceControl.Register(s.p4); err != nil {
-		logf("register P4 source control provider: %v", err)
-	}
-	s.fs.SetMutationCoordinator(s.sourceControl)
-	s.git.SetNotifier(func(event gitservice.Event) {
-		s.hub.BroadcastWorkspaceGit(event.WorkspaceID, event)
-		if event.Status != nil {
-			status := gitprovider.StatusFromGit(*event.Status)
-			s.sourceControl.Emit(sourcecontrol.Event{Type: "source_control_status", WorkspaceID: event.WorkspaceID, RepositoryID: event.RepositoryID, ProviderID: gitprovider.ID, Status: &status})
-		} else if event.Type == "git_resync_required" {
-			s.sourceControl.Emit(sourcecontrol.Event{Type: "source_control_resync_required", WorkspaceID: event.WorkspaceID, ProviderID: gitprovider.ID})
+	s.Development = development.New(ctx, dir, developmentConfig, func() {
+		select {
+		case s.shutdownRequested <- struct{}{}:
+		default:
 		}
 	})
-	s.watcher = workspacefs.NewWatchManager(s.fs, func(event workspacefs.WatchEvent) {
-		s.goTests.HandleWorkspaceChanges(event.WorkspaceID, event.Changes)
-		s.cTests.HandleWorkspaceChanges(event.WorkspaceID, event.Changes)
-		s.hub.BroadcastWorkspaceFS(event.WorkspaceID, event)
-		s.sourceControl.HandleFileEvent(event)
-	})
-	s.p4.SetWatcher(func(workspace string, enabled bool) error {
-		if enabled {
-			return s.watcher.SubscribeTracking(workspace)
-		}
-		s.watcher.UnsubscribeTracking(workspace)
-		return nil
-	})
-	coreToolNames := map[string]bool{}
-	for _, tool := range s.tools.Registered() {
-		coreToolNames[tool.Metadata().Name] = true
+	s.Plugins, e = plugins.New(ctx, db, filepath.Join(dir, "plugins"), guest, s.pluginCall)
+	if e != nil {
+		db.Close()
+		cancel()
+		return nil, e
 	}
-	pluginManager, pluginErr := plugins.NewManager(plugins.Options{
-		RootDir: filepath.Join(filepath.Dir(settingsPath), "plugins"), CoreToolNames: coreToolNames,
-		SafeMode: options.SafeMode, Builtins: plugins.BuiltinPackages(),
-		WorkspacePath: func(workspaceID string) (string, error) {
-			workspace, ok, err := s.workspaces.Get(workspaceID)
-			if err != nil {
-				return "", err
-			}
-			if !ok {
-				return "", fmt.Errorf("workspace %q was not found", workspaceID)
-			}
-			return workspace.MainPath, nil
-		},
-		WorkspaceIDs: func() []string {
-			workspaces, err := s.workspaces.List()
-			if err != nil {
-				return nil
-			}
-			ids := make([]string, 0, len(workspaces))
-			for _, workspace := range workspaces {
-				ids = append(ids, workspace.ID)
-			}
-			return ids
-		},
-		Notify: func() { s.hub.Broadcast(map[string]any{"type": "plugins_changed"}) },
-		RuntimeEvent: func(event plugins.RuntimeEvent) {
-			s.hub.Broadcast(map[string]any{"type": "plugin_runtime_event", "event": event})
-		},
-	})
-	if pluginErr != nil {
-		logf("initialize plugins: %v", pluginErr)
-	} else {
-		s.plugins = pluginManager
-		if err := s.plugins.BindTools(s.tools); err != nil {
-			logf("register plugin tools: %v", err)
+	if e = s.initSwarm(); e != nil {
+		s.Close()
+		return nil, e
+	}
+	if shell, e := s.Plugins.Get("shell"); e == nil {
+		if _, configured := shell.Config["toolchains"]; !configured {
+			shell.Config["toolchains"] = broker.DefaultToolchains()
+			s.Plugins.Save(shell)
 		}
 	}
-	authManager, authErr := auth.New(s.data)
-	s.auth = authManager
-	if authErr != nil {
-		log.Printf("initialize authentication: %v", authErr)
+	var echo domain.Bot
+	if db.Get("bots", "echo", &echo) != nil {
+		e = db.Put("bots", "echo", domain.Bot{ID: "echo", Handle: "echo", Name: "Echo", Prompt: "You are Echo, a chat-first assistant and bot manager. Use tools to complete the user's request. A bot's handle identifies it in @mentions. Ask only for missing information. Plugin source must be self-contained and use the documented capability bridge.", Plugins: map[string]bool{}, Roots: []string{}, Revision: 1})
+		if e != nil {
+			s.Close()
+			return nil, e
+		}
 	}
-	s.loginLimiter = newLoginRateLimiter()
-	s.modes = agentmodes.NewManager()
-	s.sessions = newChatSessionManager(s)
-	s.workspaceGroups = workspacegroups.NewStore(s.data)
-	s.orchestrator = newGroupOrchestrator(s)
-	s.orchestrator.start()
-	s.initLLM()
-	// Enabled sandbox starts wait on Manager's reconciliation barrier. Running
-	// this in the background keeps Docker-free, non-sandbox workspaces on the
-	// existing fast startup path without allowing a first-start race.
+	if e = db.Recover(); e != nil {
+		s.Close()
+		return nil, e
+	}
+	if e = s.recoverSwarm(); e != nil {
+		s.Close()
+		return nil, e
+	}
+	if e = s.Process.Recover(); e != nil {
+		s.Close()
+		return nil, e
+	}
+	if e = s.initRollouts(); e != nil {
+		s.Close()
+		return nil, e
+	}
+	s.Calendar = &calendar.Calendar{Store: db, Dispatch: s.scheduled, Deferred: s.maintenanceActive, Enabled: func(id string) bool { b, e := s.Bot(id); return e == nil && s.Plugins.Enabled(b, "calendar") }, Changed: func() { s.emit("changed", "", "", "", nil) }}
+	if e = s.Calendar.Start(ctx); e != nil {
+		s.Close()
+		return nil, e
+	}
+	s.initEditor()
+	s.initSourceControl()
+	s.initTerminal()
+	s.initDebugger()
+	s.startNotifications()
+	s.Development.StartAutomaticChecks()
 	go func() {
-		reconcileContext, reconcileCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer reconcileCancel()
-		if err := s.sandbox.Reconcile(reconcileContext); err != nil {
-			logf("sandbox startup reconciliation: %v", err)
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				db.Reclaim()
+			}
 		}
 	}()
-	s.lsp.StartActiveWorkspace()
-	s.httpServer = &http.Server{
-		Addr:              addr,
-		Handler:           s.routes(),
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       2 * time.Minute,
-		MaxHeaderBytes:    1 << 20,
-	}
-	return s
+	s.ready.Store(true)
+	return s, nil
+}
+func (s *Server) Close() {
+	s.closeOnce.Do(s.close)
 }
 
-func (s *Server) broadcastDebugEvent(event debugger.Event) {
-	s.hub.BroadcastWorkspaceDebug(event.WorkspaceID, event)
-	if notification := debugStopNotification(event); notification != nil {
-		s.hub.Broadcast(notification)
+func (s *Server) close() {
+	s.ready.Store(false)
+	s.cancel()
+	s.goLanguageMu.Lock()
+	languageSessions := make([]*goLanguageSession, 0, len(s.goLanguages))
+	for _, g := range s.goLanguages {
+		g.close()
+		languageSessions = append(languageSessions, g)
+	}
+	s.goLanguageMu.Unlock()
+	for _, g := range languageSessions {
+		<-g.done
+	}
+	if s.Debug != nil {
+		_ = s.Debug.Shutdown(context.Background())
+	}
+	if s.Terminal != nil {
+		_ = s.Terminal.Shutdown(context.Background())
+	}
+	if s.rollouts != nil {
+		s.rollouts.wg.Wait()
+	}
+	s.swarmMu.Lock()
+	prepared := []*swarmWorker{}
+	for _, worker := range s.swarmWorkers {
+		prepared = append(prepared, worker)
+	}
+	s.swarmMu.Unlock()
+	for _, worker := range prepared {
+		worker.mu.Lock()
+		if worker.lease != nil {
+			worker.lease.Stop()
+		}
+		worker.d.cancel()
+		worker.mu.Unlock()
+	}
+	if s.Swarm != nil {
+		s.Swarm.Close()
+	}
+	if s.SourceControl != nil {
+		s.SourceControl.Close()
+	}
+	if s.Process != nil {
+		_ = s.Process.CloseSessions("")
+	}
+	if s.EditorWatch != nil {
+		s.EditorWatch.Close()
+	}
+	if s.EditorFS != nil {
+		s.EditorFS.Close()
+	}
+	s.References.Close()
+	if s.Development != nil {
+		s.Development.Close()
+	}
+	s.mu.Lock()
+	ds := []*dispatch{}
+	for _, d := range s.dispatches {
+		d.cancel()
+		d.group.Close()
+		ds = append(ds, d)
+	}
+	s.mu.Unlock()
+	for _, d := range ds {
+		<-d.done
+	}
+	if s.Calendar != nil {
+		s.Calendar.Stop()
+	}
+	if s.Plugins != nil {
+		s.Plugins.Close(context.Background())
+	}
+	s.swarmWG.Wait()
+	s.notificationWG.Wait()
+	s.Store.Close()
+}
+func (s *Server) Bot(id string) (domain.Bot, error) {
+	var b domain.Bot
+	e := s.Store.Get("bots", id, &b)
+	return b, e
+}
+func (s *Server) Bots() ([]domain.Bot, error) {
+	r, e := s.Store.List("bots")
+	if e != nil {
+		return nil, e
+	}
+	return store.Decode[domain.Bot](r)
+}
+func (s *Server) emit(kind, chat, run, bot string, payload any) {
+	if kind == "changed" && s.Terminal != nil {
+		s.Terminal.Reconcile()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emitLocked(kind, chat, run, bot, payload)
+}
+func (s *Server) emitLocked(kind, chat, run, bot string, payload any) {
+	b, _ := json.Marshal(payload)
+	e := domain.Event{Sequence: s.seq.Add(1), Type: kind, ChatID: chat, RunID: run, BotID: bot, Payload: b}
+	for ch := range s.subscribers {
+		select {
+		case ch <- e:
+		default:
+			close(ch)
+			delete(s.subscribers, ch)
+		}
 	}
 }
-
-func debugStopNotification(event debugger.Event) map[string]any {
-	if event.Session == nil || event.Session.Status != debugger.StatusStopped || (event.Event != "stopped" && event.Event != "location") {
-		return nil
+func (s *Server) stopChat(id string) func() {
+	s.mu.Lock()
+	s.closingChats[id]++
+	ds := []*dispatch{}
+	for _, d := range s.dispatches {
+		if d.chatID == id {
+			ds = append(ds, d)
+		}
 	}
-	return map[string]any{
-		"type":           "debug_stopped",
-		"phase":          event.Event,
-		"workspaceId":    event.WorkspaceID,
-		"sessionId":      event.Session.ID,
-		"groupId":        event.Session.GroupID,
-		"configuration":  event.Session.Configuration,
-		"stopGeneration": event.Session.StopGeneration,
-		"stoppedReason":  event.Session.StoppedReason,
-		"stoppedText":    event.Session.StoppedText,
-		"location":       event.Session.Location,
+	s.mu.Unlock()
+	for _, d := range ds {
+		if d.federation != nil {
+			_ = s.persistSwarmStop(d.federation)
+		}
+		d.cancel()
+		d.group.Close()
 	}
+	for _, d := range ds {
+		<-d.done
+	}
+	return func() { s.mu.Lock(); s.closingChats[id]--; s.mu.Unlock() }
 }
-
-// initLLM builds the LLM client used by the chat endpoint. It loads settings
-// from the store (falling back to defaults) and selects the chat endpoint.
-func (s *Server) initLLM() {
-	cfg, err := s.store.Load()
+func (s *Server) stopBot(id string) func() {
+	s.mu.Lock()
+	s.revoking[id]++
+	s.mu.Unlock()
+	if s.Plugins != nil {
+		s.Plugins.CancelBot(id)
+	}
+	if s.Debug != nil {
+		s.Debug.StopWorkspace(id)
+	}
+	if s.SourceControl != nil {
+		s.SourceControl.StopWorkspaceProcesses(id)
+	}
+	if s.Process != nil {
+		_ = s.Process.CloseSessions(id)
+	}
+	s.mu.Lock()
+	ds := []*dispatch{}
+	for _, d := range s.dispatches {
+		if _, ok := d.wake[id]; ok {
+			ds = append(ds, d)
+			d.cancel()
+			d.group.Close()
+		}
+	}
+	s.mu.Unlock()
+	for _, d := range ds {
+		<-d.done
+	}
+	return func() { s.mu.Lock(); s.revoking[id]--; s.mu.Unlock() }
+}
+func (s *Server) messages(id string) ([]domain.Message, error) {
+	ms, _, e := s.snapshot(id)
+	return ms, e
+}
+func (s *Server) snapshot(id string) ([]domain.Message, int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ms, e := s.Store.Messages(id)
+	if e != nil {
+		return nil, 0, e
+	}
+	for i, m := range ms {
+		if active, ok := s.streams[m.ID]; ok {
+			ms[i] = active
+		}
+	}
+	runs, err := s.Store.ChatRuns(id)
 	if err != nil {
-		logf("load settings: %v", err)
-		cfg = llm.DefaultSettings()
+		return nil, 0, err
 	}
-	cfg = cfg.NormalizedEndpointProfiles()
-	s.settings = cfg
-	s.decisionModel = decision.New(cfg.DecisionModelURL, cfg.DecisionModelName)
-	s.llmSettings = cfg.ForInteraction(llm.InteractionChat)
-	s.researchSettings = cfg.ForInteraction(llm.InteractionResearch)
-	s.visionSettings = cfg.ForInteraction(llm.InteractionVision)
-	s.llm = nil
-	s.llmCompleter = nil
-	s.researchLLM = nil
-	s.visionLLM = nil
-	s.endpointLLMs = make(map[string]chatStreamer, len(cfg.Endpoints))
-	s.researchSeparate = cfg.EndpointSelection.Research != cfg.EndpointSelection.Chat
-	s.visionSeparate = cfg.EndpointSelection.Vision != cfg.EndpointSelection.Chat
-	client, err := llm.NewClient(s.llmSettings)
-	if err != nil {
-		logf("init llm client: %v", err)
+	inputs := rerunInputs(ms, runs)
+	for i := range ms {
+		if ms[i].Role == "assistant" {
+			_, available := inputs[ms[i].RunID]
+			ms[i].RerunUnavailable = !available
+		}
+	}
+	return ms, s.seq.Load(), nil
+}
+func respond(w http.ResponseWriter, v any, e error) {
+	w.Header().Set("Content-Type", "application/json")
+	if e != nil {
+		if errors.Is(e, errMaintenance) {
+			w.Header().Set("Retry-After", "2")
+			w.WriteHeader(http.StatusServiceUnavailable)
+		} else {
+			w.WriteHeader(http.StatusBadRequest)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"error": e.Error()})
 		return
 	}
-	s.llm = client
-	s.llmCompleter = client
-	s.endpointLLMs[cfg.EndpointSelection.Chat] = client
-	if !s.researchSeparate {
-		s.researchLLM = client
-		s.endpointLLMs[cfg.EndpointSelection.Research] = client
-	} else {
-		researchClient, researchErr := llm.NewClient(s.researchSettings)
-		if researchErr != nil {
-			logf("init research llm client: %v", researchErr)
-		} else {
-			s.researchLLM = researchClient
-			s.endpointLLMs[cfg.EndpointSelection.Research] = researchClient
-		}
-	}
-	if !s.visionSeparate {
-		s.visionLLM = client
-		s.endpointLLMs[cfg.EndpointSelection.Vision] = client
-	} else {
-		visionClient, visionErr := llm.NewClient(s.visionSettings)
-		if visionErr != nil {
-			logf("init vision llm client: %v", visionErr)
-		} else {
-			s.visionLLM = visionClient
-			s.endpointLLMs[cfg.EndpointSelection.Vision] = visionClient
-		}
-	}
-	for _, endpoint := range cfg.Endpoints {
-		if s.endpointLLMs[endpoint.ID] != nil {
-			continue
-		}
-		endpointSettings := endpoint.ApplyToSettings(cfg)
-		endpointClient, endpointErr := llm.NewClient(endpointSettings)
-		if endpointErr != nil {
-			logf("init endpoint %q llm client: %v", endpoint.Name, endpointErr)
-			continue
-		}
-		s.endpointLLMs[endpoint.ID] = endpointClient
-	}
+	json.NewEncoder(w).Encode(v)
 }
-
-func (s *Server) researchChat() (llm.Settings, chatStreamer) {
-	if !s.researchSeparate {
-		return s.researchSettings, s.llm
-	}
-	return s.researchSettings, s.researchLLM
+func decode(w http.ResponseWriter, r *http.Request, v any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<20)
+	d := json.NewDecoder(r.Body)
+	d.DisallowUnknownFields()
+	return d.Decode(v)
 }
-
-// settingsForModel returns the settings for the endpoint that owns the given
-// model, if one is configured. It is used to route a chat prompt to a
-// user-selected model from the landing page. If no endpoint declares the model,
-// ok is false and the caller should fall back to the default chat endpoint.
-func (s *Server) settingsForModel(model string) (llm.Settings, bool) {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return llm.Settings{}, false
+func localHost(host string) bool {
+	if h, _, e := net.SplitHostPort(host); e == nil {
+		host = h
 	}
-	for _, endpoint := range s.settings.Endpoints {
-		if strings.TrimSpace(endpoint.Model) == model {
-			return endpoint.ApplyToSettings(s.settings), true
-		}
-	}
-	return llm.Settings{}, false
+	return strings.EqualFold(host, "localhost") || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback())
 }
-
-// streamerForSettings returns the initialized client for the endpoint that
-// supplied settings. Model selection changes both request generation settings
-// and the destination client; using the default Chat client here would send a
-// selected model name to the wrong provider.
-func (s *Server) streamerForSettings(settings llm.Settings) chatStreamer {
-	for _, endpoint := range s.settings.Endpoints {
-		if strings.TrimSpace(endpoint.Endpoint) != strings.TrimSpace(settings.Endpoint) ||
-			strings.TrimSpace(endpoint.Model) != strings.TrimSpace(settings.Model) {
-			continue
-		}
-		if endpoint.ID == s.settings.EndpointSelection.Chat && s.llm != nil {
-			return s.llm
-		}
-		if endpoint.ID == s.settings.EndpointSelection.Research && s.researchLLM != nil {
-			return s.researchLLM
-		}
-		if endpoint.ID == s.settings.EndpointSelection.Vision && s.visionLLM != nil {
-			return s.visionLLM
-		}
-		if streamer := s.endpointLLMs[endpoint.ID]; streamer != nil {
-			return streamer
-		}
-	}
-	return nil
-}
-
-// routes builds the HTTP handler tree for the server.
-func (s *Server) routes() http.Handler {
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-
-	// JSON API endpoints.
-	mux.HandleFunc("GET /api/health", s.handleHealth)
-	mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
-	mux.HandleFunc("POST /api/auth/setup", s.handleAuthSetup)
-	mux.HandleFunc("POST /api/auth/login", s.handleAuthLogin)
-	mux.HandleFunc("POST /api/auth/logout", s.handleAuthLogout)
-	mux.HandleFunc("GET /api/auth/sessions", s.handleAuthSessions)
-	mux.HandleFunc("DELETE /api/auth/sessions/{id}", s.handleAuthRevokeSession)
-	mux.HandleFunc("PUT /api/auth/password", s.handleAuthChangePassword)
-	mux.HandleFunc("GET /api/echo", s.handleEcho)
-	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
-	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
-	mux.HandleFunc("GET /api/lsp/profiles", s.handleGetLSPProfiles)
-	mux.HandleFunc("POST /api/lsp/profiles", s.handleCreateLSPProfile)
-	mux.HandleFunc("PUT /api/lsp/profiles/{profileId}", s.handleUpdateLSPProfile)
-	mux.HandleFunc("DELETE /api/lsp/profiles/{profileId}", s.handleDeleteLSPProfile)
-	mux.HandleFunc("GET /api/debug/adapter-profiles", s.handleGetDebugAdapterProfiles)
-	mux.HandleFunc("POST /api/debug/adapter-profiles", s.handleCreateDebugAdapterProfile)
-	mux.HandleFunc("PUT /api/debug/adapter-profiles/{profileId}", s.handleUpdateDebugAdapterProfile)
-	mux.HandleFunc("DELETE /api/debug/adapter-profiles/{profileId}", s.handleDeleteDebugAdapterProfile)
-	mux.HandleFunc("GET /api/development/update-status", s.handleEchoUpdateStatus)
-	mux.HandleFunc("POST /api/development/update", s.handleEchoUpdate)
-	mux.HandleFunc("POST /api/development/rebuild-relaunch", s.handleRebuildRelaunch)
-	mux.HandleFunc("POST /api/development/relaunch", s.handleRelaunch)
-	mux.HandleFunc("POST /api/development/terminate", s.handleTerminateEcho)
-	mux.HandleFunc("GET /api/agent-modes", s.handleGetAgentModes)
-	mux.HandleFunc("POST /api/agent-modes", s.handleCreateAgentMode)
-	mux.HandleFunc("PUT /api/agent-modes/default", s.handleSetDefaultAgentMode)
-	mux.HandleFunc("PUT /api/agent-modes/{id}", s.handleUpdateAgentMode)
-	mux.HandleFunc("DELETE /api/agent-modes/{id}", s.handleDeleteAgentMode)
-	mux.HandleFunc("GET /api/plugins", s.handlePluginCatalog)
-	mux.HandleFunc("GET /api/plugins/bookmarks/state", s.handleBookmarks)
-	mux.HandleFunc("POST /api/plugins/bookmarks/state", s.handleBookmarks)
-	mux.HandleFunc("POST /api/plugins/stages", s.handlePluginStage)
-	mux.HandleFunc("POST /api/plugins/stages/{stageId}/approve", s.handlePluginApprove)
-	mux.HandleFunc("DELETE /api/plugins/stages/{stageId}", s.handlePluginReject)
-	mux.HandleFunc("POST /api/plugins/{id}/actions", s.handlePluginAction)
-	mux.HandleFunc("PUT /api/plugins/{id}/config", s.handlePluginConfig)
-	mux.HandleFunc("GET /api/plugins/{id}/logs", s.handlePluginLog)
-	mux.HandleFunc("GET /api/plugins/{id}/icon/{viewId}", s.handlePluginIcon)
-	mux.HandleFunc("POST /api/plugins/{id}/views/{viewId}/sessions", s.handlePluginUISession)
-	mux.HandleFunc("POST /api/plugins/ui-sessions/{token}/bridge", s.handlePluginUIBridge)
-	mux.HandleFunc("DELETE /api/plugins/ui-sessions/{token}", s.handlePluginUIClose)
-	mux.HandleFunc("POST /api/plugins/{id}/remove-data", s.handlePluginRemoveData)
-
-	// Workspace endpoints.
-	mux.HandleFunc("GET /api/workspaces", s.handleGetWorkspaces)
-	mux.HandleFunc("GET /api/chats", s.handleGetChats)
-	mux.HandleFunc("GET /api/echo-map", s.handleGetEchoMap)
-	mux.HandleFunc("GET /api/workspace-groups", s.handleGetWorkspaceGroups)
-	mux.HandleFunc("POST /api/workspace-groups", s.handleCreateWorkspaceGroup)
-	mux.HandleFunc("PUT /api/workspace-groups/{id}", s.handleUpdateWorkspaceGroup)
-	mux.HandleFunc("DELETE /api/workspace-groups/{id}", s.handleDeleteWorkspaceGroup)
-	mux.HandleFunc("POST /api/workspace-groups/{id}/tasks", s.handleCreateGroupTask)
-	mux.HandleFunc("PUT /api/workspace-groups/{id}/tasks/{taskId}", s.handleUpdateGroupTask)
-	mux.HandleFunc("DELETE /api/workspace-groups/{id}/tasks/{taskId}", s.handleDeleteGroupTask)
-	mux.HandleFunc("POST /api/workspaces", s.handleCreateWorkspace)
-	mux.HandleFunc("PUT /api/workspaces/active", s.handleSetActiveWorkspace)
-	mux.HandleFunc("PUT /api/workspaces/{id}", s.handleUpdateWorkspace)
-	mux.HandleFunc("DELETE /api/workspaces/{id}", s.handleDeleteWorkspace)
-	mux.HandleFunc("GET /api/workspaces/{id}/icon", s.handleGetWorkspaceIcon)
-	mux.HandleFunc("GET /api/sandbox/host", s.handleSandboxHost)
-	mux.HandleFunc("GET /api/workspaces/{id}/sandbox", s.handleGetWorkspaceSandbox)
-	mux.HandleFunc("PUT /api/workspaces/{id}/sandbox", s.handlePutWorkspaceSandbox)
-	mux.HandleFunc("DELETE /api/workspaces/{id}/sandbox", s.handleDeleteWorkspaceSandbox)
-	mux.HandleFunc("POST /api/workspaces/{id}/sandbox/actions", s.handleWorkspaceSandboxAction)
-	mux.HandleFunc("GET /api/workspaces/{id}/sandbox/network-grants", s.handleGetSandboxNetworkGrants)
-	mux.HandleFunc("POST /api/workspaces/{id}/sandbox/network-grants", s.handleCreateSandboxNetworkGrant)
-	mux.HandleFunc("DELETE /api/workspaces/{id}/sandbox/network-grants", s.handleDeleteSandboxNetworkGrant)
-	mux.HandleFunc("POST /api/workspaces/{id}/sandbox/desktop-sessions", s.handleCreateSandboxDesktopSession)
-	mux.HandleFunc("DELETE /api/workspaces/{id}/sandbox/desktop-sessions", s.handleDeleteSandboxDesktopSession)
-	mux.HandleFunc("POST /api/workspaces/{id}/sandbox/desktop-control", s.handleSandboxDesktopControl)
-	mux.HandleFunc("GET /api/workspaces/{id}/sandbox/desktop-ws", s.handleSandboxDesktopWebSocket)
-	mux.HandleFunc("POST /api/workspaces/{id}/inline-chat", s.handleInlineChat)
-	mux.HandleFunc("GET /api/workspaces/{id}/fs/roots", s.handleFSRoots)
-	mux.HandleFunc("GET /api/workspaces/{id}/fs/entries", s.handleFSEntries)
-	mux.HandleFunc("POST /api/workspaces/{id}/fs/entries", s.handleFSCreateEntry)
-	mux.HandleFunc("GET /api/workspaces/{id}/fs/file", s.handleFSReadFile)
-	mux.HandleFunc("PUT /api/workspaces/{id}/fs/file", s.handleFSSaveFile)
-	mux.HandleFunc("PATCH /api/workspaces/{id}/fs/entry", s.handleFSRenameEntry)
-	mux.HandleFunc("DELETE /api/workspaces/{id}/fs/entry", s.handleFSTrashEntry)
-	mux.HandleFunc("GET /api/workspaces/{id}/fs/trash", s.handleFSListTrash)
-	mux.HandleFunc("POST /api/workspaces/{id}/fs/trash/{trashId}/restore", s.handleFSRestoreTrash)
-	mux.HandleFunc("DELETE /api/workspaces/{id}/fs/trash/{trashId}", s.handleFSPurgeTrash)
-	mux.HandleFunc("POST /api/workspaces/{id}/fs/reveal", s.handleFSReveal)
-	mux.HandleFunc("GET /api/workspaces/{id}/fs/media", s.handleFSMedia)
-	mux.HandleFunc("GET /api/workspaces/{id}/fs/search", s.handleFSSearch)
-	mux.HandleFunc("POST /api/workspaces/{id}/fs/text-search", s.handleFSTextSearch)
-	mux.HandleFunc("POST /api/workspaces/{id}/fs/text-replace", s.handleFSTextReplace)
-	mux.HandleFunc("GET /api/workspaces/{id}/lsp/config", s.handleGetWorkspaceLSPConfig)
-	mux.HandleFunc("PUT /api/workspaces/{id}/lsp/config", s.handlePutWorkspaceLSPConfig)
-	mux.HandleFunc("POST /api/workspaces/{id}/lsp/{profileId}/restart", s.handleRestartLSP)
-	mux.HandleFunc("GET /api/workspaces/{id}/lsp/ws", s.handleLSPWebSocket)
-	mux.HandleFunc("GET /api/workspaces/{id}/testing/go/config", s.handleGetGoTestingConfig)
-	mux.HandleFunc("PUT /api/workspaces/{id}/testing/go/config", s.handlePutGoTestingConfig)
-	mux.HandleFunc("GET /api/workspaces/{id}/testing/go/coverage", s.handleGetGoTestingCoverage)
-	mux.HandleFunc("POST /api/workspaces/{id}/testing/go/lenses", s.handleGoTestingLenses)
-	mux.HandleFunc("POST /api/workspaces/{id}/testing/go/runs", s.handleStartGoTestingRun)
-	mux.HandleFunc("POST /api/workspaces/{id}/testing/go/runs/{sessionId}/rerun", s.handleRerunGoTestingRun)
-	mux.HandleFunc("POST /api/workspaces/{id}/testing/go/debug-sessions", s.handleStartGoTestingDebugSession)
-	mux.HandleFunc("GET /api/workspaces/{id}/testing/c/config", s.handleGetCTestingConfig)
-	mux.HandleFunc("PUT /api/workspaces/{id}/testing/c/config", s.handlePutCTestingConfig)
-	mux.HandleFunc("GET /api/workspaces/{id}/testing/c/coverage", s.handleGetCTestingCoverage)
-	mux.HandleFunc("POST /api/workspaces/{id}/testing/c/lenses", s.handleCTestingLenses)
-	mux.HandleFunc("POST /api/workspaces/{id}/testing/c/runs", s.handleStartCTestingRun)
-	mux.HandleFunc("POST /api/workspaces/{id}/testing/c/runs/{sessionId}/rerun", s.handleRerunCTestingRun)
-	mux.HandleFunc("POST /api/workspaces/{id}/testing/c/debug-sessions", s.handleStartCTestingDebugSession)
-	mux.HandleFunc("POST /api/workspaces/{id}/testing/runs/{sessionId}/rerun", s.handleRerunTestingRun)
-	mux.HandleFunc("GET /api/workspaces/{id}/debug/config", s.handleGetWorkspaceDebugConfig)
-	mux.HandleFunc("PUT /api/workspaces/{id}/debug/config", s.handlePutWorkspaceDebugConfig)
-	mux.HandleFunc("GET /api/workspaces/{id}/debug/state", s.handleGetWorkspaceDebugState)
-	mux.HandleFunc("PUT /api/workspaces/{id}/debug/state", s.handlePutWorkspaceDebugState)
-	mux.HandleFunc("POST /api/workspaces/{id}/debug/import-vscode/preview", s.handlePreviewVSCodeDebugImport)
-	mux.HandleFunc("POST /api/workspaces/{id}/debug/adapters/{profileId}/diagnostic", s.handleDebugAdapterDiagnostic)
-	mux.HandleFunc("GET /api/workspaces/{id}/debug/snapshot", s.handleDebugSnapshot)
-	mux.HandleFunc("GET /api/workspaces/{id}/debug/processes", s.handleDebugProcesses)
-	mux.HandleFunc("POST /api/workspaces/{id}/debug/sessions", s.handleStartDebugSession)
-	mux.HandleFunc("POST /api/workspaces/{id}/debug/sessions/{sessionId}/requests/{command}", s.handleDebugRequest)
-	mux.HandleFunc("POST /api/workspaces/{id}/debug/sessions/{sessionId}/trace", s.handleSetDebugTrace)
-	mux.HandleFunc("POST /api/workspaces/{id}/debug/sessions/{sessionId}/stop", s.handleStopDebugSession)
-	mux.HandleFunc("POST /api/workspaces/{id}/debug/sessions/{sessionId}/disconnect", s.handleDisconnectDebugSession)
-	mux.HandleFunc("POST /api/workspaces/{id}/debug/sessions/{sessionId}/terminate", s.handleTerminateDebugSession)
-	mux.HandleFunc("POST /api/workspaces/{id}/debug/sessions/{sessionId}/restart", s.handleRestartDebugSession)
-	mux.HandleFunc("POST /api/workspaces/{id}/debug/groups/{groupId}/stop", s.handleStopDebugGroup)
-	mux.HandleFunc("POST /api/workspaces/{id}/debug/groups/{groupId}/restart", s.handleRestartDebugGroup)
-	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories", s.handleGitRepositories)
-	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/status", s.handleGitStatus)
-	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/diff", s.handleGitDiff)
-	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/metadata", s.handleGitMetadata)
-	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/history", s.handleGitHistory)
-	mux.HandleFunc("GET /api/workspaces/{id}/git/repositories/{repositoryId}/detail", s.handleGitCommitDetail)
-	mux.HandleFunc("POST /api/workspaces/{id}/git/repositories/{repositoryId}/actions", s.handleGitAction)
-	mux.HandleFunc("POST /api/workspaces/{id}/git/clone", s.handleGitClone)
-	mux.HandleFunc("POST /api/workspaces/{id}/git/initialize", s.handleGitInitialize)
-	mux.HandleFunc("PUT /api/workspaces/{id}/git/settings", s.handleGitSettings)
-	mux.HandleFunc("GET /api/workspaces/{id}/source-control/providers", s.handleSourceControlProviders)
-	mux.HandleFunc("GET /api/workspaces/{id}/source-control/repositories", s.handleSourceControlRepositories)
-	mux.HandleFunc("GET /api/workspaces/{id}/source-control/repositories/{repositoryId}/status", s.handleSourceControlStatus)
-	mux.HandleFunc("GET /api/workspaces/{id}/source-control/repositories/{repositoryId}/diff", s.handleSourceControlDiff)
-	mux.HandleFunc("GET /api/workspaces/{id}/source-control/repositories/{repositoryId}/metadata", s.handleSourceControlMetadata)
-	mux.HandleFunc("GET /api/workspaces/{id}/source-control/repositories/{repositoryId}/history", s.handleSourceControlHistory)
-	mux.HandleFunc("GET /api/workspaces/{id}/source-control/repositories/{repositoryId}/detail", s.handleSourceControlRevisionDetail)
-	mux.HandleFunc("POST /api/workspaces/{id}/source-control/repositories/{repositoryId}/actions", s.handleSourceControlAction)
-	mux.HandleFunc("GET /api/workspaces/{id}/source-control/settings", s.handleSourceControlSettings)
-	mux.HandleFunc("PUT /api/workspaces/{id}/source-control/settings", s.handleSourceControlSettings)
-	mux.HandleFunc("POST /api/workspaces/{id}/chats/{chatId}/skills", s.handleCreateSkillFromChat)
-	mux.HandleFunc("GET /api/workspaces/{id}/chats/{chatId}/trajectory", s.handleGetTrajectory)
-	mux.HandleFunc("GET /api/workspaces/{id}/chats/{chatId}/attachments/{attachmentId}", s.handleGetChatAttachment)
-	mux.HandleFunc("GET /api/workspaces/{id}/chats/{chatId}/tool-results/{callId}", s.handleGetChatToolResult)
-	mux.HandleFunc("GET /api/workspaces/{id}/chats/{chatId}/reasoning/{turnId}", s.handleGetChatReasoning)
-	mux.HandleFunc("GET /api/workspaces/{id}/chats/{chatId}/trajectory/search", s.handleSearchTrajectory)
-	mux.HandleFunc("GET /api/workspaces/{id}/chats/{chatId}/trajectory/export", s.handleExportTrajectory)
-	mux.HandleFunc("POST /api/workspaces/{id}/terminal/sessions", s.handleStartTerminalSession)
-	mux.HandleFunc("GET /api/workspaces/{id}/terminal/sessions", s.handleListTerminalSessions)
-	mux.HandleFunc("GET /api/workspaces/{id}/terminal/sessions/{sessionId}", s.handleSyncTerminalSession)
-	mux.HandleFunc("POST /api/workspaces/{id}/terminal/sessions/{sessionId}/input", s.handleWriteTerminalSession)
-	mux.HandleFunc("PUT /api/workspaces/{id}/terminal/sessions/{sessionId}/size", s.handleResizeTerminalSession)
-	mux.HandleFunc("POST /api/workspaces/{id}/terminal/sessions/{sessionId}/stop", s.handleStopTerminalSession)
-	mux.HandleFunc("POST /api/workspaces/{id}/terminal/sessions/{sessionId}/restart", s.handleRestartTerminalSession)
-	mux.HandleFunc("GET /api/workspaces/{id}/terminal/saved-commands", s.handleListSavedCommands)
-	mux.HandleFunc("POST /api/workspaces/{id}/terminal/saved-commands", s.handleCreateSavedCommand)
-	mux.HandleFunc("PUT /api/workspaces/{id}/terminal/saved-commands/{commandId}", s.handleUpdateSavedCommand)
-	mux.HandleFunc("DELETE /api/workspaces/{id}/terminal/saved-commands/{commandId}", s.handleDeleteSavedCommand)
-
-	// WebSocket endpoint for real-time push.
-	mux.HandleFunc("GET /ws", s.handleWebSocket)
-	mux.HandleFunc("GET /plugin-ui/{token}/{path...}", s.handlePluginUIAsset)
-
-	// Static assets from the web directory.
-	var fileServer http.Handler
-	if s.webAssets != nil {
-		fileServer = http.FileServer(http.FS(s.webAssets))
-	} else {
-		fileServer = http.FileServer(http.Dir(s.webDir))
+	s.routes(mux)
+	s.authRoutes(mux)
+	mux.HandleFunc("GET /api/v1/events", s.websocket)
+	if s.Assets != nil {
+		static := http.FileServerFS(s.Assets)
+		mux.Handle("/", static)
 	}
-	mux.Handle("/", fileServer)
-
-	// Wrap the mux with SPA fallback so unknown non-API paths serve index.html,
-	// enabling client-side routing.
-	spa := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Never rewrite API or WebSocket paths.
-		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/plugin-ui/") || r.URL.Path == "/ws" {
-			mux.ServeHTTP(w, r)
-			return
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/", "/index.html", "/sw.js", "/manifest.webmanifest", "/offline.html":
+			w.Header().Set("Cache-Control", "no-cache")
 		}
-		// Let the file server handle real files; otherwise fall back to index.html.
-		if s.isStaticAsset(r.URL.Path) {
-			mux.ServeHTTP(w, r)
-			return
+		// Windows MIME registrations do not consistently recognize PWA assets.
+		switch r.URL.Path {
+		case "/manifest.webmanifest":
+			w.Header().Set("Content-Type", "application/manifest+json")
+		case "/sw.js":
+			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		}
-		s.serveIndex(w, r)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Frame-Options", "DENY")
+		origin := r.Header.Get("Origin")
+		if strings.HasPrefix(r.URL.Path, "/api/") && origin != "" {
+			u, e := url.Parse(origin)
+			if e != nil || u.Host != r.Host || u.Scheme != "http" && u.Scheme != "https" {
+				http.Error(w, "Origin rejected", 403)
+				return
+			}
+		}
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
+		if r.URL.Path == "/renderer.html" {
+			w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
+			if r.URL.Path != "/api/v1/session" && r.URL.Path != "/api/v1/swarm/pair" && r.URL.Path != "/api/v1/swarm/link" && !s.authenticated(r) {
+				http.Error(w, "Sign in required", 401)
+				return
+			}
+		}
+		mux.ServeHTTP(w, r)
 	})
-	return s.securityHeaders(s.requireAuthentication(spa))
 }
-
-// isStaticAsset reports whether path maps to an existing file under webDir.
-func (s *Server) isStaticAsset(requestPath string) bool {
-	if requestPath == "/" {
-		return false
-	}
-	if s.webAssets != nil {
-		clean := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(requestPath)), "/")
-		if clean == "." || !iofs.ValidPath(clean) {
-			return false
+func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
+	up := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool {
+		if swarm.Owner(r.Context()) {
+			return true
 		}
-		info, err := iofs.Stat(s.webAssets, clean)
-		return err == nil && !info.IsDir()
-	}
-	clean := filepath.Clean(filepath.FromSlash(requestPath))
-	full := filepath.Join(s.webDir, clean)
-	info, err := os.Stat(full)
-	if err != nil {
-		return false
-	}
-	return !info.IsDir()
-}
-
-// serveIndex writes the SPA entry point for the given request.
-func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
-	if s.webAssets != nil {
-		index, err := iofs.ReadFile(s.webAssets, "index.html")
-		if err != nil {
-			http.Error(w, "frontend assets are unavailable", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write(index)
+		u, e := url.Parse(r.Header.Get("Origin"))
+		return e == nil && u.Host == r.Host
+	}}
+	conn, e := up.Upgrade(w, r, nil)
+	if e != nil {
 		return
 	}
-	index := filepath.Join(s.webDir, "index.html")
-	http.ServeFile(w, r, index)
-}
-
-// ListenAndServe starts serving HTTP requests on the configured address.
-func (s *Server) ListenAndServe() error {
-	return s.httpServer.ListenAndServe()
-}
-
-// RestartRequested is consumed by the host lifecycle. A value is sent only
-// after a replacement binary and detached launcher are ready.
-func (s *Server) RestartRequested() <-chan struct{} {
-	return s.restartCh
-}
-
-func (s *Server) requestRestart() {
-	select {
-	case s.restartCh <- struct{}{}:
-	default:
+	defer conn.Close()
+	s.authMu.Lock()
+	if _, ok := s.savedSessionLocked(r); !ok && !swarm.Owner(r.Context()) {
+		s.authMu.Unlock()
+		return
 	}
-}
-
-// TerminationRequested is consumed by the host lifecycle when the owner asks
-// Echo to exit without starting a replacement process.
-func (s *Server) TerminationRequested() <-chan struct{} {
-	return s.terminateCh
-}
-
-func (s *Server) requestTermination() {
-	select {
-	case s.terminateCh <- struct{}{}:
-	default:
+	id := sessionKey(r)
+	if caller, ok := swarm.Caller(r.Context()); ok {
+		id = "swarm:" + caller.NodeID
 	}
-}
-
-// Shutdown gracefully stops the server.
-func (s *Server) Shutdown(ctx context.Context) error {
-	s.watcher.Close()
-	s.sourceControl.Close()
-	if s.orchestrator != nil {
-		s.orchestrator.stop()
+	if s.sessionSockets == nil {
+		s.sessionSockets = map[string]map[*websocket.Conn]bool{}
 	}
-	s.sessions.shutdown(ctx)
-	if err := s.debugger.Shutdown(ctx); err != nil && ctx.Err() == nil {
-		logf("debugger shutdown: %v", err)
+	if s.sessionSockets[id] == nil {
+		s.sessionSockets[id] = map[*websocket.Conn]bool{}
 	}
-	if err := s.lsp.Shutdown(ctx); err != nil && ctx.Err() == nil {
-		logf("language server shutdown: %v", err)
-	}
-	if err := s.terminal.Shutdown(ctx); err != nil && ctx.Err() == nil {
-		logf("terminal shutdown: %v", err)
-	}
-	if err := s.sandbox.Shutdown(ctx); err != nil && ctx.Err() == nil {
-		logf("sandbox shutdown: %v", err)
-	}
-	s.fs.Close()
-	if s.plugins != nil {
-		if err := s.plugins.Shutdown(ctx); err != nil && ctx.Err() == nil {
-			logf("plugin shutdown: %v", err)
+	s.sessionSockets[id][conn] = true
+	s.authMu.Unlock()
+	defer func() {
+		s.authMu.Lock()
+		delete(s.sessionSockets[id], conn)
+		if len(s.sessionSockets[id]) == 0 {
+			delete(s.sessionSockets, id)
+		}
+		s.authMu.Unlock()
+	}()
+	ch := make(chan domain.Event, 256)
+	s.mu.Lock()
+	s.subscribers[ch] = true
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); delete(s.subscribers, ch); s.mu.Unlock() }()
+	conn.WriteJSON(domain.Event{Type: "reset", Sequence: s.seq.Load(), Payload: json.RawMessage(`null`)})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn.SetReadLimit(1024)
+		for {
+			if _, _, e := conn.ReadMessage(); e != nil {
+				return
+			}
+		}
+	}()
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-s.ctx.Done():
+			return
+		case e, ok := <-ch:
+			if !ok || !s.authenticated(r) {
+				return
+			}
+			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if conn.WriteJSON(e) != nil {
+				return
+			}
+		case <-ticker.C:
+			if !s.authenticated(r) {
+				return
+			}
+			if conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)) != nil {
+				return
+			}
 		}
 	}
-	s.hub.Shutdown()
-	return s.httpServer.Shutdown(ctx)
 }
 
-func (s *Server) refreshWorkspaceCaches(ctx context.Context, workspaceID string) {
-	s.sessions.invalidate(workspaceID)
-	s.goTests.ClearCoverage(workspaceID)
-	s.cTests.ClearCoverage(workspaceID)
-	s.debugger.StopWorkspace(workspaceID)
-	s.terminal.StopWorkspace(workspaceID)
-	s.watcher.Refresh(workspaceID)
-	if err := s.sourceControl.ResetWorkspace(ctx, workspaceID); err != nil {
-		logf("refresh source control workspace %s: %v", workspaceID, err)
+var handlePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,47}$`)
+
+func (s *Server) saveBot(b domain.Bot) (domain.Bot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, err := s.normalizeBot(b)
+	if err != nil {
+		return b, err
 	}
-	s.fs.RefreshWorkspace(workspaceID)
-	s.lsp.RefreshWorkspace(workspaceID)
-	s.skillsMu.Lock()
-	delete(s.skills, workspaceID)
-	s.skillsMu.Unlock()
+	return s.saveBotLocked(b)
 }
 
-func (s *Server) removeWorkspaceCaches(workspaceID string) {
-	s.sessions.invalidate(workspaceID)
-	s.goTests.RemoveWorkspace(workspaceID)
-	s.cTests.RemoveWorkspace(workspaceID)
-	s.debugger.StopWorkspace(workspaceID)
-	s.terminal.StopWorkspace(workspaceID)
-	s.watcher.RemoveWorkspace(workspaceID)
-	s.sourceControl.RemoveWorkspace(workspaceID)
-	s.fs.RefreshWorkspace(workspaceID)
-	s.lsp.DeactivateWorkspace(workspaceID)
-	s.skillsMu.Lock()
-	delete(s.skills, workspaceID)
-	s.skillsMu.Unlock()
-}
-
-// ResetAuthentication clears the configured owner password and remembered
-// devices, returning the new one-time setup code.
-func (s *Server) ResetAuthentication() (string, error) {
-	if s.auth == nil {
-		return "", fmt.Errorf("authentication manager is unavailable")
+func (s *Server) normalizeBot(b domain.Bot) (domain.Bot, error) {
+	b.Handle = strings.ToLower(strings.TrimSpace(b.Handle))
+	if !handlePattern.MatchString(b.Handle) {
+		return b, errors.New("handle must start with a letter and contain letters, digits, - or _")
 	}
-	return s.auth.Reset()
-}
-
-// AuthenticationSetupCode returns the memory-only first-run code, if Echo is
-// still in setup mode. It is intended for display by the host process only.
-func (s *Server) AuthenticationSetupCode() string {
-	if s.auth == nil {
-		return ""
+	if b.Name == "" {
+		b.Name = b.Handle
 	}
-	return s.auth.SetupCode()
+	if b.ID == "" {
+		b.ID = domain.ID()
+	}
+	if b.ID != "echo" && b.Handle == "echo" {
+		return b, errors.New("echo is reserved")
+	}
+	bots, e := s.Bots()
+	if e != nil {
+		return b, e
+	}
+	var existing *domain.Bot
+	for _, other := range bots {
+		if other.ID != b.ID && other.Handle == b.Handle {
+			return b, errors.New("bot handle already exists")
+		}
+		if other.ID == b.ID {
+			existing = &other
+		}
+	}
+	b.Roots, e = broker.CanonicalRoots(b.Roots)
+	if e != nil {
+		return b, e
+	}
+	for _, root := range b.Roots {
+		if broker.Within(root, s.Dir) || broker.Within(s.Dir, root) {
+			return b, errors.New("workspace cannot contain Echo private application data")
+		}
+	}
+	if b.ID == "echo" {
+		b.Handle = "echo"
+	}
+	b.Plugins = maps.Clone(b.Plugins)
+	if existing != nil && b.Plugins == nil {
+		b.Plugins = maps.Clone(existing.Plugins)
+	}
+	if b.Plugins == nil {
+		b.Plugins = map[string]bool{}
+	}
+	if existing == nil && b.ID != "echo" {
+		installed, err := s.Plugins.List()
+		if err != nil {
+			return b, err
+		}
+		for _, plugin := range installed {
+			if plugin.Scope == "bot" || plugin.Scope == "" {
+				if _, selected := b.Plugins[plugin.ID]; !selected {
+					b.Plugins[plugin.ID] = true
+				}
+			}
+		}
+	}
+	return b, nil
+}
+func (s *Server) key(ctx context.Context, e domain.Endpoint) (string, error) {
+	if e.Credential == "" {
+		return "", nil
+	}
+	return s.Secrets.Get(ctx, e.Credential)
+}
+func (s *Server) scheduled(ctx context.Context, o calendar.Occurrence) error {
+	if s.maintenanceActive() {
+		return calendar.ErrDeferred
+	}
+	b, e := s.Bot(o.BotID)
+	if e != nil {
+		return e
+	}
+	c := domain.Chat{ID: domain.ID(), Title: "Scheduled: " + truncate(o.Prompt, 70), Bots: map[string]string{}, Generation: o.Generation, CreatedAt: domain.Now(), UpdatedAt: domain.Now()}
+	if e = s.Store.CreateChat(c); e != nil {
+		return e
+	}
+	request := SendRequest{Content: o.Prompt, Segments: []domain.Segment{{Type: "bot", BotID: b.ID}, {Type: "text", Text: o.Prompt}}, Generation: o.Generation, scheduledBot: b.ID}
+	d, e := s.send(c.ID, request)
+	if e != nil {
+		if errors.Is(e, errMaintenance) {
+			return calendar.ErrDeferred
+		}
+		return e
+	}
+	select {
+	case <-ctx.Done():
+		d.cancel()
+		<-d.done
+		return ctx.Err()
+	case <-d.done:
+		return d.err
+	}
+}
+func truncate(v string, n int) string {
+	r := []rune(v)
+	if len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return v
+}
+func (s *Server) ListenAddress(port int) (string, string, string, error) {
+	m, e := s.Plugins.Get("hosted-server")
+	if e != nil {
+		return "", "", "", e
+	}
+	remote, _ := m.Config["remote"].(bool)
+	if configured, ok := m.Config["port"].(float64); ok && configured != 0 {
+		if configured < 1 || configured > 65535 || configured != float64(int(configured)) {
+			return "", "", "", errors.New("port must be 1-65535")
+		}
+		port = int(configured)
+	}
+	if !m.Enabled || !remote {
+		return fmt.Sprintf("127.0.0.1:%d", port), "", "", nil
+	}
+	var hash string
+	if s.Store.Get("auth", "password", &hash) != nil || hash == "" {
+		return "", "", "", errors.New("remote hosting requires a password in Hosted Server settings")
+	}
+	cert, _ := m.Config["certificate"].(string)
+	key, _ := m.Config["key"].(string)
+	if (cert == "") != (key == "") {
+		return "", "", "", errors.New("TLS requires both certificate and key")
+	}
+	return fmt.Sprintf("0.0.0.0:%d", port), cert, key, nil
 }
 
-// logf is a small logging helper so handlers can log without importing log
-// everywhere.
-func logf(format string, args ...any) {
-	log.Printf(format, args...)
-}
+var _ = os.ErrNotExist

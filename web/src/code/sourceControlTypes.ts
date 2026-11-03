@@ -180,6 +180,7 @@ export type SourceControlActionRequest = {
 };
 
 export type SourceControlActionResult = {
+ url?: string;
   preview?: { token: string; paths?: string[]; changes: Array<Omit<SourceControlChange,"scope">>; truncated?: boolean; diagnostic?: string };
   diagnostic?: string;
   groupId?: string;

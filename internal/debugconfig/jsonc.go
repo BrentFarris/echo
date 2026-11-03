@@ -9,7 +9,7 @@ import (
 // DecodeJSONC accepts the comments and trailing commas used by VS Code's JSON
 // configuration files without changing strings that contain comment markers.
 func DecodeJSONC(data []byte, destination any) error {
-	cleaned, err := stripJSONComments(data)
+	cleaned, err := stripJSONComments(bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf}))
 	if err != nil {
 		return err
 	}

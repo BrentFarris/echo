@@ -1,0 +1,16 @@
+{
+  "id": "/",
+  "name": "Echo",
+  "short_name": "Echo",
+  "description": "Your chat-first workspace for Echo and your bots.",
+  "lang": "en",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f3f1",
+  "theme_color": "#f7f3f1",
+  "icons": [
+    { "src": "/icons/echo-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/echo-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

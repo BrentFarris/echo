@@ -199,7 +199,7 @@ func TestDAPConnectionSendsCancelForTimedOutRequestWhenSupported(t *testing.T) {
 func TestDAPFailureMessageUsesStructuredAdapterDetail(t *testing.T) {
 	message := dapEnvelope{
 		Message: "Failed to launch",
-		Body: json.RawMessage(`{"error":{"id":3000,"format":"Failed to launch: invalid configuration {reason}","variables":{"reason":"unsupported mode"},"showUser":true}}`),
+		Body:    json.RawMessage(`{"error":{"id":3000,"format":"Failed to launch: invalid configuration {reason}","variables":{"reason":"unsupported mode"},"showUser":true}}`),
 	}
 	if got := dapFailureMessage(message); got != "Failed to launch: invalid configuration unsupported mode" {
 		t.Fatalf("failure message = %q", got)

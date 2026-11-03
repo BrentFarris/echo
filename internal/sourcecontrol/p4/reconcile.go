@@ -11,9 +11,9 @@ import (
 	"sort"
 	"time"
 
+	workspacefs "github.com/brent/echo/internal/editorfs"
 	"github.com/brent/echo/internal/sourcecontrol"
 	"github.com/brent/echo/internal/sourcecontrol/hunk"
-	"github.com/brent/echo/internal/workspacefs"
 )
 
 type contextReader struct {
@@ -51,7 +51,7 @@ func (p *Provider) fingerprint(ctx context.Context, r *repository, paths []strin
 			return "", err
 		}
 		sum := "absent"
-		file, err := os.Open(path)
+		file, err := p.fs.OpenSourceControlFile(r.workspace, path)
 		if err == nil {
 			if info, statErr := file.Stat(); statErr != nil || !info.Mode().IsRegular() {
 				file.Close()

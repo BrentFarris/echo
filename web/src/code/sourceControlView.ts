@@ -1,11 +1,12 @@
-import { api } from "../../js/api.js";
-import { on as onSocket, onState as onSocketState, send as sendSocket } from "../../js/ws.js";
+import { resourceURL } from '../instances';
+import { api } from "./api";
+import { on as onSocket, onState as onSocketState } from "./events";
 import * as sourceControlAPI from "./sourceControlApi";
 import { revealEntry } from "./editorApi";
 import { actionKeys, updateSelection, type SelectionState } from "./sourceControlSelection";
 import type {
   SourceControlActionRequest, SourceControlActionResult, SourceControlChange, SourceControlChangeGroup,
-  SourceControlDiffRequest, SourceControlHistory, SourceControlMetadata, SourceControlOperationEvent, SourceControlRepository,
+  SourceControlDiffRequest, SourceControlProvider, SourceControlMetadata, SourceControlOperationEvent, SourceControlRepository,
   SourceControlRevisionDetail, SourceControlStatus,
 } from "./sourceControlTypes";
 import { normalizeStatus } from "./sourceControlTypes";
@@ -13,9 +14,10 @@ import { aggregateSourceControlChangeCount } from "./sourceControlIdentity";
 import { presentationFor, supports, type ChangeActionPresentation } from "./sourceControlPresentation";
 import type { FileRef, WorkspaceRoot } from "./types";
 import { choiceDialog, escapeHTML, promptDialog, showContextMenu, toast } from "./ui";
-import { randomUUID } from "../randomUUID";
+import { randomUUID } from "./randomUUID";
 
 type SourceControlViewCallbacks = {
+  beforeAction?(repository: SourceControlRepository, request: SourceControlActionRequest): Promise<boolean>;
   roots(): WorkspaceRoot[];
   openFile(ref: FileRef, keepOpen: boolean): Promise<void>;
   openDiff(repository: SourceControlRepository, target: SourceControlDiffRequest, keepOpen: boolean): Promise<void>;
@@ -35,7 +37,6 @@ type CommitInputState = {
 };
 
 const rowHeight = 22;
-const historyRowHeight = 38;
 
 export class SourceControlView {
   private readonly host: HTMLElement;
@@ -49,9 +50,10 @@ export class SourceControlView {
   private expandedRepositories = new Set<string>();
   private expandedGroups = new Map<string, boolean>();
   private busyRepositories = new Map<string, SourceControlOperationEvent>();
+  private localOperations = new Set<string>();
   private metadata = new Map<string, SourceControlMetadata>();
-  private history = new Map<string, SourceControlHistory>();
-  private historyExpanded = new Set<string>();
+  private providers: SourceControlProvider[] = [];
+  private discovered = false;
   private reviews = new Map<string, Review>();
   private listScroll = new Map<string, number>();
   private repositoryListExpanded = true;
@@ -59,6 +61,7 @@ export class SourceControlView {
   private sidebarScroll = 0;
   private loading = true;
   private disposed = false;
+  private repositoryLoad: Promise<void> | null = null;
 
   constructor(host: HTMLElement, workspaceId: string, signal: AbortSignal, callbacks: SourceControlViewCallbacks) {
     this.host = host;
@@ -77,7 +80,6 @@ export class SourceControlView {
     let opened = false;
     const unsubscribeState = onSocketState((state: string) => {
       if (state !== "open") return;
-      sendSocket({ type: "source_control_subscribe", workspaceId: this.workspaceId });
       if (opened) void this.reloadRepositories();
       opened = true;
     });
@@ -97,6 +99,9 @@ export class SourceControlView {
     const unsubscribeOperation = onSocket("source_control_operation", (data: object) => {
       const event = data as { workspaceId: string; operation?: SourceControlOperationEvent };
       if (event.workspaceId !== this.workspaceId || !event.operation) return;
+      // A completed command event can arrive before its HTTP response and
+      // authoritative status. Keep local actions disabled through that refresh.
+      if (this.localOperations.has(event.operation.repositoryId)) return;
       if (event.operation.state === "running") this.busyRepositories.set(event.operation.repositoryId, event.operation);
       else this.busyRepositories.delete(event.operation.repositoryId);
       this.callbacks.operationChanged?.(event.operation.repositoryId, event.operation.state === "running");
@@ -115,24 +120,36 @@ export class SourceControlView {
       unsubscribeLegacyStatus();
       unsubscribeOperation();
       unsubscribeResync();
-      sendSocket({ type: "source_control_unsubscribe", workspaceId: this.workspaceId });
     }, { once: true });
-    sendSocket({ type: "source_control_subscribe", workspaceId: this.workspaceId });
   }
 
-  private async reloadRepositories(): Promise<void> {
+  private reloadRepositories(): Promise<void> {
+    if (this.disposed) return Promise.resolve();
+    if (this.repositoryLoad) return this.repositoryLoad;
+    this.loading = true;
+    this.render();
+    this.repositoryLoad = this.fetchRepositories().finally(() => { this.repositoryLoad = null; });
+    return this.repositoryLoad;
+  }
+
+  private async fetchRepositories(): Promise<void> {
     try {
-      const response = await sourceControlAPI.listRepositories(this.workspaceId);
+      const signal = AbortSignal.any([this.signal, AbortSignal.timeout(30_000)]);
+      const response = await sourceControlAPI.listRepositories(this.workspaceId, signal);
       if (this.disposed) return;
       this.repositories = response.repositories || [];
+      this.providers = response.providers || [];
       this.searchParents = response.searchParentRepositories;
-      if (this.expandedRepositories.size === 0) this.repositories.forEach((repository) => this.expandedRepositories.add(repository.id));
+      if (!this.discovered) this.repositories.forEach((repository) => this.expandedRepositories.add(repository.id));
+      this.discovered = true;
       this.loading = false;
       this.render();
       await Promise.allSettled(this.repositories.filter((repository) => repository.available).map((repository) => this.refreshStatus(repository.id)));
     } catch (error) {
+      if (this.disposed) return;
       this.loading = false;
-      this.renderError(error);
+      this.renderError(error instanceof Error && error.name === "TimeoutError"
+        ? new Error("Repository discovery timed out. Check the provider settings and connection, then retry.") : error);
     }
   }
 
@@ -202,6 +219,9 @@ export class SourceControlView {
 
   private render(): void {
     if (this.disposed) return;
+    const focused = document.activeElement instanceof HTMLElement && this.host.contains(document.activeElement) ? document.activeElement.closest<HTMLElement>('[data-git-change-key]') : null;
+    const focusedKey = focused?.dataset.gitChangeKey;
+    const focusedList = focused?.closest<HTMLElement>('[data-git-list-key]')?.dataset.gitListKey;
     const commitInputState = this.commitInputState();
     this.rememberListScroll();
     const total = aggregateSourceControlChangeCount(this.repositories, this.statuses);
@@ -227,6 +247,7 @@ export class SourceControlView {
           <div class="git-section-static-title"><strong>CHANGES</strong></div>
           ${this.loading ? `<div class="git-empty"><span class="spinner"></span> Discovering repositories…</div>` : ""}
           ${!this.loading && this.repositories.length === 0 ? this.renderNoRepositories() : ""}
+          ${!this.loading && this.repositories.length === 0 ? this.providers.filter(provider => !provider.available || provider.diagnostic).map(provider => `<div class="git-warning" role="status">${escapeHTML(provider.label)}: ${escapeHTML(provider.diagnostic || "Provider unavailable. Check its plugin settings.")}</div>`).join("") : ""}
           ${this.repositories.map((repository) => this.renderRepository(repository)).join("")}
         </section>
       </div>
@@ -234,8 +255,8 @@ export class SourceControlView {
     const sidebar = this.host.querySelector<HTMLElement>("[data-git-scroll]");
     if (sidebar) sidebar.scrollTop = this.sidebarScroll;
     this.mountVirtualLists();
-    this.mountVirtualHistory();
     this.restoreCommitInputState(commitInputState);
+    if (focusedKey && focusedList) this.focusChange(focusedList, focusedKey);
   }
 
   private renderError(error: unknown): void {
@@ -301,7 +322,7 @@ export class SourceControlView {
       ${status.truncated ? `<div class="git-warning"><span class="codicon codicon-warning"></span>Showing the first 10,000 changed files.</div>` : ""}
       ${status.groups.map((group) => this.renderGroup(repository, group, this.groupChanges(status, group))).join("")}
       ${status.totalChangeCount === 0 && !status.stale && !status.detectionIncomplete ? `<div class="git-empty compact"><span class="codicon codicon-check-all"></span>No changes</div>` : ""}
-      ${supports(repository, "history") ? this.renderHistory(repository) : ""}
+      ${this.reviews.has(repository.id) ? this.renderReview(repository, this.reviews.get(repository.id)!) : ""}
     </div>`;
   }
 
@@ -334,20 +355,6 @@ export class SourceControlView {
     return changes.filter((change) => this.selection(repositoryId, change.scope).selected.has(this.changeKey(change)));
   }
 
-  private renderHistory(repository: SourceControlRepository): string {
-    const expanded = this.historyExpanded.has(repository.id);
-    const history = this.history.get(repository.id);
-    const review = this.reviews.get(repository.id);
-    return `<section class="git-history">
-      <header><button type="button" data-git-history-toggle aria-expanded="${expanded}"><span class="codicon codicon-chevron-${expanded ? "down" : "right"}"></span><span class="codicon codicon-git-commit"></span><strong>HISTORY</strong></button></header>
-      ${expanded ? `<div class="git-history-list">
-        ${!history ? `<div class="git-empty compact"><span class="spinner"></span> Loading history…</div>` : history.commits.length ? `<div class="git-history-viewport" data-git-scroll-key="${escapeHTML(`${repository.id}:history`)}" data-git-history-repository="${escapeHTML(repository.id)}"><div class="git-history-canvas"></div></div>` : `<div class="git-empty compact">No commits yet</div>`}
-        ${history?.hasMore ? `<button type="button" class="git-load-more" data-git-history-more>Load more</button>` : ""}
-        ${review ? this.renderReview(repository, review) : ""}
-      </div>` : ""}
-    </section>`;
-  }
-
   private renderReview(repository: SourceControlRepository, review: Review): string {
     return `<div class="git-review"><header><strong>${review.kind === "stash" ? "Stash" : "Commit"} ${escapeHTML(shortHash(review.ref))}</strong><button type="button" data-git-review-close aria-label="Close review"><span class="codicon codicon-close"></span></button></header>
       ${review.detail.files.length ? review.detail.files.map((file, index) => `<button type="button" data-git-review-file="${index}"><span class="codicon codicon-file-code"></span><span>${escapeHTML(file.path)}</span><b>${escapeHTML(file.status)}</b></button>`).join("") : `<div class="git-empty compact">No changed files</div>`}
@@ -376,29 +383,6 @@ export class SourceControlView {
     });
   }
 
-  private mountVirtualHistory(): void {
-    this.host.querySelectorAll<HTMLElement>("[data-git-history-repository]").forEach((list) => {
-      const repositoryId = list.dataset.gitHistoryRepository || "";
-      const commits = this.history.get(repositoryId)?.commits || [];
-      const key = `${repositoryId}:history`;
-      const canvas = list.querySelector<HTMLElement>(".git-history-canvas")!;
-      canvas.style.height = `${commits.length * historyRowHeight}px`;
-      list.style.height = `${Math.min(commits.length * historyRowHeight, 380)}px`;
-      list.scrollTop = Math.min(this.listScroll.get(key) || 0, Math.max(0, commits.length * historyRowHeight - list.clientHeight));
-      const renderWindow = () => {
-        const start = Math.max(0, Math.floor(list.scrollTop / historyRowHeight) - 5);
-        const end = Math.min(commits.length, start + Math.ceil(list.clientHeight / historyRowHeight) + 10);
-        canvas.innerHTML = commits.slice(start, end).map((commit, offset) => this.renderHistoryRow(commit, start + offset)).join("");
-      };
-      list.addEventListener("scroll", renderWindow, { signal: this.signal, passive: true });
-      renderWindow();
-    });
-  }
-
-  private renderHistoryRow(commit: SourceControlHistory["commits"][number], index: number): string {
-    return `<button type="button" class="git-history-row" style="transform:translateY(${index * historyRowHeight}px)" data-git-commit="${escapeHTML(commit.hash)}" title="${escapeHTML(commit.hash)}"><span class="git-graph-node"></span><span><strong>${escapeHTML(commit.subject)}</strong><small>${escapeHTML(commit.author)} · ${escapeHTML(formatDate(commit.authoredAt))}</small></span>${commit.refs.slice(0, 2).map((ref) => `<em>${escapeHTML(ref)}</em>`).join("")}</button>`;
-  }
-
   private renderChangeRow(repositoryId: string, scope: string, change: SourceControlChange, index: number): string {
     const key = this.changeKey(change);
     const selected = this.selection(repositoryId, scope).selected.has(key);
@@ -409,7 +393,7 @@ export class SourceControlView {
     const group = this.statuses.get(repositoryId)?.groups.find((candidate) => candidate.id === change.groupId);
     const changeAction = repository && group ? presentationFor(repository).changeAction(repository, group, change) : null;
     const canDiscard = group?.actions.includes("discard") ?? false;
-    return `<div class="git-change-row ${selected ? "is-selected" : ""}" style="transform:translateY(${index * rowHeight}px)" role="option" aria-selected="${selected}" tabindex="${selected ? 0 : -1}" data-git-change-index="${index}">
+    return `<div class="git-change-row ${selected ? "is-selected" : ""}" style="transform:translateY(${index * rowHeight}px)" role="option" aria-selected="${selected}" tabindex="${selected || index === 0 ? 0 : -1}" data-git-change-key="${escapeHTML(key)}" data-git-change-index="${index}">
       <span class="codicon codicon-${change.submodule ? "file-submodule" : "file-code"}"></span><span class="git-change-name">${escapeHTML(filename)}</span><small>${escapeHTML(directory)}</small>
       <div class="git-change-actions">
         ${group?.role !== "included" ? `<button type="button" title="Open File" aria-label="Open File" data-git-file-action="open"><span class="codicon codicon-go-to-file"></span></button>` : ""}
@@ -447,16 +431,29 @@ export class SourceControlView {
       }
     }, { signal: this.signal });
     this.host.addEventListener("keydown", (event) => {
+      const row = (event.target as Element).closest<HTMLElement>('[data-git-change-index]');
+      if (row && !(event.target as Element).closest('button')) {
+        const context = this.changeContext(row);
+        const list = row.closest<HTMLElement>('[data-git-list-key]')!;
+        if (context && ['ArrowUp','ArrowDown','Home','End',' ','Enter'].includes(event.key)) {
+          event.preventDefault(); event.stopPropagation();
+          if(event.key === 'Enter') { void this.openChange(row,true); return; }
+          const index = event.key === 'Home' ? 0 : event.key === 'End' ? context.changes.length-1 : Math.max(0,Math.min(context.changes.length-1,context.index + (event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0)));
+          const key = this.changeKey(context.changes[index]);
+          const repositoryId = list.dataset.gitListRepository!;
+          const selected = updateSelection(this.selection(repositoryId,context.scope),context.changes.map(change=>this.changeKey(change)),key,{range:event.shiftKey,toggle:event.key === ' ' || event.ctrlKey || event.metaKey});
+          this.selections.clear(); this.selections.set(this.selectionKey(repositoryId,context.scope),selected);
+          if(index*rowHeight < list.scrollTop) list.scrollTop=index*rowHeight;
+          if((index+1)*rowHeight > list.scrollTop+list.clientHeight) list.scrollTop=(index+1)*rowHeight-list.clientHeight;
+          const listKey=list.dataset.gitListKey!;
+          this.render(); this.focusChange(listKey,key); return;
+        }
+      }
       const input = (event.target as Element).closest<HTMLTextAreaElement>("[data-git-commit-message]");
       if (input && event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         const repositoryId = input.closest<HTMLElement>("[data-git-repository]")?.dataset.gitRepository;
         if (repositoryId) void this.runPrimaryAction(repositoryId);
-      }
-      const row = (event.target as Element).closest<HTMLElement>("[data-git-change-index]");
-      if (row && (event.key === "Enter" || event.key === " ")) {
-        event.preventDefault();
-        void this.openChange(row, true);
       }
     }, { signal: this.signal });
     this.host.addEventListener("dblclick", (event) => {
@@ -470,6 +467,11 @@ export class SourceControlView {
       this.showChangeRowMenu(event, row);
     }, { signal: this.signal });
     this.host.addEventListener("click", (event) => void this.handleClick(event), { signal: this.signal });
+  }
+
+  private focusChange(listKey:string,key:string):void {
+    const list=[...this.host.querySelectorAll<HTMLElement>('[data-git-list-key]')].find(element=>element.dataset.gitListKey===listKey);
+    [...(list?.querySelectorAll<HTMLElement>('[data-git-change-key]') || [])].find(element=>element.dataset.gitChangeKey===key)?.focus({preventScroll:true});
   }
 
   private async handleClick(event: MouseEvent): Promise<void> {
@@ -533,18 +535,6 @@ export class SourceControlView {
       }
       return;
     }
-    if (target.closest("[data-git-history-toggle]")) {
-      if (this.historyExpanded.has(repository.id)) this.historyExpanded.delete(repository.id);
-      else {
-        this.historyExpanded.add(repository.id);
-        if (!this.history.has(repository.id)) void this.loadHistory(repository.id);
-      }
-      this.render();
-      return;
-    }
-    if (target.closest("[data-git-history-more]")) { await this.loadMoreHistory(repository.id); return; }
-    const commit = target.closest<HTMLElement>("[data-git-commit]");
-    if (commit) { await this.loadReview(repository.id, commit.dataset.gitCommit || "", "commit"); return; }
     if (target.closest("[data-git-review-close]")) { this.reviews.delete(repository.id); this.render(); return; }
     const reviewFile = target.closest<HTMLElement>("[data-git-review-file]");
     if (reviewFile) {
@@ -569,8 +559,9 @@ export class SourceControlView {
     const next = updateSelection(this.selection(repository.id, context.scope), ordered, this.changeKey(context.change), {
       toggle: event.ctrlKey || event.metaKey, range: event.shiftKey,
     });
+    this.selections.clear();
     this.selections.set(this.selectionKey(repository.id, context.scope), next);
-    if (!event.ctrlKey && !event.metaKey && !event.shiftKey) await this.callbacks.openDiff(repository, {
+    await this.callbacks.openDiff(repository, {
       kind: "change", groupId: context.change.groupId, path: context.change.path,
       oldPath: context.change.oldPath, fileRef: context.change.ref,
       scope: diffScopeForGroup(this.statuses.get(repository.id)?.groups.find((group) => group.id === context.change.groupId)),
@@ -609,6 +600,7 @@ export class SourceControlView {
     // Right-clicking an unselected row selects just that row, mirroring the Code tab explorer.
     if (!this.selection(repository.id, scope).selected.has(this.changeKey(change))) {
       const ordered = changes.map((candidate) => this.changeKey(candidate));
+      this.selections.clear();
       this.selections.set(this.selectionKey(repository.id, scope), updateSelection(this.selection(repository.id, scope), ordered, this.changeKey(change), { toggle: false, range: false }));
       this.render();
     }
@@ -643,12 +635,11 @@ export class SourceControlView {
     const selectedKeys = actionKeys(this.selection(repository.id, scope), this.changeKey(change));
     const paths = changes.filter((candidate) => selectedKeys.includes(this.changeKey(candidate))).map((candidate) => candidate.path);
     if (action === "discard") {
-      const protectedActive = hasProtectedChanges(this.statuses.get(repository.id));
       const answer = await choiceDialog({
         title: "Revert changes?", message: paths.length === 1 ? `Revert changes to ${paths[0]}?` : `Revert changes to ${paths.length} files?`,
-        detail: protectedActive
-          ? "Protected files return to their frozen versions and remain protected. Other tracked edits cannot be recovered; untracked files go to Echo Trash."
-          : "Tracked edits cannot be recovered. Untracked files will be moved to Echo Trash and can be restored.",
+        detail: `${repository.providerId === "git" ? "Working files return to the index; staged content is preserved." : "Tracked edits return to the checkout baseline."} Tracked edits cannot be recovered. Untracked files go to Echo Trash.
+
+${paths.join("\n")}`,
         choices: [{ id: "cancel", label: "Cancel" }, { id: "revert", label: "Revert", danger: true, primary: true }],
       });
       if (answer !== "revert") return;
@@ -671,10 +662,15 @@ export class SourceControlView {
     groupPaths: string[],
     groupId?: string,
   ): Promise<void> {
+    const paths = presentation.pathSource === "row" ? rowPaths
+      : presentation.pathSource === "selection" ? selectedPaths
+        : presentation.pathSource === "group" ? groupPaths : undefined;
+    if (presentation.pathSource !== "none" && !paths?.length) return;
     if (presentation.confirmation) {
       const answer = await choiceDialog({
         title: presentation.confirmation.title,
         message: presentation.confirmation.message,
+        detail: paths?.join("\n"),
         choices: [
           { id: "cancel", label: "Cancel" },
           { id: "confirm", label: presentation.confirmation.confirmLabel, danger: true, primary: true },
@@ -682,10 +678,6 @@ export class SourceControlView {
       });
       if (answer !== "confirm") return;
     }
-    const paths = presentation.pathSource === "row" ? rowPaths
-      : presentation.pathSource === "selection" ? selectedPaths
-        : presentation.pathSource === "group" ? groupPaths : undefined;
-    if (presentation.pathSource !== "none" && !paths?.length) return;
     await this.run(repository, {
       requestId: randomUUID(), action: presentation.action, paths,
       groupId,
@@ -718,7 +710,22 @@ export class SourceControlView {
   }
 
   private async run(repository: SourceControlRepository, request: SourceControlActionRequest): Promise<void> {
+    if(this.busyRepositories.has(repository.id) && request.action !== "reconcile_apply") return;
+    if (repository.providerId === "git" && ["fetch", "fetch_prune", "pull", "pull_rebase", "push", "sync", "publish_branch", "push_tags", "delete_remote_tag"].includes(request.action) && !request.remote) {
+      const metadata = await this.ensureMetadata(repository.id);
+      if (!metadata) return;
+      const remote = metadata.remotes.length === 1 ? metadata.remotes[0].name : await choose("Choose Remote", metadata.remotes.map(item => item.name));
+      if (!remote) return;
+      request = {...request, remote};
+    }
+    if (!request.confirmed && ["drop_stash", "drop_all_stashes", "delete_tag", "delete_remote_tag", "delete_remote_branch", "delete_branch", "remove_remote", "abort_rebase", "commit_staged_amend", "commit_all_amend"].includes(request.action)) {
+      const choice = await choiceDialog({title: `${actionLabel(request.action)}?`, message: `Confirm ${actionLabel(request.action).toLowerCase()} in ${repository.label}.`, detail: request.name || request.ref || "This operation cannot be undone from the editor.", choices: [{id:"cancel",label:"Cancel"},{id:"confirm",label:"Continue",danger:true,primary:true}]});
+      if(choice !== "confirm") return;
+      request = {...request, confirmed:true};
+    }
+    if (this.callbacks.beforeAction && !(await this.callbacks.beforeAction(repository,request))) return;
     const operation: SourceControlOperationEvent = { workspaceId: this.workspaceId, repositoryId: repository.id, providerId: repository.providerId, requestId: request.requestId, action: request.action, state: "running" };
+    this.localOperations.add(repository.id);
     this.busyRepositories.set(repository.id, operation);
     this.callbacks.operationChanged?.(repository.id, true);
     this.render();
@@ -726,6 +733,7 @@ export class SourceControlView {
       const status = this.statuses.get(repository.id);
       const actionRequest = { ...request, expectedRevision: status?.revision } as SourceControlActionRequest;
       const result = await sourceControlAPI.runAction(this.workspaceId, repository.id, actionRequest);
+      if (result.url) { const localBot = this.workspaceId.split(":").at(-1)!; const routed = result.url.replace(`/bots/${encodeURIComponent(localBot)}/`, `/bots/${encodeURIComponent(this.workspaceId)}/`); window.open(resourceURL(routed),"_blank","noopener"); }
       this.applyPrediction(repository.id, request, result);
       if (result.diagnostic) toast(result.diagnostic, { sticky: true });
       if (result.preview) {
@@ -738,24 +746,23 @@ export class SourceControlView {
       }
       if (!["stage", "stage_all", "unstage", "unstage_all", "protect", "protect_all", "unprotect", "unprotect_all", "discard", "discard_all", "open_ui"].includes(request.action)) {
         this.metadata.delete(repository.id);
-        this.history.delete(repository.id);
-        if (this.historyExpanded.has(repository.id)) void this.loadHistory(repository.id);
       }
       if (request.action.startsWith("commit_")) this.drafts.delete(repository.id);
       if (result.trashIds?.length) {
         toast(`${result.trashIds.length} untracked file${result.trashIds.length === 1 ? "" : "s"} moved to Trash.`, {
           actionLabel: "Undo", action: async () => {
-            await Promise.all(result.trashIds!.map((id) => api(`/api/workspaces/${encodeURIComponent(this.workspaceId)}/fs/trash/${encodeURIComponent(id)}/restore`, { method: "POST" })));
+            await Promise.all(result.trashIds!.map((id) => api(`/api/v1/plugins/monaco-editor/bots/${encodeURIComponent(this.workspaceId)}/fs/trash/${encodeURIComponent(id)}/restore`, { method: "POST" })));
             await this.refreshStatus(repository.id);
           },
         });
       }
       this.render();
-      void this.refreshStatus(repository.id);
+      await this.refreshStatus(repository.id);
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), { sticky: true });
-      void this.refreshStatus(repository.id);
+      await this.refreshStatus(repository.id);
     } finally {
+      this.localOperations.delete(repository.id);
       this.busyRepositories.delete(repository.id);
       this.callbacks.operationChanged?.(repository.id, false);
       this.render();
@@ -786,8 +793,8 @@ export class SourceControlView {
   private showGlobalMenu(x: number, y: number): void {
     showContextMenu(x, y, [
       { label: "Refresh", icon: "refresh", run: () => this.reloadRepositories() },
-      { label: "Initialize Git Repository…", icon: "repo-create", run: () => this.initialize() },
-      { label: "Clone Git Repository…", icon: "repo-clone", run: () => this.clone() },
+      { label: "Initialize Git Repository…", icon: "repo-create", disabled: !this.providers.some(provider=>provider.id==="git" && provider.available), run: () => this.initialize() },
+      { label: "Clone Git Repository…", icon: "repo-clone", disabled: !this.providers.some(provider=>provider.id==="git" && provider.available), run: () => this.clone() },
       { label: "P4 Connection Settings…", icon: "settings-gear", run: () => this.configureP4() },
       { label: this.searchParents ? "Stop Searching Parent Repositories" : "Search Parent Repositories", icon: this.searchParents ? "check" : "blank", separatorBefore: true, run: () => this.toggleParentSearch() },
     ]);
@@ -796,11 +803,17 @@ export class SourceControlView {
   private showRepositoryMenu(repository: SourceControlRepository, x: number, y: number): void {
     if (supports(repository, "changelists")) { this.showP4Menu(repository, x, y); return; }
     const presentation = presentationFor(repository);
+    if (presentation.repositoryMenu) {
+      const status = this.statuses.get(repository.id);
+      showContextMenu(x,y,presentation.repositoryMenu({repository,status,selected:status?this.selectedChanges(repository.id,status):[],busy:this.busyRepositories.has(repository.id),run:request=>this.run(repository,{...request,requestId:randomUUID()})}));
+      return;
+    }
+
     const actions: Parameters<typeof showContextMenu>[2] = [
       { label: "Refresh", icon: "refresh", run: () => this.refreshStatus(repository.id) },
     ];
     if (!repository.available) {
-      showContextMenu(x, y, actions);
+      showContextMenu(x, y, actions.map(action=>({...action,disabled:action.disabled || !repository.available || this.busyRepositories.has(repository.id)})));
       return;
     }
     if (supports(repository, "commitAll") || supports(repository, "commitSelected")) {
@@ -818,11 +831,6 @@ export class SourceControlView {
     if (presentation.supportsRemoteAdministration) actions.push({ label: "Remote…", icon: "remote", run: () => void this.showRemoteMenu(repository, x, y) });
     if (supports(repository, "stashes")) actions.push({ label: "Stash…", icon: "archive", run: () => void this.showStashMenu(repository, x, y) });
     if (presentation.supportsTagAdministration) actions.push({ label: "Tags…", icon: "tag", run: () => void this.showTagMenu(repository, x, y) });
-    if (supports(repository, "history")) actions.push({ label: this.historyExpanded.has(repository.id) ? "Hide History" : "Show History", icon: "history", separatorBefore: true, run: () => {
-        if (this.historyExpanded.has(repository.id)) this.historyExpanded.delete(repository.id);
-        else { this.historyExpanded.add(repository.id); if (!this.history.has(repository.id)) void this.loadHistory(repository.id); }
-        this.render();
-      } });
     for (const [index, action] of (presentation.repositoryActions?.(repository) || []).entries()) {
       const availability = repository.actionAvailability?.[action.action];
       actions.push({
@@ -834,7 +842,7 @@ export class SourceControlView {
         run: () => this.runSimple(repository, action.action),
       });
     }
-    showContextMenu(x, y, actions);
+    showContextMenu(x, y, actions.map(action=>({...action,disabled:action.disabled || !repository.available || this.busyRepositories.has(repository.id)})));
   }
 
   private showCommitMenu(repository: SourceControlRepository, x: number, y: number): void {
@@ -900,7 +908,7 @@ export class SourceControlView {
       { label: "Stage All Changes", icon: "add", disabled: !status?.unstaged.length && !status?.conflicts.length, run: () => this.runSimple(repository, "stage_all") },
       { label: "Unstage All Changes", icon: "remove", disabled: !status?.staged.length, run: () => this.runSimple(repository, "unstage_all") },
       { label: "Discard All Changes", icon: "discard", danger: true, separatorBefore: true, disabled: !status?.unstaged.length, run: async () => {
-        const choice = await choiceDialog({ title: "Discard all changes?", message: "Tracked changes cannot be recovered. Untracked files will be moved to Echo Trash.", choices: [{ id: "cancel", label: "Cancel" }, { id: "discard", label: "Discard All", danger: true, primary: true }] });
+        const choice = await choiceDialog({ title: "Discard all changes?", message: "Tracked changes cannot be recovered. Untracked files will be moved to Echo Trash.", detail: status?.unstaged.map(change=>change.path).join("\n"), choices: [{ id: "cancel", label: "Cancel" }, { id: "discard", label: "Discard All", danger: true, primary: true }] });
         if (choice === "discard") await this.run(repository, { requestId: randomUUID(), action: "discard_all", confirmed: true });
       } },
     ]);
@@ -908,10 +916,9 @@ export class SourceControlView {
 
   private showNetworkMenu(repository: SourceControlRepository, x: number, y: number): void {
     if (presentationFor(repository).workflow !== "git") {
-      const protectedActive = hasProtectedChanges(this.statuses.get(repository.id));
       const actions: Parameters<typeof showContextMenu>[2] = [];
       if (supports(repository, "sync")) actions.push({ label: "Sync", icon: "sync", run: () => this.runSimple(repository, "sync") });
-      if (supports(repository, "update")) actions.push({ label: "Update Checkout", detail: protectedActive ? "Clear protection first" : undefined, icon: "refresh", separatorBefore: actions.length > 0, disabled: protectedActive, run: () => this.runSimple(repository, "update") });
+      if (supports(repository, "update")) actions.push({ label: "Update Checkout", icon: "refresh", separatorBefore: actions.length > 0, run: () => this.runSimple(repository, "update") });
       if (supports(repository, "pull")) actions.push({ label: "Pull", icon: "cloud-download", run: () => this.runSimple(repository, "pull") });
       if (supports(repository, "push")) actions.push({ label: "Push", icon: "cloud-upload", run: () => this.runSimple(repository, "push") });
       showContextMenu(x, y, actions);
@@ -940,14 +947,13 @@ export class SourceControlView {
     const metadata = await this.ensureMetadata(repository.id);
     if (!metadata) return;
     if (presentationFor(repository).workflow !== "git") {
-      const protectedActive = hasProtectedChanges(this.statuses.get(repository.id));
       const actions: Parameters<typeof showContextMenu>[2] = [];
       if (supports(repository, "branches")) actions.push(
-        { label: "Switch To…", detail: protectedActive ? "Clear protection first" : undefined, icon: "git-branch", disabled: protectedActive, run: () => this.chooseRefAction(repository, "checkout", metadata.branches.map((branch) => branch.name)) },
-        { label: "Create Branch…", detail: protectedActive ? "Clear protection first" : undefined, icon: "git-branch-create", separatorBefore: true, disabled: protectedActive, run: () => this.promptNameAction(repository, "create_branch", "Create Branch", "Branch name") },
-        { label: "Create Branch From…", detail: protectedActive ? "Clear protection first" : undefined, icon: "git-branch-create", disabled: protectedActive, run: () => this.createBranchFrom(repository, metadata) },
+        { label: "Switch To…", icon: "git-branch", run: () => this.chooseRefAction(repository, "checkout", metadata.branches.map((branch) => branch.name)) },
+        { label: "Create Branch…", icon: "git-branch-create", separatorBefore: true, run: () => this.promptNameAction(repository, "create_branch", "Create Branch", "Branch name") },
+        { label: "Create Branch From…", icon: "git-branch-create", run: () => this.createBranchFrom(repository, metadata) },
       );
-      if (supports(repository, "merge")) actions.push({ label: "Merge Branch…", detail: protectedActive ? "Clear protection first" : undefined, icon: "git-merge", separatorBefore: actions.length > 0, disabled: protectedActive, run: () => this.chooseRefAction(repository, "merge", metadata.branches.filter((branch) => !branch.current && !branch.closed).map((branch) => branch.name)) });
+      if (supports(repository, "merge")) actions.push({ label: "Merge Branch…", icon: "git-merge", separatorBefore: actions.length > 0, run: () => this.chooseRefAction(repository, "merge", metadata.branches.filter((branch) => !branch.current && !branch.closed).map((branch) => branch.name)) });
       showContextMenu(x, y, actions);
       return;
     }
@@ -958,7 +964,7 @@ export class SourceControlView {
       { label: "Rename Current Branch…", icon: "edit", run: () => this.promptNameAction(repository, "rename_branch", "Rename Branch", "New branch name") },
       { label: "Merge Branch…", icon: "git-merge", separatorBefore: true, run: () => this.chooseRefAction(repository, "merge", metadata.branches.filter((branch) => !branch.current).map((branch) => branch.name)) },
       { label: "Rebase Current Branch…", icon: "git-pull-request", run: () => this.chooseRefAction(repository, "rebase", metadata.branches.filter((branch) => !branch.current).map((branch) => branch.name)) },
-      { label: "Publish Branch", icon: "cloud-upload", run: () => this.run(repository, { requestId: randomUUID(), action: "publish_branch", remote: metadata.remotes[0]?.name || "origin" }) },
+      { label: "Publish Branch", icon: "cloud-upload", run: () => this.run(repository, { requestId: randomUUID(), action: "publish_branch",  }) },
       { label: "Delete Local Branch…", icon: "trash", danger: true, separatorBefore: true, run: () => this.chooseRefAction(repository, "delete_branch", metadata.branches.filter((branch) => !branch.current).map((branch) => branch.name)) },
       { label: "Delete Remote Branch…", icon: "trash", danger: true, run: () => this.deleteRemoteBranch(repository, metadata) },
     ]);
@@ -982,14 +988,13 @@ export class SourceControlView {
     const hasStash = metadata.stashes.length > 0;
     const workflow = presentationFor(repository).workflow;
     if (workflow === "fossil") {
-      const protectedActive = hasProtectedChanges(this.statuses.get(repository.id));
       showContextMenu(x, y, [
-        { label: "Stash Changes", detail: protectedActive ? "Clear protection first" : undefined, icon: "archive", disabled: protectedActive, run: () => this.runSimple(repository, "stash") },
-        { label: "Snapshot Changes", detail: protectedActive ? "Clear protection first" : undefined, icon: "archive", disabled: protectedActive, run: () => this.runSimple(repository, "stash_snapshot") },
-        { label: "Apply Latest Stash", detail: protectedActive ? "Clear protection first" : undefined, icon: "check", separatorBefore: true, disabled: !hasStash || protectedActive, run: () => this.runSimple(repository, "apply_latest_stash") },
-        { label: "Apply Stash…", detail: protectedActive ? "Clear protection first" : undefined, icon: "check", disabled: !hasStash || protectedActive, run: () => this.chooseStashAction(repository, metadata, "apply_stash") },
-        { label: "Pop Latest Stash", detail: protectedActive ? "Clear protection first" : undefined, icon: "move", disabled: !hasStash || protectedActive, run: () => this.runSimple(repository, "pop_latest_stash") },
-        { label: "Pop Stash…", detail: protectedActive ? "Clear protection first" : undefined, icon: "move", disabled: !hasStash || protectedActive, run: () => this.chooseStashAction(repository, metadata, "pop_stash") },
+        { label: "Stash Changes", icon: "archive", run: () => this.runSimple(repository, "stash") },
+        { label: "Snapshot Changes", icon: "archive", run: () => this.runSimple(repository, "stash_snapshot") },
+        { label: "Apply Latest Stash", icon: "check", separatorBefore: true, disabled: !hasStash, run: () => this.runSimple(repository, "apply_latest_stash") },
+        { label: "Apply Stash…", icon: "check", disabled: !hasStash, run: () => this.chooseStashAction(repository, metadata, "apply_stash") },
+        { label: "Pop Latest Stash", icon: "move", disabled: !hasStash, run: () => this.runSimple(repository, "pop_latest_stash") },
+        { label: "Pop Stash…", icon: "move", disabled: !hasStash, run: () => this.chooseStashAction(repository, metadata, "pop_stash") },
         { label: "View Stash…", icon: "eye", separatorBefore: true, disabled: !hasStash, run: async () => {
           const ref = await choose("View Stash", metadata.stashes.map((stash) => stash.ref), metadata.stashes.map((stash) => stash.message));
           if (ref) await this.loadReview(repository.id, ref, "stash");
@@ -1038,9 +1043,9 @@ export class SourceControlView {
         const name = await choose("Delete Tag", metadata.tags); if (name) await this.run(repository, { requestId: randomUUID(), action: "delete_tag", name });
       } },
       { label: "Delete Remote Tag…", icon: "trash", danger: true, disabled: metadata.tags.length === 0, run: async () => {
-        const name = await choose("Delete Remote Tag", metadata.tags); if (name) await this.run(repository, { requestId: randomUUID(), action: "delete_remote_tag", name, remote: metadata.remotes[0]?.name || "origin" });
+        const name = await choose("Delete Remote Tag", metadata.tags); if (name) await this.run(repository, { requestId: randomUUID(), action: "delete_remote_tag", name,  });
       } },
-      { label: "Push Tags", icon: "cloud-upload", separatorBefore: true, disabled: metadata.tags.length === 0, run: () => this.run(repository, { requestId: randomUUID(), action: "push_tags", remote: metadata.remotes[0]?.name || "origin" }) },
+      { label: "Push Tags", icon: "cloud-upload", separatorBefore: true, disabled: metadata.tags.length === 0, run: () => this.run(repository, { requestId: randomUUID(), action: "push_tags",  }) },
     ]);
   }
 
@@ -1057,26 +1062,10 @@ export class SourceControlView {
     }
   }
 
-  private async loadHistory(repositoryId: string): Promise<void> {
-    try { this.history.set(repositoryId, await sourceControlAPI.loadHistory(this.workspaceId, repositoryId)); this.render(); }
-    catch (error) { toast(error instanceof Error ? error.message : String(error)); }
-  }
-
-  private async loadMoreHistory(repositoryId: string): Promise<void> {
-    const current = this.history.get(repositoryId);
-    if (!current?.hasMore) return;
-    try {
-      const next = await sourceControlAPI.loadHistory(this.workspaceId, repositoryId, current.nextOffset || current.commits.length);
-      this.history.set(repositoryId, { commits: [...current.commits, ...next.commits], hasMore: next.hasMore, nextOffset: next.nextOffset });
-      this.render();
-    } catch (error) { toast(error instanceof Error ? error.message : String(error)); }
-  }
-
   private async loadReview(repositoryId: string, ref: string, kind: "commit" | "stash"): Promise<void> {
     try {
       const detail = await sourceControlAPI.loadRevisionDetail(this.workspaceId, repositoryId, ref, kind);
       this.reviews.set(repositoryId, { ref, kind, detail });
-      this.historyExpanded.add(repositoryId);
       this.render();
     } catch (error) { toast(error instanceof Error ? error.message : String(error)); }
   }
@@ -1208,7 +1197,7 @@ export class SourceControlView {
   }
 
   private async revertP4(repository: SourceControlRepository, action: string, paths: string[], groupId?: string): Promise<void> {
-    const choice = await choiceDialog({ title: "Revert P4 changes?", message: paths.length ? `Revert ${paths.length} selected files?` : `Revert changelist ${groupId}?`, detail: "Echo saves a backup of local content first. P4 restores the synced version; reverting an add leaves the file on disk.", choices: [{ id: "cancel", label: "Cancel" }, { id: "revert", label: "Revert", danger: true, primary: true }] });
+    const choice = await choiceDialog({ title: "Revert P4 changes?", message: paths.length ? `Revert ${paths.length} selected files?` : `Revert changelist ${groupId}?`, detail: `Echo saves a backup of local content first. P4 restores the synced version; reverting an add leaves the file on disk.\n\n${paths.join("\n")}`, choices: [{ id: "cancel", label: "Cancel" }, { id: "revert", label: "Revert", danger: true, primary: true }] });
     if (choice === "revert") await this.run(repository, { requestId: randomUUID(), action, paths, groupId, confirmed: true });
   }
 
@@ -1217,11 +1206,18 @@ export class SourceControlView {
     try {
       const settings = await sourceControlAPI.loadP4Settings(this.workspaceId);
       const current = settings.roots[root.id];
-      const server = await promptDialog({ title: "P4 Connection Settings", label: "Server (blank uses existing P4 configuration)", initial: current?.server || "", required: false, confirmLabel: "Next" }); if (server === null) return;
-      const user = await promptDialog({ title: "P4 Connection Settings", label: "User (blank uses existing P4 configuration)", initial: current?.user || "", required: false, confirmLabel: "Next" }); if (user === null) return;
-      const client = await promptDialog({ title: "P4 Connection Settings", label: "Client (blank uses existing P4 configuration)", initial: current?.client || "", required: false, confirmLabel: "Save" }); if (client === null) return;
+      const server = await promptDialog({ title: "P4 Connection Settings", label: "Server (blank inherits P4 plugin settings)", initial: current?.server || "", required: false, confirmLabel: "Next" }); if (server === null) return;
+      const user = await promptDialog({ title: "P4 Connection Settings", label: "User (blank inherits P4 plugin settings)", initial: current?.user || "", required: false, confirmLabel: "Next" }); if (user === null) return;
+      const client = await promptDialog({ title: "P4 Connection Settings", label: "Client (blank inherits P4 plugin settings)", initial: current?.client || "", required: false, confirmLabel: "Save" }); if (client === null) return;
       settings.roots[root.id] = { server, user, client };
       await sourceControlAPI.saveP4Settings(this.workspaceId, settings);
+      if (server && user) {
+        const choice = await choiceDialog({title:"P4 Credentials",message:`Use the saved credential for ${user} on ${server}, or replace it in protected storage.`,choices:[{id:"keep",label:"Keep Saved Credential",primary:true},{id:"replace",label:"Replace Credential"}]});
+        if(choice === "replace") {
+          const secret = await promptDialog({title:"P4 Credential",label:"Password or ticket",type:"password",confirmLabel:"Store"});
+          if(secret !== null) await sourceControlAPI.saveP4Credential(this.workspaceId,server,user,secret);
+        }
+      }
       await this.reloadRepositories();
     } catch (error) { toast(error instanceof Error ? error.message : String(error), { sticky: true }); }
   }

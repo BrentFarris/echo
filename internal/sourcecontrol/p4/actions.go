@@ -442,7 +442,7 @@ func (p *Provider) backup(ctx context.Context, r *repository, paths []string) (s
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		input, err := os.Open(path)
+		input, err := p.fs.OpenSourceControlFile(r.workspace, path)
 		if os.IsNotExist(err) {
 			continue
 		}

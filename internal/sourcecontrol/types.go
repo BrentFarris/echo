@@ -7,8 +7,8 @@ package sourcecontrol
 import (
 	"errors"
 
+	workspacefs "github.com/brent/echo/internal/editorfs"
 	"github.com/brent/echo/internal/sourcecontrol/hunk"
-	"github.com/brent/echo/internal/workspacefs"
 )
 
 const (

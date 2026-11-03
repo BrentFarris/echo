@@ -25,6 +25,21 @@ func (p *Provider) describeHunks(ctx context.Context, state *repositoryState, do
 	if target.GroupID != "working" && target.GroupID != "untracked" && target.GroupID != protectedGroupID {
 		return
 	}
+	if manifest == nil && document.Editable {
+		// Ordinary Fossil hunks only edit the browser buffer, with Undo/Redo.
+		// They neither stage content nor mutate a protected snapshot. Running
+		// `changes --hash` here scans the whole checkout even with a path filter,
+		// making every click slow once the short status cache expires. The diff
+		// already contains the baseline and the revision checked by Save; keep
+		// only the local file-type guard for this buffer-only operation.
+		current, _, err := p.captureFileState(state, target.Path, target.OldPath, "", "")
+		if err != nil || current.Symlink {
+			return
+		}
+		document.HunkToken = hunk.Token(document.RepositoryID, target, document.Original, document.Modified, document.ModifiedRevision)
+		document.HunkActions = []string{"revert_hunk"}
+		return
+	}
 	info, err := p.checkoutInfo(ctx, state.workspaceID, state.root)
 	if err != nil || checkpointStale(manifest, state, info.Checkout) != "" {
 		return
@@ -57,9 +72,9 @@ func (p *Provider) describeHunks(ctx context.Context, state *repositoryState, do
 	}
 	document.HunkToken = hunk.Token(document.RepositoryID, target, document.Original, document.Modified, manifest, info.Checkout, current)
 	if target.GroupID == protectedGroupID {
-		document.HunkActions = []string{"unprotect_hunk"}
+		document.HunkActions = []string{}
 	} else {
-		document.HunkActions = []string{"protect_hunk", "revert_hunk"}
+		document.HunkActions = []string{"revert_hunk"}
 	}
 }
 

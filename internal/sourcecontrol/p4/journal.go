@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
+	workspacefs "github.com/brent/echo/internal/editorfs"
 	"github.com/brent/echo/internal/mutation"
-	"github.com/brent/echo/internal/workspacefs"
 )
 
 type intent struct {

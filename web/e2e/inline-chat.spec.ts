@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { createServer, type Server, type ServerResponse } from "node:http";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,6 +12,7 @@ test.beforeAll(async () => {
   provider = createServer(async (request, response) => {
     let raw = "";
     for await (const chunk of request) raw += chunk.toString();
+    if (request.method === 'GET') { response.writeHead(200, { 'Content-Type':'application/json' }); response.end(JSON.stringify({ data:[{ id:'inline-fake' },{ id:'inline-chosen' }] })); return; }
     const body = JSON.parse(raw);
     requests.push(body);
     response.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -48,184 +49,189 @@ test.afterAll(async () => {
   await new Promise<void>(resolve => provider.close(() => resolve()));
 });
 
-async function api(page: Page, path: string, body?: unknown, method = body === undefined ? "GET" : "POST") {
+const original = 'const value = 1;\r\n// Unicode 😀\r\nexport { value };\r\n';
+const owner = (page: Page) => page.locator('.editor-bot-session:not([hidden])');
+const zone = (page: Page) => owner(page).locator('.inline-chat-zone');
+const input = (page: Page) => zone(page).getByRole('textbox', { name: 'Inline message' });
+const editor = (page: Page) => owner(page).locator('[data-monaco-host]').getByRole('textbox', { name: 'Editor content' });
+const lines = (page: Page) => owner(page).locator('[data-monaco-host] .view-lines');
+async function api(page: Page, path: string, body?: unknown, method = body === undefined ? 'GET' : 'POST') {
   const response = await page.request.fetch(path, { method, data: body });
-  const result = await response.json();
-  expect(response.ok(), JSON.stringify(result)).toBeTruthy();
-  return result.data;
+  expect(response.ok(), await response.text()).toBeTruthy(); return response.json();
 }
+async function launch(page: Page, plugin = 'monaco-editor') {
+  await page.locator('#apps-button').click();
+  await page.locator(`[data-app-id="${plugin}"]`).getByRole('button', { name: 'Open Monaco Editor', exact: true }).click();
+  await expect(owner(page).locator('.code-app-shell')).toHaveAttribute('aria-busy', 'false');
+}
+async function openFile(page: Page, name: string) {
+  await owner(page).locator('.code-tree-row').filter({ hasText: name }).first().dblclick();
+  await expect(owner(page).locator('.code-tab.is-active')).toContainText(name);
+}
+async function openChat(page: Page) {
+  await editor(page).focus(); await page.keyboard.press('Control+i'); await expect(input(page)).toBeFocused();
+  await zone(page).locator('.model-settings summary').click();
+  const popup = page.locator('.generation-popup:popover-open');
+  await popup.getByRole('option', { name: /Inline test/ }).click();
+  await popup.press('Escape'); await input(page).focus();
+}
+async function send(page: Page, prompt: string) { await input(page).fill(prompt); await input(page).press('Enter'); }
 
-test("inline conversations preview, follow up, stop, accept, undo, and survive tab switches", async ({ page }, testInfo) => {
-  test.setTimeout(180_000);
-  const runtime = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../test-results/e2e-runtime/state.json"), "utf8"));
-  const workspace = join(dirname(runtime.workspace), "inline-workspace");
-  mkdirSync(workspace, { recursive: true });
-  const original = "const value = 1;\r\n// Unicode 😀\r\nexport { value };\r\n";
-  const mainPath = join(workspace, "main.ts");
-  writeFileSync(mainPath, original);
-  writeFileSync(join(workspace, "helper.ts"), "export const helper = 'reference-content';\n");
-  const errors: string[] = [];
-  page.on("pageerror", error => errors.push(error.message));
-  await page.goto("/");
-  await expect(page.getByRole("heading", { name: /Secure this Echo server|Welcome back/ })).toBeVisible();
-  const setup = await page.getByRole("heading", { name: "Secure this Echo server" }).isVisible();
-  if (setup) {
-    await page.getByLabel("Setup code").fill(runtime.setupCode);
-    await page.getByLabel("Confirm password").fill("Echo-E2E-Password!");
-  }
-  await page.getByLabel("Password", { exact: true }).fill("Echo-E2E-Password!");
-  await page.getByLabel("Device name").fill("Inline Chat Test");
-  await page.getByRole("button", { name: setup ? "Finish setup" : "Sign in" }).click();
-  await expect(page.locator(".app-shell")).toBeVisible();
-  const { workspace: created } = await api(page, "/api/workspaces", { name: "Inline", mainPath: workspace, folders: [] });
-  await api(page, "/api/workspaces/active", { id: created.id }, "PUT");
-  const { settings } = await api(page, "/api/settings");
-  settings.endpoints = [{ ...settings.endpoints[0], endpoint: `http://127.0.0.1:${port}/v1`, model: "inline-fake", maxTokens: 1024, contextLength: 65536 }];
-  await api(page, "/api/settings", { settings }, "PUT");
-  await page.goto("/#/code");
-  await expect(page.locator(".code-app-shell")).toHaveAttribute("aria-busy", "false");
-  const editor = page.locator("[data-monaco-host]").getByRole("textbox", { name: "Editor content" });
-  const lines = page.locator("[data-monaco-host] .view-lines");
-  const zone = page.locator(".inline-chat-zone");
-  const input = zone.getByRole("textbox", { name: "Inline message" });
-  const openFile = async (name: string) => {
-    await page.keyboard.press("Control+p");
-    await page.getByLabel("Go to File").fill(name);
-    await page.getByRole("option", { name: new RegExp(name.replace(".", "\\.")) }).first().click();
-    await expect(page.locator(".code-tab.is-active")).toContainText(name);
-  };
-  const openChat = async () => { await editor.focus(); await page.keyboard.press("Control+i"); await expect(input).toBeFocused(); };
-  const send = async (message: string) => { await input.fill(message); await input.press("Enter"); await expect(zone).toHaveAttribute("aria-busy", "false"); };
-  await openFile("main.ts");
-  await editor.focus(); await page.keyboard.press("Control+End"); await page.keyboard.insertText("// unsaved note\n");
-  await page.keyboard.press("Control+Home"); await page.keyboard.press("Shift+End");
-  await openChat();
-  await input.fill("draft"); await page.keyboard.press("Control+i");
-  await expect(zone).toHaveCount(1); await expect(input).toHaveText("draft");
-  await input.fill("explain @helper");
-  await expect(zone.getByRole("option").first()).toBeVisible();
-  await input.press("Enter");
-  await expect(zone.locator(".chat-mention-chip")).toHaveText("helper.ts");
-  await input.press("Enter");
-  await expect(zone).toContainText("The selected code defines a value");
-  const firstRequest = JSON.stringify(requests.at(-1));
-  expect(firstRequest).toContain("unsaved note"); expect(firstRequest).toContain("reference-content");
-  expect(firstRequest).toContain('const value = 1;');
+let botA: string, botB: string, mainPath: string;
+test.beforeEach(async ({ page }, info) => {
+  requests.length = 0;
+  await page.goto('/'); await expect(page.locator('#apps-button')).toBeVisible();
+  await api(page, '/api/v1/session', {});
+  const root = join(dirname(fileURLToPath(import.meta.url)), '../../.test-data/inline', `${info.workerIndex}-${Date.now()}`);
+  mkdirSync(root, { recursive: true }); mainPath = join(root, 'main.ts');
+  writeFileSync(mainPath, original); writeFileSync(join(root, 'helper.ts'), "export const helper = 'reference-content';\n");
+  botA = (await api(page, '/api/v1/bots', { handle: 'inline-first', name: 'Inline First', prompt: 'Use selected bot conventions.', roots: [root] })).id;
+  botB = (await api(page, '/api/v1/bots', { handle: 'inline-second', name: 'Inline Second', roots: [root] })).id;
+  await api(page, '/api/v1/endpoints', { endpoint: { id: 'inline-test', name: 'Inline test', url: `http://127.0.0.1:${port}/v1`, model: 'inline-fake', contextTokens: 65536 } });
+  await api(page, '/api/v1/plugins/monaco-editor', { enabled: true, config: {} }, 'PATCH');
+  await page.reload(); await launch(page);
+  await page.getByLabel('Editor bot', { exact: true }).selectOption(botA);
+  await expect(owner(page).locator('.code-app-shell')).toHaveAttribute('aria-busy', 'false');
+  await openFile(page, 'main.ts');
+});
+test.afterEach(async ({ page }) => {
+  held.forEach(response => response.end());
+  await page.request.delete(`/api/v1/bots/${botA}`); await page.request.delete(`/api/v1/bots/${botB}`);
+  await page.request.delete("/api/v1/endpoints/inline-test");
+});
 
-  await send("change");
-  await expect(page.locator(".inline-chat-added-lines")).toContainText("const value = 2;");
-  await expect(page.locator(".inline-chat-removed").first()).toBeVisible();
-  expect(readFileSync(mainPath, "utf8")).toBe(original);
-  await send("follow-up");
-  await expect(page.locator(".inline-chat-added-lines")).toContainText("const value = 3;");
-  await expect(lines).toContainText("const value = 1;");
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.setViewportSize({ width: 800, height: 700 });
-  await expect(zone.getByRole("button", { name: "Accept changes" })).toBeInViewport();
-  await page.screenshot({ path: testInfo.outputPath("inline-review.png") });
-  await zone.getByRole("button", { name: "Cancel and close" }).click();
-  await expect(zone).toHaveCount(0); await expect(lines).toContainText("unsaved note");
-  await openChat(); await send("change");
-  await zone.getByRole("button", { name: "Accept changes" }).click();
-  await expect(zone).toHaveCount(0); await expect(lines).toContainText("const value = 2;");
-  expect(readFileSync(mainPath, "utf8")).toBe(original);
-  await page.keyboard.press("Control+z");
-  await expect(lines).toContainText("const value = 1;"); await expect(lines).toContainText("unsaved note");
-
-  await openChat(); await send("change");
-  await editor.focus(); await page.keyboard.press("Control+End"); await page.keyboard.insertText("// newer manual edit\n");
-  await expect(zone.getByRole("button", { name: "Accept changes" })).toBeDisabled();
-  await zone.getByRole("button", { name: "Regenerate from current file" }).click();
-  await expect(zone.getByRole("button", { name: "Accept changes" })).toBeEnabled();
-  await expect(lines).toContainText("newer manual edit");
-  await zone.getByRole("button", { name: "Cancel and close" }).click();
-
-  await openChat(); await input.fill("hold"); await input.press("Enter");
-  await expect(zone.getByRole("button", { name: "Stop response" })).toBeVisible();
-  expect(await zone.evaluate(element => getComputedStyle(element).animationName)).toBe("none");
-  await openFile("helper.ts"); await expect(zone).toHaveCount(0);
-  await openChat(); await send("explain");
-  await openFile("main.ts"); await expect(zone.getByRole("button", { name: "Stop response" })).toBeVisible();
-  await zone.getByRole("button", { name: "Stop response" }).click();
-  await expect(zone).toContainText("Stopped");
-  await expect.poll(() => held.size).toBe(0);
-  await page.evaluate(() => { location.hash = "#/home"; });
-  await expect(zone).toHaveCount(0);
-  await page.evaluate(() => { location.hash = "#/code"; });
-  await expect(page.locator(".code-app-shell")).toHaveAttribute("aria-busy", "false");
-  await expect(zone).toContainText("Stopped");
-  await page.keyboard.press("Control+w");
-  await page.getByRole("button", { name: "Discard", exact: true }).click();
-  await openFile("main.ts"); await expect(zone).toHaveCount(0);
-
-  await page.keyboard.press("Control+n");
-  await openChat(); await send("write empty");
-  await zone.getByRole("button", { name: "Accept changes" }).click();
-  await expect(lines).toContainText("Hello 😀");
-  await openChat(); await send("emoji");
-  await page.keyboard.press("Control+Shift+s");
-  await page.getByLabel("File name", { exact: true }).fill("inline-saved.txt");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(zone).toContainText("file location has changed");
-  const savedInlineText = readFileSync(join(workspace, "inline-saved.txt"), "utf8");
-  expect(savedInlineText).toMatch(/^Hello 😀\r?\n$/);
-  await expect(zone.getByRole("button", { name: "Accept changes" })).toBeDisabled();
-  await zone.getByRole("button", { name: "Regenerate from current file" }).click();
-  await expect(zone.getByRole("button", { name: "Accept changes" })).toBeEnabled();
-  await zone.getByRole("button", { name: "Accept changes" }).click();
-  await expect(lines).toContainText("Hello 😃");
-  expect(readFileSync(join(workspace, "inline-saved.txt"), "utf8")).toBe(savedInlineText);
-  await page.keyboard.press("Control+z");
-  await expect(lines).toContainText("Hello 😀");
-  await openChat(); await send("delete all");
-  await zone.getByRole("button", { name: "Accept changes" }).click();
-  await expect(lines).not.toContainText("Hello");
-
-  // The command palette and editor context menu expose the same conversation.
-  await openFile("main.ts");
-  await page.keyboard.press("Control+Shift+p");
-  await page.getByLabel("Command Palette").fill("Inline Chat");
-  await page.getByRole("option", { name: /Inline Chat/ }).click();
-  await expect(input).toBeFocused();
-  await zone.getByRole("button", { name: "Cancel and close" }).click();
-  await lines.click({ button: "right" });
-  // Monaco ignores mouse-up for its first 100 ms to prevent accidental picks.
-  await page.getByRole("menuitem", { name: /Inline Chat/ }).click({ delay: 150 });
-  await expect(input).toBeFocused();
-
-  // Side chat can finish independently while the inline request keeps running.
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await page.emulateMedia({ reducedMotion: "no-preference" });
-  await input.fill("hold"); await input.press("Enter");
-  await expect(zone.getByRole("button", { name: "Stop response" })).toBeVisible();
-  expect(await zone.evaluate(element => getComputedStyle(element).animationName)).toBe("inline-chat-breathe");
-  await page.getByRole("button", { name: "Open code assistant" }).click();
-  const sideInput = page.getByLabel("Message Echo about this code");
-  await sideInput.fill("side response @helper");
-  await expect(page.locator(".code-chat-surface").getByRole("option").first()).toBeVisible();
-  await sideInput.press("Tab"); await sideInput.press("Enter");
-  await expect(page.locator(".code-chat-surface .chat-final-content").last()).toContainText("Side chat response.");
-  await expect(zone.getByRole("button", { name: "Stop response" })).toBeVisible();
-  await zone.getByRole("button", { name: "Stop response" }).click();
-  await expect.poll(() => held.size).toBe(0);
-  await page.getByRole("button", { name: "Close chat", exact: true }).click();
-  await zone.getByRole("button", { name: "Cancel and close" }).click();
-
-  // Acceptance re-reads disk, even before a watcher reports a conflict.
-  await openChat(); await send("change");
-  await editor.focus(); await page.keyboard.press("Control+End"); await page.keyboard.insertText("// keep my edit\n");
-  await zone.getByRole("button", { name: "Regenerate from current file" }).click();
-  await expect(zone.getByRole("button", { name: "Accept changes" })).toBeEnabled();
-  writeFileSync(mainPath, original + "// external edit\r\n");
-  // A watcher may disable acceptance before the click; otherwise the fresh read does.
-  await zone.getByRole("button", { name: "Accept changes" }).evaluate((button: HTMLButtonElement) => button.click());
-  await expect(zone.getByRole("button", { name: "Accept changes" })).toBeDisabled();
-  await expect(zone).toContainText("changed on disk");
-  await expect(lines).toContainText("const value = 1;");
-  await expect(lines).toContainText("keep my edit");
-  expect(readFileSync(mainPath, "utf8")).toBe(original + "// external edit\r\n");
-  await page.reload();
-  await expect(page.locator(".code-app-shell")).toHaveAttribute("aria-busy", "false");
-  await expect(zone).toHaveCount(0);
+test('legacy inline review, references, follow-ups, rejection, acceptance and undo', async ({ page }, info) => {
+  test.setTimeout(90_000);
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await editor(page).focus(); await page.keyboard.press('Control+End'); await page.keyboard.insertText('// unsaved note\n');
+  await page.keyboard.press('Control+Home'); await page.keyboard.press('Shift+End'); await openChat(page);
+  await input(page).fill('explain @helper');
+  await expect(zone(page).getByRole('option').first()).toBeVisible(); await input(page).press('Enter');
+  await expect(zone(page).locator('.chat-mention-chip')).toHaveText('helper.ts'); await input(page).press('Enter');
+  await expect(zone(page)).toContainText('The selected code defines a value');
+  expect(JSON.stringify(requests.at(-1))).toContain('reference-content'); expect(JSON.stringify(requests.at(-1))).toContain('unsaved note');
+  expect(requests.at(-1).messages[0].content).toContain('Use selected bot conventions.');
+  await send(page, 'change'); await expect(owner(page).locator('.inline-chat-added-lines')).toContainText('const value = 2;');
+  await send(page, 'follow-up'); await expect(owner(page).locator('.inline-chat-added-lines')).toContainText('const value = 3;');
+  await expect(lines(page)).toContainText('const value = 1;'); expect(readFileSync(mainPath, 'utf8')).toBe(original);
+  await page.emulateMedia({ reducedMotion: 'reduce', colorScheme: 'light' }); await page.screenshot({ path: info.outputPath('inline-review-light.png') });
+  await page.emulateMedia({ colorScheme: 'dark' }); await page.screenshot({ path: info.outputPath('inline-review-dark.png') });
+  await zone(page).getByRole('button', { name: 'Cancel and close' }).click();
+  await expect(zone(page)).toHaveCount(0); await expect(lines(page)).toContainText('unsaved note');
+  await openChat(page); await send(page, 'change'); await expect(zone(page).getByRole('button', { name: 'Accept changes' })).toBeEnabled();
+  await zone(page).getByRole('button', { name: 'Accept changes' }).click(); await expect(zone(page)).toHaveCount(0);
+  await expect(lines(page)).toContainText('const value = 2;'); expect(readFileSync(mainPath, 'utf8')).toBe(original);
+  await page.keyboard.press('Control+z'); await expect(lines(page)).toContainText('const value = 1;'); await expect(lines(page)).toContainText('unsaved note');
+  await openChat(page); await send(page, 'change'); await expect(zone(page).getByRole('button', { name: 'Accept changes' })).toBeEnabled();
+  await editor(page).focus(); await page.keyboard.press('Control+End'); await page.keyboard.insertText('// newer manual edit\n');
+  await expect(zone(page).getByRole('button', { name: 'Accept changes' })).toBeDisabled();
+  await zone(page).getByRole('button', { name: 'Regenerate from current file' }).click(); await expect(zone(page).getByRole('button', { name: 'Accept changes' })).toBeEnabled();
+  await zone(page).getByRole('button', { name: 'Accept changes' }).click(); await expect(zone(page)).toHaveCount(0); await page.keyboard.press('Control+s');
+  await expect.poll(() => readFileSync(mainPath, 'utf8')).toContain('const value = 2;\r\n'); expect(readFileSync(mainPath, 'utf8')).toContain('newer manual edit');
   expect(errors).toEqual([]);
+});
+
+test('per-bot model settings, tab lifetime, presentation, stop and reload', async ({ page }, info) => {
+  test.setTimeout(90_000);
+  const mainModel = await page.locator('#model-name').textContent(); await openChat(page);
+  await zone(page).locator('.model-settings summary').click(); const popup = page.locator('.generation-popup:popover-open');
+  await expect(popup.getByLabel('Model machine')).toBeDisabled(); await popup.getByLabel('Model identifier').fill('inline-chosen');
+  await popup.getByLabel('Thinking', { exact: true }).fill('5'); await popup.getByLabel('Temperature', { exact: true }).fill('0.23');
+  await page.screenshot({ path: info.outputPath('inline-model-popup.png') });
+  await popup.press('Escape'); await send(page, 'explain'); await expect(zone(page)).toContainText('The selected code defines a value');
+  expect(requests.at(-1)).toMatchObject({ model: 'inline-chosen', reasoning_effort: 'high', temperature: .23 }); await expect(page.locator('#model-name')).toHaveText(mainModel!);
+  await send(page, 'change'); await expect(zone(page).getByRole('button', { name: 'Accept changes' })).toBeEnabled();
+  await input(page).fill('retained draft');
+  await page.getByLabel('Editor bot', { exact: true }).selectOption(botB); await openFile(page, 'main.ts'); await openChat(page);
+  await zone(page).locator('.model-settings summary').click(); await expect(popup.getByLabel('Model identifier')).toHaveValue('inline-fake'); await popup.press('Escape');
+  await page.getByLabel('Editor bot', { exact: true }).selectOption(botA); await expect(input(page)).toHaveText('retained draft');
+  await send(page, 'hold'); await expect(zone(page).getByRole('button', { name: 'Stop response' })).toBeVisible();
+  await openFile(page, 'helper.ts'); await expect(zone(page)).toHaveCount(0); await openFile(page, 'main.ts'); await expect(zone(page).getByRole('button', { name: 'Stop response' })).toBeVisible();
+  await page.getByRole('button', { name: 'Open in Window', exact: true }).click(); await expect(zone(page)).toBeVisible();
+  await page.getByRole('button', { name: 'Open Embedded', exact: true }).click();
+  await zone(page).getByRole('button', { name: 'Stop response' }).click(); await expect(zone(page)).toContainText('Stopped'); await expect.poll(() => held.size).toBe(0);
+  await expect(owner(page).locator('.inline-chat-added-lines')).toContainText('const value = 2;'); await expect(zone(page).getByRole('button', { name: 'Accept changes' })).toBeEnabled();
+  await page.reload(); await expect(owner(page).locator('.code-app-shell')).toHaveAttribute('aria-busy', 'false'); await expect(zone(page)).toHaveCount(0);
+  await editor(page).focus(); await page.keyboard.press('Control+i'); await zone(page).locator('.model-settings summary').click();
+  await expect(popup.getByLabel('Model identifier')).toHaveValue('inline-chosen'); await expect(popup.getByLabel('Thinking', { exact: true })).toHaveValue('5'); await expect(popup.getByLabel('Temperature', { exact: true })).toHaveValue('0.23');
+});
+
+test('untitled Unicode and empty-file proposals stay undoable', async ({ page }) => {
+  await editor(page).focus(); await page.keyboard.press('Control+n'); await openChat(page); await send(page, 'write empty');
+  await expect(zone(page).getByRole('button', { name: 'Accept changes' })).toBeEnabled(); await zone(page).getByRole('button', { name: 'Accept changes' }).click(); await expect(lines(page)).toContainText('Hello 😀');
+  await openChat(page); await send(page, 'emoji'); await expect(zone(page).getByRole('button', { name: 'Accept changes' })).toBeEnabled();
+  await zone(page).getByRole('button', { name: 'Accept changes' }).click(); await expect(lines(page)).toContainText('Hello 😃');
+  await page.keyboard.press('Control+z'); await expect(lines(page)).toContainText('Hello 😀'); await openChat(page); await send(page, 'delete all');
+  await expect(zone(page).getByRole('button', { name: 'Accept changes' })).toBeEnabled(); await zone(page).getByRole('button', { name: 'Accept changes' }).click(); await expect(lines(page)).not.toContainText('Hello');
+  await page.keyboard.press('Control+z'); await expect(lines(page)).toContainText('Hello 😀');
+});
+
+test('remote inline execution uses the editor bot and model on its owning machine', async ({ page }) => {
+  test.setTimeout(60_000);
+  const remote = await api(page, '/api/v1/swarm/peers', { url: 'http://127.0.0.1:3744', password: 'echo-test-password' });
+  const base = `/api/v1/swarm/instances/${remote.nodeId}`;
+  let remoteBot = '';
+  try {
+    remoteBot = (await api(page, `${base}/bots`, { handle: 'inline-remote', name: 'Inline Remote', prompt: 'Remote inline conventions.', roots: [dirname(mainPath)] })).id;
+    await api(page, `${base}/endpoints`, { endpoint: { id: 'inline-test', name: 'Inline test remote', url: `http://127.0.0.1:${port}/v1`, model: 'inline-fake', contextTokens: 65536 } });
+    await api(page, `${base}/plugins/monaco-editor`, { enabled: true, config: {} }, 'PATCH');
+    await page.reload(); await page.getByRole('button', { name: 'Close plugin', exact: true }).click();
+    await launch(page, `${remote.nodeId}:monaco-editor`);
+    await page.getByLabel('Editor bot', { exact: true }).selectOption(`${remote.nodeId}:${remoteBot}`);
+    await openFile(page, 'main.ts'); await openChat(page);
+    const dispatched = page.waitForRequest(request => request.url().includes(`${base}/plugins/monaco-editor/bots/${remoteBot}/inline-chat`));
+    await send(page, 'change');
+    expect((await dispatched).postDataJSON().generation.endpointId).toBe('inline-test');
+    await expect(zone(page).getByRole('button', { name: 'Accept changes' })).toBeEnabled();
+    expect(requests.at(-1).messages[0].content).toContain('Remote inline conventions.');
+    expect(readFileSync(mainPath, 'utf8')).toBe(original);
+    await zone(page).getByRole('button', { name: 'Accept changes' }).click(); await expect(zone(page)).toHaveCount(0);
+    await expect(lines(page)).toContainText('const value = 2;');
+  } finally {
+    if (remoteBot) await page.request.delete(`${base}/bots/${remoteBot}`);
+    await page.request.delete(`${base}/endpoints/inline-test`);
+    await page.request.delete(`/api/v1/swarm/peers/${remote.nodeId}`);
+  }
+});
+
+
+test('shared model popup matches chat, supports keyboard access and stays inside the viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole('button', { name: 'Open in Window', exact: true }).click();
+  const popup = page.locator('.generation-popup:popover-open');
+  const appearance = () => popup.evaluate(element => Object.fromEntries(['.popover-heading', 'label', '[role=option][aria-selected=true]', '.range-label', '.popover-footer'].map(selector => {
+    const style = getComputedStyle(element.querySelector(selector)!);
+    return [selector, [style.fontFamily, style.fontSize, style.lineHeight, style.padding, style.borderRadius, style.backgroundColor]];
+  })));
+  await page.locator('.composer .model-settings summary').click(); const chatAppearance = await appearance(); await popup.press('Escape');
+  await openChat(page); const trigger = zone(page).locator('.model-settings summary');
+  await trigger.focus(); await trigger.press('Enter'); await expect(popup).toBeVisible();
+  expect(await appearance()).toEqual(chatAppearance);
+  await trigger.press('Tab'); await expect(popup.locator('.endpoint-options [role=option]').first()).toBeFocused();
+  await page.keyboard.press('Shift+Tab'); await expect(trigger).toBeFocused();
+  await trigger.press('ArrowDown'); await expect(popup.locator('.endpoint-options [role=option]').first()).toBeFocused();
+  await page.keyboard.press('End'); await expect(popup.locator('.endpoint-options [role=option]').last()).toBeFocused();
+  await popup.press('Escape'); await expect(trigger).toBeFocused(); await expect(popup).toHaveCount(0);
+  await page.getByRole('button', { name: 'Open Embedded', exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 640 });
+  await trigger.click(); await expect(popup).toBeVisible();
+  const bounds = (await popup.boundingBox())!;
+  expect(bounds.x).toBeGreaterThanOrEqual(0); expect(bounds.x + bounds.width).toBeLessThanOrEqual(390);
+  expect(bounds.y).toBeGreaterThanOrEqual(0); expect(bounds.y + bounds.height).toBeLessThanOrEqual(640);
+});
+
+test('disk changes, tab switches, renames and deletion invalidate old proposals', async ({ page }) => {
+  await openChat(page); await send(page, 'change'); const accept = zone(page).getByRole('button', { name: 'Accept changes' });
+  await expect(accept).toBeEnabled();
+  writeFileSync(mainPath, original + '// externally edited\r\n');
+  await expect(accept).toBeDisabled();
+  await openFile(page, 'helper.ts'); await openFile(page, 'main.ts'); await expect(accept).toBeDisabled();
+  await zone(page).getByRole('button', { name: 'Regenerate from current file' }).click(); await expect(accept).toBeEnabled();
+  await owner(page).locator('.code-tree-row').filter({ hasText: 'main.ts' }).first().click(); await page.keyboard.press('F2');
+  await owner(page).locator('.code-tree input').fill('renamed.ts'); await page.keyboard.press('Enter');
+  await expect(accept).toBeDisabled();
+  await zone(page).getByRole('button', { name: 'Regenerate from current file' }).click(); await expect(accept).toBeEnabled();
+  unlinkSync(join(dirname(mainPath), 'renamed.ts'));
+  await expect(accept).not.toBeEnabled();
+  expect(await lines(page).textContent()).not.toContain('const value = 2;');
 });

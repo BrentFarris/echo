@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { CODE_NAVIGATION_HISTORY_STATE_KEY } from "../navigation";
+import { CODE_NAVIGATION_HISTORY_STATE_KEY } from "./navigation";
 import {
   CodeNavigationHistory,
   isLargeCodeNavigationJump,

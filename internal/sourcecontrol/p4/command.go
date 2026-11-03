@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/brent/echo/internal/scmexec"
 	"io"
-	"os/exec"
+	"slices"
 	"strings"
-	"time"
 	"unicode/utf8"
 )
 
@@ -71,6 +71,7 @@ func (b *boundedBuffer) Write(data []byte) (int, error) {
 }
 
 type connection struct {
+	BotID          string `json:"botId"`
 	Unicode        bool   `json:"unicode,omitempty"`
 	CommandCharset string `json:"commandCharset,omitempty"`
 	Directory      string `json:"directory"`
@@ -111,28 +112,17 @@ func (p *Provider) command(ctx context.Context, c connection, input []byte, tagg
 		global = append(global, "-x", "-")
 	}
 	global = append(global, args...)
-	cmd := exec.CommandContext(ctx, p.binary, global...)
-	cmd.Dir = c.Directory
-	cmd.WaitDelay = time.Second
-	hideWindow(cmd)
-	if p.env != nil {
-		cmd.Env = p.env
+	result, err := p.runner.Execute(ctx, c.BotID, scmexec.Request{CaptureOutputFile: slices.Contains(args, scmexec.OutputFileToken), Command: append([]string{"p4"}, global...), WorkingDirectory: c.Directory, Input: input, OutputLimit: commandLimit})
+	if err != nil {
+		return result.Stdout, err
 	}
-	cmd.Stdin = bytes.NewReader(input)
-	stdout := &boundedBuffer{max: commandLimit}
-	stderr := &boundedBuffer{max: 64 << 10}
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-	err := cmd.Run()
-	if ctx.Err() != nil {
-		return stdout.Bytes(), fmt.Errorf("P4 command cancelled or timed out: %w", ctx.Err())
+	if result.StdoutTruncated {
+		return result.Stdout, errOutputLimit
 	}
-	if stdout.exceeded || stderr.exceeded {
-		return stdout.Bytes(), errOutputLimit
+	if result.ExitCode != 0 {
+		return result.Stdout, fmt.Errorf("P4: %s", strings.TrimSpace(string(result.Stderr)))
 	}
-	if err != nil && stderr.Len() > 0 {
-		err = fmt.Errorf("P4: %s: %w", strings.TrimSpace(stderr.String()), err)
-	}
-	return stdout.Bytes(), err
+	return result.Stdout, nil
 }
 
 func (p *Provider) run(ctx context.Context, c connection, args ...string) ([]record, error) {

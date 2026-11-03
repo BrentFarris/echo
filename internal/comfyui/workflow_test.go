@@ -257,8 +257,8 @@ func TestBuildDefaultWorkflow_DefaultsWhenEmpty(t *testing.T) {
 		node := nodeAny.(map[string]any)
 		if node["class_type"] == "KSampler" {
 			inputs := node["inputs"].(map[string]any)
-			if inputs["seed"] != int64(-1) {
-				t.Errorf("expected default seed -1, got %v", inputs["seed"])
+			if inputs["seed"] != int64(0) {
+				t.Errorf("expected explicit seed 0 preserved, got %v", inputs["seed"])
 			}
 			if inputs["steps"] != 20 {
 				t.Errorf("expected default steps 20, got %v", inputs["steps"])

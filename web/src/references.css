@@ -1,0 +1,13 @@
+reference-input{white-space:pre-wrap;overflow-wrap:anywhere;outline:none;width:100%;border:0;background:transparent;color:var(--text);cursor:text}
+reference-input[aria-disabled=true]{opacity:.65}
+.reference-chip{--reference-color:var(--accent);display:inline-flex;align-items:center;gap:3px;max-width:min(280px,72vw);margin:0 1px;padding:0 5px;border:1px solid color-mix(in srgb,var(--reference-color) 25%,transparent);border-radius:5px;background:color-mix(in srgb,var(--reference-color) 10%,transparent);color:var(--reference-color);cursor:pointer;font-size:.9em;line-height:1.35;vertical-align:baseline;white-space:nowrap;user-select:all}
+.reference-chip:hover{border-color:color-mix(in srgb,var(--reference-color) 50%,transparent);background:color-mix(in srgb,var(--reference-color) 17%,transparent)}
+.reference-chip:focus-visible{outline:2px solid var(--reference-color);outline-offset:2px}
+.reference-chip svg{width:12px;height:12px;flex:none;align-self:center}.reference-label{overflow:hidden;text-overflow:ellipsis}
+.bot-reference{--reference-color:#8257c9}.reference-unavailable{border-style:dashed;text-decoration:line-through}
+.legacy-references{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+.bot-details{position:fixed;z-index:60;display:grid;gap:8px;width:min(340px,calc(100vw - 16px));max-height:calc(100dvh - 16px);overflow:auto;box-sizing:border-box;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface);box-shadow:0 8px 30px #0003;font-size:13px;overflow-wrap:anywhere}
+.bot-details:focus{outline:2px solid var(--accent);outline-offset:1px}.bot-folders ul{padding-left:18px;margin:6px 0}.bot-folders li{margin:4px 0}.bot-details button{justify-self:start}
+.picker button{align-items:center;padding:8px;min-width:0}.picker button>svg{width:16px;height:16px;flex:none;color:var(--accent)}
+.picker .picker-name{flex:1;display:grid;gap:3px;min-width:0}.picker-name strong{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.picker small{display:block;font-size:11px;color:var(--subtle)}.picker-kind{flex:none;font-size:11px;color:var(--subtle)}
+@media(prefers-color-scheme:dark){.bot-reference{--reference-color:#bc9aff}}

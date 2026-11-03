@@ -8,16 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/brent/echo/internal/sandbox"
+	workspacefs "github.com/brent/echo/internal/editorfs"
+	"github.com/brent/echo/internal/scmexec"
 	"github.com/brent/echo/internal/sourcecontrol"
-	"github.com/brent/echo/internal/workspacefs"
 )
 
 const ID = "p4"
@@ -70,7 +69,7 @@ type discovery struct {
 }
 type Provider struct {
 	fs                 *workspacefs.Service
-	sandbox            *sandbox.Manager
+	runner             *scmexec.Runtime
 	binary, dataDir    string
 	timeout            time.Duration
 	env                []string             // isolated integration fixtures only; production inherits P4 configuration
@@ -87,8 +86,8 @@ type Provider struct {
 	watching           map[string]bool
 }
 
-func New(fs *workspacefs.Service, sandbox *sandbox.Manager, dataDir string) *Provider {
-	p := &Provider{fs: fs, sandbox: sandbox, dataDir: dataDir, binary: "p4", timeout: 15 * time.Second, discovery: map[string]discovery{}, clients: map[string]*sync.Mutex{}, subscriptions: map[string]context.CancelFunc{}, watching: map[string]bool{}}
+func New(fs *workspacefs.Service, sandbox *scmexec.Runtime, dataDir string) *Provider {
+	p := &Provider{fs: fs, runner: sandbox, dataDir: dataDir, binary: "p4", timeout: 15 * time.Second, discovery: map[string]discovery{}, clients: map[string]*sync.Mutex{}, subscriptions: map[string]context.CancelFunc{}, watching: map[string]bool{}}
 	p.config.Workspaces = map[string]Settings{}
 	if data, err := os.ReadFile(filepath.Join(dataDir, "settings.json")); err == nil {
 		_ = json.Unmarshal(data, &p.config)
@@ -103,16 +102,12 @@ func digest(value string) string {
 	return hex.EncodeToString(sum[:16])
 }
 func (p *Provider) disabled(workspace string) bool {
-	return p.sandbox != nil && p.sandbox.IsEnabled(workspace)
+	return p.runner == nil || p.runner.Available(workspace, "p4") != nil
 }
 func (p *Provider) Descriptor(ctx context.Context, workspace string) sourcecontrol.ProviderDescriptor {
 	d := sourcecontrol.ProviderDescriptor{ID: ID, Label: "Perforce", Capabilities: capabilities}
 	if p.disabled(workspace) {
-		d.Diagnostic = "P4 requires host execution; disable the workspace sandbox to use it"
-		return d
-	}
-	if _, err := exec.LookPath(p.binary); err != nil {
-		d.Diagnostic = "Install the P4 2024.1 command-line client and add it to PATH"
+		d.Diagnostic = "P4 plugin is disabled, unavailable, or not configured"
 		return d
 	}
 	d.Available = true
@@ -185,7 +180,7 @@ func (p *Provider) Repositories(ctx context.Context, workspace string) ([]source
 			item.RootRef = &workspacefs.FileRef{RootID: r.roots[0].ID, Path: ""}
 		}
 		if !item.Available {
-			item.Diagnostic = "P4 is unavailable in sandboxed workspaces"
+			item.Diagnostic = "P4 plugin is unavailable for this bot"
 		}
 		r.mu.Unlock()
 		out = append(out, item)
@@ -215,7 +210,7 @@ func (p *Provider) discover(ctx context.Context, workspace string) ([]*repositor
 	d := discovery{at: time.Now(), configuration: digest(string(configuration))}
 	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	for index, probed := range p.probeRoots(ctx, roots, settings) {
+	for index, probed := range p.probeRoots(ctx, roots, settings, workspace) {
 		if probed.err != nil {
 			d.diagnostic = probed.err.Error()
 		}
@@ -225,6 +220,16 @@ func (p *Provider) discover(ctx context.Context, workspace string) ([]*repositor
 		root, c, clientRoot := roots[index], probed.connection, probed.clientRoot
 		identity := c.Server + "\x00" + c.User + "\x00" + c.Client
 		id := "p4-" + digest(workspace+"\x00"+identity)
+		if _, known := settings.Repositories[id]; !known {
+			settings.Repositories[id] = RepositorySettings{Tracking: true, Active: "default", Connection: &c, ClientRoot: clientRoot, RootIDs: []string{root.ID}, Overrides: settings.Roots}
+			p.mu.Lock()
+			p.config.Workspaces[workspace] = settings
+			saveErr := writeJSON(filepath.Join(p.dataDir, "settings.json"), p.config)
+			p.mu.Unlock()
+			if saveErr != nil {
+				return nil, saveErr
+			}
+		}
 		if r := found[id]; r != nil {
 			r.mu.Lock()
 			r.roots = append(r.roots, root)
@@ -292,7 +297,7 @@ type rootProbe struct {
 
 // Probe independent root configurations together so an unavailable server in
 // one folder cannot consume the entire discovery deadline for a healthy one.
-func (p *Provider) probeRoots(ctx context.Context, roots []workspacefs.Root, settings Settings) []rootProbe {
+func (p *Provider) probeRoots(ctx context.Context, roots []workspacefs.Root, settings Settings, workspace string) []rootProbe {
 	results := make([]rootProbe, len(roots))
 	limit := make(chan struct{}, 8)
 	var pending sync.WaitGroup
@@ -307,32 +312,32 @@ func (p *Provider) probeRoots(ctx context.Context, roots []workspacefs.Root, set
 				results[index].err = ctx.Err()
 				return
 			}
-			results[index] = p.probeRoot(ctx, root, settings.Roots[root.ID])
+			results[index] = p.probeRoot(ctx, root, settings.Roots[root.ID], workspace)
 		}()
 	}
 	pending.Wait()
 	return results
 }
 
-func (p *Provider) probeRoot(ctx context.Context, root workspacefs.Root, override Override) (result rootProbe) {
+func (p *Provider) probeRoot(ctx context.Context, root workspacefs.Root, override Override, workspace string) (result rootProbe) {
 	if strings.Contains(root.HostPath, "...") {
 		result.err = errors.New("P4 cannot safely address a workspace path containing an ellipsis wildcard")
 		return result
 	}
-	c := connection{Directory: root.HostPath, Server: override.Server, User: override.User, Client: override.Client}
-	if c.Server == "" {
-		configured, err := p.command(ctx, c, nil, false, "set", "-q", "P4PORT")
-		if err != nil {
-			result.err = err
-			return result
-		}
-		c.Server = settingValue(configured, "P4PORT")
-		if c.Server == "" {
-			return result
-		}
+	defaults := p.runner.Defaults(workspace, "p4")
+	if override.Server == "" {
+		override.Server = defaults["port"]
 	}
-	if charset, charsetErr := p.command(ctx, c, nil, false, "set", "-q", "P4CHARSET"); charsetErr == nil {
-		c.Charset = settingValue(charset, "P4CHARSET")
+	if override.User == "" {
+		override.User = defaults["user"]
+	}
+	if override.Client == "" {
+		override.Client = defaults["client"]
+	}
+	c := connection{BotID: workspace, Directory: root.HostPath, Server: override.Server, User: override.User, Client: override.Client, Charset: defaults["charset"]}
+	if c.Server == "" {
+		result.err = errors.New("Configure P4 server in Source Control settings")
+		return result
 	}
 	if c.Charset != "" && c.Charset != "none" && !strings.HasPrefix(c.Charset, "auto") {
 		c.CommandCharset = "utf8"
@@ -513,7 +518,7 @@ func inside(root, path string) bool {
 }
 func (p *Provider) repo(ctx context.Context, workspace, id string) (*repository, error) {
 	if p.disabled(workspace) {
-		return nil, errors.New("P4 is unavailable in sandboxed workspaces")
+		return nil, errors.New("P4 plugin is unavailable for this bot")
 	}
 	states, err := p.discover(ctx, workspace)
 	if err != nil {

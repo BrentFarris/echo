@@ -3,7 +3,8 @@ const inputDirectionTolerance = 0.5;
 
 export type ChatScrollFollower = {
   contentChanged(): void;
-  reset(): void;
+  /** Restore a thread's follow state after restoring its scroll position. */
+  reset(following?: boolean): void;
   isFollowing(): boolean;
   /** Re-engages tail following and jumps to the bottom, e.g. after the user sends a message. */
   forceFollow(): void;
@@ -99,7 +100,8 @@ export function createChatScrollFollower(element: HTMLElement): ChatScrollFollow
       lastScrollTop = current;
       return;
     }
-    if (atBottom) following = true;
+    // A queued scroll event from our last write must not undo upward intent.
+    if (current > lastScrollTop && atBottom) following = true;
     lastScrollTop = current;
   };
 
@@ -112,8 +114,14 @@ export function createChatScrollFollower(element: HTMLElement): ChatScrollFollow
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
+    if (event.defaultPrevented || (event.target instanceof Element
+      && event.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])'))) return;
     if (isUpwardScrollKey(event)) {
       stopFollowing();
+    } else if (event.key === 'End') {
+      // End explicitly requests the tail. Re-engage before the browser's
+      // asynchronous scroll event, which can arrive after another delta grows it.
+      forceFollow();
     } else if (isDownwardScrollKey(event) && isAtBottom(element)) {
       following = true;
     }
@@ -166,10 +174,10 @@ export function createChatScrollFollower(element: HTMLElement): ChatScrollFollow
   window.addEventListener("pointerup", clearPointer, { passive: true });
   window.addEventListener("pointercancel", clearPointer, { passive: true });
 
-  const reset = () => {
+  const reset = (follow = isAtBottom(element)) => {
     cancelFrame();
     lastScrollTop = element.scrollTop;
-    following = isAtBottom(element);
+    following = follow;
     syncObservedTail();
   };
 

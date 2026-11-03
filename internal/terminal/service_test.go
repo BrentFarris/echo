@@ -6,15 +6,13 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
-	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/brent/echo/internal/appdata"
-	"github.com/brent/echo/internal/workspaces"
+	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/store"
 )
 
 type fakeWaitResult struct {
@@ -178,7 +176,7 @@ func TestSessionLifecycleReplayAndExit(t *testing.T) {
 	if cols, rows := backend.size(); cols != 120 || rows != 40 {
 		t.Fatalf("initial size = %dx%d, want 120x40", cols, rows)
 	}
-	if backend.spec.Dir != workspace.MainPath || len(backend.spec.Env) == 0 {
+	if backend.spec.Dir != workspace.Roots[0] || len(backend.spec.Env) == 0 {
 		t.Fatalf("unexpected command spec: %#v", backend.spec)
 	}
 
@@ -226,342 +224,6 @@ func TestSessionLifecycleReplayAndExit(t *testing.T) {
 	}
 	if err := service.Write(workspace.ID, started.ID, "x"); !errors.Is(err, ErrSessionNotRunning) {
 		t.Fatalf("write after exit = %v", err)
-	}
-}
-
-func TestTaskLifecycleStatusEnvironmentAndReplacement(t *testing.T) {
-	service, workspace, _ := newTestService(t)
-	first, second := newFakeBackend(), newFakeBackend()
-	firstCompletion := make(chan TaskResult, 2)
-	backends := []Backend{first, second}
-	service.SetBackendFactory(func() (Backend, error) {
-		next := backends[0]
-		backends = backends[1:]
-		return next, nil
-	})
-	t.Cleanup(func() { shutdownTestService(t, service) })
-
-	started, err := service.StartTask(workspace.ID, TaskRequest{
-		Name: "Test Output", Command: "go", Args: []string{"test", "."}, WorkingDirectory: workspace.MainPath,
-		Environment: map[string]string{"ECHO_TEST": "yes"}, DisplayCommand: "go test .",
-		OnExit: func(result TaskResult) { firstCompletion <- result },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if started.Kind != "test" || started.TaskStatus != "running" || len(started.Output) != 1 {
-		t.Fatalf("task snapshot = %#v", started)
-	}
-	foundEnvironment := false
-	for _, item := range first.spec.Env {
-		foundEnvironment = foundEnvironment || item == "ECHO_TEST=yes"
-	}
-	if !foundEnvironment {
-		t.Fatalf("task environment = %#v", first.spec.Env)
-	}
-
-	replaced, err := service.StartTask(workspace.ID, TaskRequest{
-		Name: "Test Output", Command: "go", Args: []string{"test", "-run", "TestOne", "."}, WorkingDirectory: workspace.MainPath,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if replaced.ID == started.ID {
-		t.Fatal("replacement reused task session id")
-	}
-	completion := <-firstCompletion
-	if completion.SessionID != started.ID || completion.Status != "stopped" {
-		t.Fatalf("replacement completion = %#v", completion)
-	}
-	select {
-	case duplicate := <-firstCompletion:
-		t.Fatalf("duplicate replacement completion = %#v", duplicate)
-	default:
-	}
-	if _, err := service.Sync(workspace.ID, started.ID, 0); !errors.Is(err, ErrSessionNotFound) {
-		t.Fatalf("replaced task is still retained: %v", err)
-	}
-	second.process.complete(0, nil)
-	exited := waitStatus(t, service, workspace.ID, replaced.ID, "exited")
-	if exited.TaskStatus != "passed" || exited.ExitCode == nil || *exited.ExitCode != 0 {
-		t.Fatalf("completed task = %#v", exited)
-	}
-}
-
-func TestStagedTaskRunsBuildThenExecutableInOneSession(t *testing.T) {
-	service, workspace, _ := newTestService(t)
-	build, run := newFakeBackend(), newFakeBackend()
-	backends := []Backend{build, run}
-	service.SetBackendFactory(func() (Backend, error) {
-		next := backends[0]
-		backends = backends[1:]
-		return next, nil
-	})
-	t.Cleanup(func() { shutdownTestService(t, service) })
-	prepared := make(chan struct{}, 1)
-	started, err := service.StartTask(workspace.ID, TaskRequest{Name: "Test Output", Steps: []TaskStep{
-		{Command: "go", Args: []string{"build"}, WorkingDirectory: workspace.MainPath, DisplayCommand: "go build", After: func() error { prepared <- struct{}{}; return nil }},
-		{Command: "go", Args: []string{"test"}, WorkingDirectory: workspace.MainPath, DisplayCommand: "tests.exe"},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	build.send([]byte("build output\n"))
-	build.process.complete(0, nil)
-	select {
-	case <-prepared:
-	case <-time.After(time.Second):
-		t.Fatal("build completion hook did not run")
-	}
-	deadline := time.Now().Add(time.Second)
-	for run.spec.Name == "" && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if !strings.HasPrefix(strings.ToLower(filepath.Base(build.spec.Name)), "go") || !strings.HasPrefix(strings.ToLower(filepath.Base(run.spec.Name)), "go") || len(run.spec.Args) != 1 || run.spec.Args[0] != "test" {
-		t.Fatalf("stages = build %#v, run %#v", build.spec, run.spec)
-	}
-	run.send([]byte("test output\n"))
-	run.process.complete(0, nil)
-	exited := waitStatus(t, service, workspace.ID, started.ID, "exited")
-	if exited.TaskStatus != "passed" || len(exited.Output) < 4 {
-		t.Fatalf("staged snapshot = %#v", exited)
-	}
-}
-
-func TestTaskStepTimeoutStopsThePipeline(t *testing.T) {
-	service, workspace, _ := newTestService(t)
-	first := &contextAwareBackend{fakeBackend: newFakeBackend()}
-	second := newFakeBackend()
-	created := 0
-	service.SetBackendFactory(func() (Backend, error) {
-		created++
-		if created == 1 {
-			return first, nil
-		}
-		return second, nil
-	})
-	t.Cleanup(func() { shutdownTestService(t, service) })
-	started, err := service.StartTask(workspace.ID, TaskRequest{Steps: []TaskStep{
-		{Command: "go", WorkingDirectory: workspace.MainPath, Timeout: 10 * time.Millisecond},
-		{Command: "go", WorkingDirectory: workspace.MainPath},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	exited := waitStatus(t, service, workspace.ID, started.ID, "exited")
-	if exited.TaskStatus != "failed" || exited.Message != "task step timed out" || created != 1 {
-		t.Fatalf("timeout snapshot = %#v, backends = %d", exited, created)
-	}
-}
-
-func TestTaskCompletionRunsOnceAfterFinalOutputAndStatus(t *testing.T) {
-	service, workspace, _ := newTestService(t)
-	backend := newFakeBackend()
-	service.SetBackendFactory(func() (Backend, error) { return backend, nil })
-	t.Cleanup(func() { shutdownTestService(t, service) })
-
-	completed := make(chan TaskResult, 2)
-	started, err := service.StartTask(workspace.ID, TaskRequest{
-		Name: "Test Output", Command: "go", Args: []string{"test", "."}, WorkingDirectory: workspace.MainPath,
-		OnExit: func(result TaskResult) { completed <- result },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	backend.readCh <- []byte("final output")
-	backend.process.complete(0, nil)
-	result := <-completed
-	if result.SessionID != started.ID || result.Status != "passed" || result.ExitCode != 0 {
-		t.Fatalf("completion = %#v", result)
-	}
-	snapshot, err := service.Sync(workspace.ID, started.ID, 0)
-	if err != nil || snapshot.Status != "exited" || len(snapshot.Output) != 1 {
-		t.Fatalf("snapshot before callback = %#v, %v", snapshot, err)
-	}
-	select {
-	case duplicate := <-completed:
-		t.Fatalf("duplicate completion = %#v", duplicate)
-	case <-time.After(25 * time.Millisecond):
-	}
-}
-
-func TestTaskCompletionReportsFailureAndStop(t *testing.T) {
-	for _, scenario := range []struct {
-		name string
-		want string
-		end  func(*Service, workspaces.Workspace, *fakeBackend, string) error
-	}{
-		{
-			name: "failure", want: "failed",
-			end: func(_ *Service, _ workspaces.Workspace, backend *fakeBackend, _ string) error {
-				backend.process.complete(2, errors.New("exit status 2"))
-				return nil
-			},
-		},
-		{
-			name: "stop", want: "stopped",
-			end: func(service *Service, workspace workspaces.Workspace, _ *fakeBackend, sessionID string) error {
-				return service.Stop(workspace.ID, sessionID)
-			},
-		},
-	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			service, workspace, _ := newTestService(t)
-			backend := newFakeBackend()
-			service.SetBackendFactory(func() (Backend, error) { return backend, nil })
-			t.Cleanup(func() { shutdownTestService(t, service) })
-			completed := make(chan TaskResult, 2)
-			started, err := service.StartTask(workspace.ID, TaskRequest{
-				Name: "Test Output", Command: "go", Args: []string{"test", "."}, WorkingDirectory: workspace.MainPath,
-				OnExit: func(result TaskResult) { completed <- result },
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := scenario.end(service, workspace, backend, started.ID); err != nil {
-				t.Fatal(err)
-			}
-			result := <-completed
-			if result.SessionID != started.ID || result.Status != scenario.want {
-				t.Fatalf("completion = %#v, want status %q", result, scenario.want)
-			}
-			select {
-			case duplicate := <-completed:
-				t.Fatalf("duplicate completion = %#v", duplicate)
-			case <-time.After(25 * time.Millisecond):
-			}
-		})
-	}
-}
-
-func TestTaskStartupFailureKeepsStoppedOutputForRecovery(t *testing.T) {
-	service, workspace, _ := newTestService(t)
-	first := newFakeBackend()
-	failed := &startErrorBackend{fakeBackend: newFakeBackend()}
-	backends := []Backend{first, failed}
-	service.SetBackendFactory(func() (Backend, error) {
-		next := backends[0]
-		backends = backends[1:]
-		return next, nil
-	})
-	t.Cleanup(func() { shutdownTestService(t, service) })
-
-	started, err := service.StartTask(workspace.ID, TaskRequest{
-		Name: "Test Output", Command: "go", Args: []string{"test", "."}, WorkingDirectory: workspace.MainPath,
-		DisplayCommand: "go test .",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.StartTask(workspace.ID, TaskRequest{
-		Name: "Test Output", Command: "go", Args: []string{"test", "./broken"}, WorkingDirectory: workspace.MainPath,
-	}); err == nil {
-		t.Fatal("task startup failure was not returned")
-	}
-	recovered, err := service.Sync(workspace.ID, started.ID, 0)
-	if err != nil {
-		t.Fatalf("stopped task output was discarded: %v", err)
-	}
-	if recovered.TaskStatus != "stopped" || len(recovered.Output) == 0 {
-		t.Fatalf("recovered task = %#v", recovered)
-	}
-}
-
-func TestDebugTerminalIsNamedOwnedAndIndependentOfDefaultShell(t *testing.T) {
-	service, workspace, _ := newTestService(t)
-	defaultBackend := newFakeBackend()
-	debugBackend := newFakeBackend()
-	backends := []Backend{defaultBackend, debugBackend}
-	var backendMu sync.Mutex
-	service.SetBackendFactory(func() (Backend, error) {
-		backendMu.Lock()
-		defer backendMu.Unlock()
-		if len(backends) == 0 {
-			return nil, errors.New("no fake backend")
-		}
-		next := backends[0]
-		backends = backends[1:]
-		return next, nil
-	})
-	t.Cleanup(func() { shutdownTestService(t, service) })
-
-	defaultSession, err := service.Start(workspace.ID, 80, 24)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response, err := service.StartDebugDAP(context.Background(), workspace.ID, "debug-owner", map[string]any{
-		"kind": "integrated", "title": "API Process", "cwd": workspace.MainPath,
-		"args": []any{"example-debuggee", "--port", "4000"},
-		"env":  map[string]any{"ECHO_MODE": "debug"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	debugID, _ := response["sessionId"].(string)
-	if debugID == "" || debugID == defaultSession.ID {
-		t.Fatalf("debug response = %#v", response)
-	}
-	debugSnapshot, err := service.Sync(workspace.ID, debugID, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if debugSnapshot.Kind != "debug" || debugSnapshot.Name != "API Process" || debugSnapshot.OwnerSessionID != "debug-owner" {
-		t.Fatalf("debug snapshot = %#v", debugSnapshot)
-	}
-	if debugBackend.spec.Name != "example-debuggee" || len(debugBackend.spec.Args) != 2 {
-		t.Fatalf("debug argv = %#v", debugBackend.spec)
-	}
-	foundEnvironment := false
-	for _, value := range debugBackend.spec.Env {
-		if value == "ECHO_MODE=debug" {
-			foundEnvironment = true
-		}
-	}
-	if !foundEnvironment {
-		t.Fatalf("debug environment = %#v", debugBackend.spec.Env)
-	}
-	reconnect, err := service.List(workspace.ID)
-	if err != nil || len(reconnect) != 2 {
-		t.Fatalf("terminal reconnect list = %#v, %v", reconnect, err)
-	}
-	foundDebug := false
-	for _, snapshot := range reconnect {
-		if snapshot.ID == debugID && snapshot.Kind == "debug" && snapshot.OwnerSessionID == "debug-owner" {
-			foundDebug = true
-		}
-	}
-	if !foundDebug {
-		t.Fatalf("debug terminal missing from reconnect list: %#v", reconnect)
-	}
-
-	service.StopOwner(workspace.ID, "debug-owner")
-	if _, err := service.Sync(workspace.ID, debugID, 0); !errors.Is(err, ErrSessionNotFound) {
-		t.Fatalf("owned terminal still exists: %v", err)
-	}
-	if snapshot, err := service.Sync(workspace.ID, defaultSession.ID, 0); err != nil || snapshot.Status != "running" {
-		t.Fatalf("default terminal was disturbed: %#v, %v", snapshot, err)
-	}
-}
-
-func TestDebugTerminalFailsClosedWithoutSandboxRuntime(t *testing.T) {
-	service, workspace, _ := newTestService(t)
-	manager := service.workspaces.(*workspaces.Manager)
-	config := workspaces.DefaultSandboxConfig()
-	config.Enabled = true
-	if _, err := manager.SetSandboxConfig(workspace.ID, config); err != nil {
-		t.Fatal(err)
-	}
-	backend := newFakeBackend()
-	service.SetBackendFactory(func() (Backend, error) { return backend, nil })
-
-	_, err := service.StartDebugDAP(context.Background(), workspace.ID, "debug-owner", map[string]any{
-		"kind": "integrated", "args": []any{"example-debuggee"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "sandbox debug terminal runtime is unavailable") {
-		t.Fatalf("sandbox debug terminal error = %v", err)
-	}
-	if backend.spec.Name != "" {
-		t.Fatalf("host backend was started for sandbox workspace: %#v", backend.spec)
 	}
 }
 
@@ -674,53 +336,23 @@ func TestRestartAndConcurrentShutdownCloseOnce(t *testing.T) {
 	}
 }
 
-func TestWorkingDirectoryRejectsUnavailableMainFolder(t *testing.T) {
-	root := t.TempDir()
-	mainPath := filepath.Join(root, "gone")
-	extraPath := filepath.Join(root, "available")
-	if err := os.MkdirAll(mainPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(extraPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	data := appdata.NewStore(filepath.Join(root, "echo.json"))
-	manager := workspaces.NewManagerWithData(data)
-	workspace, err := manager.Create(workspaces.CreateRequest{Name: "fallback", MainPath: mainPath, Folders: []string{extraPath}})
-	if err != nil {
-		t.Fatalf("create workspace: %v", err)
-	}
-	if err := os.RemoveAll(mainPath); err != nil {
-		t.Fatalf("remove main folder: %v", err)
-	}
-	service := New(manager, data)
-	backend := newFakeBackend()
-	service.SetBackendFactory(func() (Backend, error) { return backend, nil })
-	t.Cleanup(func() { shutdownTestService(t, service) })
-	_, err = service.Start(workspace.ID, 80, 24)
-	var configErr *workspaces.ConfigError
-	if !errors.As(err, &configErr) || configErr.Code != workspaces.ConfigMainUnavailable {
-		t.Fatalf("expected unavailable-main error, got %T %v", err, err)
-	}
-}
-
 func TestSavedCommandCRUDOrderingAndPersistence(t *testing.T) {
 	service, workspace, path := newTestService(t)
-	if _, err := service.CreateSavedCommand(workspace.ID, " ", "echo nope"); err == nil {
+	if _, err := service.SaveCommand(workspace.ID, "", " ", "echo nope"); err == nil {
 		t.Fatal("blank name was accepted")
 	}
-	first, err := service.CreateSavedCommand(workspace.ID, " Status ", " git status ")
+	first, err := service.SaveCommand(workspace.ID, "", " Status ", " git status ")
 	if err != nil {
 		t.Fatalf("create first: %v", err)
 	}
-	second, err := service.CreateSavedCommand(workspace.ID, "Tests", "go test ./...")
+	second, err := service.SaveCommand(workspace.ID, "", "Tests", "go test ./...")
 	if err != nil {
 		t.Fatalf("create second: %v", err)
 	}
 	if first.Order != 0 || second.Order != 1 || first.Name != "Status" || first.Command != "git status" {
 		t.Fatalf("unexpected commands: %#v %#v", first, second)
 	}
-	updated, err := service.UpdateSavedCommand(workspace.ID, first.ID, "Git status", "git status --short")
+	updated, err := service.SaveCommand(workspace.ID, first.ID, "Git status", "git status --short")
 	if err != nil || updated.Order != first.Order {
 		t.Fatalf("update: %#v, %v", updated, err)
 	}
@@ -731,8 +363,19 @@ func TestSavedCommandCRUDOrderingAndPersistence(t *testing.T) {
 		t.Fatalf("delete: %v", err)
 	}
 
-	reloadedData := appdata.NewStore(path)
-	reloaded := New(workspaces.NewManagerWithData(reloadedData), reloadedData)
+	if err := service.data.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reloadedData, err := store.Open(filepath.Join(path, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reloadedData.Close() })
+	reloaded := New(func(id string) (domain.Bot, error) {
+		var bot domain.Bot
+		err := reloadedData.Get("bots", id, &bot)
+		return bot, err
+	}, reloadedData)
 	list, err := reloaded.ListSavedCommands(workspace.ID)
 	if err != nil {
 		t.Fatalf("reload commands: %v", err)
@@ -742,25 +385,22 @@ func TestSavedCommandCRUDOrderingAndPersistence(t *testing.T) {
 	}
 }
 
-func newTestService(t *testing.T) (*Service, workspaces.Workspace, string) {
+func newTestService(t *testing.T) (*Service, domain.Bot, string) {
 	t.Helper()
 	root := t.TempDir()
-	path := filepath.Join(root, "echo.json")
-	data := appdata.NewStore(path)
-	manager := workspaces.NewManagerWithData(data)
-	workspace, err := manager.Create(workspaces.CreateRequest{Name: "terminal", MainPath: filepath.Join(root, "workspace")})
+	data, err := store.Open(filepath.Join(root, "data"))
 	if err != nil {
-		if mkdirErr := os.MkdirAll(filepath.Join(root, "workspace"), 0o755); mkdirErr != nil {
-			t.Fatal(mkdirErr)
-		}
-		workspace, err = manager.Create(workspaces.CreateRequest{Name: "terminal", MainPath: filepath.Join(root, "workspace")})
+		t.Fatal(err)
 	}
-	if err != nil {
-		t.Fatalf("create workspace: %v", err)
+	bot := domain.Bot{ID: "test-bot", Handle: "test-bot", Name: "Test", Roots: []string{root}}
+	if err = data.Put("bots", bot.ID, bot); err != nil {
+		t.Fatal(err)
 	}
-	return New(manager, data), workspace, path
+	resolve := func(id string) (domain.Bot, error) { var b domain.Bot; err := data.Get("bots", id, &b); return b, err }
+	service := New(resolve, data)
+	t.Cleanup(func() { shutdownTestService(t, service); data.Close() })
+	return service, bot, root
 }
-
 func shutdownTestService(t *testing.T, service *Service) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -786,11 +426,11 @@ func waitEvent(t *testing.T, events <-chan Event, eventType string) Event {
 	}
 }
 
-func waitStatus(t *testing.T, service *Service, workspaceID, sessionID, status string) Snapshot {
+func waitStatus(t *testing.T, service *Service, botID, sessionID, status string) Snapshot {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		snapshot, err := service.Sync(workspaceID, sessionID, 0)
+		snapshot, err := service.Sync(botID, sessionID, 0)
 		if err == nil && snapshot.Status == status {
 			return snapshot
 		}
@@ -800,11 +440,11 @@ func waitStatus(t *testing.T, service *Service, workspaceID, sessionID, status s
 	return Snapshot{}
 }
 
-func waitSequence(t *testing.T, service *Service, workspaceID, sessionID string, sequence uint64) {
+func waitSequence(t *testing.T, service *Service, botID, sessionID string, sequence uint64) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		snapshot, err := service.Sync(workspaceID, sessionID, 0)
+		snapshot, err := service.Sync(botID, sessionID, 0)
 		if err == nil && snapshot.LastSequence >= sequence {
 			return
 		}

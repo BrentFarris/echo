@@ -311,7 +311,7 @@ func (p *Provider) captureFileState(state *repositoryState, pathValue, oldPath, 
 	if !info.Mode().IsRegular() {
 		return entry, nil, &sourcecontrol.Error{Code: "protected_changes_special_file", Message: "only regular files and symbolic links can be protected", Details: map[string]any{"path": pathValue}}
 	}
-	data, err := os.ReadFile(hostPath)
+	data, err := p.fs.ReadSourceControlFile(state.workspaceID, hostPath)
 	if err != nil {
 		return entry, nil, &sourcecontrol.Error{Code: "protected_changes_read_failed", Message: "file could not be captured for protection", Cause: err}
 	}

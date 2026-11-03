@@ -1,4 +1,4 @@
-// Package terminal owns Echo's shared workspace-scoped interactive terminals.
+// Package terminal owns Echo's shared bot-scoped interactive terminals.
 package terminal
 
 import (
@@ -15,11 +15,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
+	"database/sql"
 	ptylib "github.com/aymanbagabas/go-pty"
-	"github.com/brent/echo/internal/appdata"
-	"github.com/brent/echo/internal/sandbox"
-	"github.com/brent/echo/internal/workspaces"
+	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -49,7 +50,7 @@ type OutputChunk struct {
 }
 
 type Snapshot struct {
-	WorkspaceID      string        `json:"workspaceId"`
+	BotID            string        `json:"botId"`
 	ID               string        `json:"id"`
 	Name             string        `json:"name,omitempty"`
 	Kind             string        `json:"kind,omitempty"`
@@ -67,7 +68,7 @@ type Snapshot struct {
 
 type Event struct {
 	Type           string `json:"type"`
-	WorkspaceID    string `json:"workspaceId"`
+	BotID          string `json:"botId"`
 	SessionID      string `json:"sessionId"`
 	Name           string `json:"name,omitempty"`
 	Kind           string `json:"kind,omitempty"`
@@ -94,52 +95,6 @@ type CommandSpec struct {
 	Env  []string
 }
 
-// TaskResult is delivered to trusted in-process task owners after all PTY
-// output has drained and the terminal lifecycle status has been finalized.
-type TaskResult struct {
-	WorkspaceID string
-	SessionID   string
-	ExitCode    int
-	Status      string
-	Message     string
-}
-
-// TaskStep is one direct process in a trusted server-owned task. Steps run in
-// order inside one logical terminal session; a non-zero exit or callback error
-// stops the remaining pipeline.
-type TaskStep struct {
-	Command          string
-	Args             []string
-	WorkingDirectory string
-	Environment      map[string]string
-	DisplayCommand   string
-	Timeout          time.Duration
-	After            func() error
-}
-
-// TaskRequest is a trusted, server-constructed direct process invocation.
-// Browser APIs never accept this shape directly.
-type TaskRequest struct {
-	Name             string
-	Command          string
-	Args             []string
-	WorkingDirectory string
-	Environment      map[string]string
-	DisplayCommand   string
-	Steps            []TaskStep
-	OnExit           func(TaskResult)
-}
-
-type taskRuntimeStep struct {
-	command     string
-	args        []string
-	dir         string
-	environment []string
-	display     string
-	timeout     time.Duration
-	after       func() error
-}
-
 type Process interface {
 	Wait() (int, error)
 	Kill() error
@@ -153,61 +108,6 @@ type Backend interface {
 
 type realBackend struct{ pty ptylib.Pty }
 type realProcess struct{ cmd *ptylib.Cmd }
-
-type sandboxBackend struct {
-	manager     *sandbox.Manager
-	workspaceID string
-	pty         sandbox.PTY
-	cols        int
-	rows        int
-}
-
-type sandboxProcess struct{ pty sandbox.PTY }
-
-func (b *sandboxBackend) Read(buffer []byte) (int, error) {
-	if b.pty == nil {
-		return 0, io.ErrClosedPipe
-	}
-	return b.pty.Read(buffer)
-}
-
-func (b *sandboxBackend) Write(buffer []byte) (int, error) {
-	if b.pty == nil {
-		return 0, io.ErrClosedPipe
-	}
-	return b.pty.Write(buffer)
-}
-
-func (b *sandboxBackend) Close() error {
-	if b.pty == nil {
-		return nil
-	}
-	return b.pty.Close()
-}
-
-func (b *sandboxBackend) Resize(cols, rows int) error {
-	b.cols, b.rows = cols, rows
-	if b.pty == nil {
-		return nil
-	}
-	return b.pty.Resize(cols, rows)
-}
-
-func (b *sandboxBackend) Start(ctx context.Context, spec CommandSpec) (Process, error) {
-	command := append([]string{spec.Name}, spec.Args...)
-	pty, err := b.manager.OpenPTY(ctx, b.workspaceID, sandbox.ExecRequest{
-		Command: command, WorkingDirectory: spec.Dir, Environment: spec.Env,
-		TTY: true, Columns: b.cols, Rows: b.rows,
-	})
-	if err != nil {
-		return nil, err
-	}
-	b.pty = pty
-	return &sandboxProcess{pty: pty}, nil
-}
-
-func (p *sandboxProcess) Wait() (int, error) { return p.pty.Wait() }
-func (p *sandboxProcess) Kill() error        { return p.pty.Kill() }
 
 func newRealBackend() (Backend, error) {
 	value, err := ptylib.New()
@@ -266,16 +166,16 @@ type bufferedChunk struct {
 }
 
 type session struct {
-	workspaceID string
-	id          string
-	name        string
-	kind        string
-	ownerID     string
-	shell       string
-	workingDir  string
-	backend     Backend
-	process     Process
-	cancel      context.CancelFunc
+	botID      string
+	id         string
+	name       string
+	kind       string
+	ownerID    string
+	shell      string
+	workingDir string
+	backend    Backend
+	process    Process
+	cancel     context.CancelFunc
 
 	mu          sync.Mutex
 	writeMu     sync.Mutex
@@ -288,200 +188,30 @@ type session struct {
 	sequence    uint64
 	output      []bufferedChunk
 	outputBytes int
-	onExit      func(TaskResult)
-	taskSteps   []taskRuntimeStep
-	taskIndex   int
-	taskFactory func() (Backend, error)
-	taskSandbox bool
-	processCtx  context.Context
 	closed      map[Backend]bool
 }
 
-type workspaceResolver interface {
-	Get(id string) (workspaces.Workspace, bool, error)
-}
-
 type Service struct {
-	workspaces workspaceResolver
-	data       *appdata.Store
-
+	resolve    func(string) (domain.Bot, error)
+	data       *store.Store
 	mu         sync.Mutex
+	commandMu  sync.Mutex
 	sessions   map[string]*session
 	defaults   map[string]string
-	tasks      map[string]string
-	taskMu     sync.Mutex
 	newBackend func() (Backend, error)
-	sandbox    *sandbox.Manager
 	notify     func(Event)
+	closed     bool
 }
 
-func New(workspaceManager workspaceResolver, data *appdata.Store) *Service {
-	return &Service{
-		workspaces: workspaceManager,
-		data:       data,
-		sessions:   make(map[string]*session),
-		defaults:   make(map[string]string),
-		tasks:      make(map[string]string),
-		newBackend: newRealBackend,
-	}
+func New(resolve func(string) (domain.Bot, error), data *store.Store) *Service {
+	return &Service{resolve: resolve, data: data, sessions: map[string]*session{}, defaults: map[string]string{}, newBackend: newRealBackend}
 }
-
-// StartTask starts one server-owned, non-interactive task for a workspace.
-// Only the latest task is retained; a new task stops and replaces its predecessor.
-func (s *Service) StartTask(workspaceID string, request TaskRequest) (Snapshot, error) {
-	s.taskMu.Lock()
-	defer s.taskMu.Unlock()
-	workspace, err := s.workspace(workspaceID)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	steps := append([]TaskStep(nil), request.Steps...)
-	if len(steps) == 0 {
-		steps = []TaskStep{{
-			Command: request.Command, Args: request.Args, WorkingDirectory: request.WorkingDirectory,
-			Environment: request.Environment, DisplayCommand: request.DisplayCommand,
-		}}
-	}
-	if len(steps) > 16 {
-		return Snapshot{}, errors.New("task may contain at most 16 steps")
-	}
-
-	s.mu.Lock()
-	previous := s.sessions[s.tasks[workspaceID]]
-	sandboxManager := s.sandbox
-	factory := s.newBackend
-	s.mu.Unlock()
-	if previous != nil {
-		previous.stopAndWait()
-	}
-
-	sandboxEnabled := workspace.Sandbox.Enabled || (sandboxManager != nil && sandboxManager.IsEnabled(workspaceID))
-	if sandboxEnabled && sandboxManager == nil {
-		return Snapshot{}, errors.New("sandbox task runtime is unavailable")
-	}
-	runtimeSteps := make([]taskRuntimeStep, 0, len(steps))
-	for _, step := range steps {
-		command := strings.TrimSpace(step.Command)
-		if command == "" {
-			return Snapshot{}, errors.New("task command is required")
-		}
-		workingDir := filepath.Clean(strings.TrimSpace(step.WorkingDirectory))
-		if workingDir == "." || workingDir == "" {
-			workingDir, err = availableWorkingDirectory(workspace)
-			if err != nil {
-				return Snapshot{}, err
-			}
-		}
-		if sandboxEnabled {
-			workingDir, err = sandboxManager.HostToGuest(workspaceID, workingDir)
-			if err != nil {
-				return Snapshot{}, fmt.Errorf("map task working directory: %w", err)
-			}
-		}
-		environment := terminalEnvironment()
-		if sandboxEnabled {
-			environment = sandboxTerminalEnvironment()
-		}
-		runtimeSteps = append(runtimeSteps, taskRuntimeStep{
-			command: command, args: append([]string(nil), step.Args...), dir: workingDir,
-			environment: mergeTaskEnvironment(environment, step.Environment), display: strings.TrimSpace(step.DisplayCommand),
-			timeout: step.Timeout, after: step.After,
-		})
-	}
-	cols, rows := ClampSize(120, 30)
-	name := strings.TrimSpace(request.Name)
-	if name == "" {
-		name = "Task Output"
-	}
-	current := &session{
-		workspaceID: workspaceID, id: uuid.NewString(), name: name, kind: "test",
-		done: make(chan struct{}), status: "running", taskStatus: "running", output: make([]bufferedChunk, 0, 64),
-		onExit: request.OnExit, taskSteps: runtimeSteps, taskFactory: factory, taskSandbox: sandboxEnabled,
-	}
-	if err := s.startTaskStep(current, sandboxManager, cols, rows); err != nil {
-		return Snapshot{}, err
-	}
-	s.mu.Lock()
-	if previous != nil {
-		delete(s.sessions, previous.id)
-	}
-	s.sessions[current.id] = current
-	s.tasks[workspaceID] = current.id
-	s.mu.Unlock()
-	s.emit(Event{Type: "terminal_event", WorkspaceID: workspaceID, SessionID: current.id, Name: current.name, Kind: current.kind, Event: "started", TaskStatus: current.taskStatus})
-	if display := runtimeSteps[0].display; display != "" {
-		s.emitOutput(current, []byte("Running tool: "+display+"\r\n\r\n"))
-	}
-	go s.run(current)
-	return current.snapshot(0), nil
-}
-
-func (s *Service) startTaskStep(current *session, sandboxManager *sandbox.Manager, cols, rows int) error {
-	if current.stopping() {
-		return context.Canceled
-	}
-	step := current.taskSteps[current.taskIndex]
-	command := step.command
-	var backend Backend
-	var err error
-	if current.taskSandbox {
-		backend = &sandboxBackend{manager: sandboxManager, workspaceID: current.workspaceID}
-	} else {
-		command, err = exec.LookPath(command)
-		if err != nil {
-			return fmt.Errorf("resolve task command %q: %w", step.command, err)
-		}
-		backend, err = current.taskFactory()
-	}
-	if err != nil {
-		return fmt.Errorf("create task terminal: %w", err)
-	}
-	if err := backend.Resize(cols, rows); err != nil {
-		_ = backend.Close()
-		return fmt.Errorf("size task terminal: %w", err)
-	}
-	processContext := context.Background()
-	var cancel context.CancelFunc
-	if step.timeout > 0 {
-		processContext, cancel = context.WithTimeout(processContext, step.timeout)
-	} else {
-		processContext, cancel = context.WithCancel(processContext)
-	}
-	process, err := backend.Start(processContext, CommandSpec{Name: command, Args: step.args, Dir: step.dir, Env: step.environment})
-	if err != nil {
-		cancel()
-		_ = backend.Close()
-		return fmt.Errorf("start task: %w", err)
-	}
-	current.mu.Lock()
-	current.shell = filepath.Base(command)
-	current.workingDir = step.dir
-	current.backend = backend
-	current.process = process
-	current.cancel = cancel
-	current.processCtx = processContext
-	current.mu.Unlock()
-	if current.stopping() {
-		cancel()
-		_ = process.Kill()
-		current.closeBackend(backend)
-		return context.Canceled
-	}
-	return nil
-}
-
+func (s *Service) workspace(id string) (domain.Bot, error) { return s.resolve(id) }
 func (s *Service) SetNotifier(notify func(Event)) {
 	s.mu.Lock()
 	s.notify = notify
 	s.mu.Unlock()
 }
-
-func (s *Service) SetSandbox(manager *sandbox.Manager) {
-	s.mu.Lock()
-	s.sandbox = manager
-	s.mu.Unlock()
-}
-
 func (s *Service) SetBackendFactory(factory func() (Backend, error)) func() {
 	s.mu.Lock()
 	previous := s.newBackend
@@ -493,14 +223,13 @@ func (s *Service) SetBackendFactory(factory func() (Backend, error)) func() {
 		s.mu.Unlock()
 	}
 }
-
-func (s *Service) Start(workspaceID string, cols, rows int) (Snapshot, error) {
-	workspace, err := s.workspace(workspaceID)
+func (s *Service) Start(botID string, cols, rows int) (Snapshot, error) {
+	workspace, err := s.workspace(botID)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	s.mu.Lock()
-	existing := s.sessions[s.defaults[workspaceID]]
+	existing := s.sessions[s.defaults[botID]]
 	s.mu.Unlock()
 	if existing != nil {
 		return existing.snapshot(0), nil
@@ -509,43 +238,23 @@ func (s *Service) Start(workspaceID string, cols, rows int) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	s.mu.Lock()
-	sandboxManager := s.sandbox
-	s.mu.Unlock()
-	// The portable workspace policy is authoritative. A missing sandbox
-	// runtime must never turn a sandbox-owned debuggee into a host process.
-	sandboxEnabled := workspace.Sandbox.Enabled || (sandboxManager != nil && sandboxManager.IsEnabled(workspaceID))
-	if sandboxEnabled && sandboxManager == nil {
-		return Snapshot{}, errors.New("sandbox terminal runtime is unavailable")
-	}
-	var shellName, shellLabel string
-	var shellArgs []string
-	if sandboxEnabled {
-		workingDir, err = sandboxManager.HostToGuest(workspaceID, workingDir)
-		if err != nil {
-			return Snapshot{}, fmt.Errorf("map sandbox working directory: %w", err)
-		}
-		shellName, shellArgs, shellLabel = "/bin/bash", []string{"-l"}, "Sandbox Bash"
-	} else {
-		shellName, shellArgs, shellLabel, err = resolveInteractiveShell()
-		if err != nil {
-			return Snapshot{}, err
-		}
+	shellName, shellArgs, shellLabel, err := resolveInteractiveShell()
+	if err != nil {
+		return Snapshot{}, err
 	}
 	cols, rows = ClampSize(cols, rows)
 
 	s.mu.Lock()
-	if current := s.sessions[s.defaults[workspaceID]]; current != nil {
+	if s.closed {
+		s.mu.Unlock()
+		return Snapshot{}, errors.New("terminal service is closed")
+	}
+	if current := s.sessions[s.defaults[botID]]; current != nil {
 		s.mu.Unlock()
 		return current.snapshot(0), nil
 	}
 	factory := s.newBackend
-	var backend Backend
-	if sandboxEnabled {
-		backend = &sandboxBackend{manager: sandboxManager, workspaceID: workspaceID}
-	} else {
-		backend, err = factory()
-	}
+	backend, err := factory()
 	if err != nil {
 		s.mu.Unlock()
 		return Snapshot{}, fmt.Errorf("create terminal: %w", err)
@@ -557,9 +266,6 @@ func (s *Service) Start(workspaceID string, cols, rows int) (Snapshot, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	environment := terminalEnvironment()
-	if sandboxEnabled {
-		environment = sandboxTerminalEnvironment()
-	}
 	process, err := backend.Start(ctx, CommandSpec{
 		Name: shellName, Args: shellArgs, Dir: workingDir, Env: environment,
 	})
@@ -570,162 +276,47 @@ func (s *Service) Start(workspaceID string, cols, rows int) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("start %s: %w", shellLabel, err)
 	}
 	current := &session{
-		workspaceID: workspaceID,
-		id:          uuid.NewString(),
-		name:        "Terminal",
-		kind:        "default",
-		shell:       shellLabel,
-		workingDir:  workingDir,
-		backend:     backend,
-		process:     process,
-		cancel:      cancel,
-		done:        make(chan struct{}),
-		status:      "running",
-		output:      make([]bufferedChunk, 0, 64),
+		botID:      botID,
+		id:         uuid.NewString(),
+		name:       "Terminal",
+		kind:       "default",
+		shell:      shellLabel,
+		workingDir: workingDir,
+		backend:    backend,
+		process:    process,
+		cancel:     cancel,
+		done:       make(chan struct{}),
+		status:     "running",
+		output:     make([]bufferedChunk, 0, 64),
 	}
 	s.sessions[current.id] = current
-	s.defaults[workspaceID] = current.id
+	s.defaults[botID] = current.id
 	s.mu.Unlock()
 
-	s.emit(Event{Type: "terminal_event", WorkspaceID: workspaceID, SessionID: current.id, Name: current.name, Kind: current.kind, Event: "started"})
+	s.emit(Event{Type: "terminal_event", BotID: botID, SessionID: current.id, Name: current.name, Kind: current.kind, Event: "started"})
 	go s.run(current)
 	return current.snapshot(0), nil
 }
 
-// StartDebugDAP implements DAP's runInTerminal reverse request using an
-// integrated, debugger-owned PTY. The process is intentionally independent of
-// the browser request context; StopOwner ties its lifetime to the DAP session.
-func (s *Service) StartDebugDAP(ctx context.Context, workspaceID, ownerSessionID string, arguments map[string]any) (map[string]any, error) {
-	if strings.EqualFold(stringFromAny(arguments["kind"]), "external") {
-		return nil, ErrExternalUnsupported
-	}
-	if interpreted, _ := arguments["argsCanBeInterpretedByShell"].(bool); interpreted {
-		return nil, errors.New("debug terminal shell-interpreted arguments are not supported; provide direct argv")
-	}
-	argv, err := dapArgv(arguments["args"])
-	if err != nil {
-		return nil, err
-	}
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-	}
-	workspace, err := s.workspace(workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	workingDir := strings.TrimSpace(stringFromAny(arguments["cwd"]))
-	if workingDir == "" {
-		workingDir, err = availableWorkingDirectory(workspace)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	s.mu.Lock()
-	sandboxManager := s.sandbox
-	factory := s.newBackend
-	s.mu.Unlock()
-	// Reverse requests are process launches, so use the same fail-closed policy
-	// as the normal terminal path instead of treating a missing manager as host.
-	sandboxEnabled := workspace.Sandbox.Enabled || (sandboxManager != nil && sandboxManager.IsEnabled(workspaceID))
-	if sandboxEnabled && sandboxManager == nil {
-		return nil, errors.New("sandbox debug terminal runtime is unavailable")
-	}
-	if sandboxEnabled && !strings.HasPrefix(filepath.ToSlash(workingDir), "/") {
-		workingDir, err = sandboxManager.HostToGuest(workspaceID, workingDir)
-		if err != nil {
-			return nil, fmt.Errorf("map debug terminal working directory: %w", err)
-		}
-	}
-	environment := terminalEnvironment()
-	if sandboxEnabled {
-		environment = sandboxTerminalEnvironment()
-	}
-	environment = mergeDAPEnvironment(environment, arguments["env"])
-
-	cols, rows := ClampSize(120, 30)
-	var backend Backend
-	if sandboxEnabled {
-		backend = &sandboxBackend{manager: sandboxManager, workspaceID: workspaceID}
-	} else {
-		backend, err = factory()
-	}
-	if err != nil {
-		return nil, fmt.Errorf("create debug terminal: %w", err)
-	}
-	if err := backend.Resize(cols, rows); err != nil {
-		_ = backend.Close()
-		return nil, fmt.Errorf("size debug terminal: %w", err)
-	}
-	processContext, cancel := context.WithCancel(context.Background())
-	process, err := backend.Start(processContext, CommandSpec{Name: argv[0], Args: argv[1:], Dir: workingDir, Env: environment})
-	if err != nil {
-		cancel()
-		_ = backend.Close()
-		return nil, fmt.Errorf("start debug terminal: %w", err)
-	}
-	title := strings.TrimSpace(stringFromAny(arguments["title"]))
-	if title == "" {
-		title = "Debug Terminal"
-	}
-	current := &session{
-		workspaceID: workspaceID, id: uuid.NewString(), name: title, kind: "debug", ownerID: ownerSessionID,
-		shell: filepath.Base(argv[0]), workingDir: workingDir, backend: backend, process: process,
-		cancel: cancel, done: make(chan struct{}), status: "running", output: make([]bufferedChunk, 0, 64),
-	}
-	s.mu.Lock()
-	s.sessions[current.id] = current
-	s.mu.Unlock()
-	s.emit(Event{Type: "terminal_event", WorkspaceID: workspaceID, SessionID: current.id, Name: current.name, Kind: current.kind, OwnerSessionID: current.ownerID, Event: "started"})
-	go s.run(current)
-	response := map[string]any{"sessionId": current.id}
-	if process, ok := process.(interface{ PID() int }); ok && process.PID() > 0 {
-		response["processId"] = process.PID()
-	}
-	return response, nil
-}
-
-// StopOwner terminates every integrated terminal created for one debugger
-// session without disturbing the workspace's normal shell.
-func (s *Service) StopOwner(workspaceID, ownerSessionID string) {
-	s.mu.Lock()
-	all := make([]*session, 0)
-	for id, current := range s.sessions {
-		if current.workspaceID == workspaceID && current.ownerID == ownerSessionID && current.kind == "debug" {
-			all = append(all, current)
-			delete(s.sessions, id)
-		}
-	}
-	s.mu.Unlock()
-	for _, current := range all {
-		current.stopAndWait()
-	}
-}
-
-func (s *Service) Sync(workspaceID, sessionID string, afterSequence uint64) (Snapshot, error) {
-	if _, err := s.workspace(workspaceID); err != nil {
+func (s *Service) Sync(botID, sessionID string, afterSequence uint64) (Snapshot, error) {
+	if _, err := s.workspace(botID); err != nil {
 		return Snapshot{}, err
 	}
-	current, err := s.current(workspaceID, sessionID)
+	current, err := s.current(botID, sessionID)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	return current.snapshot(afterSequence), nil
 }
 
-// List returns the server-owned terminal sessions for reconnecting browsers.
-// In particular, debug PTYs cannot be reconstructed from a DAP snapshot alone
-// because runInTerminal assigns their own independent session IDs.
-func (s *Service) List(workspaceID string) ([]Snapshot, error) {
-	if _, err := s.workspace(workspaceID); err != nil {
+func (s *Service) List(botID string) ([]Snapshot, error) {
+	if _, err := s.workspace(botID); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
 	current := make([]*session, 0, len(s.sessions))
 	for _, candidate := range s.sessions {
-		if candidate.workspaceID == workspaceID {
+		if candidate.botID == botID {
 			current = append(current, candidate)
 		}
 	}
@@ -735,6 +326,9 @@ func (s *Service) List(workspaceID string) ([]Snapshot, error) {
 		result = append(result, candidate.snapshot(0))
 	}
 	sort.SliceStable(result, func(i, j int) bool {
+		if (result[i].Kind == "default") != (result[j].Kind == "default") {
+			return result[i].Kind == "default"
+		}
 		if result[i].Kind != result[j].Kind {
 			return result[i].Kind < result[j].Kind
 		}
@@ -745,15 +339,14 @@ func (s *Service) List(workspaceID string) ([]Snapshot, error) {
 	})
 	return result, nil
 }
-
-func (s *Service) Write(workspaceID, sessionID, data string) error {
+func (s *Service) Write(botID, sessionID, data string) error {
 	if len(data) > MaxInput {
 		return fmt.Errorf("%w: maximum is %d bytes", ErrInputTooLarge, MaxInput)
 	}
 	if data == "" {
 		return nil
 	}
-	current, err := s.currentRunning(workspaceID, sessionID)
+	current, err := s.currentRunning(botID, sessionID)
 	if err != nil {
 		return err
 	}
@@ -772,9 +365,8 @@ func (s *Service) Write(workspaceID, sessionID, data string) error {
 	}
 	return nil
 }
-
-func (s *Service) Resize(workspaceID, sessionID string, cols, rows int) error {
-	current, err := s.currentRunning(workspaceID, sessionID)
+func (s *Service) Resize(botID, sessionID string, cols, rows int) error {
+	current, err := s.currentRunning(botID, sessionID)
 	if err != nil {
 		return err
 	}
@@ -784,9 +376,8 @@ func (s *Service) Resize(workspaceID, sessionID string, cols, rows int) error {
 	}
 	return nil
 }
-
-func (s *Service) Stop(workspaceID, sessionID string) error {
-	current, err := s.current(workspaceID, sessionID)
+func (s *Service) Stop(botID, sessionID string) error {
+	current, err := s.current(botID, sessionID)
 	if err != nil {
 		return err
 	}
@@ -794,27 +385,23 @@ func (s *Service) Stop(workspaceID, sessionID string) error {
 	return nil
 }
 
-// StopWorkspace terminates and forgets a workspace terminal when its root is
-// rebound. A subsequent Start resolves the new authoritative workspace path.
-func (s *Service) StopWorkspace(workspaceID string) {
+func (s *Service) StopBot(botID string) {
 	s.mu.Lock()
 	all := make([]*session, 0)
 	for id, current := range s.sessions {
-		if current.workspaceID == workspaceID {
+		if current.botID == botID {
 			all = append(all, current)
 			delete(s.sessions, id)
 		}
 	}
-	delete(s.defaults, workspaceID)
-	delete(s.tasks, workspaceID)
+	delete(s.defaults, botID)
 	s.mu.Unlock()
 	for _, current := range all {
 		current.stopAndWait()
 	}
 }
-
-func (s *Service) Restart(workspaceID, sessionID string, cols, rows int) (Snapshot, error) {
-	current, err := s.current(workspaceID, sessionID)
+func (s *Service) Restart(botID, sessionID string, cols, rows int) (Snapshot, error) {
+	current, err := s.current(botID, sessionID)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -825,14 +412,13 @@ func (s *Service) Restart(workspaceID, sessionID string, cols, rows int) (Snapsh
 	if s.sessions[sessionID] == current {
 		delete(s.sessions, sessionID)
 	}
-	if s.defaults[workspaceID] == sessionID {
-		delete(s.defaults, workspaceID)
+	if s.defaults[botID] == sessionID {
+		delete(s.defaults, botID)
 	}
 	s.mu.Unlock()
 	current.stopAndWait()
-	return s.Start(workspaceID, cols, rows)
+	return s.Start(botID, cols, rows)
 }
-
 func (s *Service) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	all := make([]*session, 0, len(s.sessions))
@@ -841,7 +427,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 	s.sessions = make(map[string]*session)
 	s.defaults = make(map[string]string)
-	s.tasks = make(map[string]string)
+	s.closed = true
 	s.mu.Unlock()
 	for _, current := range all {
 		current.stop()
@@ -855,115 +441,19 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 	return nil
 }
-
-func (s *Service) ListSavedCommands(workspaceID string) ([]SavedCommand, error) {
-	if _, err := s.workspace(workspaceID); err != nil {
-		return nil, err
-	}
-	file, err := s.data.Load()
-	if err != nil {
-		return nil, err
-	}
-	commands := fromStoredCommands(file.SavedCommands[workspaceID])
-	sort.SliceStable(commands, func(i, j int) bool { return commands[i].Order < commands[j].Order })
-	return commands, nil
-}
-
-func (s *Service) CreateSavedCommand(workspaceID, name, command string) (SavedCommand, error) {
-	if _, err := s.workspace(workspaceID); err != nil {
-		return SavedCommand{}, err
-	}
-	name, command, err := validateSavedCommand(name, command)
-	if err != nil {
-		return SavedCommand{}, err
-	}
-	created := SavedCommand{ID: uuid.NewString(), Name: name, Command: command}
-	err = s.data.Update(func(file *appdata.File) error {
-		if file.SavedCommands == nil {
-			file.SavedCommands = make(map[string][]appdata.SavedCommand)
-		}
-		for _, existing := range file.SavedCommands[workspaceID] {
-			if existing.Order >= created.Order {
-				created.Order = existing.Order + 1
-			}
-		}
-		file.SavedCommands[workspaceID] = append(file.SavedCommands[workspaceID], toStoredCommand(created))
-		return nil
-	})
-	return created, err
-}
-
-func (s *Service) UpdateSavedCommand(workspaceID, id, name, command string) (SavedCommand, error) {
-	if _, err := s.workspace(workspaceID); err != nil {
-		return SavedCommand{}, err
-	}
-	name, command, err := validateSavedCommand(name, command)
-	if err != nil {
-		return SavedCommand{}, err
-	}
-	var updated SavedCommand
-	err = s.data.Update(func(file *appdata.File) error {
-		for index, existing := range file.SavedCommands[workspaceID] {
-			if existing.ID != id {
-				continue
-			}
-			existing.Name = name
-			existing.Command = command
-			file.SavedCommands[workspaceID][index] = existing
-			updated = fromStoredCommand(existing)
-			return nil
-		}
-		return ErrSavedCommandNotFound
-	})
-	return updated, err
-}
-
-func (s *Service) DeleteSavedCommand(workspaceID, id string) error {
-	if _, err := s.workspace(workspaceID); err != nil {
-		return err
-	}
-	return s.data.Update(func(file *appdata.File) error {
-		existing := file.SavedCommands[workspaceID]
-		for index, command := range existing {
-			if command.ID != id {
-				continue
-			}
-			file.SavedCommands[workspaceID] = append(existing[:index], existing[index+1:]...)
-			return nil
-		}
-		return ErrSavedCommandNotFound
-	})
-}
-
-func (s *Service) workspace(id string) (workspaces.Workspace, error) {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return workspaces.Workspace{}, fmt.Errorf("%w: workspace id is required", ErrWorkspaceNotFound)
-	}
-	workspace, ok, err := s.workspaces.Get(id)
-	if err != nil {
-		return workspaces.Workspace{}, err
-	}
-	if !ok {
-		return workspaces.Workspace{}, fmt.Errorf("%w: %s", ErrWorkspaceNotFound, id)
-	}
-	return workspace, nil
-}
-
-func (s *Service) current(workspaceID, sessionID string) (*session, error) {
-	workspaceID = strings.TrimSpace(workspaceID)
+func (s *Service) current(botID, sessionID string) (*session, error) {
+	botID = strings.TrimSpace(botID)
 	sessionID = strings.TrimSpace(sessionID)
 	s.mu.Lock()
 	current := s.sessions[sessionID]
 	s.mu.Unlock()
-	if current == nil || sessionID == "" || current.workspaceID != workspaceID {
+	if current == nil || sessionID == "" || current.botID != botID {
 		return nil, ErrSessionNotFound
 	}
 	return current, nil
 }
-
-func (s *Service) currentRunning(workspaceID, sessionID string) (*session, error) {
-	current, err := s.current(workspaceID, sessionID)
+func (s *Service) currentRunning(botID, sessionID string) (*session, error) {
+	current, err := s.current(botID, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -975,50 +465,20 @@ func (s *Service) currentRunning(workspaceID, sessionID string) (*session, error
 	}
 	return current, nil
 }
-
 func (s *Service) run(current *session) {
 	defer close(current.done)
-	if len(current.taskSteps) == 0 {
-		exitCode, message := s.runTaskProcess(current)
-		s.finishTask(current, exitCode, message, current.stopping())
-		return
-	}
-	for {
-		exitCode, message := s.runTaskProcess(current)
-		wasStopping := current.stopping()
-		if !wasStopping && exitCode == 0 && message == "" {
-			step := current.taskSteps[current.taskIndex]
-			if step.after != nil {
-				if err := step.after(); err != nil {
-					exitCode, message = -1, err.Error()
-				}
-			}
-		}
-		wasStopping = current.stopping()
-		if !wasStopping && exitCode == 0 && message == "" && current.taskIndex+1 < len(current.taskSteps) {
-			current.taskIndex++
-			s.mu.Lock()
-			manager := s.sandbox
-			s.mu.Unlock()
-			cols, rows := ClampSize(120, 30)
-			if err := s.startTaskStep(current, manager, cols, rows); err == nil {
-				if display := current.taskSteps[current.taskIndex].display; display != "" {
-					s.emitOutput(current, []byte("\r\nRunning tool: "+display+"\r\n\r\n"))
-				}
-				continue
-			} else {
-				exitCode, message = -1, err.Error()
-				wasStopping = current.stopping()
-			}
-		}
-		s.finishTask(current, exitCode, message, wasStopping)
-		return
-	}
-}
-
-func (s *Service) runTaskProcess(current *session) (int, string) {
+	code, message := s.runProcess(current)
 	current.mu.Lock()
-	process, backend, processContext := current.process, current.backend, current.processCtx
+	current.exitCode = &code
+	current.status = "exited"
+	current.message = message
+	seq := current.sequence
+	current.mu.Unlock()
+	s.emit(Event{Type: "terminal_event", BotID: current.botID, SessionID: current.id, Event: "exited", Sequence: seq, ExitCode: &code, Message: message})
+}
+func (s *Service) runProcess(current *session) (int, string) {
+	current.mu.Lock()
+	process, backend := current.process, current.backend
 	current.mu.Unlock()
 	waitResult := make(chan struct {
 		exitCode int
@@ -1073,43 +533,8 @@ func (s *Service) runTaskProcess(current *session) (int, string) {
 	} else if result.err != nil && result.exitCode < 0 && !current.stopping() {
 		message = result.err.Error()
 	}
-	if processContext != nil && errors.Is(processContext.Err(), context.DeadlineExceeded) && !current.stopping() {
-		message = "task step timed out"
-	}
 	return result.exitCode, message
 }
-
-func (s *Service) finishTask(current *session, exitCode int, message string, wasStopping bool) {
-	current.mu.Lock()
-	current.exitCode = &exitCode
-	current.status = "exited"
-	if current.kind == "test" {
-		switch {
-		case wasStopping:
-			current.taskStatus = "stopped"
-		case exitCode == 0 && message == "":
-			current.taskStatus = "passed"
-		default:
-			current.taskStatus = "failed"
-		}
-	}
-	current.message = message
-	lastSequence := current.sequence
-	taskStatus := current.taskStatus
-	current.mu.Unlock()
-	if current.onExit != nil {
-		current.onExit(TaskResult{
-			WorkspaceID: current.workspaceID, SessionID: current.id, ExitCode: exitCode,
-			Status: taskStatus, Message: message,
-		})
-	}
-	s.emit(Event{
-		Type: "terminal_event", WorkspaceID: current.workspaceID, SessionID: current.id,
-		Name: current.name, Kind: current.kind, OwnerSessionID: current.ownerID,
-		Event: "exited", Sequence: lastSequence, ExitCode: &exitCode, Message: message, TaskStatus: taskStatus,
-	})
-}
-
 func (s *Service) emitOutput(current *session, data []byte) {
 	value := append([]byte(nil), data...)
 	current.mu.Lock()
@@ -1124,12 +549,11 @@ func (s *Service) emitOutput(current *session, data []byte) {
 	taskStatus := current.taskStatus
 	current.mu.Unlock()
 	s.emit(Event{
-		Type: "terminal_event", WorkspaceID: current.workspaceID, SessionID: current.id,
+		Type: "terminal_event", BotID: current.botID, SessionID: current.id,
 		Name: current.name, Kind: current.kind, OwnerSessionID: current.ownerID,
 		Event: "data", Sequence: sequence, Data: base64.StdEncoding.EncodeToString(value), TaskStatus: taskStatus,
 	})
 }
-
 func (s *Service) emit(event Event) {
 	s.mu.Lock()
 	notify := s.notify
@@ -1138,7 +562,6 @@ func (s *Service) emit(event Event) {
 		notify(event)
 	}
 }
-
 func (current *session) snapshot(afterSequence uint64) Snapshot {
 	current.mu.Lock()
 	defer current.mu.Unlock()
@@ -1159,13 +582,12 @@ func (current *session) snapshot(afterSequence uint64) Snapshot {
 		exitCode = &value
 	}
 	return Snapshot{
-		WorkspaceID: current.workspaceID, ID: current.id, Name: current.name, Kind: current.kind,
+		BotID: current.botID, ID: current.id, Name: current.name, Kind: current.kind,
 		OwnerSessionID: current.ownerID, Shell: current.shell,
 		WorkingDirectory: current.workingDir, Status: current.status, ExitCode: exitCode,
 		Message: current.message, TaskStatus: current.taskStatus, LastSequence: current.sequence, Reset: reset, Output: output,
 	}
 }
-
 func (current *session) stop() {
 	current.stopOnce.Do(func() {
 		current.mu.Lock()
@@ -1188,39 +610,6 @@ func (current *session) stop() {
 		current.closeBackend(backend)
 	})
 }
-
-func mergeTaskEnvironment(base []string, values map[string]string) []string {
-	if len(values) == 0 {
-		return base
-	}
-	merged := make(map[string]string, len(base)+len(values))
-	for _, item := range base {
-		if index := strings.IndexByte(item, '='); index > 0 {
-			merged[item[:index]] = item[index+1:]
-		}
-	}
-	for key, value := range values {
-		if runtime.GOOS == "windows" {
-			for existing := range merged {
-				if strings.EqualFold(existing, key) {
-					delete(merged, existing)
-				}
-			}
-		}
-		merged[key] = value
-	}
-	keys := make([]string, 0, len(merged))
-	for key := range merged {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	result := make([]string, 0, len(keys))
-	for _, key := range keys {
-		result = append(result, key+"="+merged[key])
-	}
-	return result
-}
-
 func (current *session) closeBackend(backend Backend) {
 	if backend == nil {
 		return
@@ -1243,7 +632,6 @@ func (current *session) stopping() bool {
 	defer current.mu.Unlock()
 	return current.status == "stopping"
 }
-
 func ClampSize(cols, rows int) (int, int) {
 	if cols < MinCols {
 		cols = MinCols
@@ -1259,30 +647,6 @@ func ClampSize(cols, rows int) (int, int) {
 	}
 	return cols, rows
 }
-
-func availableWorkingDirectory(workspace workspaces.Workspace) (string, error) {
-	candidates := append([]string{workspace.MainPath}, workspace.Folders...)
-	seen := make(map[string]bool)
-	for _, candidate := range candidates {
-		candidate = filepath.Clean(strings.TrimSpace(candidate))
-		if candidate == "." || candidate == "" {
-			continue
-		}
-		key := candidate
-		if runtime.GOOS == "windows" {
-			key = strings.ToLower(key)
-		}
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-			return candidate, nil
-		}
-	}
-	return "", ErrWorkspaceUnavailable
-}
-
 func resolveInteractiveShell() (string, []string, string, error) {
 	if runtime.GOOS == "windows" {
 		if shell, err := exec.LookPath("pwsh.exe"); err == nil {
@@ -1300,7 +664,6 @@ func resolveInteractiveShell() (string, []string, string, error) {
 	}
 	return "/bin/sh", nil, "sh", nil
 }
-
 func terminalEnvironment() []string {
 	values := os.Environ()
 	values = setEnvironment(values, "TERM", "xterm-256color")
@@ -1308,14 +671,6 @@ func terminalEnvironment() []string {
 	values = setEnvironment(values, "TERM_PROGRAM", "Echo")
 	return values
 }
-
-func sandboxTerminalEnvironment() []string {
-	return []string{
-		"TERM=xterm-256color", "COLORTERM=truecolor", "TERM_PROGRAM=Echo",
-		"LANG=C.UTF-8", "LC_ALL=C.UTF-8", "ECHO_SANDBOX=1",
-	}
-}
-
 func setEnvironment(values []string, key, value string) []string {
 	prefix := strings.ToUpper(key) + "="
 	for index, existing := range values {
@@ -1326,75 +681,138 @@ func setEnvironment(values []string, key, value string) []string {
 	}
 	return append(values, key+"="+value)
 }
-
-func removeEnvironment(values []string, key string) []string {
-	prefix := strings.ToUpper(key) + "="
-	result := values[:0]
-	for _, existing := range values {
-		if !strings.HasPrefix(strings.ToUpper(existing), prefix) {
-			result = append(result, existing)
+func availableWorkingDirectory(bot domain.Bot) (string, error) {
+	if len(bot.Roots) == 0 {
+		return os.UserHomeDir()
+	}
+	for _, root := range bot.Roots {
+		if info, err := os.Stat(root); err == nil && info.IsDir() {
+			return filepath.Abs(root)
 		}
 	}
-	return result
+	return "", ErrWorkspaceUnavailable
 }
-
-func mergeDAPEnvironment(values []string, raw any) []string {
-	environment, ok := raw.(map[string]any)
-	if !ok {
-		return values
-	}
-	for key, value := range environment {
-		if value == nil {
-			values = removeEnvironment(values, key)
-			continue
-		}
-		if text, ok := value.(string); ok {
-			values = setEnvironment(values, key, text)
-		}
-	}
-	return values
+func (s *Service) ListSavedCommands(id string) ([]SavedCommand, error) {
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
+	return s.savedCommands(id)
 }
-
-func dapArgv(raw any) ([]string, error) {
-	values, ok := raw.([]any)
-	if !ok || len(values) == 0 {
-		return nil, errors.New("debug terminal requires a non-empty args array")
+func (s *Service) savedCommands(id string) ([]SavedCommand, error) {
+	if _, err := s.resolve(id); err != nil {
+		return nil, err
 	}
-	result := make([]string, len(values))
-	for index, value := range values {
-		text, ok := value.(string)
-		if !ok || strings.ContainsRune(text, 0) || (index == 0 && strings.TrimSpace(text) == "") {
-			return nil, fmt.Errorf("debug terminal argument %d is invalid", index)
-		}
-		result[index] = text
+	list := []SavedCommand{}
+	err := s.data.Get("terminal-commands", id, &list)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
 	}
-	return result, nil
+	sort.SliceStable(list, func(i, j int) bool { return list[i].Order < list[j].Order })
+	return list, err
 }
-
-func stringFromAny(value any) string {
-	text, _ := value.(string)
-	return text
-}
-
-func validateSavedCommand(name, command string) (string, string, error) {
+func (s *Service) SaveCommand(id, commandID, name, command string) (SavedCommand, error) {
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
 	name = strings.TrimSpace(name)
 	command = strings.TrimSpace(command)
-	if name == "" || command == "" {
-		return "", "", errors.New("name and command are required")
+	if name == "" || command == "" || len(name) > 1024 || len(command) > MaxInput {
+		return SavedCommand{}, errors.New("a name and command are required (maximum 1024 and 65536 bytes)")
 	}
-	return name, command, nil
+	list, err := s.savedCommands(id)
+	if err != nil {
+		return SavedCommand{}, err
+	}
+	item := SavedCommand{ID: commandID, Name: name, Command: command}
+	if commandID == "" {
+		item.ID = uuid.NewString()
+		for _, v := range list {
+			if item.Order <= v.Order {
+				item.Order = v.Order + 1
+			}
+		}
+		list = append(list, item)
+	} else {
+		found := false
+		for i, v := range list {
+			if v.ID == commandID {
+				item.Order = v.Order
+				list[i] = item
+				found = true
+				break
+			}
+		}
+		if !found {
+			return SavedCommand{}, ErrSavedCommandNotFound
+		}
+	}
+	return item, s.data.Put("terminal-commands", id, list)
+}
+func (s *Service) DeleteSavedCommand(id, commandID string) error {
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
+	list, err := s.savedCommands(id)
+	if err != nil {
+		return err
+	}
+	for i, v := range list {
+		if v.ID == commandID {
+			return s.data.Put("terminal-commands", id, append(list[:i], list[i+1:]...))
+		}
+	}
+	return ErrSavedCommandNotFound
 }
 
-func fromStoredCommands(values []appdata.SavedCommand) []SavedCommand {
-	result := make([]SavedCommand, len(values))
-	for index, value := range values {
-		result[index] = fromStoredCommand(value)
+// Reconcile also cleans up sessions whose browser has gone away.
+func (s *Service) Reconcile() {
+	s.mu.Lock()
+	ids := make([]string, 0, len(s.defaults))
+	for id := range s.defaults {
+		ids = append(ids, id)
 	}
-	return result
+	s.mu.Unlock()
+	for _, id := range ids {
+		if _, err := s.resolve(id); err != nil {
+			s.StopBot(id)
+		}
+	}
 }
-func fromStoredCommand(value appdata.SavedCommand) SavedCommand {
-	return SavedCommand{ID: value.ID, Name: value.Name, Command: value.Command, Order: value.Order}
+func (s *Service) ChangeFolder(botID, sessionID, folder string) error {
+	bot, err := s.resolve(botID)
+	if err != nil {
+		return err
+	}
+	found := false
+	for _, root := range bot.Roots {
+		if root == folder {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return errors.New("folder is not configured for this bot")
+	}
+	info, err := os.Stat(folder)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return errors.New("folder is unavailable")
+	}
+	current, err := s.currentRunning(botID, sessionID)
+	if err != nil {
+		return err
+	}
+	command, err := DirectoryCommand(current.shell, folder)
+	if err != nil {
+		return err
+	}
+	return s.Write(botID, sessionID, command+"\r")
 }
-func toStoredCommand(value SavedCommand) appdata.SavedCommand {
-	return appdata.SavedCommand{ID: value.ID, Name: value.Name, Command: value.Command, Order: value.Order}
+func DirectoryCommand(shell, folder string) (string, error) {
+	if strings.IndexFunc(folder, unicode.IsControl) >= 0 {
+		return "", errors.New("folder contains terminal control characters")
+	}
+	if strings.Contains(strings.ToLower(shell), "powershell") {
+		return "Set-Location -LiteralPath '" + strings.ReplaceAll(folder, "'", "''") + "'", nil
+	}
+	return "cd -- '" + strings.ReplaceAll(folder, "'", "'\\''") + "'", nil
 }

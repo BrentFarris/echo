@@ -21,7 +21,7 @@ export function applyDebugEvent(snapshot: DebugSnapshot, event: DebugEvent): Deb
       next.sessions[index] = {
         ...session,
         lastOutputSequence: event.output.sequence,
-        output: [...(session.output || []), event.output],
+        output: boundedOutput([...(session.output || []), event.output]),
       };
     }
   }
@@ -76,6 +76,7 @@ export function breakpointDecorationClass(breakpoint: SourceBreakpoint, sessions
   if (!breakpoint.enabled) return "echo-debug-breakpoint-disabled";
   const statuses = sessions.flatMap((session) => session.breakpoints || []).filter((status) => status.stateId === breakpoint.id);
   if (statuses.some((status) => status.verified && status.line && status.line !== breakpoint.line)) return "echo-debug-breakpoint-relocated";
+  if (statuses.some(status => status.verified)) return breakpoint.logMessage ? "echo-debug-logpoint" : breakpoint.condition || breakpoint.hitCondition ? "echo-debug-breakpoint-conditional" : "echo-debug-breakpoint";
   if (statuses.length > 0 && statuses.every((status) => !status.verified)) return "echo-debug-breakpoint-unverified";
   if (breakpoint.logMessage) return "echo-debug-logpoint";
   if (breakpoint.condition || breakpoint.hitCondition) return "echo-debug-breakpoint-conditional";
@@ -96,7 +97,9 @@ export type DebugKeyContext = {
 export function debugKeyAction(event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey">, context: DebugKeyContext): string | null {
   if (!context.codeActive || context.modalOpen || context.inputFocused || event.altKey) return null;
   const modifier = event.ctrlKey || event.metaKey;
-  if (modifier && event.shiftKey && event.key === "F8") return "restart";
+  if (modifier && !event.shiftKey && event.key === "F5") return "without";
+  if (modifier && event.shiftKey && event.key.toLowerCase() === "d") return "view";
+  if (modifier && event.shiftKey && (event.key === "F5" || event.key === "F8")) return "restart";
   if (!modifier && event.shiftKey && event.key === "F8") return "stop";
   if (!modifier && event.shiftKey && event.key === "F5") return context.sessionActive ? "stop" : null;
   if (!modifier && !event.shiftKey && event.key === "F5") return "toggle";
@@ -105,4 +108,10 @@ export function debugKeyAction(event: Pick<KeyboardEvent, "key" | "ctrlKey" | "m
   if (!modifier && !event.shiftKey && event.key === "F11") return "stepIn";
   if (!modifier && event.shiftKey && event.key === "F11") return "stepOut";
   return null;
+}
+
+function boundedOutput(output: NonNullable<DebugSession['output']>): NonNullable<DebugSession['output']> {
+ let size = 0; let first = output.length;
+ while (first > 0 && size + output[first-1].output.length <= 2 * 1024 * 1024 && output.length - first < 4096) size += output[--first].output.length;
+ return output.slice(first);
 }

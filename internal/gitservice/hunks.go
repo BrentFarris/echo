@@ -21,12 +21,8 @@ func readHunkGit(ctx context.Context, state *repositoryState, args ...string) ([
 	return runGit(ctx, state.root, nil, true, args...)
 }
 
-func (s *Service) describeHunks(ctx context.Context, state *repositoryState, document *DiffDocument) {
+func (s *Service) describeHunks(ctx context.Context, state *repositoryState, document *DiffDocument, index []byte) {
 	if document.Kind != "text" || (document.Scope != "staged" && document.Scope != "unstaged") || state.protectedMetadataPath(document.Path) {
-		return
-	}
-	index, err := readHunkGit(ctx, state, "ls-files", "--stage", "-z", "--", document.Path)
-	if err != nil {
 		return
 	}
 	for _, entry := range strings.Split(string(index), "\x00") {

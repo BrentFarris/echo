@@ -1,0 +1,31 @@
+export type Generation = { endpointId: string; model: string; thinking: string; temperature: number };
+export type Bot = { nodeId?: string; enableMultitasking: boolean; id: string; handle: string; name: string; prompt: string; roots: string[]; plugins: Record<string, boolean>; revision: number };
+export type Endpoint = { nodeId?: string; id: string; name: string; url: string; model: string; cloud: boolean; contextTokens: number; compact: boolean; credential?: string; provider?: string; temperature?: number; topK?: number; topP?: number; minP?: number; maxTokens?: number; frequencyPenalty?: number; presencePenalty?: number; repetitionPenalty?: number; reasoningEffort?: string; thinkingTokenBudget?: number; compressionThreshold?: number; requestTimeoutSeconds?: number; streamIdleTimeoutSeconds?: number };
+export type Attachment = { modelInput?: boolean; nodeId?: string; originChatId?: string; id: string; chatId: string; name: string; mediaType: string; size: number };
+export type Chat = { forkedFrom?: { chatId: string; messageId: string }; nodeId?: string; id: string; title: string; bots: Record<string, string>; generation: Generation; generationByNode?: Record<string, Generation>; updatedAt: string; lastReadAt?: string };
+// Ranges are half-open UTF-16 offsets into the plain message content.
+export type Segment = { nodeId?: string; type: string; botId?: string; path?: string; text?: string; allowedBots?: string[]; kind?: 'file' | 'directory'; range?: { start: number; end: number } };
+export type FileChange = { path: string; displayPath: string; operation: 'created' | 'edited' | 'deleted'; before?: string; after?: string };
+export type TokenUsage = { inputTokens?: number; outputTokens?: number; totalTokens?: number; cachedInputTokens?: number; inputMissing?: boolean; outputMissing?: boolean };
+export type UsageCounts = { inputTokens: number; outputTokens: number; modelCalls: number; inputReports: number; outputReports: number; cachedInputTokens?: number; uncachedInputTokens?: number; cacheReports?: number };
+export type TurnStatistics = UsageCounts & { startedAt: string; completedAt?: string; toolCalls: number };
+export type UsageTotals = UsageCounts & { trackingStartedAt: string; resetAt: string; revision: number };
+export type Message = { usage?: TokenUsage; modelContent?: string; rerunUnavailable?: boolean; storedId?: string; nodeId?: string; id: string; chatId: string; runId?: string; botId?: string; author: string; role: string; content: string; segments?: Segment[]; recipients?: string[]; reasoning?: string; status: string; toolCalls?: unknown[]; createdAt: string; attachments?: Attachment[]; fileChanges?: FileChange[]; fileChangesNotice?: string };
+export type Run = { statistics?: TurnStatistics; id: string; chatId: string; botId: string; userMessageId?: string; status: string; error?: string; updatedAt?: string };
+export type PendingQuestion = { chatId: string; messageId: string; botId: string };
+export type AppRegistration = { viewId: string; icon?: string };
+export type AppFeature = { id: string; title: string };
+export type SlashAction =
+  | { type: 'text'; text: string; position: 'insert' | 'append' | 'prepend' }
+  | { type: 'plugin'; pluginId: string; tool: string; arguments: Record<string, unknown>; botId?: string }
+  | { type: 'app'; pluginId: string; viewId: string; feature?: string; botId?: string };
+export type SlashCommand = { nodeId?: string; id: string; name: string; description: string; builtin: boolean; enabled: boolean; action: SlashAction };
+export type Plugin = { nodeId?: string; id: string; name: string; enabled: boolean; pending: boolean; builtin: boolean; scope: string; digest?: string; app?: AppRegistration; capabilities: string[]; network?: { origins: string[] }; requestedNetworkOrigins?: string[]; config: Record<string, unknown>; providers?: string[]; renderers?: string[]; settings: { properties: Record<string, { type: string; description?: string }> }; views?: { id: string; title: string; html: string; kind?: string; features?: AppFeature[] }[] };
+export type Schedule = { nodeId?: string; id: string; botId: string; prompt: string; recurrence: string; timezone: string; paused: boolean; generation: Generation; next: string };
+export type Occurrence = { nodeId?: string; id: string; scheduleId: string; botId: string; prompt: string; intendedAt: string; status: string; error?: string; timezone?: string; recurrence?: string };
+export type ToolCall = { id: string; type: 'function'; function: { name: string; arguments: string } };
+export type ExecutionScope = { bot: Bot; chatId: string; runId: string; dispatchId: string; pluginId: string; toolMessageId?: string };
+export type PluginManifest = Plugin & { api: 1; version: string; tools: { name: string; description: string; parameters: Record<string, unknown>; capability?: string }[]; providers?: string[]; renderers?: string[]; digest?: string; backend?: string };
+export type EchoEvent = { sequence: number; type: string; chatId?: string; runId?: string; botId?: string; payload: unknown };
+export type State = { slashCommands?: SlashCommand[]; bots: Bot[]; chats: Chat[]; endpoints: Endpoint[]; plugins: Plugin[]; appDock: string[]; schedules: Schedule[]; occurrences: Occurrence[]; runs: Run[]; questions?: PendingQuestion[] };
+export type FileEntry = { nodeId?: string; path: string; name: string; directory: boolean; allowedBots: string[] };

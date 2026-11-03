@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -17,10 +15,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/brent/echo/internal/sandbox"
+	workspacefs "github.com/brent/echo/internal/editorfs"
+	"github.com/brent/echo/internal/scmexec"
 	"github.com/brent/echo/internal/sourcecontrol"
-	"github.com/brent/echo/internal/workspacefs"
-	"github.com/brent/echo/internal/workspaces"
 )
 
 const (
@@ -50,7 +47,7 @@ type repositoryState struct {
 	rootRef      *workspacefs.FileRef
 	scopes       []repositoryScope
 	revision     atomic.Uint64
-	mutationMu   sync.Mutex
+	mutationMu   *sync.Mutex
 	refreshMu    sync.Mutex
 	refreshing   bool
 	refreshAgain bool
@@ -75,21 +72,22 @@ func (r *repositoryState) public() Repository {
 }
 
 type Service struct {
-	workspaces   *workspaces.Manager
+	workspaces   *scmexec.Workspaces
 	fs           *workspacefs.Service
 	mu           sync.RWMutex
 	repos        map[string]map[string]*repositoryState
+	locks        map[string]*sync.Mutex
 	notify       func(Event)
 	watches      map[string]*workspaceWatch
 	statusSlots  chan struct{}
-	sandbox      *sandbox.Manager
+	runner       *scmexec.Runtime
 	execStops    map[string]context.CancelFunc
 	execContexts map[string]context.Context
 }
 
-func New(workspaces *workspaces.Manager, fs *workspacefs.Service) *Service {
+func New(workspaces *scmexec.Workspaces, fs *workspacefs.Service) *Service {
 	return &Service{
-		workspaces: workspaces, fs: fs, repos: make(map[string]map[string]*repositoryState),
+		workspaces: workspaces, fs: fs, locks: make(map[string]*sync.Mutex), repos: make(map[string]map[string]*repositoryState),
 		watches: make(map[string]*workspaceWatch), statusSlots: make(chan struct{}, 4),
 		execStops: make(map[string]context.CancelFunc), execContexts: make(map[string]context.Context),
 	}
@@ -101,9 +99,9 @@ func (s *Service) SetNotifier(notify func(Event)) {
 	s.mu.Unlock()
 }
 
-func (s *Service) SetSandbox(manager *sandbox.Manager) {
+func (s *Service) SetRuntime(manager *scmexec.Runtime) {
 	s.mu.Lock()
-	s.sandbox = manager
+	s.runner = manager
 	s.mu.Unlock()
 }
 
@@ -123,17 +121,27 @@ func (s *Service) Version(ctx context.Context, workspaceID string) (string, erro
 	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(output)), "git version")), nil
 }
 
+func (s *Service) Available(workspaceID string) error {
+	s.mu.RLock()
+	runner := s.runner
+	s.mu.RUnlock()
+	if runner == nil || runner.Available == nil {
+		return errors.New("Git execution scope unavailable")
+	}
+	return runner.Available(workspaceID, "git")
+}
+
 type gitExecutionContextKey struct{}
 
 type gitExecutionContext struct {
-	manager     *sandbox.Manager
+	manager     *scmexec.Runtime
 	workspaceID string
 	stop        context.Context
 }
 
 func (s *Service) executionContext(ctx context.Context, workspaceID string) context.Context {
 	s.mu.Lock()
-	manager := s.sandbox
+	manager := s.runner
 	if s.execContexts == nil {
 		s.execContexts = make(map[string]context.Context)
 		s.execStops = make(map[string]context.CancelFunc)
@@ -145,9 +153,7 @@ func (s *Service) executionContext(ctx context.Context, workspaceID string) cont
 		s.execContexts[workspaceID], s.execStops[workspaceID] = stop, cancel
 	}
 	s.mu.Unlock()
-	if manager == nil || !manager.IsEnabled(workspaceID) {
-		return ctx
-	}
+
 	return context.WithValue(ctx, gitExecutionContextKey{}, gitExecutionContext{manager: manager, workspaceID: workspaceID, stop: stop})
 }
 
@@ -179,9 +185,6 @@ func (s *Service) emit(event Event) {
 func (s *Service) Repositories(ctx context.Context, workspaceID string) ([]Repository, error) {
 	ctx = s.executionContext(ctx, workspaceID)
 	states, err := s.discover(ctx, strings.TrimSpace(workspaceID))
-	if err != nil {
-		return nil, err
-	}
 	repositories := make([]Repository, 0, len(states))
 	for _, state := range states {
 		repositories = append(repositories, state.public())
@@ -194,7 +197,7 @@ func (s *Service) Repositories(ctx context.Context, workspaceID string) ([]Repos
 		}
 		return left < right
 	})
-	return repositories, nil
+	return repositories, err
 }
 
 func (s *Service) discover(ctx context.Context, workspaceID string) ([]*repositoryState, error) {
@@ -219,26 +222,18 @@ func (s *Service) discover(ctx context.Context, workspaceID string) ([]*reposito
 		rootInfos = append(rootInfos, rootInfo{Root: root, canonical: canonical})
 	}
 
+	var discoveryErr error
 	candidates := make(map[string]bool)
 	for _, root := range rootInfos {
 		if hasGitMarker(root.canonical) {
 			candidates[root.canonical] = true
 		}
-		children, readErr := os.ReadDir(root.canonical)
-		if readErr == nil {
-			for _, child := range children {
-				if !child.IsDir() || child.Type()&os.ModeSymlink != 0 {
-					continue
-				}
-				name := strings.ToLower(child.Name())
-				if name == ".git" || name == ".echo" || name == "node_modules" {
-					continue
-				}
-				candidate := filepath.Join(root.canonical, child.Name())
-				if hasGitMarker(candidate) {
-					candidates[candidate] = true
-				}
-			}
+		found, scanErr := scmexec.Discover(ctx, root.canonical, hasGitMarker, func(path string) bool { _, err := s.runner.ValidatePath(workspaceID, path); return err == nil })
+		if scanErr != nil {
+			discoveryErr = scanErr
+		}
+		for _, candidate := range found {
+			candidates[candidate] = true
 		}
 		if workspace.SearchParentRepositories || workspace.SearchParentGitRepositories {
 			candidates[root.canonical] = true
@@ -249,6 +244,7 @@ func (s *Service) discover(ctx context.Context, workspaceID string) ([]*reposito
 	for candidate := range candidates {
 		root, discoverErr := discoverRepositoryRoot(ctx, candidate)
 		if discoverErr != nil {
+			discoveryErr = discoverErr
 			continue
 		}
 		key := pathIdentity(root)
@@ -272,7 +268,12 @@ func (s *Service) discover(ctx context.Context, workspaceID string) ([]*reposito
 		if state == nil {
 			gitDir, _ := discoverGitDir(ctx, repositoryRoot)
 			commonDir, _ := discoverCommonGitDir(ctx, repositoryRoot)
-			state = &repositoryState{
+			lock := s.locks[pathIdentity(commonDir)]
+			if lock == nil {
+				lock = &sync.Mutex{}
+				s.locks[pathIdentity(commonDir)] = lock
+			}
+			state = &repositoryState{mutationMu: lock,
 				workspaceID: workspaceID, root: repositoryRoot, gitDir: gitDir, commonDir: commonDir,
 				label: filepath.Base(repositoryRoot), parent: parent, rootRef: rootRef, scopes: scopes,
 			}
@@ -317,7 +318,7 @@ func (s *Service) discover(ctx context.Context, workspaceID string) ([]*reposito
 		}
 	}
 	s.fs.SetSourceControlMetadata(workspaceID, "git", metadataRefs)
-	return states, nil
+	return states, discoveryErr
 }
 
 func scopesForRepository(repositoryRoot string, roots []rootInfo) ([]repositoryScope, *workspacefs.FileRef, bool) {
@@ -373,6 +374,21 @@ func (s *Service) repository(ctx context.Context, workspaceID, repositoryID stri
 	state := s.repos[workspaceID][repositoryID]
 	s.mu.RUnlock()
 	if state != nil {
+		roots, err := s.fs.Roots(workspaceID)
+		if err != nil {
+			return nil, err
+		}
+		for _, scope := range state.scopes {
+			valid := false
+			for _, root := range roots {
+				if root.ID == scope.RootID && root.BlockedReason == "" {
+					valid = true
+				}
+			}
+			if !valid {
+				return nil, &Error{Code: "stale_workspace_scope", Message: "Workspace folders changed; refresh Source Control before continuing"}
+			}
+		}
 		return state, nil
 	}
 	if _, err := s.discover(ctx, workspaceID); err != nil {
@@ -451,7 +467,7 @@ func mappedGitPath(ctx context.Context, value string) string {
 	if !ok || execution.manager == nil {
 		return value
 	}
-	hostPath, err := execution.manager.GuestToHost(execution.workspaceID, value)
+	hostPath, err := execution.manager.ValidatePath(execution.workspaceID, value)
 	if err != nil {
 		return value
 	}
@@ -459,78 +475,29 @@ func mappedGitPath(ctx context.Context, value string) string {
 }
 
 func runGit(ctx context.Context, root string, input []byte, readOnly bool, args ...string) ([]byte, error) {
-	if execution, ok := ctx.Value(gitExecutionContextKey{}).(gitExecutionContext); ok && execution.manager != nil {
-		executionContext, cancelExecution := context.WithCancel(ctx)
-		stopExecution := context.AfterFunc(execution.stop, cancelExecution)
-		defer func() { stopExecution(); cancelExecution() }()
-		guestRoot, err := execution.manager.HostToGuest(execution.workspaceID, root)
-		if err != nil {
-			return nil, &Error{Code: "sandbox_path_mapping_failed", Message: "Git path could not be mapped into the sandbox", Cause: err}
-		}
-		commandArgs := []string{"git", "-c", "core.quotepath=false", "-C", guestRoot}
-		commandArgs = append(commandArgs, args...)
-		environment := []string{"GIT_TERMINAL_PROMPT=0"}
-		if readOnly {
-			environment = append(environment, "GIT_OPTIONAL_LOCKS=0")
-		}
-		result, executeErr := execution.manager.Execute(executionContext, execution.workspaceID, sandbox.ExecRequest{
-			Command: commandArgs, WorkingDirectory: guestRoot, Environment: environment,
-			Input: input, OutputLimit: maximumCommandOutput,
-		})
-		if executeErr != nil {
-			return nil, &Error{Code: sandbox.ErrorCode(executeErr), Message: executeErr.Error(), Cause: executeErr}
-		}
-		if result.ExitCode != 0 {
-			message := strings.TrimSpace(string(result.Stderr))
-			if message == "" {
-				message = strings.TrimSpace(string(result.Stdout))
-			}
-			if message == "" {
-				message = fmt.Sprintf("Git exited with code %d", result.ExitCode)
-			}
-			return result.Stdout, &Error{Code: "git_command_failed", Message: message}
-		}
-		return result.Stdout, nil
+	execution, ok := ctx.Value(gitExecutionContextKey{}).(gitExecutionContext)
+	if !ok || execution.manager == nil {
+		return nil, errors.New("Git execution scope unavailable")
 	}
-	commandArgs := []string{"-c", "core.quotepath=false", "-C", root}
-	commandArgs = append(commandArgs, args...)
-	command := exec.CommandContext(ctx, "git", commandArgs...)
-	environment := append([]string{}, os.Environ()...)
-	environment = append(environment, "GIT_TERMINAL_PROMPT=0")
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := context.AfterFunc(execution.stop, cancel)
+	defer stop()
+	env := []string{"GIT_TERMINAL_PROMPT=0"}
 	if readOnly {
-		environment = append(environment, "GIT_OPTIONAL_LOCKS=0")
+		env = append(env, "GIT_OPTIONAL_LOCKS=0")
 	}
-	command.Env = environment
-	if input != nil {
-		command.Stdin = bytes.NewReader(input)
-	}
-	var stdout, stderr cappedBuffer
-	stdout.limit = maximumCommandOutput
-	stderr.limit = 4 << 20
-	command.Stdout = &stdout
-	command.Stderr = &stderr
-	err := command.Run()
+	result, err := execution.manager.Execute(runCtx, execution.workspaceID, scmexec.Request{Command: append([]string{"git", "-c", "core.quotepath=false"}, args...), WorkingDirectory: root, Environment: env, Input: input, OutputLimit: maximumCommandOutput})
 	if err != nil {
-		message := strings.TrimSpace(stderr.String())
-		if message == "" {
-			message = strings.TrimSpace(stdout.String())
-		}
-		if message == "" {
-			message = err.Error()
-		}
-		code := "git_command_failed"
-		if ctx.Err() != nil {
-			message = "Git operation timed out or was cancelled"
-			code = "git_timeout"
-		} else if errors.Is(err, exec.ErrNotFound) {
-			message = "Git is not installed or is not available on PATH"
-			code = "git_unavailable"
-		} else if isAuthenticationFailure(message) {
-			code = "git_authentication_failed"
-		}
-		return nil, &Error{Code: code, Message: sanitizeGitOutput(message, root), Cause: err}
+		return nil, err
 	}
-	return stdout.Bytes(), nil
+	if result.StdoutTruncated {
+		return nil, errors.New("Git output exceeds the capture limit")
+	}
+	if result.ExitCode != 0 {
+		return result.Stdout, &Error{Code: "git_command_failed", Message: sanitizeGitOutput(string(result.Stderr)+string(result.Stdout), root)}
+	}
+	return result.Stdout, nil
 }
 
 type cappedBuffer struct {

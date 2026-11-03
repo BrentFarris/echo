@@ -3,8 +3,8 @@ package sourcecontrol
 import (
 	"context"
 
+	workspacefs "github.com/brent/echo/internal/editorfs"
 	"github.com/brent/echo/internal/mutation"
-	"github.com/brent/echo/internal/workspacefs"
 )
 
 // Provider owns discovery and identity for one VCS. Feature interfaces are

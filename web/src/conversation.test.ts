@@ -1,0 +1,106 @@
+import { expect, test } from 'vitest';
+import { conversationItems, conversationThreads, threadMessages } from './conversation';
+import type { Message, Run } from './types';
+
+const message = (id: string, extra: Partial<Message> = {}): Message => ({ id, chatId: 'chat', runId: 'run', botId: 'bot', author: 'Kaiju', role: 'assistant', status: 'completed', content: '', createdAt: '', ...extra });
+const run = (status: string, id = 'run'): Run => ({ id, chatId: 'chat', botId: 'bot', status });
+const response = (messages: Message[], runs: Run[]) => conversationItems(messages, runs).flatMap(item => item.kind === 'response' ? [item.group] : []);
+
+test('media input follows the run input relationship even when another prompt intervenes', () => {
+  const original = message('original', { runId: undefined, role: 'user' });
+  const newer = message('newer', { runId: undefined, role: 'user' });
+  const groups = response([original, newer, message('answer')], [{ ...run('completed'), userMessageId: 'original' }]);
+  expect(groups[0].input).toBe(original);
+  expect(response([original, message('answer')], [run('completed')])[0].input).toBe(original);
+});
+
+test('bot threads include queued and historical bots in prompt order', () => {
+  const messages = [message('prompt', { botId: undefined, runId: undefined, role: 'user', recipients: ['bot', 'b'] }), message('answer', { author: 'Historical name' })];
+  const threads = conversationThreads(undefined, messages, [run('completed'), { ...run('queued', 'b-run'), botId: 'b' }], []);
+  expect(threads).toEqual([{ id: 'bot', name: 'Historical name', status: 'completed' }, { id: 'b', name: 'b', status: 'queued' }]);
+});
+
+test('each thread keeps its prompts, tools and handoffs without another bot’s messages', () => {
+  const messages = [
+    message('shared', { botId: undefined, runId: undefined, role: 'user', recipients: ['bot', 'b'] }),
+    message('only-b', { botId: undefined, runId: undefined, role: 'user', recipients: ['b'] }),
+    message('a-work'), message('a-tool', { role: 'tool' }),
+    message('b-handoff', { botId: 'b', runId: 'b-run', role: 'user' }),
+    message('b-answer', { botId: 'b', runId: 'b-run' }),
+    message('legacy-a-tool', { botId: undefined, role: 'tool' }),
+    message('legacy-prompt', { botId: undefined, runId: undefined, role: 'user' }),
+  ];
+  const runs = [run('completed'), { ...run('completed', 'b-run'), botId: 'b' }];
+  expect(threadMessages(messages, 'bot', runs).map(m => m.id)).toEqual(['shared', 'a-work', 'a-tool', 'legacy-a-tool', 'legacy-prompt']);
+  expect(threadMessages(messages, 'b', runs).map(m => m.id)).toEqual(['shared', 'only-b', 'b-handoff', 'b-answer', 'legacy-prompt']);
+  expect(threadMessages(messages)).toBe(messages);
+});
+
+test('folds reasoning, progress and tools behind the final answer without changing the transcript', () => {
+  const messages = [message('user', { runId: undefined, role: 'user', content: 'Build it' }), message('progress', { reasoning: 'Inspect the folder', content: 'Working', toolCalls: [{}] }), message('tool', { role: 'tool', content: 'Result' }), message('final', { content: 'Done', reasoning: 'Check the result' })];
+  const before = JSON.stringify(messages), items = conversationItems(messages, [run('completed')]);
+  expect(items).toHaveLength(2); expect(items[0].kind).toBe('message');
+  const group = response(messages, [run('completed')])[0];
+  expect(group.final?.id).toBe('final'); expect(group.messages.map(m => m.id)).toEqual(['progress', 'tool', 'final']);
+  expect(JSON.stringify(messages)).toBe(before);
+});
+
+test('keeps independent bots attributed and only folds the finished bot', () => {
+  const messages = [message('a-work', { content: 'Progress', toolCalls: [{}] }), message('b-work', { runId: 'b', botId: 'b', author: 'Backend', content: 'Still working', status: 'running' }), message('a-final', { content: 'Kaiju finished' })];
+  const groups = response(messages, [run('completed'), run('running', 'b')]);
+  expect(groups.map(g => g.author)).toEqual(['Kaiju', 'Backend']);
+  expect(groups[0].final?.content).toBe('Kaiju finished'); expect(groups[1].final).toBeUndefined();
+  expect(groups[0].messages.map(m => m.id)).toEqual(['a-work', 'a-final']);
+});
+
+test.each(['running', 'waiting', 'queued', 'failed', 'cancelled', 'interrupted'])('%s runs do not hide unfinished work', status => {
+  expect(response([message('result', { content: 'Partial result' })], [run(status)])[0].final).toBeUndefined();
+});
+
+test('a resumed handoff unfolds until the replacement final reply completes', () => {
+  const messages = [message('first-final', { content: 'Initial result' }), message('handoff', { role: 'user', author: 'Bot handoff', content: 'Please revise' }), message('new-work', { status: 'running', content: 'Revising' })];
+  let groups = response(messages, [run('running')]);
+  expect(groups).toHaveLength(1); expect(groups[0].final).toBeUndefined();
+  messages[2].status = 'completed'; messages.push(message('new-final', { content: 'Revised result' }));
+  groups = response(messages, [run('completed')]);
+  expect(groups[0].final?.id).toBe('new-final'); expect(groups[0].messages).toHaveLength(4);
+});
+
+test('never treats a completed tool call or empty answer as the final reply', () => {
+  for (const last of [message('call', { content: 'Calling a tool', toolCalls: [{}] }), message('result', { role: 'tool', content: 'Tool result' }), message('empty')]) {
+    expect(response([last], [run('completed')])[0].final).toBeUndefined();
+  }
+});
+
+test('reconstructs completed history without a surviving run record and separates user turns', () => {
+  const messages = [message('first', { content: 'Old result' }), message('user', { role: 'user', runId: undefined, content: 'Another question' }), message('second', { content: 'New result' })];
+  const groups = response(messages, []);
+  expect(groups).toHaveLength(2); expect(groups[0].key).not.toBe(groups[1].key);
+  expect(groups.map(g => g.final?.id)).toEqual(['first', 'second']);
+});
+
+test.each(['failed', 'cancelled', 'interrupted'])('%s errors stay beside their response when the conversation continues', status => {
+  const stopped = { ...run(status), error: 'context canceled' };
+  const messages = [message('partial', { status, content: 'Partial result' }), message('continue', { runId: undefined, role: 'user', content: 'Continue' }), message('next', { runId: 'next-run', status: 'running' })];
+  const items = conversationItems(messages, [stopped, run('running', 'next-run')]);
+  expect(items.map(item => item.kind)).toEqual(['response', 'run-error', 'message', 'response']);
+  expect(items[1]).toEqual({ kind: 'run-error', run: stopped });
+});
+
+test('a run stopped before its first response keeps its error after the originating prompt', () => {
+  const stopped = { ...run('cancelled'), userMessageId: 'prompt', error: 'context canceled' };
+  const messages = [message('prompt', { runId: undefined, role: 'user' }), message('continue', { runId: undefined, role: 'user' }), message('next', { runId: 'next-run' })];
+  const items = conversationItems(messages, [run('completed', 'next-run'), stopped]);
+  expect(items.map(item => item.kind)).toEqual(['message', 'run-error', 'message', 'response']);
+  expect(items[1]).toEqual({ kind: 'run-error', run: stopped });
+});
+
+test('a run split across user turns shows its error once after its last response', () => {
+  const messages = [message('partial'), message('prompt', { runId: undefined, role: 'user' }), message('last')];
+  const items = conversationItems(messages, [{ ...run('failed'), error: 'Model unavailable' }]);
+  expect(items.map(item => item.kind)).toEqual(['response', 'message', 'response', 'run-error']);
+});
+
+test.each(['queued', 'waiting', 'running', 'completed'])('%s runs do not display stale errors', status => {
+  expect(conversationItems([message('reply')], [{ ...run(status), error: 'Old failure' }]).map(item => item.kind)).toEqual(['response']);
+});

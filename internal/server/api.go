@@ -2,68 +2,492 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
-	"time"
+	"strconv"
+	"strings"
+
+	"github.com/brent/echo/internal/calendar"
+	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/model"
+	"github.com/brent/echo/internal/plugins"
+	"github.com/brent/echo/internal/store"
+	"github.com/brent/echo/internal/swarm"
 )
 
-// Standard JSON envelope used by every API endpoint. Successful responses use
-// {"ok":true,"data":...}; failures use {"ok":false,"error":"..."}.
-type envelope struct {
-	OK   bool `json:"ok"`
-	Data any  `json:"data,omitempty"`
-}
-
-type errorEnvelope struct {
-	OK      bool   `json:"ok"`
-	Error   string `json:"error"`
-	Code    string `json:"code,omitempty"`
-	Details any    `json:"details,omitempty"`
-}
-
-// writeJSON writes v as a JSON response with the given status code.
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		logf("writeJSON: %v", err)
-	}
-}
-
-// writeData writes a successful envelope with the given payload.
-func writeData(w http.ResponseWriter, status int, data any) {
-	writeJSON(w, status, envelope{OK: true, Data: data})
-}
-
-// writeError writes a failure envelope with the given HTTP status and message.
-func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, errorEnvelope{OK: false, Error: message})
-}
-
-func writeCodedError(w http.ResponseWriter, status int, code, message string, details any) {
-	writeJSON(w, status, errorEnvelope{OK: false, Error: message, Code: code, Details: details})
-}
-
-// handleHealth reports that the server is alive along with basic metadata.
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeData(w, http.StatusOK, map[string]any{
-		"service":    "echo",
-		"status":     "ok",
-		"time":       time.Now().UTC().Format(time.RFC3339),
-		"clients":    s.hub.ClientCount(),
-		"version":    "0.1.0",
-		"instanceId": s.instanceID,
+func (s *Server) routes(mux *http.ServeMux) {
+	s.slashCommandRoutes(mux)
+	s.usageRoutes(mux)
+	s.messageActionRoutes(mux)
+	s.notificationRoutes(mux)
+	s.swarmRoutes(mux)
+	s.appRoutes(mux)
+	s.editorRoutes(mux)
+	s.goLanguageRoutes(mux)
+	s.debugRoutes(mux)
+	s.terminalRoutes(mux)
+	s.notesRoutes(mux)
+	s.developmentRoutes(mux)
+	s.sourceControlRoutes(mux)
+	s.confluenceRoutes(mux)
+	s.jiraRoutes(mux)
+	s.attachmentRoutes(mux)
+	mux.HandleFunc("GET /api/v1/state", func(w http.ResponseWriter, r *http.Request) {
+		bots, e := s.Bots()
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		chats, e := s.Store.Chats()
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		visible := chats[:0]
+		for _, chat := range chats {
+			if !chat.Projection {
+				visible = append(visible, chat)
+			}
+		}
+		chats = visible
+		endpoints, e := s.Store.List("endpoints")
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		ps, e := s.Plugins.List()
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		schedules, e := s.Calendar.List()
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		jobs, e := s.Calendar.Occurrences()
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		dock, e := s.appDock()
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		commands, e := s.slashCommands()
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		runs, e := s.Store.List("runs")
+		visibleRuns := runs[:0]
+		for _, raw := range runs {
+			var run domain.Run
+			if json.Unmarshal(raw, &run) == nil && !strings.HasPrefix(run.ChatID, "swarm:") {
+				visibleRuns = append(visibleRuns, raw)
+			}
+		}
+		runs = visibleRuns
+		respond(w, map[string]any{"bots": bots, "chats": chats, "endpoints": endpoints, "plugins": ps, "schedules": schedules, "occurrences": jobs, "runs": runs, "appDock": dock, "slashCommands": commands, "questions": s.pendingQuestionState()}, e)
+	})
+	mux.HandleFunc("POST /api/v1/bots", func(w http.ResponseWriter, r *http.Request) {
+		var b domain.Bot
+		if e := decode(w, r, &b); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		value, e := s.updateBot(b, nil)
+		if e == nil {
+			e = s.Calendar.ReconcileActivation(domain.Now())
+		}
+		s.emit("changed", "", "", "", nil)
+		respond(w, value, e)
+	})
+	mux.HandleFunc("DELETE /api/v1/bots/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "echo" {
+			respond(w, nil, errors.New("Echo cannot be deleted"))
+			return
+		}
+		finish := s.stopBot(id)
+		defer finish()
+		if e := s.Calendar.DeleteBot(id); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		e := s.Store.Delete("bots", id)
+		if e == nil && s.SourceControl != nil {
+			s.SourceControl.RemoveWorkspace(id)
+		}
+		s.emit("changed", "", "", "", nil)
+		respond(w, map[string]bool{"deleted": e == nil}, e)
+	})
+	mux.HandleFunc("POST /api/v1/endpoints", func(w http.ResponseWriter, r *http.Request) {
+		var a struct {
+			Endpoint domain.Endpoint `json:"endpoint"`
+			APIKey   *string         `json:"apiKey"`
+		}
+		if e := decode(w, r, &a); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		e := a.Endpoint
+		if e.ID == "" {
+			e.ID = domain.ID()
+		}
+		var old domain.Endpoint
+		s.Store.Get("endpoints", e.ID, &old)
+		e.Credential = old.Credential
+		if e.URL != old.URL {
+			e.Credential = ""
+		}
+		if err := model.ValidateEndpoint(e); err != nil {
+			respond(w, nil, err)
+			return
+		}
+		if e.Provider != "" {
+			echo, _ := s.Bot("echo")
+			if _, err := s.Plugins.Provider(echo, e.Provider); err != nil {
+				respond(w, nil, err)
+				return
+			}
+		}
+		if a.APIKey != nil {
+			if *a.APIKey == "" {
+				if old.Credential != "" {
+					s.Secrets.Delete(r.Context(), old.Credential)
+				}
+				e.Credential = ""
+			} else {
+				e.Credential = "Echo2/" + s.Dir + "/models/" + e.ID
+				if err := s.Secrets.Set(r.Context(), e.Credential, *a.APIKey); err != nil {
+					respond(w, nil, err)
+					return
+				}
+			}
+		}
+		if e.ContextTokens == 0 {
+			e.ContextTokens = 32768
+		}
+		err := s.Store.Put("endpoints", e.ID, e)
+		s.emit("changed", "", "", "", nil)
+		respond(w, e, err)
+	})
+	mux.HandleFunc("DELETE /api/v1/endpoints/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		var endpoint domain.Endpoint
+		s.Store.Get("endpoints", id, &endpoint)
+		if endpoint.Credential != "" {
+			s.Secrets.Delete(r.Context(), endpoint.Credential)
+		}
+		e := s.Store.Delete("endpoints", id)
+		s.emit("changed", "", "", "", nil)
+		respond(w, true, e)
+	})
+	mux.HandleFunc("GET /api/v1/endpoints/{id}/models", func(w http.ResponseWriter, r *http.Request) {
+		var e domain.Endpoint
+		if err := s.Store.Get("endpoints", r.PathValue("id"), &e); err != nil {
+			respond(w, nil, err)
+			return
+		}
+		key, err := s.key(r.Context(), e)
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		v, err := s.Model.Models(r.Context(), e, key)
+		respond(w, v, err)
+	})
+	mux.HandleFunc("POST /api/v1/chats", func(w http.ResponseWriter, r *http.Request) {
+		c := domain.Chat{ID: domain.ID(), Title: "New chat", Bots: map[string]string{}, CreatedAt: domain.Now(), UpdatedAt: domain.Now(), Generation: domain.Generation{Temperature: 0.6}}
+		endpoints, _ := s.Store.List("endpoints")
+		if len(endpoints) > 0 {
+			var ep domain.Endpoint
+			json.Unmarshal(endpoints[0], &ep)
+			c.Generation.EndpointID = ep.ID
+			c.Generation.Model = ep.Model
+			if ep.Temperature != nil {
+				c.Generation.Temperature = *ep.Temperature
+			}
+		}
+		e := s.Store.CreateChat(c)
+		s.emit("changed", c.ID, "", "", nil)
+		respond(w, c, e)
+	})
+	mux.HandleFunc("DELETE /api/v1/chats/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		finish := s.stopChat(id)
+		defer finish()
+		e := s.Store.DeleteChat(id)
+		s.emit("changed", id, "", "", nil)
+		respond(w, true, e)
+	})
+	mux.HandleFunc("PUT /api/v1/chats/{id}/generation", func(w http.ResponseWriter, r *http.Request) {
+		var g domain.Generation
+		if e := decode(w, r, &g); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		var endpoint domain.Endpoint
+		if e := s.Store.Get("endpoints", g.EndpointID, &endpoint); e != nil {
+			respond(w, nil, errors.New("choose an available model connection"))
+			return
+		}
+		if e := model.ValidateSettings(domain.Endpoint{Temperature: &g.Temperature, ReasoningEffort: g.Thinking}); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		// Serialize saved settings with fork snapshot validation and commit.
+		s.mu.Lock()
+		e := s.Store.SetChatGeneration(r.PathValue("id"), g)
+		s.mu.Unlock()
+		respond(w, g, e)
+	})
+	mux.HandleFunc("POST /api/v1/chats/{id}/read", func(w http.ResponseWriter, r *http.Request) {
+		e := s.Store.SetChatReadAt(r.PathValue("id"), domain.Now())
+		s.emit("changed", r.PathValue("id"), "", "", nil)
+		respond(w, true, e)
+	})
+	mux.HandleFunc("POST /api/v1/chats/{id}/stop", func(w http.ResponseWriter, r *http.Request) {
+		finish := s.stopChat(r.PathValue("id"))
+		defer finish()
+		respond(w, true, nil)
+	})
+	mux.HandleFunc("GET /api/v1/chats/{id}/messages", func(w http.ResponseWriter, r *http.Request) { v, e := s.messages(r.PathValue("id")); respond(w, v, e) })
+	mux.HandleFunc("POST /api/v1/chats/{id}/files/reveal", s.revealChangedFile)
+	mux.HandleFunc("POST /api/v1/chats/{id}/files/open", s.openChangedFile)
+	mux.HandleFunc("GET /api/v1/chats/{id}/snapshot", func(w http.ResponseWriter, r *http.Request) {
+		messages, sequence, e := s.snapshot(r.PathValue("id"))
+		respond(w, map[string]any{"messages": messages, "sequence": sequence}, e)
+	})
+	mux.HandleFunc("POST /api/v1/chats/{id}/questions/{messageId}", func(w http.ResponseWriter, r *http.Request) {
+		var a struct {
+			Answers []PlanAnswer `json:"answers"`
+			Skipped bool         `json:"skipped"`
+		}
+		if e := decode(w, r, &a); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		respond(w, true, s.resolveChatQuestions(r.PathValue("id"), r.PathValue("messageId"), a.Answers, a.Skipped))
+	})
+	mux.HandleFunc("POST /api/v1/chats/{id}/messages", func(w http.ResponseWriter, r *http.Request) {
+		var a SendRequest
+		if e := decode(w, r, &a); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		if caller, ok := swarm.Caller(r.Context()); ok {
+			a.OriginNodeID = caller.NodeID
+		} else {
+			a.OriginNodeID = s.Swarm.Node().ID
+		}
+		d, e := s.send(r.PathValue("id"), a)
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		respond(w, map[string]any{"dispatchId": d.id}, nil)
+	})
+	mux.HandleFunc("POST /api/v1/references", func(w http.ResponseWriter, r *http.Request) {
+		var a struct {
+			Content  string           `json:"content"`
+			Query    string           `json:"query"`
+			Segments []domain.Segment `json:"segments"`
+		}
+		if e := decode(w, r, &a); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		bots, e := s.recipients(SendRequest{Content: a.Content, Segments: a.Segments})
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		out, status, e := s.fileReferences(r.Context(), bots, a.Query)
+		w.Header().Set("X-Echo-Reference-Indexing", strconv.FormatBool(status.Indexing))
+		w.Header().Set("X-Echo-Reference-Incomplete", strconv.FormatBool(status.Incomplete))
+		respond(w, out, e)
+	})
+	mux.HandleFunc("POST /api/v1/references/validate", func(w http.ResponseWriter, r *http.Request) {
+		var a SendRequest
+		if e := decode(w, r, &a); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		bots, e := s.recipients(a)
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		if e := s.validateFileSegments(&a, bots, false); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		out := []domain.Segment{}
+		for _, ref := range a.Segments {
+			if ref.Type != "file" {
+				continue
+			}
+			out = append(out, ref)
+		}
+		respond(w, out, nil)
+	})
+	mux.HandleFunc("POST /api/v1/references/reveal", s.revealDraftReference)
+	mux.HandleFunc("POST /api/v1/chats/{id}/references/reveal", s.revealMessageReference)
+	mux.HandleFunc("POST /api/v1/references/open", s.openDraftReference)
+	mux.HandleFunc("POST /api/v1/chats/{id}/references/open", s.openMessageReference)
+	mux.HandleFunc("PATCH /api/v1/plugins/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("id") == "confluence" {
+			s.confluenceMu.Lock()
+			defer s.confluenceMu.Unlock()
+		}
+		if r.PathValue("id") == "jira" {
+			s.jiraMu.Lock()
+			defer s.jiraMu.Unlock()
+		}
+		m, e := s.Plugins.Get(r.PathValue("id"))
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		var a struct {
+			Enabled bool           `json:"enabled"`
+			Config  map[string]any `json:"config"`
+		}
+		if e = decode(w, r, &a); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		if a.Enabled && m.Pending {
+			respond(w, nil, errors.New("approve the requested capabilities first"))
+			return
+		}
+		oldCredential := text(m.Config, "credential")
+		if m.ID == "comfyui" {
+			a.Config, e = comfyUIConfig(m, a.Config, true)
+		} else if m.ID == "jira" {
+			a.Config, e = jiraSettings(m, a.Config, true)
+		} else if m.ID == "confluence" {
+			a.Config, e = confluenceSettings(m, a.Config, true)
+		} else if m.ID == "go" {
+			a.Config, e = s.goConfig(m, a.Config, true)
+		} else if sourceControl(m.ID) {
+			a.Config, e = s.sourceControlConfig(m, a.Config, true)
+		} else {
+			b, _ := json.Marshal(a.Config)
+			e = plugins.Validate(m.Settings, b)
+		}
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		m.Enabled = a.Enabled
+		m.Config = a.Config
+		if m.ID == "swarm" {
+			name := text(a.Config, "name")
+			if name == "" {
+				name = s.Swarm.Node().Name
+			}
+			if e = s.Swarm.Configure(name, text(a.Config, "advertiseUrl")); e != nil {
+				respond(w, nil, e)
+				return
+			}
+		}
+		e = s.Plugins.Save(m)
+		if e == nil && m.ID == "swarm" {
+			s.Swarm.Refresh()
+		}
+		if e == nil && m.ID == "confluence" {
+			s.cancelConfluenceLocked()
+		}
+		if e == nil && (m.ID == "p4" || m.ID == "jira" || m.ID == "confluence") && oldCredential != "" && oldCredential != text(m.Config, "credential") {
+			s.Secrets.Delete(r.Context(), oldCredential)
+		}
+		if e == nil {
+			e = s.Calendar.ReconcileActivation(domain.Now())
+		}
+		s.emit("changed", "", "", "", nil)
+		respond(w, m, e)
+	})
+	mux.HandleFunc("POST /api/v1/plugins/{id}/approve", func(w http.ResponseWriter, r *http.Request) {
+		var approval struct {
+			Digest string `json:"digest"`
+		}
+		if e := decode(w, r, &approval); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		m, e := s.Plugins.ApproveDigest(r.PathValue("id"), approval.Digest)
+		s.emit("changed", "", "", "", nil)
+		respond(w, m, e)
+	})
+	mux.HandleFunc("POST /api/v1/plugins/{id}/rollback", func(w http.ResponseWriter, r *http.Request) {
+		e := s.Plugins.Rollback(r.PathValue("id"))
+		s.emit("changed", "", "", "", nil)
+		respond(w, true, e)
+	})
+	mux.HandleFunc("GET /api/v1/plugins/{id}/views/{view}", func(w http.ResponseWriter, r *http.Request) {
+		m, e := s.Plugins.Get(r.PathValue("id"))
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		botID := r.URL.Query().Get("botId")
+		if botID == "" {
+			botID = "echo"
+		}
+		bot, e := s.Bot(botID)
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		if !s.Plugins.Enabled(bot, m.ID) {
+			respond(w, nil, errors.New("plugin is inactive"))
+			return
+		}
+		view, e := plugins.FloatingView(m, r.PathValue("view"))
+		respond(w, struct {
+			domain.View
+			Digest  string                `json:"digest"`
+			Network *domain.PluginNetwork `json:"network,omitempty"`
+		}{view, m.Digest, m.Network}, e)
+	})
+	mux.HandleFunc("POST /api/v1/plugins/{id}/bridge", s.pluginBridge)
+	mux.HandleFunc("GET /api/v1/plugins/{id}/network", s.pluginNetworkRelay)
+	mux.HandleFunc("POST /api/v1/schedules", func(w http.ResponseWriter, r *http.Request) {
+		var a calendar.Schedule
+		if e := decode(w, r, &a); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		if _, e := s.Bot(a.BotID); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		v, e := s.Calendar.Save(a, domain.Now())
+		s.emit("changed", "", "", "", nil)
+		respond(w, v, e)
+	})
+	mux.HandleFunc("DELETE /api/v1/schedules/{id}", func(w http.ResponseWriter, r *http.Request) {
+		e := s.Calendar.Delete(r.PathValue("id"))
+		s.emit("changed", "", "", "", nil)
+		respond(w, true, e)
+	})
+	mux.HandleFunc("POST /api/v1/missed/review", func(w http.ResponseWriter, r *http.Request) {
+		var a struct {
+			IDs         []string `json:"ids"`
+			Concurrency int      `json:"concurrency"`
+		}
+		if e := decode(w, r, &a); e != nil {
+			respond(w, nil, e)
+			return
+		}
+		e := s.Calendar.Review(s.ctx, a.IDs, a.Concurrency)
+		s.emit("changed", "", "", "", nil)
+		respond(w, true, e)
 	})
 }
 
-// handleEcho is a sample endpoint that echoes back a message, demonstrating
-// the request/response API pattern the frontend will use.
-func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
-	msg := r.URL.Query().Get("message")
-	if msg == "" {
-		msg = "hello from echo"
-	}
-	writeData(w, http.StatusOK, map[string]any{
-		"message":  msg,
-		"received": time.Now().UTC().Format(time.RFC3339),
-	})
-}
+var _ = store.Decode[domain.Endpoint]

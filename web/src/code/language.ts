@@ -11,15 +11,20 @@ import "monaco-editor/language/css/monaco.contribution";
 import "monaco-editor/language/html/monaco.contribution";
 import "monaco-editor/language/typescript/monaco.contribution";
 // The lean editor API exposes language-provider registries but does not load
-// the editor contributions that invoke them. Import only Echo's LSP v1 UI.
+// the editor contributions that invoke them. Load the editor actions supported by the bundled language services.
 import "monaco-editor/editor/browser/services/contribution.js";
 // Lazy language workers register drop/paste contributions after the first
 // editor. Their service must exist before standalone services are initialized,
-// including when Code is remounted while an inline conversation is retained.
+// including when editor sessions are restored.
 import "monaco-editor/editor/common/services/treeViewsDndService.js";
 import "monaco-editor/editor/contrib/codeAction/browser/codeActionContributions.js";
 import "monaco-editor/editor/contrib/codelens/browser/codelensController.js";
 import "monaco-editor/editor/contrib/comment/browser/comment.js";
+import "monaco-editor/editor/contrib/clipboard/browser/clipboard.js";
+import "monaco-editor/editor/contrib/contextmenu/browser/contextmenu.js";
+import "monaco-editor/editor/contrib/folding/browser/folding.js";
+import "monaco-editor/editor/contrib/bracketMatching/browser/bracketMatching.js";
+import "monaco-editor/editor/contrib/stickyScroll/browser/stickyScrollContribution.js";
 import "monaco-editor/editor/contrib/documentSymbols/browser/documentSymbols.js";
 import "monaco-editor/editor/contrib/dnd/browser/dnd.js";
 import "monaco-editor/editor/contrib/find/browser/findController.js";
@@ -36,8 +41,7 @@ import "monaco-editor/editor/contrib/suggest/browser/suggestController.js";
 import "monaco-editor/editor/standalone/browser/quickAccess/standaloneGotoLineQuickAccess.js";
 import "monaco-editor/editor/standalone/browser/referenceSearch/standaloneReferenceSearch.js";
 import "monaco-editor/editor/contrib/wordHighlighter/browser/wordHighlighter.js";
-import { configuredLanguageIdForPath } from "./languageMap";
-import type { LSPProfile } from "./lspTypes";
+import { languageIdForPath } from "./languageMap";
 
 // Import the editor API rather than Monaco's aggregate entry point. The
 // aggregate also eagerly pulls language registrations into this lazy route;
@@ -86,17 +90,8 @@ function registerAssembly(): void {
   });
 }
 
-export function configuredLanguageForPath(filePath: string, profiles: LSPProfile[] = []): string {
-  return configuredLanguageIdForPath(filePath, profiles);
-}
-
-export function languageForPath(filePath: string, profiles: LSPProfile[] = []): string {
-  const language = configuredLanguageForPath(filePath, profiles);
-  const known = monaco.languages.getLanguages().some((candidate) => candidate.id === language);
-  if (!known && language !== "plaintext") {
-    const selector = profiles.flatMap((profile) => profile.selectors || []).find((candidate) => candidate.languageId === language);
-    monaco.languages.register({ id: language, extensions: selector?.extensions, filenames: selector?.filenames });
-  }
+export function languageForPath(filePath: string): string {
+  const language = languageIdForPath(filePath);
   if (language === "echo-asm") registerAssembly();
   return language;
 }

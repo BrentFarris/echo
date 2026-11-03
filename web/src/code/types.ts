@@ -1,6 +1,6 @@
+export type Registration = {pending?: boolean; diagnostic?: string; operationId?: string};
 export type FileRef = { rootId: string; path: string };
 
-export type FileRegistration = { pending: boolean; diagnostic?: string; operationId?: string };
 
 export type WorkspaceRoot = {
   id: string;
@@ -11,7 +11,7 @@ export type WorkspaceRoot = {
 };
 
 export type FsEntry = {
-  registration?: FileRegistration;
+  registration?: Registration;
   ref: FileRef;
   name: string;
   hostPath: string;
@@ -24,7 +24,7 @@ export type FsEntry = {
 };
 
 export type FileSnapshot = {
-  registration?: FileRegistration;
+  registration?: Registration;
   ref: FileRef;
   hostPath: string;
   content: string;
@@ -37,7 +37,7 @@ export type FileSnapshot = {
 };
 
 export type TrashItem = {
-  registration?: FileRegistration;
+  registration?: Registration;
   id: string;
   workspaceId: string;
   ref: FileRef;
@@ -115,7 +115,7 @@ export type TextReplaceTarget = {
 };
 
 export type TextReplaceUpdate = {
-  registration?: FileRegistration;
+  registration?: Registration;
   ref: FileRef;
   revision: string;
   size: number;
@@ -136,7 +136,8 @@ export type MarkdownViewState = {
 };
 
 export type PersistedTab = MarkdownViewState & {
-  kind?: "file" | "diff" | "media";
+  kind?: "file" | "media" | "diff";
+  diff?: {repository: import("./sourceControlTypes").SourceControlRepository; target: import("./sourceControlTypes").SourceControlDiffRequest; originalContent?: string};
   id: string;
   ref: FileRef | null;
   title: string;
@@ -153,28 +154,6 @@ export type PersistedTab = MarkdownViewState & {
   content?: string;
   cursor?: { lineNumber: number; column: number };
   scrollTop?: number;
-  diff?: {
-    repository: {
-      id: string;
-      providerId?: string;
-      providerLabel?: string;
-      label: string;
-      rootRef?: FileRef;
-      parent: boolean;
-      scopes: Array<{ rootId: string; rootLabel: string; repoPrefix: string }>;
-      revision: number;
-      available?: boolean;
-      diagnostic?: string;
-      capabilities?: string[];
-    };
-    scope: "included" | "working" | "commit" | "stash" | "staged" | "unstaged" | "conflict";
-    groupId?: string;
-    reviewRef?: string;
-    fileRef?: FileRef;
-    oldPath?: string;
-    path: string;
-    editable: boolean;
-  };
 };
 
 export type PersistedWorkspaceSession = {
@@ -184,7 +163,6 @@ export type PersistedWorkspaceSession = {
   expanded: string[];
   selectedTreeKey?: string | null;
   explorerWidth: number;
-  codeChatWidth?: number;
   outlineSizeRatio?: number;
   treeScrollTop: number;
 };

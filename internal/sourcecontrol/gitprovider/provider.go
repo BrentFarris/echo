@@ -13,7 +13,7 @@ import (
 const ID = "git"
 
 var capabilities = []sourcecontrol.Capability{
-	sourcecontrol.CapabilityStatus, sourcecontrol.CapabilityDiff, sourcecontrol.CapabilityHistory,
+	sourcecontrol.CapabilityStatus, sourcecontrol.CapabilityDiff,
 	sourcecontrol.CapabilityStage, sourcecontrol.CapabilityCommitAll, sourcecontrol.CapabilityCommitSelected,
 	sourcecontrol.CapabilitySync, sourcecontrol.CapabilityPull, sourcecontrol.CapabilityPush,
 	sourcecontrol.CapabilityBranches, sourcecontrol.CapabilityMerge, sourcecontrol.CapabilityStashes,
@@ -29,21 +29,17 @@ func (p *Provider) Descriptor(ctx context.Context, workspaceID string) sourcecon
 	if strings.TrimSpace(workspaceID) == "" {
 		return descriptor
 	}
-	version, err := p.service.Version(ctx, workspaceID)
+	err := p.service.Available(workspaceID)
 	if err != nil {
-		descriptor.Diagnostic = "Git is not installed or is unavailable in this workspace execution environment"
+		descriptor.Diagnostic = err.Error()
 		return descriptor
 	}
 	descriptor.Available = true
-	descriptor.Version = version
 	return descriptor
 }
 
 func (p *Provider) Repositories(ctx context.Context, workspaceID string) ([]sourcecontrol.Repository, error) {
 	repositories, err := p.service.Repositories(ctx, workspaceID)
-	if err != nil {
-		return nil, convertError(err)
-	}
 	result := make([]sourcecontrol.Repository, 0, len(repositories))
 	for _, repository := range repositories {
 		scopes := make([]sourcecontrol.Scope, len(repository.Scopes))
@@ -56,7 +52,7 @@ func (p *Provider) Repositories(ctx context.Context, workspaceID string) ([]sour
 			Revision: repository.Revision, Available: true, Capabilities: append([]sourcecontrol.Capability(nil), capabilities...),
 		})
 	}
-	return result, nil
+	return result, convertError(err)
 }
 
 func (p *Provider) Status(ctx context.Context, workspaceID, repositoryID string) (sourcecontrol.StatusSnapshot, error) {
