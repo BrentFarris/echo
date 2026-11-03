@@ -149,6 +149,8 @@ Input tokens are cumulative across model calls, including repeated conversation 
 
 General also shows combined input/output totals for online machines, including chat, inline editing, and context summaries. Hover, focus, or tap a total to see exact counts and the machine breakdown without moving the layout. Missing usage is marked partial; tracking starts fresh when this feature is installed. **Settings → Development → Reset token totals…** asks for confirmation and resets reachable machines, preserving historical chat statistics. Offline machines keep their counts and contribute them again when reconnected.
 
+Bots are instructed to ask clarifying questions whenever unresolved ambiguity would materially affect a plan or result, during both planning and implementation. They check the conversation and workspace first and proceed independently when the request is clear or a low-impact assumption is sufficient. In chat, questions use interactive cards with optional suggested answers and free text; bots wait for your answers and continue, or use their best judgment if you skip. Inline code chat asks in its reply before proposing edits that depend on your answer. No separate Pair Programming mode is needed, and `/plan` uses the same clarification guidance while still requiring approval before changes.
+
 Chats have no turn limit, and bots can ask clarifying questions as often as needed. Model/tool rounds and bot-to-bot questions and handoffs have no count limit. Use Stop to end active work.
 
 - Ask Echo to create, list, configure or delete bots. Unmentioned messages go to Echo even inside a named-bot chat.

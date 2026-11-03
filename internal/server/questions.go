@@ -20,6 +20,10 @@ import (
 // transcripts and snapshots restore the pending state without extra storage.
 const AskUserQuestionsToolName = "ask_user_questions"
 
+// clarificationGuidance applies to every bot, independently of slash commands.
+// Each chat surface supplies its own mechanism for asking and receiving answers.
+const clarificationGuidance = "Collaborate with the user throughout the task, during planning and implementation. Check the conversation and available workspace context first. If unresolved ambiguity about the user's intent, scope, approach, constraints, or priorities would materially change the plan or result, ask concise, focused questions before finalizing the plan or taking actions that depend on the answer. Do not guess consequential user preferences. Continue independently when the request is clear or a reasonable low-impact assumption is sufficient."
+
 const (
 	maxPlanQuestionOptions   = 3
 	maxPlanQuestionIDLen     = 64
