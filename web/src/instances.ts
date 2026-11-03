@@ -68,7 +68,8 @@ export function ownedState(node: string, value: State): State {
     endpoints: (value.endpoints || []).map(e => ({ ...e, id: key(e.id), nodeId: node })),
     schedules: (value.schedules || []).map(s => ({ ...s, id: key(s.id), botId: key(s.botId), nodeId: node, generation: ownedGeneration(node, s.generation) })),
     occurrences: (value.occurrences || []).map(o => ({ ...o, id: key(o.id), scheduleId: key(o.scheduleId), botId: key(o.botId), nodeId: node })),
-    runs: (value.runs || []).map(r => ({ ...r, id: key(r.id), chatId: key(r.chatId), botId: key(r.botId), userMessageId: r.userMessageId && key(r.userMessageId) })), appDock: (value.appDock || []).map(key) };
+    runs: (value.runs || []).map(r => ({ ...r, id: key(r.id), chatId: key(r.chatId), botId: key(r.botId), userMessageId: r.userMessageId && key(r.userMessageId) })),
+    questions: (value.questions || []).map(q => ({ ...q, chatId: key(q.chatId), messageId: key(q.messageId), botId: key(q.botId) })), appDock: (value.appDock || []).map(key) };
 }
 export function combineState(local: State, swarm: SwarmState): State {
   entryNode = swarm.node.nodeId;

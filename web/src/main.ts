@@ -34,6 +34,7 @@ import { parseChatRoute } from './notificationRoutes';
 import { composerMarkup, icons, autosizeComposer, wireComposerMenus, attachmentCard, previewAttachment, releaseAttachments, prefixBotMention, type DraftAttachment } from './composer';
 import { MediaGalleries } from './generatedMedia';
 import { isQuestionMessage, questionCard, type QuestionSubmission } from './planQuestions';
+import { activeRunStatuses, finishedRunStatuses, chatUnread, chatDotState, chatDotMarkup, hasPendingQuestion } from './chatDot';
 import { Apps, botPluginSelected, pluginAvailable } from './apps';
 import { builtinApp } from './builtinApps';
 import { PluginWindows, parseAppRoute, type NativeFileTarget } from './pluginWindows';
@@ -102,21 +103,9 @@ function action(fn: () => unknown | Promise<unknown>) { return () => { Promise.r
 function busy() { return state.runs.some(r => r.chatId === chatId && ['running', 'waiting', 'queued'].includes(r.status)); }
 function currentBot(id?: string) { return state.bots.find(b => b.id === id); }
 function pluginEnabled(id: string, botId?: string) { return pluginAvailable(state.plugins.find(p => p.id === id), currentBot(botId)); }
-const activeRunStatuses = ['running', 'waiting', 'queued'];
-const finishedRunStatuses = ['completed', 'failed', 'cancelled', 'interrupted'];
 function markRead(id: string) { if (id) void api(`/chats/${id}/read`, 'POST', {}).catch(() => { /* Sidebar state recovers on the next refresh. */ }); }
-function chatUnread(c: Chat) {
-  if (c.id === chatId && !showingApps && !showingApp) return false;
-  const lastReadAt = c.lastReadAt;
-  if (!lastReadAt) return true;
-  return state.runs.some(r => r.chatId === c.id && finishedRunStatuses.includes(r.status) && (r.updatedAt || '') > lastReadAt);
-}
-// Yellow dot: work is in progress. Green dot: the latest run finished after the
-// chat was last opened, so the outcome has not been seen yet.
 function chatDot(c: Chat) {
-  if (state.runs.some(r => r.chatId === c.id && activeRunStatuses.includes(r.status))) return '<span class="chat-dot busy" role="img" aria-label="In progress" title="In progress"></span>';
-  if (!c.lastReadAt) return '';
-  return chatUnread(c) ? '<span class="chat-dot done" role="img" aria-label="Finished, not yet opened" title="Finished — not yet opened"></span>' : '';
+  return chatDotMarkup(chatDotState(c, state.runs, state.questions, chatId, !showingApps && !showingApp));
 }
 
 function shell() {
@@ -442,7 +431,7 @@ function renderSidebar() {
 async function deleteChat(id: string) {
   if (submitting || closingChats.has(id)) return;
   const chat = state.chats.find(c => c.id === id); if (!chat) return;
-  const active = state.runs.some(r => r.chatId === id && activeRunStatuses.includes(r.status)), unread = chatUnread(chat);
+  const active = state.runs.some(r => r.chatId === id && activeRunStatuses.includes(r.status)), unread = chatUnread(chat, state.runs, chatId, !showingApps && !showingApp);
   const reasons = [active ? 'This chat is still busy.' : '', unread ? 'This chat has not been read yet.' : ''].filter(Boolean);
   if (reasons.length && !window.confirm(`Close “${chat.title}”?\n\n${reasons.join(' ')}\n\nClosing permanently deletes this chat${active ? ' and stops its work' : ''}.`)) return;
   closingChats.add(id);
@@ -560,9 +549,10 @@ function renderBotTabs() {
   const tabs = q('.bot-tabs'), panel = q('#bot-thread-panel');
   q('.bot-tabs-shell').hidden = !visibleBotId;
   const markup = visibleBotId ? threads.map(thread => {
-    const status = statusLabel(thread.status), label = thread.name + (status ? ' ' + status : '');
+    const pendingQuestion = hasPendingQuestion(state.questions, chatId, thread.id);
+    const status = pendingQuestion ? 'Waiting for your answer' : statusLabel(thread.status), label = thread.name + (status ? ' ' + status : '');
     const working = ['running', 'waiting', 'queued'].includes(thread.status || '');
-    return `<button type="button" role="tab" id="bot-tab-${esc(thread.id)}" data-bot-thread="${esc(thread.id)}" aria-controls="bot-thread-panel" aria-label="${esc(label)}" title="${esc(label)}" aria-selected="${thread.id === visibleBotId}" tabindex="${thread.id === visibleBotId ? 0 : -1}">${botAvatarMarkup(thread)}${working ? '<span class="bot-tab-busy-dot" aria-hidden="true"></span>' : ''}<span class="bot-tab-label">${esc(thread.name)}</span>${splitID(thread.id)[0] !== entryNode ? `<small class="machine-chip">${esc(machineName(splitID(thread.id)[0]))}</small>` : ''}</button>`;
+    return `<button type="button" role="tab" id="bot-tab-${esc(thread.id)}" data-bot-thread="${esc(thread.id)}" aria-controls="bot-thread-panel" aria-label="${esc(label)}" title="${esc(label)}" aria-selected="${thread.id === visibleBotId}" tabindex="${thread.id === visibleBotId ? 0 : -1}">${botAvatarMarkup(thread)}${pendingQuestion ? '<span class="bot-tab-question-dot" aria-hidden="true"></span>' : working ? '<span class="bot-tab-busy-dot" aria-hidden="true"></span>' : ''}<span class="bot-tab-label">${esc(thread.name)}</span>${splitID(thread.id)[0] !== entryNode ? `<small class="machine-chip">${esc(machineName(splitID(thread.id)[0]))}</small>` : ''}</button>`;
   }).join('') : '';
   if (tabs.innerHTML !== markup) {
     const focused = tabs.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.botThread : undefined;
@@ -843,6 +833,7 @@ function connect() {
 }
 function receive(e: any) {
     if (e.type === 'notification') { notifications.receive(e.payload); return; }
+    if (e.type === 'questions') { queueRefresh(); return; }
     if (e.type === 'plugin-open') { action(() => openPlugin(e.payload.id, e.payload.viewId, e.botId))(); return; }
     if (e.type === 'run') { state.runs = [...state.runs.filter(r => r.id !== e.payload.id), e.payload]; updateSendButton(); if (e.chatId === chatId) renderMessages(); queueRefresh(); }
     if (e.chatId === chatId && e.type === 'tool-output') {

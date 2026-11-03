@@ -1,8 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +13,26 @@ import (
 	"github.com/brent/echo/internal/domain"
 	"github.com/brent/echo/internal/model"
 )
+
+func assertQuestionState(t *testing.T, s *Server, want ...domain.PendingQuestion) {
+	t.Helper()
+	mux := http.NewServeMux()
+	s.routes(mux)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/state", nil))
+	var state struct {
+		Questions []domain.PendingQuestion `json:"questions"`
+	}
+	if w.Code != http.StatusOK {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Questions == nil || !slices.Equal(state.Questions, want) {
+		t.Fatalf("pending questions: got %+v, want %+v", state.Questions, want)
+	}
+}
 
 func TestParseAskUserQuestionsArgs(t *testing.T) {
 	if _, e := ParseAskUserQuestionsArgs(nil); e == nil {
@@ -64,7 +87,13 @@ func questionPending(t *testing.T, s *Server, chatID, callID string) domain.Mess
 		for _, m := range ms {
 			if m.Role == "tool" && m.CallID == callID {
 				if m.Status == "running" {
-					return m
+					s.questionsMu.Lock()
+					_, pending := s.pendingQuestions[m.ID]
+					s.questionsMu.Unlock()
+					if pending {
+						return m
+					}
+					continue
 				}
 				if m.Status != "" {
 					t.Fatalf("question finished without answers: %s", m.Status)
@@ -72,7 +101,8 @@ func questionPending(t *testing.T, s *Server, chatID, callID string) domain.Mess
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("question never became pending")
+			runs, _ := s.Store.ChatRuns(chatID)
+			t.Fatalf("question never became pending: messages=%+v questions=%+v runs=%+v", ms, s.pendingQuestionState(), runs)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -106,6 +136,8 @@ func TestAskUserQuestionsBlocksAndResumes(t *testing.T) {
 		t.Fatal(e)
 	}
 	tool := questionPending(t, s, c.ID, "q1")
+	pending := domain.PendingQuestion{ChatID: c.ID, MessageID: tool.ID, BotID: tool.BotID}
+	assertQuestionState(t, s, pending)
 	if !strings.Contains(tool.Content, "Which scope?") {
 		t.Fatal("pending tool message does not carry the question set", tool.Content)
 	}
@@ -116,9 +148,11 @@ func TestAskUserQuestionsBlocksAndResumes(t *testing.T) {
 	if e := s.resolveChatQuestions(c.ID, tool.ID, []PlanAnswer{{QuestionID: "scope", OptionIndex: 1}}, false); e == nil {
 		t.Fatal("partial answers accepted")
 	}
+	assertQuestionState(t, s, pending)
 	if e := s.resolveChatQuestions(c.ID, tool.ID, []PlanAnswer{{QuestionID: "scope", OptionIndex: 1}, {QuestionID: "lang", OptionIndex: -1, Text: "Go"}}, false); e != nil {
 		t.Fatal(e)
 	}
+	assertQuestionState(t, s)
 	waitDispatch(t, d)
 	if !strings.Contains(toolResult, "Extended") || !strings.Contains(toolResult, "Go") {
 		t.Fatal("model did not receive the answers", toolResult)
@@ -172,10 +206,11 @@ func TestAskUserQuestionsSkip(t *testing.T) {
 	if e := s.resolveChatQuestions(c.ID, tool.ID, nil, true); e != nil {
 		t.Fatal(e)
 	}
+	assertQuestionState(t, s)
 	waitDispatch(t, d)
 	var parsed struct {
-		Skipped  bool           `json:"skipped"`
-		Answers  []PlanAnswer   `json:"answers"`
+		Skipped   bool           `json:"skipped"`
+		Answers   []PlanAnswer   `json:"answers"`
 		Questions []PlanQuestion `json:"questions"`
 	}
 	if e := json.Unmarshal([]byte(toolResult), &parsed); e != nil {
@@ -211,6 +246,7 @@ func TestAskUserQuestionsCancel(t *testing.T) {
 	finish := s.stopChat(c.ID)
 	waitDispatch(t, d)
 	finish()
+	assertQuestionState(t, s)
 	ms, e := s.messages(c.ID)
 	if e != nil {
 		t.Fatal(e)
@@ -224,5 +260,68 @@ func TestAskUserQuestionsCancel(t *testing.T) {
 				t.Fatal("cancel reason missing from the tool result", m.Content)
 			}
 		}
+	}
+}
+
+func TestPendingQuestionEvents(t *testing.T) {
+	for _, resolution := range []string{"answer", "skip", "cancel"} {
+		t.Run(resolution, func(t *testing.T) {
+			s := testServer(t)
+			events := make(chan domain.Event, 16)
+			s.mu.Lock()
+			s.subscribers[events] = true
+			s.mu.Unlock()
+			defer func() { s.mu.Lock(); delete(s.subscribers, events); s.mu.Unlock() }()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			scope := domain.ExecutionScope{ChatID: "chat", ToolMessageID: "question", RunID: "run", Bot: domain.Bot{ID: "echo", Name: "Echo"}}
+			go func() {
+				_, err := s.askUserQuestions(ctx, scope, json.RawMessage(`{"questions":[{"id":"scope","question":"Which scope?","options":["Core"]}]}`))
+				done <- err
+			}()
+			nextQuestionEvent := func() domain.Event {
+				t.Helper()
+				deadline := time.After(5 * time.Second)
+				for {
+					select {
+					case event := <-events:
+						if event.Type == "questions" {
+							return event
+						}
+					case <-deadline:
+						t.Fatal("missing question event")
+					}
+				}
+			}
+			appeared := nextQuestionEvent()
+			if appeared.ChatID != scope.ChatID || appeared.BotID != scope.Bot.ID || appeared.RunID != scope.RunID {
+				t.Fatal("question event lost its scope", appeared)
+			}
+			assertQuestionState(t, s, domain.PendingQuestion{ChatID: "chat", MessageID: "question", BotID: "echo"})
+			if resolution == "cancel" {
+				cancel()
+			} else if err := s.resolveChatQuestions("chat", "question", []PlanAnswer{{QuestionID: "scope", OptionIndex: 0}}, resolution == "skip"); err != nil {
+				t.Fatal(err)
+			}
+			cleared := nextQuestionEvent()
+			var payload struct {
+				ID       string `json:"id"`
+				Resolved bool   `json:"resolved"`
+			}
+			if err := json.Unmarshal(cleared.Payload, &payload); err != nil || payload.ID != "question" || !payload.Resolved {
+				t.Fatal("missing question resolution", cleared, err)
+			}
+			// A refresh triggered by the clearing event must already see no question.
+			assertQuestionState(t, s)
+			select {
+			case err := <-done:
+				if (err != nil) != (resolution == "cancel") {
+					t.Fatal("unexpected question result", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("question did not finish")
+			}
+		})
 	}
 }

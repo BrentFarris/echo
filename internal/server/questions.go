@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -117,6 +118,8 @@ func questionSet(args askUserQuestionsArgs) []PlanQuestion {
 // sent flag makes a second submit or skip a visible error instead of a race.
 type pendingQuestion struct {
 	chatID   string
+	botID    string
+	runID    string
 	set      []PlanQuestion
 	resolved chan questionResolution
 	mu       sync.Mutex
@@ -136,7 +139,7 @@ func (s *Server) askUserQuestions(ctx context.Context, scope domain.ExecutionSco
 		return nil, e
 	}
 	set := questionSet(args)
-	wait := &pendingQuestion{chatID: scope.ChatID, set: set, resolved: make(chan questionResolution, 1)}
+	wait := &pendingQuestion{chatID: scope.ChatID, botID: scope.Bot.ID, runID: scope.RunID, set: set, resolved: make(chan questionResolution, 1)}
 	s.questionsMu.Lock()
 	if s.pendingQuestions == nil {
 		s.pendingQuestions = map[string]*pendingQuestion{}
@@ -159,10 +162,28 @@ func (s *Server) askUserQuestions(ctx context.Context, scope domain.ExecutionSco
 
 func (s *Server) clearPendingQuestion(messageID string, wait *pendingQuestion) {
 	s.questionsMu.Lock()
-	if s.pendingQuestions[messageID] == wait {
+	removed := s.pendingQuestions[messageID] == wait
+	if removed {
 		delete(s.pendingQuestions, messageID)
 	}
 	s.questionsMu.Unlock()
+	if removed {
+		// State must stop reporting the question before clients refresh, even
+		// when a cancellation clears it without an answer submission.
+		s.emit("questions", wait.chatID, wait.runID, wait.botID, map[string]any{"id": messageID, "resolved": true})
+	}
+}
+
+func (s *Server) pendingQuestionState() []domain.PendingQuestion {
+	s.questionsMu.Lock()
+	defer s.questionsMu.Unlock()
+	out := make([]domain.PendingQuestion, 0, len(s.pendingQuestions))
+	for id, wait := range s.pendingQuestions {
+		out = append(out, domain.PendingQuestion{ChatID: wait.chatID, MessageID: id, BotID: wait.botID})
+	}
+	// Stable ordering avoids unnecessary changes in the swarm state cache.
+	sort.Slice(out, func(i, j int) bool { return out[i].MessageID < out[j].MessageID })
+	return out
 }
 
 // resolveChatQuestions delivers the owner's answers to the run waiting on the
@@ -187,6 +208,7 @@ func (s *Server) resolveChatQuestions(chatID, messageID string, answers []PlanAn
 	}
 	wait.sent = true
 	_ = s.Store.ResolveQuestionAlert(chatID, messageID)
+	s.clearPendingQuestion(messageID, wait)
 	wait.resolved <- questionResolution{answers: normalized, skipped: skipped}
 	return nil
 }

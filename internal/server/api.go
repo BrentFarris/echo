@@ -89,7 +89,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 			}
 		}
 		runs = visibleRuns
-		respond(w, map[string]any{"bots": bots, "chats": chats, "endpoints": endpoints, "plugins": ps, "schedules": schedules, "occurrences": jobs, "runs": runs, "appDock": dock, "slashCommands": commands}, e)
+		respond(w, map[string]any{"bots": bots, "chats": chats, "endpoints": endpoints, "plugins": ps, "schedules": schedules, "occurrences": jobs, "runs": runs, "appDock": dock, "slashCommands": commands, "questions": s.pendingQuestionState()}, e)
 	})
 	mux.HandleFunc("POST /api/v1/bots", func(w http.ResponseWriter, r *http.Request) {
 		var b domain.Bot

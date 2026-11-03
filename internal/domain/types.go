@@ -179,6 +179,14 @@ type Run struct {
 	CreatedAt     time.Time       `json:"createdAt"`
 	UpdatedAt     time.Time       `json:"updatedAt"`
 }
+
+// PendingQuestion identifies a structured question awaiting the owner's answer.
+type PendingQuestion struct {
+	ChatID    string `json:"chatId"`
+	MessageID string `json:"messageId"`
+	BotID     string `json:"botId"`
+}
+
 type ExecutionScope struct {
 	Standalone    bool   `json:"-"` // Owner-invoked plugin action without a model/chat run.
 	Bot           Bot    `json:"bot"`

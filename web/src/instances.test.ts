@@ -6,6 +6,14 @@ const a = 'a'.repeat(32), b = 'b'.repeat(32);
 const empty = (): State => ({ bots: [], chats: [], endpoints: [], plugins: [], appDock: [], schedules: [], occurrences: [], runs: [] });
 beforeEach(() => { vi.restoreAllMocks(); combineState(empty(), { node: { nodeId: a, name: 'desktop', epoch: '1', version: 1 }, enabled: true, peers: [], instances: [{ node: { nodeId: b, name: 'linux', epoch: '2', version: 1 }, online: true, state: empty() }] }); });
 describe('instance ownership', () => {
+  it('combines pending questions with machine-qualified IDs and accepts older state', () => {
+    const question = { chatId: 'chat', messageId: 'question', botId: 'echo' };
+    const local = { ...empty(), questions: [question] }, remote = { ...empty(), questions: [question] };
+    const combined = combineState(local, { node: { nodeId: a, name: 'desktop', epoch: '1', version: 1 }, enabled: true, peers: [], instances: [{ node: { nodeId: b, name: 'linux', epoch: '2', version: 1 }, online: true, state: remote }] });
+    expect(combined.questions).toEqual([question, { chatId: `${b}:chat`, messageId: `${b}:question`, botId: `${b}:echo` }]);
+    expect(ownedState(b, empty()).questions).toEqual([]);
+    expect(ownedState(b, { ...empty(), questions: [{ ...question, botId: `${a}:echo` }] }).questions![0].botId).toBe('echo');
+  });
   it('keeps run errors linked to their prompt in both remote snapshots and live events', () => {
     const run = { id: 'run', chatId: 'chat', botId: 'echo', userMessageId: 'prompt', status: 'cancelled', error: 'context canceled' };
     const expected = { id: `${b}:run`, chatId: `${b}:chat`, botId: `${b}:echo`, userMessageId: `${b}:prompt` };

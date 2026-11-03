@@ -49,7 +49,8 @@ test('deleted notification target is explained instead of opening an unrelated c
   await expect(page.getByText('This chat is no longer available.', { exact: true })).toBeVisible();
 });
 
-test('question toast reveals the pending card and the chosen bot tab', async ({ page }) => {
+for (const resolution of ['answer', 'skip', 'cancel'] as const) test(`question dots survive reload and clear after ${resolution}`, async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'light' });
   await setup(page);
   const handle = 'notify' + Date.now().toString(36);
   const botResponse = await page.request.post('/api/v1/bots', { data: { handle, name: 'Notification bot', prompt: 'Help with the request.', roots: [], plugins: {} } });
@@ -58,12 +59,54 @@ test('question toast reveals the pending card and the chosen bot tab', async ({ 
   await page.getByRole('button', { name: '▦ Apps', exact: true }).click();
   await page.request.post(`/api/v1/chats/${chat.id}/messages`, { data: { content: `@echo @${handle} notification question fixture`, generation: { endpointId: 'notification-model', model: 'echo-test' } } });
   const toast = page.locator('.chat-notification').filter({ hasText: 'Notification bot has a question' });
-  await expect(toast).toBeVisible(); await toast.locator('.chat-notification-open').click();
-  await expect(page.getByRole('tab', { name: /^Notification bot/ })).toHaveAttribute('aria-selected', 'true');
+  await expect(toast).toBeVisible();
+  const row = page.locator('.chat-row').filter({ has: page.locator(`[data-chat="${chat.id}"]`) });
+  const dot = row.locator('.chat-dot.question');
+  await expect(dot).toBeVisible();
+  await expect(dot).toHaveCSS('background-color', 'rgb(9, 105, 218)');
+  await expect(dot).toHaveCSS('animation-name', 'none');
+  await expect(dot).toHaveAttribute('aria-label', 'Waiting for your answer');
+  await toast.locator('.chat-notification-open').click();
+  const botTab = page.getByRole('tab', { name: /^Notification bot/ });
+  const echoTab = page.getByRole('tab', { name: /^Echo/ });
+  await expect(botTab).toHaveAttribute('aria-selected', 'true');
+  await expect(botTab).toHaveAttribute('title', 'Notification bot Waiting for your answer');
+  await expect(botTab).toHaveAttribute('aria-label', 'Notification bot Waiting for your answer');
+  await expect(botTab.locator('.bot-tab-question-dot')).toHaveCSS('background-color', 'rgb(9, 105, 218)');
+  await expect(botTab.locator('.bot-tab-busy-dot')).toHaveCount(0);
   await expect(page.getByText('Which notification approach?', { exact: true })).toBeVisible();
   await expect(page.locator('.question-card')).toHaveAttribute('open', '');
-  await page.getByRole('button', { name: 'Skip', exact: true }).click();
-  await expect(page.getByText('Questions skipped.', { exact: true })).toBeAttached();
+  await expect(dot).toBeVisible();
+  await page.reload();
+  await expect(botTab).toHaveAttribute('aria-selected', 'true');
+  await expect(dot).toBeVisible();
+  await expect(botTab.locator('.bot-tab-question-dot')).toBeVisible();
+  await expect(echoTab.locator('.bot-tab-question-dot')).toBeVisible();
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect(dot).toHaveCSS('background-color', 'rgb(68, 147, 248)');
+  await expect(botTab.locator('.bot-tab-question-dot')).toHaveCSS('background-color', 'rgb(68, 147, 248)');
+  await expect(botTab.locator('.bot-tab-question-dot')).toHaveCSS('animation-name', 'none');
+  if (resolution === 'cancel') {
+    expect((await page.request.post(`/api/v1/chats/${chat.id}/stop`, { data: {} })).ok()).toBe(true);
+  } else {
+    if (resolution === 'answer') {
+      await page.getByRole('radio', { name: 'First', exact: true }).check();
+      await page.getByRole('button', { name: 'Submit answers', exact: true }).click();
+      await expect(page.locator('.question-card > summary')).toContainText('Answered');
+    } else {
+      await page.getByRole('button', { name: 'Skip', exact: true }).click();
+      await expect(page.getByText('Questions skipped.', { exact: true })).toBeAttached();
+    }
+    await expect(botTab.locator('.bot-tab-question-dot')).toHaveCount(0);
+    await expect(botTab).not.toHaveAttribute('aria-label', /Waiting for your answer/);
+    // Another bot still needs an answer, so the chat must stay blue.
+    await expect(dot).toBeVisible();
+    await expect(echoTab.locator('.bot-tab-question-dot')).toBeVisible();
+    await echoTab.click();
+    await page.getByRole('button', { name: 'Skip', exact: true }).click();
+  }
+  await expect(dot).toHaveCount(0);
+  await expect(page.locator('.bot-tab-question-dot')).toHaveCount(0);
   await page.request.delete(`/api/v1/chats/${chat.id}`);
   await page.request.delete(`/api/v1/bots/${bot.id}`);
 });

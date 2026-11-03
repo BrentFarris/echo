@@ -24,6 +24,8 @@
 .bot-tab-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bot-tabs [role=tab]:focus-visible,.bot-tabs-scroll:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 .bot-tab-busy-dot{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--warning);box-shadow:0 0 0 2px color-mix(in srgb,var(--warning) 16%,transparent);animation:bot-tab-breathe 1.7s ease-in-out infinite}
+.bot-tab-question-dot{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:#0969da;box-shadow:0 0 0 2px #0969da29}
+@media(prefers-color-scheme:dark){.bot-tab-question-dot{background:#4493f8;box-shadow:0 0 0 2px #4493f829}}
 @keyframes bot-tab-breathe{0%,100%{opacity:.48;transform:scale(.82)}50%{opacity:1;transform:scale(1)}}
 @media(prefers-reduced-motion:reduce){.bot-tab-busy-dot{animation:none}}
 .bot-tabs-scroll{display:none;z-index:1;width:26px;height:31px;padding:7px;border:0;border-radius:0;background:var(--surface);color:var(--subtle);place-items:center}
