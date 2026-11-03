@@ -98,7 +98,7 @@ func (c *Client) ProviderRequest(ctx context.Context, endpoint domain.Endpoint, 
 		contentType = strings.ReplaceAll(contentType, key, "[redacted]")
 	}
 	if response.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("provider HTTP %d: %s", response.StatusCode, text)
+		return nil, fmt.Errorf("provider request: %w", ProviderError(response.StatusCode, []byte(text)))
 	}
 	return map[string]any{"status": response.StatusCode, "contentType": contentType, "body": text}, nil
 }

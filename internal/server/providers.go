@@ -128,7 +128,13 @@ func (s *Server) providerOperation(ctx context.Context, scope domain.ExecutionSc
 	}
 	switch method {
 	case "model.request":
-		return s.Model.ProviderRequest(ctx, invocation.Endpoint, invocation.Credential, args)
+		value, err := s.Model.ProviderRequest(ctx, invocation.Endpoint, invocation.Credential, args)
+		// Preserve context errors across the guest's text-only error boundary,
+		// just as model.complete does for compatible providers.
+		if model.IsContextOverflow(err) {
+			invocation.Err = err
+		}
+		return value, err
 	case "model.emit":
 		var d model.Delta
 		var value struct {
