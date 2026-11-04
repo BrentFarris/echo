@@ -19,12 +19,15 @@ type blobResult struct {
 }
 
 func (s *Service) Diff(ctx context.Context, workspaceID, repositoryID, scope, path, oldPath, ref string) (DiffDocument, error) {
-	ctx = s.executionContext(ctx, workspaceID)
+	ctx, cancel := s.CommandContext(ctx, workspaceID)
+	defer cancel()
 	state, err := s.repository(ctx, workspaceID, repositoryID)
 	if err != nil {
 		return DiffDocument{}, err
 	}
-	state.mutationMu.Lock()
+	if err := state.mutationMu.LockContext(ctx); err != nil {
+		return DiffDocument{}, err
+	}
 	defer state.mutationMu.Unlock()
 	return s.diffState(ctx, state, repositoryID, scope, path, oldPath, ref)
 }

@@ -518,6 +518,26 @@ test('built-in source-control settings and per-bot toggles persist', async ({ pa
     await page.locator('.settings-nav').getByRole('button', { name, exact: true }).click();
     await expect(page.getByLabel('CLI executable path (blank discovers it on PATH)')).toBeVisible();
     await expect(page.getByLabel('Grant Internet access to this plugin\'s workspace-bound commands')).toBeVisible();
+    const hostGit = page.getByRole('checkbox', { name: 'Run Git outside the sandbox', exact: true });
+    if (name === 'Git') {
+      await expect(hostGit).not.toBeChecked();
+      await expect(hostGit).toHaveAccessibleDescription(/All Git-enabled bots on this machine/);
+      await hostGit.check();
+      await expect(page.getByLabel("Grant Internet access to this plugin's workspace-bound commands")).toBeHidden();
+      const saved = page.waitForResponse(r => r.url().endsWith('/plugins/git') && r.request().method() === 'PATCH');
+      await page.getByRole('button', { name: 'Save settings', exact: true }).click();
+      expect((await (await saved).json()).config.runOutsideSandbox).toBe(true);
+      await page.locator('.settings-nav').getByRole('button', { name: 'Fossil', exact: true }).click();
+      await page.locator('.settings-nav').getByRole('button', { name: 'Git', exact: true }).click();
+      await expect(hostGit).toBeChecked();
+      await hostGit.uncheck();
+      await expect(page.getByLabel("Grant Internet access to this plugin's workspace-bound commands")).toBeVisible();
+      const reset = page.waitForResponse(r => r.url().endsWith('/plugins/git') && r.request().method() === 'PATCH');
+      await page.getByRole('button', { name: 'Save settings', exact: true }).click();
+      expect((await (await reset).json()).config.runOutsideSandbox).toBe(false);
+    } else {
+      await expect(hostGit).toHaveCount(0);
+    }
   }
   await page.getByLabel('P4 server, for example ssl:perforce.example.com:1666').fill('ssl:example.invalid:1666');
   await page.getByLabel('P4 user', { exact: true }).fill('artist'); await page.getByLabel('P4 client workspace', { exact: true }).fill('game');

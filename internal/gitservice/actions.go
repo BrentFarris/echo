@@ -13,7 +13,8 @@ import (
 var simpleGitName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/@{}+-]*$`)
 
 func (s *Service) Action(ctx context.Context, workspaceID, repositoryID string, request ActionRequest) (result ActionResult, resultErr error) {
-	ctx = s.executionContext(ctx, workspaceID)
+	ctx, cancel := s.CommandContext(ctx, workspaceID)
+	defer cancel()
 	state, err := s.repository(ctx, workspaceID, repositoryID)
 	if err != nil {
 		return ActionResult{}, err
@@ -23,7 +24,9 @@ func (s *Service) Action(ctx context.Context, workspaceID, repositoryID string, 
 	if request.RequestID == "" {
 		return ActionResult{}, &Error{Code: "request_id_required", Message: "requestId is required"}
 	}
-	state.mutationMu.Lock()
+	if err := state.mutationMu.LockContext(ctx); err != nil {
+		return ActionResult{}, err
+	}
 	defer state.mutationMu.Unlock()
 	if request.ExpectedRevision != 0 && request.ExpectedRevision != state.revision.Load() {
 		return ActionResult{}, &Error{

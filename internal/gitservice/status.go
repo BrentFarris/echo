@@ -43,12 +43,15 @@ type parsedStatus struct {
 }
 
 func (s *Service) Status(ctx context.Context, workspaceID, repositoryID string) (StatusSnapshot, error) {
-	ctx = s.executionContext(ctx, workspaceID)
+	ctx, cancel := s.CommandContext(ctx, workspaceID)
+	defer cancel()
 	state, err := s.repository(ctx, workspaceID, repositoryID)
 	if err != nil {
 		return StatusSnapshot{}, err
 	}
-	state.mutationMu.Lock()
+	if err := state.mutationMu.LockContext(ctx); err != nil {
+		return StatusSnapshot{}, err
+	}
 	defer state.mutationMu.Unlock()
 	return s.loadStatus(ctx, state)
 }

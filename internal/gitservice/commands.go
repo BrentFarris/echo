@@ -11,6 +11,11 @@ func (l *repositoryLock) Unlock() { <-l.gate }
 func (l *repositoryLock) LockContext(ctx context.Context) error {
 	select {
 	case l.gate <- struct{}{}:
+		// Cancellation and an available lock can become ready together.
+		if err := ctx.Err(); err != nil {
+			l.Unlock()
+			return err
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -28,9 +33,6 @@ func (s *Service) RunCommand(ctx context.Context, workspaceID, commonDir string,
 		return err
 	}
 	defer lock.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	defer s.InvalidateWorkspace(workspaceID)
 	return run(ctx)
 }

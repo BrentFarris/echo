@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -173,7 +174,8 @@ func TestEditorSourceControlNativeGitParentFolders(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("outside\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	fixtureSCM(t, repository, "git", "init", "--ref-format=files")
+	t.Setenv("GIT_DEFAULT_REF_FORMAT", "files")
+	fixtureSCM(t, repository, "git", "init")
 	fixtureSCM(t, repository, "git", "config", "core.autocrlf", "false")
 	fixtureSCM(t, repository, "git", "add", ".")
 	fixtureSCM(t, repository, "git", "commit", "-m", "initial")
@@ -274,8 +276,14 @@ func TestEditorSourceControlNativeGitParentFolders(t *testing.T) {
 	}
 	fixtureSCM(t, repository, "git", "restore", "--staged", "--", "outside.txt")
 	result, err = s.executeSCM(ctx, bot.ID, scmexec.Request{Command: []string{"git", "restore", "--worktree", "--", "outside.txt"}, WorkingDirectory: repository})
-	if err != nil || result.ExitCode == 0 {
+	if err != nil || runtime.GOOS != "linux" && result.ExitCode == 0 {
 		t.Fatalf("outside file write access: %+v %v", result, err)
+	}
+	// Bubblewrap can restore into the transient directory standing in for the
+	// parent checkout. A new command must still have no access to that file.
+	result, err = s.executeSCM(ctx, bot.ID, scmexec.Request{Command: []string{"git", "hash-object", "--no-filters", outside}, WorkingDirectory: repository})
+	if err != nil || result.ExitCode == 0 {
+		t.Fatalf("outside file visible after restore: %+v %v", result, err)
 	}
 	if data, err := os.ReadFile(outside); err != nil || string(data) != "outside staged\n" {
 		t.Fatalf("outside file changed: %q %v", data, err)

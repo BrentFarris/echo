@@ -58,6 +58,7 @@ type ProcessBroker struct {
 
 type processSession struct {
 	botID   string
+	name    string
 	ctx     context.Context
 	cancel  context.CancelFunc
 	gate    chan struct{}
@@ -95,6 +96,19 @@ func (b *ProcessBroker) journal(j aclJournal) error {
 	return os.Rename(path+".tmp", path)
 }
 func (b *ProcessBroker) Run(ctx context.Context, r ProcessRequest, emit func(string)) (ProcessResult, error) {
+	return b.runRequest(ctx, r, emit, false)
+}
+
+// RunHost runs a native executable as the Echo account. Only a host-authorized
+// caller may select this entry point; tool arguments cannot select it.
+func (b *ProcessBroker) RunHost(ctx context.Context, r ProcessRequest, emit func(string)) (ProcessResult, error) {
+	if r.Executable == "" || r.Command != "" || r.duplex != nil || r.SandboxSession != "" || len(r.Roots)+len(r.Toolchains)+len(r.ReadPaths) != 0 || r.OutputFileArgument != "" {
+		return ProcessResult{}, errors.New("host execution requires a direct executable without a sandbox scope")
+	}
+	return b.runRequest(ctx, r, emit, true)
+}
+
+func (b *ProcessBroker) runRequest(ctx context.Context, r ProcessRequest, emit func(string), host bool) (ProcessResult, error) {
 	if e := ctx.Err(); e != nil {
 		return ProcessResult{}, e
 	}
@@ -185,8 +199,23 @@ func (b *ProcessBroker) Run(ctx context.Context, r ProcessRequest, emit func(str
 			return ProcessResult{}, errors.New("working directory is outside the bot's folders")
 		}
 	}
+	if host {
+		return runHost(ctx, r, emit)
+	}
 	r.ReportProgress("preparing command access")
 	return b.run(ctx, r, emit)
+}
+
+// Start with the account environment, including Git config, SSH agent and
+// credential helpers. exec.Cmd applies platform-specific key precedence.
+func hostCommand(ctx context.Context, r ProcessRequest) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, r.Executable, r.Args...)
+	cmd.Dir = r.Directory
+	cmd.Env = cmd.Environ()
+	for key, value := range r.Environment {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	return cmd
 }
 
 func DefaultToolchains() []string {

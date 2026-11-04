@@ -38,7 +38,7 @@ func (b *ProcessBroker) acquireProcessSession(ctx context.Context, r ProcessRequ
 			return nil, nil, errors.New("native sandbox session limit reached; restart Echo to release inactive scopes")
 		}
 		lifetime, cancel := context.WithCancel(context.Background())
-		s = &processSession{botID: r.BotID, ctx: lifetime, cancel: cancel, gate: make(chan struct{}, 1)}
+		s = &processSession{botID: r.BotID, name: r.SandboxSession, ctx: lifetime, cancel: cancel, gate: make(chan struct{}, 1)}
 		b.sessions[key] = s
 	}
 	b.sessionsMu.Unlock()
@@ -140,10 +140,22 @@ func (b *ProcessBroker) acquireProcessSession(ctx context.Context, r ProcessRequ
 // CloseSessions cancels commands before removing their shared filesystem grants.
 // An empty bot ID closes every session. Failed cleanup retains its durable journal.
 func (b *ProcessBroker) CloseSessions(botID string) error {
+	return b.closeSessions(botID, "")
+}
+
+// CloseNamedSessions retires only this kind of sandbox across bot workspaces.
+func (b *ProcessBroker) CloseNamedSessions(name string) error {
+	if name == "" {
+		return errors.New("sandbox session name required")
+	}
+	return b.closeSessions("", name)
+}
+
+func (b *ProcessBroker) closeSessions(botID, name string) error {
 	b.sessionsMu.Lock()
 	var sessions []*processSession
 	for key, s := range b.sessions {
-		if botID == "" || s.botID == botID {
+		if (botID == "" || s.botID == botID) && (name == "" || s.name == name) {
 			s.cancel()
 			sessions = append(sessions, s)
 			delete(b.sessions, key)

@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -131,6 +130,17 @@ func (s *Server) executeSCM(ctx context.Context, botID string, request scmexec.R
 	if err != nil {
 		return out, err
 	}
+	if id == "git" {
+		var release context.CancelFunc
+		ctx, m, release, err = s.beginGit(ctx, bot, m)
+		if err != nil {
+			return out, err
+		}
+		defer release()
+		if boolean(m.Config, "runOutsideSandbox") {
+			return s.executeHostGit(ctx, m, request)
+		}
+	}
 	var gitScope gitProcessScope
 	if id == "git" && gitUsesRepository(request.Command[1:]) {
 		gitScope, err = s.gitSourceControlScope(bot, request.WorkingDirectory)
@@ -217,18 +227,7 @@ func (s *Server) executeSCM(ctx context.Context, botID string, request scmexec.R
 			env["P4PASSWD"] = secret
 		}
 	}
-	binary := text(config, "executable")
-	if binary == "" {
-		binary = id
-		if runtime.GOOS == "windows" {
-			binary += ".exe"
-		}
-		binary, err = exec.LookPath(binary)
-		if err != nil {
-			return out, err
-		}
-	}
-	binary, err = filepath.Abs(binary)
+	binary, err := scmExecutable(id, m)
 	if err != nil {
 		return out, err
 	}

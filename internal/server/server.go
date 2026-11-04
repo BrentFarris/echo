@@ -55,6 +55,8 @@ type Server struct {
 	Fossil          *fossil.Provider
 	SourceControl   *sourcecontrol.Service
 	Git             *gitservice.Service
+	gitSettingsMu   sync.Mutex // Serializes owner and chat read/modify/write operations.
+	gitPolicy       gitExecutionPolicy
 	P4              *p4.Provider
 	Terminal        *terminal.Service
 	terminalMu      sync.Mutex

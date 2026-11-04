@@ -217,7 +217,8 @@ func (s *Service) scheduleStatusRefresh(state *repositoryState) {
 }
 
 func (s *Service) refreshState(state *repositoryState) {
-	ctx := s.executionContext(context.Background(), state.workspaceID)
+	ctx, cancel := s.CommandContext(context.Background(), state.workspaceID)
+	defer cancel()
 	state.refreshMu.Lock()
 	if state.refreshing {
 		state.refreshAgain = true
@@ -227,9 +228,12 @@ func (s *Service) refreshState(state *repositoryState) {
 	state.refreshing = true
 	state.refreshMu.Unlock()
 	for {
-		state.mutationMu.Lock()
-		snapshot, err := s.loadStatus(ctx, state)
-		state.mutationMu.Unlock()
+		var snapshot StatusSnapshot
+		err := state.mutationMu.LockContext(ctx)
+		if err == nil {
+			snapshot, err = s.loadStatus(ctx, state)
+			state.mutationMu.Unlock()
+		}
 
 		state.refreshMu.Lock()
 		again := state.refreshAgain
@@ -237,7 +241,7 @@ func (s *Service) refreshState(state *repositoryState) {
 		if err == nil && snapshot.Revision != state.revision.Load() {
 			again = true
 		}
-		if !again {
+		if err != nil || !again {
 			state.refreshing = false
 		}
 		state.refreshMu.Unlock()

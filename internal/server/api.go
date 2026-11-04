@@ -339,6 +339,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/references/open", s.openDraftReference)
 	mux.HandleFunc("POST /api/v1/chats/{id}/references/open", s.openMessageReference)
 	mux.HandleFunc("PATCH /api/v1/plugins/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("id") == "git" {
+			s.gitSettingsMu.Lock()
+			defer s.gitSettingsMu.Unlock()
+		}
 		if r.PathValue("id") == "confluence" {
 			s.confluenceMu.Lock()
 			defer s.confluenceMu.Unlock()
@@ -395,7 +399,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 				return
 			}
 		}
-		e = s.Plugins.Save(m)
+		e = s.saveConfiguredPlugin(m)
 		if e == nil && m.ID == "swarm" {
 			s.Swarm.Refresh()
 		}

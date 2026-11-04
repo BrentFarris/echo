@@ -11,3 +11,8 @@ func (b *ProcessBroker) run(context.Context, ProcessRequest, func(string)) (Proc
 	return ProcessResult{}, errors.New("native process containment is unavailable on this platform")
 }
 func (b *ProcessBroker) Recover() error { return nil }
+
+func runHost(context.Context, ProcessRequest, func(string)) (ProcessResult, error) {
+	return ProcessResult{}, errors.New("native host execution is unavailable on this platform")
+}
+func (b *ProcessBroker) CloseNamedSessions(string) error { return nil }

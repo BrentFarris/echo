@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -46,6 +47,9 @@ func (s *Server) sourceControlConfig(m domain.PluginManifest, updates map[string
 			continue
 		}
 		if !owner {
+			if k == "runOutsideSandbox" {
+				return nil, errors.New("only the owner can set Run Git outside the sandbox in Git settings")
+			}
 			if (k == "internet" || k == "privateNetwork") && v == true && m.Config[k] != true {
 				return nil, errors.New("grant network access directly in the plugin's settings")
 			}
@@ -59,7 +63,10 @@ func (s *Server) sourceControlConfig(m domain.PluginManifest, updates map[string
 	if e := plugins.Validate(m.Settings, raw); e != nil {
 		return nil, e
 	}
-	if path := text(config, "executable"); path != "" {
+	// Previously saved paths may have disappeared. A mode change can reuse
+	// them without setup, and the sandbox checks them again before execution.
+	modeChanged := m.ID == "git" && boolean(config, "runOutsideSandbox") != boolean(m.Config, "runOutsideSandbox")
+	if path := text(config, "executable"); path != "" && (!modeChanged || path != text(m.Config, "executable")) {
 		if !filepath.IsAbs(path) || runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(path), ".exe") {
 			return nil, errors.New("executable must be an absolute executable path")
 		}
@@ -67,7 +74,7 @@ func (s *Server) sourceControlConfig(m domain.PluginManifest, updates map[string
 			return nil, errors.New("executable cannot be inside Echo private data")
 		}
 	}
-	if paths := stringsValue(config["toolchains"]); len(paths) > 0 {
+	if paths := stringsValue(config["toolchains"]); len(paths) > 0 && (!modeChanged || !slices.Equal(paths, stringsValue(m.Config["toolchains"]))) {
 		roots, e := broker.CanonicalRoots(paths)
 		if e != nil {
 			return nil, e
@@ -180,10 +187,18 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 	if !sourceControl(id) || scope.PluginID != id || !m.Builtin {
 		return nil, errors.New("source control capability belongs to its built-in plugin")
 	}
+	hostGit := false
 	if id == "git" {
 		var cancel context.CancelFunc
 		ctx, cancel = s.Git.CommandContext(ctx, scope.Bot.ID)
 		defer cancel()
+		var err error
+		ctx, m, cancel, err = s.beginGit(ctx, scope.Bot, m)
+		if err != nil {
+			return nil, err
+		}
+		defer cancel()
+		hostGit = boolean(m.Config, "runOutsideSandbox")
 	}
 	command := text(a, "command")
 	args, env, e := scmArguments(id, command, stringsValue(a["args"]), m.Config, text(a, "client"))
@@ -193,23 +208,9 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 	if id == "p4" && command != "help" && command != "version" && len(scope.Bot.Roots) > 0 && !boolean(m.Config, "internet") && !boolean(m.Config, "privateNetwork") {
 		return nil, errors.New("P4 needs server access: grant the appropriate network access in P4 settings; workspace restrictions stay enforced")
 	}
-	binary := text(m.Config, "executable")
-	if binary == "" {
-		name := id
-		if runtime.GOOS == "windows" {
-			name += ".exe"
-		}
-		binary, e = exec.LookPath(name)
-		if e != nil {
-			return nil, fmt.Errorf("%s CLI is not installed or on PATH; install it or set its executable in %s settings", id, m.Name)
-		}
-	}
-	binary, e = filepath.Abs(binary)
+	binary, e := scmExecutable(id, m)
 	if e != nil {
 		return nil, e
-	}
-	if !s.Files.Allowed(domain.Bot{ID: "echo"}, binary) {
-		return nil, errors.New("executable cannot be inside Echo private data")
 	}
 	directory := text(a, "directory")
 	if (id == "git" || id == "fossil") && len(scope.Bot.Roots) > 0 {
@@ -219,60 +220,10 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 			directory = filepath.Join(scope.Bot.Roots[0], directory)
 		}
 	}
-	var gitScope gitProcessScope
-	if id == "git" {
-		if directory == "" {
-			directory, e = os.UserHomeDir()
-			if e != nil {
-				return nil, e
-			}
-		}
-		gitScope, e = s.gitCommandScope(scope.Bot, directory)
-		if e != nil {
-			// Version/init/clone do not require an existing valid repository.
-			// They can still run in an explicitly configured folder when a
-			// surrounding checkout has unavailable metadata.
-			if gitUsesRepository(args) || !s.Files.Allowed(scope.Bot, directory) {
-				return nil, e
-			}
-			gitScope = gitProcessScope{}
-		}
-		// The whole checkout is accessible, so Git can discover it normally.
-		// Preserve its native cwd/prefix handling instead of binding GIT_DIR.
-	} else if directory != "" && !s.Files.Allowed(scope.Bot, directory) {
-		return nil, errors.New("working directory is outside the bot's scope")
-	}
-	roots := scope.Bot.Roots
-	if gitScope.roots != nil {
-		roots = gitScope.roots
-	}
-	if id == "fossil" {
-		roots, e = s.fossilProcessRoots(ctx, scope.Bot, directory)
+	if id == "git" && directory == "" {
+		directory, e = os.UserHomeDir()
 		if e != nil {
 			return nil, e
-		}
-	}
-	if path := text(m.Config, "trustFile"); path != "" && (!filepath.IsAbs(path) || !s.Files.Allowed(scope.Bot, path)) {
-		return nil, errors.New("P4 trust file must be an absolute path inside the bot's scope")
-	}
-	runtime := filepath.Dir(binary)
-	if id == "git" && (strings.EqualFold(filepath.Base(runtime), "cmd") || strings.EqualFold(filepath.Base(runtime), "bin")) {
-		runtime = filepath.Dir(runtime)
-	}
-	runtimePaths := append([]string{runtime}, stringsValue(m.Config["toolchains"])...)
-	toolchains := []string{}
-	for _, path := range runtimePaths {
-		if broker.Within(path, s.Dir) || broker.Within(s.Dir, path) {
-			return nil, errors.New("install the CLI in a dedicated runtime folder that does not contain Echo private data")
-		}
-		within := false
-		for _, root := range scope.Bot.Roots {
-			if broker.Within(root, path) {
-				within = true
-			}
-		}
-		if !within {
-			toolchains = append(toolchains, path)
 		}
 	}
 	secret := ""
@@ -303,28 +254,40 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 		output.WriteString(chunk)
 		s.nativeOutput(ctx, scope, chunk)
 	}
-	request := broker.ProcessRequest{BotID: scope.Bot.ID, Roots: roots, ReadPaths: gitScope.readPaths, Executable: binary, Args: args, Input: text(a, "input"), Environment: env, Directory: directory, Toolchains: toolchains, Internet: boolean(m.Config, "internet"), PrivateNetwork: boolean(m.Config, "privateNetwork"), TimeoutSeconds: timeout}
+	request := broker.ProcessRequest{BotID: scope.Bot.ID, Executable: binary, Args: args, Input: text(a, "input"), Environment: env, Directory: directory, TimeoutSeconds: timeout}
+	runner := s.Process.Run
+	var commonDir string
 	if id == "git" {
-		// Windows propagates permission edits through every checkout file.
-		// Reuse the same host-owned grant as Source Control instead of adding
-		// and removing it around every bot command. The broker keys sessions
-		// by the freshly resolved scope and revokes them on settings changes.
-		request.SandboxSession = "source-control:git"
 		var stopProgress func()
-		request.Progress, stopProgress = nativeCommandProgress(ctx, "Git "+command, 10*time.Second, func(message string) {
-			s.nativeOutput(ctx, scope, message)
-		})
+		request.Progress, stopProgress = nativeCommandProgress(ctx, "Git "+command, 10*time.Second, func(message string) { s.nativeOutput(ctx, scope, message) })
 		defer stopProgress()
+	}
+	if hostGit {
+		runner = s.Process.RunHost
+		hostGitEnvironment(env)
+		if gitUsesRepository(args) || command == "init" {
+			commonDir, e = s.hostGitCommonDir(ctx, request)
+		}
+	} else {
+		commonDir, e = s.prepareSandboxedSCM(ctx, scope.Bot, id, m, &request)
+	}
+	if e != nil {
+		return nil, e
 	}
 	var result broker.ProcessResult
 	run := func(ctx context.Context) error {
 		var err error
-		result, err = s.runTrackedProcess(ctx, scope.Bot, request, func(chunk string) { emit(filter.push(chunk, false)) })
+		stream := func(chunk string) { emit(filter.push(chunk, false)) }
+		if id == "git" && (command == "status" || command == "version") {
+			result, err = runner(ctx, request, stream)
+		} else {
+			result, err = s.trackProcess(ctx, scope.Bot, request, stream, runner)
+		}
 		return err
 	}
 	var err error
-	if id == "git" && gitScope.workTree != "" {
-		err = s.Git.RunCommand(ctx, scope.Bot.ID, gitScope.commonDir, run)
+	if commonDir != "" {
+		err = s.Git.RunCommand(ctx, scope.Bot.ID, commonDir, run)
 	} else {
 		err = run(ctx)
 	}
@@ -334,6 +297,86 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 		return nil, errors.New(filter.redact(err.Error()))
 	}
 	return result, nil
+}
+
+func scmExecutable(id string, m domain.PluginManifest) (string, error) {
+	var e error
+	binary := text(m.Config, "executable")
+	if binary == "" {
+		name := id
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		binary, e = exec.LookPath(name)
+		if e != nil {
+			return "", fmt.Errorf("%s CLI is not installed or on PATH; install it or set its executable in %s settings", id, m.Name)
+		}
+	}
+	return filepath.Abs(binary)
+}
+
+func (s *Server) prepareSandboxedSCM(ctx context.Context, bot domain.Bot, id string, m domain.PluginManifest, request *broker.ProcessRequest) (string, error) {
+	var e error
+	directory := request.Directory
+	if !s.Files.Allowed(domain.Bot{ID: "echo"}, request.Executable) {
+		return "", errors.New("executable cannot be inside Echo private data")
+	}
+	var gitScope gitProcessScope
+	if id == "git" {
+		gitScope, e = s.gitCommandScope(bot, directory)
+		if e != nil {
+			// Version/init/clone do not require an existing valid repository.
+			// They can still run in an explicitly configured folder when a
+			// surrounding checkout has unavailable metadata.
+			if gitUsesRepository(request.Args) || !s.Files.Allowed(bot, directory) {
+				return "", e
+			}
+			gitScope = gitProcessScope{}
+		}
+		// The whole checkout is accessible, so Git can discover it normally.
+		// Preserve its native cwd/prefix handling instead of binding GIT_DIR.
+	} else if directory != "" && !s.Files.Allowed(bot, directory) {
+		return "", errors.New("working directory is outside the bot's scope")
+	}
+	roots := bot.Roots
+	if gitScope.roots != nil {
+		roots = gitScope.roots
+	}
+	if id == "fossil" {
+		roots, e = s.fossilProcessRoots(ctx, bot, directory)
+		if e != nil {
+			return "", e
+		}
+	}
+	if path := text(m.Config, "trustFile"); path != "" && (!filepath.IsAbs(path) || !s.Files.Allowed(bot, path)) {
+		return "", errors.New("P4 trust file must be an absolute path inside the bot's scope")
+	}
+	runtime := filepath.Dir(request.Executable)
+	if id == "git" && (strings.EqualFold(filepath.Base(runtime), "cmd") || strings.EqualFold(filepath.Base(runtime), "bin")) {
+		runtime = filepath.Dir(runtime)
+	}
+	runtimePaths := append([]string{runtime}, stringsValue(m.Config["toolchains"])...)
+	toolchains := []string{}
+	for _, path := range runtimePaths {
+		if broker.Within(path, s.Dir) || broker.Within(s.Dir, path) {
+			return "", errors.New("install the CLI in a dedicated runtime folder that does not contain Echo private data")
+		}
+		within := false
+		for _, root := range bot.Roots {
+			if broker.Within(root, path) {
+				within = true
+			}
+		}
+		if !within {
+			toolchains = append(toolchains, path)
+		}
+	}
+	request.Roots, request.ReadPaths, request.Toolchains = roots, gitScope.readPaths, toolchains
+	request.Internet, request.PrivateNetwork = boolean(m.Config, "internet"), boolean(m.Config, "privateNetwork")
+	if id == "git" {
+		request.SandboxSession = "source-control:git"
+	}
+	return gitScope.commonDir, nil
 }
 
 func (s *Server) nativeOutput(ctx context.Context, scope domain.ExecutionScope, value string) {

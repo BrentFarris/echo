@@ -212,6 +212,17 @@ func TestNativeGitStatusReusesCheckoutGrant(t *testing.T) {
 			t.Fatal("repeated status replaced the sandbox identity")
 		}
 	}
+	setHostGit(t, s, true)
+	if journals, err := filepath.Glob(filepath.Join(s.Process.Dir, "*.json")); err != nil || len(journals) != 0 {
+		t.Fatalf("switching to host Git retained sandbox permissions: %v %v", journals, err)
+	}
+	setHostGit(t, s, false)
+	if r, err := invokeGitTool(t, s, bot, "git_status", "", "--short"); err != nil || r.ExitCode != 0 {
+		t.Fatalf("status after returning to sandbox: %+v %v", r, err)
+	}
+	if journals, err := filepath.Glob(filepath.Join(s.Process.Dir, "*.json")); err != nil || len(journals) != 1 {
+		t.Fatalf("sandbox permissions were not reacquired: %v %v", journals, err)
+	}
 	response := scmAPI(t, s, "PUT", "/plugins/monaco-editor/bots/"+bot.ID+"/source-control/settings", map[string]any{"searchParentRepositories": false})
 	if response.Code != 200 {
 		t.Fatal(response.Code, response.Body.String())

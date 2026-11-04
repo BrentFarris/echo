@@ -425,13 +425,93 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 		}
 	}
 	defer os.RemoveAll(scratch)
+	env := windowsSandboxEnvironment(r, scratch, sid, toolAliases)
+	result, err = runWindowsProcess(ctx, r, emit, program, scratch, toolAliases, &caps, env)
+	runtime.KeepAlive(networkCaps)
+	return result, err
+}
+
+func windowsSandboxEnvironment(r ProcessRequest, scratch string, sid *windows.SID, toolAliases map[string]string) []string {
+	pathParts := append(append([]string{}, r.PathPrepend...), filepath.SplitList(os.Getenv("PATH"))...)
+	for i, p := range pathParts {
+		for source, target := range toolAliases {
+			if Within(source, p) {
+				rel, _ := filepath.Rel(source, p)
+				pathParts[i] = filepath.Join(target, rel)
+			}
+		}
+	}
+	env := []string{"SystemDrive=" + os.Getenv("SystemDrive"), "SystemRoot=" + os.Getenv("SystemRoot"), "WINDIR=" + os.Getenv("WINDIR"), "PATH=" + os.Getenv("PATH"), "PATHEXT=.COM;.EXE;.BAT;.CMD", "TEMP=" + scratch, "TMP=" + scratch, "USERPROFILE=" + scratch, "HOME=" + scratch, "APPDATA=" + scratch, "LOCALAPPDATA=" + scratch, "GOCACHE=" + filepath.Join(scratch, "go-build"), "GOMODCACHE=" + filepath.Join(scratch, "go-mod"), "DOTNET_CLI_HOME=" + scratch, "DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1", "NUGET_PACKAGES=" + filepath.Join(scratch, "nuget"), "npm_config_cache=" + filepath.Join(scratch, "npm")}
+	for i, v := range env {
+		if strings.HasPrefix(v, "PATH=") {
+			env[i] = "PATH=" + strings.Join(pathParts, string(os.PathListSeparator))
+		}
+	}
+	env = append(env, "ECHO_WORKSPACE="+r.Directory)
+	env = append(env, "GOTMPDIR="+scratch)
+	// Native clients must not fall back to virtualized known-folder paths or
+	// machine-wide credential/configuration files.
+	if r.Executable != "" {
+		env = append(env, "FOSSIL_HOME="+scratch, "P4ENVIRO="+filepath.Join(scratch, "p4enviro.txt"), "P4TICKETS="+filepath.Join(scratch, "p4tickets.txt"), "P4TRUST="+filepath.Join(scratch, "p4trust.txt"))
+	}
+	if sid != nil {
+		// These modes avoid ancestor inspection by the module/ref loaders. The
+		// kernel still checks the resolved target, including every junction.
+		env = append(env, "GIT_DEFAULT_REF_FORMAT=reftable", "NODE_OPTIONS=--preserve-symlinks --preserve-symlinks-main")
+	}
+	for _, key := range []string{"ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS"} {
+		if value := os.Getenv(key); value != "" {
+			env = append(env, key+"="+value)
+		}
+	}
+	env = append(env, "ProgramData="+scratch, "ALLUSERSPROFILE="+scratch, "DOTNET_CLI_TELEMETRY_OPTOUT=1", "DOTNET_GENERATE_ASPNET_CERTIFICATE=false", "DOTNET_ADD_GLOBAL_TOOLS_TO_PATH=false", "MSBuildEnableWorkloadResolver=false")
+	// Native plugin callers can add only host-constructed values. Replace keys
+	// case-insensitively so Windows never chooses between duplicate entries.
+	commandEnvironment := workspaceGoCaches(r)
+	if commandEnvironment == nil {
+		commandEnvironment = map[string]string{}
+	}
+	for key, value := range r.Environment {
+		commandEnvironment[key] = value
+	}
+	for key, value := range commandEnvironment {
+		if r.duplex != nil && filepath.IsAbs(value) {
+			value = aliasPath(value, toolAliases, false)
+		}
+		prefix := strings.ToUpper(key) + "="
+		filtered := env[:0]
+		for _, entry := range env {
+			if !strings.HasPrefix(strings.ToUpper(entry), prefix) {
+				filtered = append(filtered, entry)
+			}
+		}
+		env = append(filtered, key+"="+value)
+	}
+	return env
+}
+
+func runHost(ctx context.Context, r ProcessRequest, emit func(string)) (ProcessResult, error) {
+	scratch := ""
+	// Windows supplies standard input as an inherited file handle.
+	if r.Input != "" {
+		var err error
+		scratch, err = os.MkdirTemp("", "echo-stdin-")
+		if err != nil {
+			return ProcessResult{}, err
+		}
+		defer os.RemoveAll(scratch)
+	}
+	return runWindowsProcess(ctx, r, emit, r.Executable, scratch, nil, nil, hostCommand(ctx, r).Environ())
+}
+
+func runWindowsProcess(ctx context.Context, r ProcessRequest, emit func(string), program, scratch string, toolAliases map[string]string, caps *securityCapabilities, env []string) (result ProcessResult, err error) {
 	attrs, err := windows.NewProcThreadAttributeList(2)
 	if err != nil {
 		return result, err
 	}
 	defer attrs.Delete()
-	if sid != nil {
-		if err = attrs.Update(0x20009, unsafe.Pointer(&caps), unsafe.Sizeof(caps)); err != nil {
+	if caps != nil && caps.SID != nil {
+		if err = attrs.Update(0x20009, unsafe.Pointer(caps), unsafe.Sizeof(*caps)); err != nil {
 			return result, err
 		}
 	}
@@ -507,70 +587,17 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 		r.duplex.aliases = toolAliases
 	}
 	cwd, _ := windows.UTF16PtrFromString(workingDirectory)
-	pathParts := append(append([]string{}, r.PathPrepend...), filepath.SplitList(os.Getenv("PATH"))...)
-	for i, p := range pathParts {
-		for source, target := range toolAliases {
-			if Within(source, p) {
-				rel, _ := filepath.Rel(source, p)
-				pathParts[i] = filepath.Join(target, rel)
-			}
-		}
-	}
-	env := []string{"SystemDrive=" + os.Getenv("SystemDrive"), "SystemRoot=" + os.Getenv("SystemRoot"), "WINDIR=" + os.Getenv("WINDIR"), "PATH=" + os.Getenv("PATH"), "PATHEXT=.COM;.EXE;.BAT;.CMD", "TEMP=" + scratch, "TMP=" + scratch, "USERPROFILE=" + scratch, "HOME=" + scratch, "APPDATA=" + scratch, "LOCALAPPDATA=" + scratch, "GOCACHE=" + filepath.Join(scratch, "go-build"), "GOMODCACHE=" + filepath.Join(scratch, "go-mod"), "DOTNET_CLI_HOME=" + scratch, "DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1", "NUGET_PACKAGES=" + filepath.Join(scratch, "nuget"), "npm_config_cache=" + filepath.Join(scratch, "npm")}
-	for i, v := range env {
-		if strings.HasPrefix(v, "PATH=") {
-			env[i] = "PATH=" + strings.Join(pathParts, string(os.PathListSeparator))
-		}
-	}
-	env = append(env, "ECHO_WORKSPACE="+r.Directory)
-	env = append(env, "GOTMPDIR="+scratch)
-	// Native clients must not fall back to virtualized known-folder paths or
-	// machine-wide credential/configuration files.
-	if r.Executable != "" {
-		env = append(env, "FOSSIL_HOME="+scratch, "P4ENVIRO="+filepath.Join(scratch, "p4enviro.txt"), "P4TICKETS="+filepath.Join(scratch, "p4tickets.txt"), "P4TRUST="+filepath.Join(scratch, "p4trust.txt"))
-	}
-	if sid != nil {
-		// These modes avoid ancestor inspection by the module/ref loaders. The
-		// kernel still checks the resolved target, including every junction.
-		env = append(env, "GIT_DEFAULT_REF_FORMAT=reftable", "NODE_OPTIONS=--preserve-symlinks --preserve-symlinks-main")
-	}
-	for _, key := range []string{"ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS"} {
-		if value := os.Getenv(key); value != "" {
-			env = append(env, key+"="+value)
-		}
-	}
-	env = append(env, "ProgramData="+scratch, "ALLUSERSPROFILE="+scratch, "DOTNET_CLI_TELEMETRY_OPTOUT=1", "DOTNET_GENERATE_ASPNET_CERTIFICATE=false", "DOTNET_ADD_GLOBAL_TOOLS_TO_PATH=false", "MSBuildEnableWorkloadResolver=false")
-	// Native plugin callers can add only host-constructed values. Replace keys
-	// case-insensitively so Windows never chooses between duplicate entries.
-	commandEnvironment := workspaceGoCaches(r)
-	if commandEnvironment == nil {
-		commandEnvironment = map[string]string{}
-	}
-	for key, value := range r.Environment {
-		commandEnvironment[key] = value
-	}
-	for key, value := range commandEnvironment {
-		if r.duplex != nil && filepath.IsAbs(value) {
-			value = aliasPath(value, toolAliases, false)
-		}
-		prefix := strings.ToUpper(key) + "="
-		filtered := env[:0]
-		for _, entry := range env {
-			if !strings.HasPrefix(strings.ToUpper(entry), prefix) {
-				filtered = append(filtered, entry)
-			}
-		}
-		env = append(filtered, key+"="+value)
-	}
 	sort.Strings(env)
 	block := utf16.Encode([]rune(strings.Join(env, "\x00") + "\x00\x00"))
 	var pi windows.ProcessInformation
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	err = windows.CreateProcess(app, cmd, nil, nil, true, windows.CREATE_UNICODE_ENVIRONMENT|windows.EXTENDED_STARTUPINFO_PRESENT|windows.CREATE_SUSPENDED|windows.CREATE_NO_WINDOW, &block[0], cwd, &si.StartupInfo, &pi)
 	runtime.KeepAlive(caps)
-	runtime.KeepAlive(networkCaps)
 	runtime.KeepAlive(block)
 	if err != nil {
-		return result, fmt.Errorf("start native sandbox (no host fallback): %w", err)
+		return result, fmt.Errorf("start native process: %w", err)
 	}
 	defer windows.CloseHandle(pi.Process)
 	defer windows.CloseHandle(pi.Thread)
@@ -578,6 +605,9 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 		windows.TerminateProcess(pi.Process, 1)
 		return result, err
 	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	} // Closing the job kills the suspended child.
 	if _, err = windows.ResumeThread(pi.Thread); err != nil {
 		windows.TerminateJobObject(job, 1)
 		return result, err

@@ -141,6 +141,9 @@ type gitExecutionContext struct {
 }
 
 func (s *Service) executionContext(ctx context.Context, workspaceID string) context.Context {
+	if current, ok := ctx.Value(gitExecutionContextKey{}).(gitExecutionContext); ok && current.workspaceID == workspaceID {
+		return ctx
+	}
 	s.mu.Lock()
 	manager := s.runner
 	if s.execContexts == nil {
@@ -198,6 +201,21 @@ func (s *Service) StopWorkspaceProcesses(workspaceID string) {
 	s.mu.Unlock()
 }
 
+// StopAllWorkspaceProcesses invalidates outstanding editor operations, including
+// requests between subprocesses, when the instance-wide Git policy changes.
+func (s *Service) StopAllWorkspaceProcesses() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make([]string, 0, len(s.execStops))
+	for id, cancel := range s.execStops {
+		cancel()
+		ids = append(ids, id)
+	}
+	clear(s.execContexts)
+	clear(s.execStops)
+	return ids
+}
+
 func (s *Service) emit(event Event) {
 	s.mu.RLock()
 	notify := s.notify
@@ -251,6 +269,7 @@ func (s *Service) discover(ctx context.Context, workspaceID string) ([]*reposito
 
 	var discoveryErr error
 	candidates := make(map[string]bool)
+	searchParents := workspace.SearchParentRepositories || workspace.SearchParentGitRepositories
 	for _, root := range rootInfos {
 		if hasGitMarker(root.canonical) {
 			candidates[root.canonical] = true
@@ -262,7 +281,7 @@ func (s *Service) discover(ctx context.Context, workspaceID string) ([]*reposito
 		for _, candidate := range found {
 			candidates[candidate] = true
 		}
-		if workspace.SearchParentRepositories || workspace.SearchParentGitRepositories {
+		if searchParents {
 			candidates[root.canonical] = true
 		}
 	}
@@ -279,6 +298,10 @@ func (s *Service) discover(ctx context.Context, workspaceID string) ([]*reposito
 	}
 
 	s.mu.Lock()
+	if err := ctx.Value(gitExecutionContextKey{}).(gitExecutionContext).stop.Err(); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
 	existing := s.repos[workspaceID]
 	if existing == nil {
 		existing = make(map[string]*repositoryState)
@@ -288,13 +311,21 @@ func (s *Service) discover(ctx context.Context, workspaceID string) ([]*reposito
 	for _, repositoryRoot := range discoveredRoots {
 		id := repositoryID(workspaceID, repositoryRoot)
 		scopes, rootRef, parent := scopesForRepository(repositoryRoot, rootInfos)
-		if len(scopes) == 0 {
+		if len(scopes) == 0 || parent && !searchParents {
 			continue
 		}
 		state := existing[id]
 		if state == nil {
-			gitDir, _ := discoverGitDir(ctx, repositoryRoot)
-			commonDir, _ := discoverCommonGitDir(ctx, repositoryRoot)
+			gitDir, err := discoverGitDir(ctx, repositoryRoot)
+			if err != nil {
+				discoveryErr = err
+				continue
+			}
+			commonDir, err := discoverCommonGitDir(ctx, repositoryRoot)
+			if err != nil {
+				discoveryErr = err
+				continue
+			}
 			lock := s.commandLock(commonDir)
 			state = &repositoryState{mutationMu: lock,
 				workspaceID: workspaceID, root: repositoryRoot, gitDir: gitDir, commonDir: commonDir,
@@ -501,6 +532,9 @@ func runGit(ctx context.Context, root string, input []byte, readOnly bool, args 
 	execution, ok := ctx.Value(gitExecutionContextKey{}).(gitExecutionContext)
 	if !ok || execution.manager == nil {
 		return nil, errors.New("Git execution scope unavailable")
+	}
+	if err := execution.stop.Err(); err != nil {
+		return nil, err
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

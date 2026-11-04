@@ -496,6 +496,10 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 	case "plugin.list":
 		return s.Plugins.List()
 	case "plugin.configure":
+		if text(a, "id") == "git" {
+			s.gitSettingsMu.Lock()
+			defer s.gitSettingsMu.Unlock()
+		}
 		if text(a, "id") == "confluence" {
 			s.confluenceMu.Lock()
 			defer s.confluenceMu.Unlock()
@@ -551,7 +555,7 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 			}
 			m.Config = cfg
 		}
-		e = s.Plugins.Save(m)
+		e = s.saveConfiguredPlugin(m)
 		if e == nil && m.ID == "confluence" {
 			s.cancelConfluenceLocked()
 		}

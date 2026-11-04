@@ -102,6 +102,18 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 		command.Env = append(command.Env, key+"="+value)
 	}
 	sort.Strings(command.Env)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return runUnixProcess(ctx, r, emit, command, scratch)
+}
+
+func runHost(ctx context.Context, r ProcessRequest, emit func(string)) (ProcessResult, error) {
+	command := hostCommand(ctx, r)
+	// Detach the command and its helpers from Echo's controlling terminal.
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return runUnixProcess(ctx, r, emit, command, "")
+}
+
+func runUnixProcess(ctx context.Context, r ProcessRequest, emit func(string), command *exec.Cmd, scratch string) (ProcessResult, error) {
 	command.Dir = r.Directory
 	command.Stdin = strings.NewReader(r.Input)
 	if r.duplex != nil {
@@ -110,7 +122,6 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	output := newProcessOutput(r, emit)
 	command.Stdout = processStream{output: output}
 	command.Stderr = processStream{output: output, stderr: true}
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Cancel = func() error {
 		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 		if errors.Is(err, syscall.ESRCH) {
@@ -119,14 +130,14 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 		return err
 	}
 	command.WaitDelay = 2 * time.Second
-	if err = command.Start(); err != nil {
-		return ProcessResult{}, fmt.Errorf("start native containment (no host fallback): %w", err)
+	if err := command.Start(); err != nil {
+		return ProcessResult{}, fmt.Errorf("start native process: %w", err)
 	}
 	r.ReportProgress("running command")
 	if r.duplex != nil {
 		close(r.duplex.started)
 	}
-	err = command.Wait()
+	err := command.Wait()
 	r.ReportProgress("finishing command")
 	_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 	result := output.snapshot()
@@ -148,3 +159,5 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 func (b *ProcessBroker) Recover() error { return nil }
 
 func (b *ProcessBroker) CloseSessions(string) error { return nil }
+
+func (b *ProcessBroker) CloseNamedSessions(string) error { return nil }

@@ -88,6 +88,12 @@ func (s *Server) trackFileChanges(ctx context.Context, bot domain.Bot, paths []s
 }
 
 func (s *Server) runTrackedProcess(ctx context.Context, bot domain.Bot, request broker.ProcessRequest, emit func(string)) (broker.ProcessResult, error) {
+	return s.trackProcess(ctx, bot, request, emit, s.Process.Run)
+}
+
+type processRunner func(context.Context, broker.ProcessRequest, func(string)) (broker.ProcessResult, error)
+
+func (s *Server) trackProcess(ctx context.Context, bot domain.Bot, request broker.ProcessRequest, emit func(string), run processRunner) (broker.ProcessResult, error) {
 	directory := request.Directory
 	if directory == "" {
 		if len(bot.Roots) > 0 {
@@ -105,7 +111,7 @@ func (s *Server) runTrackedProcess(ctx context.Context, bot domain.Bot, request 
 	request.ReportProgress("checking working files")
 	_, err := s.trackFileChanges(ctx, bot, paths, func() (any, error) {
 		var err error
-		result, err = s.Process.Run(ctx, request, emit)
+		result, err = run(ctx, request, emit)
 		request.ReportProgress("checking changed files")
 		return result, err
 	})
