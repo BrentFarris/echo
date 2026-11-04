@@ -178,9 +178,19 @@ func (s *Service) discard(ctx context.Context, state *repositoryState, request A
 }
 
 func (s *Service) commit(ctx context.Context, state *repositoryState, request ActionRequest) error {
-	parsed, err := s.readStatus(ctx, state)
+	status, err := s.checkCommitScope(ctx, state)
 	if err != nil {
 		return err
+	}
+	return s.commitChecked(ctx, state, request, status)
+}
+
+// checkCommitScope is shared by editor actions and the bot's native CLI path.
+// The repository mutation lock must be held throughout checking and committing.
+func (s *Service) checkCommitScope(ctx context.Context, state *repositoryState) (StatusSnapshot, error) {
+	parsed, err := s.readStatus(ctx, state)
+	if err != nil {
+		return StatusSnapshot{}, err
 	}
 	protectedStaged := 0
 	for _, record := range parsed.records {
@@ -189,18 +199,23 @@ func (s *Service) commit(ctx context.Context, state *repositoryState, request Ac
 		}
 	}
 	if protectedStaged > 0 {
-		return &Error{
+		return StatusSnapshot{}, &Error{
 			Code: "protected_workspace_metadata", Message: "unstage Echo-managed workspace metadata before committing",
 			Details: map[string]any{"count": protectedStaged},
 		}
 	}
 	status := buildStatusSnapshot(state, parsed)
 	if status.HiddenStagedCount > 0 {
-		return &Error{
+		return StatusSnapshot{}, &Error{
 			Code: "hidden_staged_changes", Message: "this parent repository has staged changes outside the workspace; open the repository root before committing",
 			Details: map[string]any{"count": status.HiddenStagedCount},
 		}
 	}
+	return status, nil
+}
+
+func (s *Service) commitChecked(ctx context.Context, state *repositoryState, request ActionRequest, status StatusSnapshot) error {
+	var err error
 	all := strings.Contains(request.Action, "commit_all")
 	amend := strings.Contains(request.Action, "amend")
 	signoff := strings.Contains(request.Action, "signoff")

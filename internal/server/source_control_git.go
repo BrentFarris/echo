@@ -20,6 +20,23 @@ type gitProcessScope struct {
 	workTree, gitDir, commonDir string
 }
 
+// Both editor and bot commands must bind Git to the host-resolved checkout.
+// Git changes directory to the worktree during setup but does not adjust a
+// relative GIT_COMMON_DIR, so probes from subfolders need an absolute common
+// directory. Scoped mutations run at the checkout root with relative metadata paths
+// to keep Git's loose-ref lock directory walk within the Windows grant.
+func (scope gitProcessScope) environment(directory string, env map[string]string) {
+	if scope.workTree == "" {
+		return
+	}
+	for key, path := range map[string]string{"GIT_DIR": scope.gitDir, "GIT_COMMON_DIR": scope.commonDir, "GIT_WORK_TREE": scope.workTree} {
+		if relative, err := filepath.Rel(directory, path); err == nil && (key != "GIT_COMMON_DIR" || sameGitPath(directory, scope.workTree)) {
+			path = relative
+		}
+		env[key] = filepath.ToSlash(path)
+	}
+}
+
 // These host-generated commands create a new checkout or report the CLI
 // version. Binding them to an existing parent repository would redirect init
 // into that parent's .git directory.

@@ -158,6 +158,30 @@ func (s *Service) executionContext(ctx context.Context, workspaceID string) cont
 	return context.WithValue(ctx, gitExecutionContextKey{}, gitExecutionContext{manager: manager, workspaceID: workspaceID, stop: stop})
 }
 
+// CommandContext enrolls a bot CLI invocation in the same revocation epoch as
+// editor Git operations, including time spent preparing or waiting for a lock.
+func (s *Service) CommandContext(parent context.Context, workspaceID string) (context.Context, context.CancelFunc) {
+	ctx := s.executionContext(parent, workspaceID)
+	execution := ctx.Value(gitExecutionContextKey{}).(gitExecutionContext)
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(execution.stop, cancel)
+	if execution.stop.Err() != nil {
+		cancel()
+	}
+	return ctx, func() { stop(); cancel() }
+}
+
+// Caller holds s.mu. All users of a shared Git index use the same lock.
+func (s *Service) commandLock(commonDir string) *sync.Mutex {
+	key := pathIdentity(commonDir)
+	lock := s.locks[key]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.locks[key] = lock
+	}
+	return lock
+}
+
 // StopWorkspaceProcesses invalidates the current sandbox Git execution epoch.
 // New operations receive a fresh context after the routing transition.
 func (s *Service) StopWorkspaceProcesses(workspaceID string) {
@@ -271,11 +295,7 @@ func (s *Service) discover(ctx context.Context, workspaceID string) ([]*reposito
 		if state == nil {
 			gitDir, _ := discoverGitDir(ctx, repositoryRoot)
 			commonDir, _ := discoverCommonGitDir(ctx, repositoryRoot)
-			lock := s.locks[pathIdentity(commonDir)]
-			if lock == nil {
-				lock = &sync.Mutex{}
-				s.locks[pathIdentity(commonDir)] = lock
-			}
+			lock := s.commandLock(commonDir)
 			state = &repositoryState{mutationMu: lock,
 				workspaceID: workspaceID, root: repositoryRoot, gitDir: gitDir, commonDir: commonDir,
 				label: filepath.Base(repositoryRoot), parent: parent, rootRef: rootRef, scopes: scopes,

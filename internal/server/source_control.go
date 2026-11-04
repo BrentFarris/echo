@@ -183,16 +183,7 @@ func (s *Server) executeSCM(ctx context.Context, botID string, request scmexec.R
 			env[key] = value
 		}
 	}
-	if gitScope.workTree != "" {
-		for key, path := range map[string]string{"GIT_DIR": gitScope.gitDir, "GIT_COMMON_DIR": gitScope.commonDir, "GIT_WORK_TREE": gitScope.workTree} {
-			// Git's loose-ref backend creates leading directories for ref
-			// locks. Relative metadata paths keep that walk inside the grant.
-			if relative, err := filepath.Rel(request.WorkingDirectory, path); err == nil {
-				path = relative
-			}
-			env[key] = filepath.ToSlash(path)
-		}
-	}
+	gitScope.environment(request.WorkingDirectory, env)
 	env["GIT_CONFIG_NOSYSTEM"] = "1"
 	env["GIT_CONFIG_GLOBAL"] = ""
 	env["P4CONFIG"] = "__echo_disabled__"

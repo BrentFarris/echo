@@ -5,7 +5,7 @@ import "github.com/brent/echo/internal/domain"
 func sourceControlPlugins() []domain.PluginManifest {
 	var out []domain.PluginManifest
 	for _, spec := range []struct{ id, name, description string }{
-		{"git", "Git", "Git repositories: status, diff, log, add, commit, branch, fetch, pull and push."},
+		{"git", "Git", "Git repositories: status, diff, log, add, commit, branch, fetch, pull and push. Enable Search Parent Repositories in Source Control when bot folders are inside a shared checkout; this setting also applies to these tools. In a parent checkout, status/diff and broad add operations cover only the bot's folders, and commit -a stages only their tracked changes. Commits refuse staged changes outside those folders. Use literal paths after -- to narrow a selection (required for diff paths); omit paths to cover all bot folders in the checkout. Repository-wide worktree operations and unsupported argument forms require the repository root as a bot folder."},
 		{"fossil", "Fossil", "Fossil repositories: status, diff, timeline, add, commit, branch and sync. Run from the checkout or a subdirectory. The checkout's linked repository database may also live in its immediate parent folder; other locations must be inside the bot's folders."},
 		{"p4", "P4 (Perforce)", "Perforce workspaces: info, clients, client, opened, status, diff, sync, edit, reopen, reconcile, changelists and submit. Configure server/user in P4 settings. Select a workspace with the client parameter on any P4 tool; it overrides the saved client for that call. Use clients to discover workspaces and client with args [-o, workspace] to inspect their mappings. Use edit to check out files before modifying them; edit/reopen args -c selects a changelist, not a workspace."},
 	} {
@@ -34,7 +34,11 @@ func sourceControlPlugins() []domain.PluginManifest {
 			if spec.id == "p4" {
 				params["client"] = args["client"]
 			}
-			m.Tools = append(m.Tools, tool(spec.id+"_"+command, "Run "+spec.name+" "+command+" in a workspace. Output is streamed; include paths/options in args.", spec.id+".run", params))
+			description := "Run " + spec.name + " " + command + " in a workspace. Output is streamed; include paths/options in args."
+			if spec.id == "git" {
+				description += " Honors Source Control's Search Parent Repositories setting. Parent-checkout results are limited to the bot's folders. Use literal paths after -- to narrow the selection; paths and relative directories are relative to the working directory and first bot folder, respectively."
+			}
+			m.Tools = append(m.Tools, tool(spec.id+"_"+command, description, spec.id+".run", params))
 		}
 		out = append(out, m)
 	}

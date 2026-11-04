@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/brent/echo/internal/broker"
 	"github.com/brent/echo/internal/domain"
@@ -178,6 +180,11 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 	if !sourceControl(id) || scope.PluginID != id || !m.Builtin {
 		return nil, errors.New("source control capability belongs to its built-in plugin")
 	}
+	if id == "git" {
+		var cancel context.CancelFunc
+		ctx, cancel = s.Git.CommandContext(ctx, scope.Bot.ID)
+		defer cancel()
+	}
 	command := text(a, "command")
 	args, env, e := scmArguments(id, command, stringsValue(a["args"]), m.Config, text(a, "client"))
 	if e != nil {
@@ -205,17 +212,33 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 		return nil, errors.New("executable cannot be inside Echo private data")
 	}
 	directory := text(a, "directory")
-	if id == "fossil" && len(scope.Bot.Roots) > 0 {
+	if (id == "git" || id == "fossil") && len(scope.Bot.Roots) > 0 {
 		if directory == "" {
 			directory = scope.Bot.Roots[0]
 		} else if !filepath.IsAbs(directory) {
 			directory = filepath.Join(scope.Bot.Roots[0], directory)
 		}
 	}
-	if directory != "" && !s.Files.Allowed(scope.Bot, directory) {
+	var gitScope gitProcessScope
+	if id == "git" && gitUsesRepository(args) {
+		if directory == "" {
+			directory, e = os.UserHomeDir()
+			if e != nil {
+				return nil, e
+			}
+		}
+		gitScope, e = s.gitSourceControlScope(scope.Bot, directory)
+		if e != nil {
+			return nil, e
+		}
+		gitScope.environment(directory, env)
+	} else if directory != "" && !s.Files.Allowed(scope.Bot, directory) {
 		return nil, errors.New("working directory is outside the bot's scope")
 	}
 	roots := scope.Bot.Roots
+	if gitScope.roots != nil {
+		roots = gitScope.roots
+	}
 	if id == "fossil" {
 		roots, e = s.fossilProcessRoots(ctx, scope.Bot, directory)
 		if e != nil {
@@ -256,8 +279,13 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 		}
 	}
 	timeout := integer(a, "timeoutSeconds")
-	if timeout < 0 {
-		return nil, errors.New("timeoutSeconds must be nonnegative; 0 disables the timeout")
+	if timeout < 0 || int64(timeout) > int64((1<<63-1)/time.Second) {
+		return nil, errors.New("timeoutSeconds must be nonnegative and fit in a duration; 0 disables the timeout")
+	}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		defer cancel()
 	}
 	var output strings.Builder
 	filter := &secretFilter{secret: secret}
@@ -268,7 +296,22 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 		output.WriteString(chunk)
 		s.nativeOutput(ctx, scope, chunk)
 	}
-	result, err := s.runTrackedProcess(ctx, scope.Bot, broker.ProcessRequest{BotID: scope.Bot.ID, Roots: roots, Executable: binary, Args: args, Input: text(a, "input"), Environment: env, Directory: directory, Toolchains: toolchains, Internet: boolean(m.Config, "internet"), PrivateNetwork: boolean(m.Config, "privateNetwork"), TimeoutSeconds: timeout}, func(chunk string) { emit(filter.push(chunk, false)) })
+	request := broker.ProcessRequest{BotID: scope.Bot.ID, Roots: roots, ReadPaths: gitScope.readPaths, Executable: binary, Args: args, Input: text(a, "input"), Environment: env, Directory: directory, Toolchains: toolchains, Internet: boolean(m.Config, "internet"), PrivateNetwork: boolean(m.Config, "privateNetwork"), TimeoutSeconds: timeout}
+	var result broker.ProcessResult
+	run := func(ctx context.Context, cwd string, arguments []string) error {
+		request.Directory = cwd
+		gitScope.environment(cwd, env)
+		request.Args = arguments
+		var err error
+		result, err = s.runTrackedProcess(ctx, scope.Bot, request, func(chunk string) { emit(filter.push(chunk, false)) })
+		return err
+	}
+	var err error
+	if id == "git" && gitScope.workTree != "" {
+		err = s.Git.RunScopedCommand(ctx, scope.Bot.ID, gitScope.workTree, gitScope.commonDir, directory, command, stringsValue(a["args"]), run)
+	} else {
+		err = run(ctx, directory, args)
+	}
 	emit(filter.push("", true))
 	result.Output = output.String()
 	if err != nil {
