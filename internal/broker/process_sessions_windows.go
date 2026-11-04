@@ -73,7 +73,10 @@ func (b *ProcessBroker) acquireProcessSession(ctx context.Context, r ProcessRequ
 			return nil
 		}
 		s.journal.Paths = append(s.journal.Paths, path)
-		return b.journal(s.journal)
+		if err := b.journal(s.journal); err != nil {
+			return fmt.Errorf("write permission journal in %s: %w", b.Dir, err)
+		}
+		return nil
 	}
 	if err == nil {
 		// A saved session is not proof that its ACL entries still exist:
@@ -109,6 +112,7 @@ func (b *ProcessBroker) acquireProcessSession(ctx context.Context, r ProcessRequ
 					}
 				}
 				if err != nil {
+					err = fmt.Errorf("grant sandbox access to %s: %w", path, err)
 					break
 				}
 			}

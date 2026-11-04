@@ -134,7 +134,9 @@ export class SourceControlView {
 
   private async fetchRepositories(): Promise<void> {
     try {
-      const signal = AbortSignal.any([this.signal, AbortSignal.timeout(30_000)]);
+      // First access can prepare a large native sandbox. Match the broker's
+      // discovery budget while retaining immediate editor-close cancellation.
+      const signal = AbortSignal.any([this.signal, AbortSignal.timeout(300_000)]);
       const response = await sourceControlAPI.listRepositories(this.workspaceId, signal);
       if (this.disposed) return;
       this.repositories = response.repositories || [];
@@ -148,7 +150,7 @@ export class SourceControlView {
     } catch (error) {
       if (this.disposed) return;
       this.loading = false;
-      this.renderError(error instanceof Error && error.name === "TimeoutError"
+      this.renderError((error instanceof Error || error instanceof DOMException) && error.name === "TimeoutError"
         ? new Error("Repository discovery timed out. Check the provider settings and connection, then retry.") : error);
     }
   }

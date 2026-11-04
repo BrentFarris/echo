@@ -1,8 +1,10 @@
 package server
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -150,14 +152,30 @@ func (s *Server) findGitWorkTree(bot domain.Bot, directory string, searchParents
 		if !s.Files.Allowed(domain.Bot{}, directory) || !searchParents && !s.Files.Allowed(bot, directory) {
 			return "", nil
 		}
-		info, err := os.Lstat(filepath.Join(directory, ".git"))
+		marker := filepath.Join(directory, ".git")
+		info, err := os.Lstat(marker)
 		if err == nil {
 			if !info.IsDir() && !info.Mode().IsRegular() {
 				return "", errors.New("Git metadata must be a directory or regular gitdir file")
 			}
-			return directory, nil
-		}
-		if !os.IsNotExist(err) {
+			// Git skips incomplete .git directories during discovery. Do not
+			// force GIT_DIR to one and hide a valid enclosing repository.
+			// Gitdir files retain their explicit validation/error behavior.
+			if info.Mode().IsRegular() {
+				return directory, nil
+			}
+			gitDir, commonDir, err := s.gitMetadataDirectories(bot, marker)
+			if err != nil {
+				return "", err
+			}
+			valid, err := gitDirectorySignatures(gitDir, commonDir)
+			if err != nil {
+				return "", err
+			}
+			if valid {
+				return directory, nil
+			}
+		} else if !os.IsNotExist(err) {
 			return "", err
 		}
 		parent := filepath.Dir(directory)
@@ -166,6 +184,69 @@ func (s *Server) findGitWorkTree(bot domain.Bot, directory string, searchParents
 		}
 		directory = parent
 	}
+}
+
+// Match the repository signatures Git checks before selecting a .git directory:
+// HEAD must name a ref/object, and the common metadata needs objects and refs.
+// Check only metadata already authorized by gitMetadataDirectories; an invalid
+// directory must not redirect this host-side probe to arbitrary paths.
+func gitDirectorySignatures(gitDir, commonDir string) (bool, error) {
+	headPath := filepath.Join(gitDir, "HEAD")
+	info, err := os.Lstat(headPath)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	validHead := false
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(headPath)
+		if err != nil {
+			return false, err
+		}
+		validHead = strings.HasPrefix(filepath.ToSlash(target), "refs/")
+	} else if info.Mode().IsRegular() {
+		file, err := os.Open(headPath)
+		if err != nil {
+			return false, err
+		}
+		// Git's discovery probe reads at most 255 bytes from HEAD.
+		data, err := io.ReadAll(io.LimitReader(file, 255))
+		file.Close()
+		if err != nil {
+			return false, err
+		}
+		head := string(data)
+		if ref, ok := strings.CutPrefix(head, "ref:"); ok {
+			validHead = strings.HasPrefix(strings.TrimSpace(ref), "refs/")
+		} else {
+			for _, size := range []int{40, 64} {
+				if len(head) >= size {
+					if _, err := hex.DecodeString(head[:size]); err == nil {
+						validHead = true
+						break
+					}
+				}
+			}
+		}
+	}
+	if !validHead {
+		return false, nil
+	}
+	for _, name := range []string{"objects", "refs"} {
+		info, err := os.Stat(filepath.Join(commonDir, name))
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if !info.IsDir() {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (s *Server) gitMetadataDirectories(bot domain.Bot, marker string) (string, string, error) {

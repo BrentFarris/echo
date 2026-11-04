@@ -95,6 +95,93 @@ func TestNativeRecoveryNonrecursiveReadGrants(t *testing.T) {
 	}
 }
 
+func TestNativeNonrecursiveGrantWithOpenDirectory(t *testing.T) {
+	if os.Getenv("ECHO2_NATIVE_TESTS") != "1" {
+		t.Skip("set ECHO2_NATIVE_TESTS=1")
+	}
+	b := &ProcessBroker{Dir: t.TempDir()}
+	parent := t.TempDir()
+	child := filepath.Join(parent, "child.txt")
+	if err := os.WriteFile(child, []byte("outside the grant"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	j := recoveryFixture(t, b, parent)
+	sid, err := windows.StringToSid(j.SID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := windows.UTF16PtrFromString(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A terminal's current directory (or another reader) can legitimately
+	// deny delete sharing without preventing changes to the directory ACL.
+	handle, err := windows.CreateFile(name, windows.FILE_LIST_DIRECTORY, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(handle)
+	if err := changeAccessInheritance(parent, sid, false, true, windows.NO_INHERITANCE); err != nil {
+		t.Fatalf("grant on an open directory: %v", err)
+	}
+	if !hasRecoveryGrant(t, parent, j.SID) || hasRecoveryGrant(t, child, j.SID) {
+		t.Fatal("grant was missing or reached a child")
+	}
+	if err := b.cleanup(j); err != nil {
+		t.Fatalf("revoke on an open directory: %v", err)
+	}
+}
+
+func TestNativeNonrecursiveACLDoesNotPropagateExistingEntries(t *testing.T) {
+	if os.Getenv("ECHO2_NATIVE_TESTS") != "1" {
+		t.Skip("set ECHO2_NATIVE_TESTS=1")
+	}
+	b := &ProcessBroker{Dir: t.TempDir()}
+	parent := t.TempDir()
+	child := filepath.Join(parent, "child.txt")
+	if err := os.WriteFile(child, []byte("unchanged ACL"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	j := recoveryFixture(t, b, parent)
+	sid, err := windows.StringToSid(j.SID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sd, err := windows.GetNamedSecurityInfo(parent, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acl, _, err := sd.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{AccessPermissions: windows.FILE_GENERIC_READ, AccessMode: windows.GRANT_ACCESS, Inheritance: windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT, Trustee: windows.TRUSTEE{TrusteeForm: windows.TRUSTEE_IS_SID, TrusteeType: windows.TRUSTEE_IS_UNKNOWN, TrusteeValue: windows.TrusteeValueFromSID(sid)}}}, acl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Even if the DACL contains other inheritable entries, an ancestor-only
+	// update must never propagate them through a potentially huge checkout.
+	before, _, err := sd.Control()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := setPathAccess(parent, merged, false); err != nil {
+		t.Fatal(err)
+	}
+	if !hasRecoveryGrant(t, parent, j.SID) || hasRecoveryGrant(t, child, j.SID) {
+		t.Fatal("nonrecursive ACL update propagated an inheritable entry")
+	}
+	sd, err = windows.GetNamedSecurityInfo(parent, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _, err := sd.Control()
+	const inheritance = windows.SE_DACL_PROTECTED | windows.SE_DACL_AUTO_INHERITED
+	if err != nil || before&inheritance != after&inheritance {
+		t.Fatalf("inheritance controls changed: %#x to %#x, %v", before, after, err)
+	}
+}
+
 func TestNativeRecoveryBatchesGrants(t *testing.T) {
 	if os.Getenv("ECHO2_NATIVE_TESTS") != "1" {
 		t.Skip("set ECHO2_NATIVE_TESTS=1")

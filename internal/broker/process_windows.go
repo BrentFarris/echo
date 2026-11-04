@@ -33,6 +33,7 @@ var createProfile = userenv.NewProc("CreateAppContainerProfile")
 var deriveProfile = userenv.NewProc("DeriveAppContainerSidFromAppContainerName")
 var deleteProfile = userenv.NewProc("DeleteAppContainerProfile")
 var freeSID = windows.NewLazySystemDLL("advapi32.dll").NewProc("FreeSid")
+var ntSetSecurityObject = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtSetSecurityObject")
 
 // ACL updates are read/modify/write operations. Concurrent VCS readers may
 // share runtime/workspace paths, and must not erase one another's grants.
@@ -126,21 +127,39 @@ func setPathAccess(path string, acl *windows.ACL, propagate bool) error {
 	if propagate {
 		return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
 	}
-	// SetNamedSecurityInfo propagates the DACL's existing inheritable entries,
-	// even when our own entry is non-inheritable. MAXIMUM_ALLOWED explicitly
-	// disables that traversal for SetSecurityInfo, so an ancestor-only grant
-	// never needs to walk a potentially enormous enclosing checkout.
-	// https://learn.microsoft.com/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo
+	// Update just this object's DACL. SetSecurityInfo also propagates existing
+	// inheritable entries through descendants. Its MAXIMUM_ALLOWED workaround
+	// requests DELETE access, which conflicts with ordinary open directories.
+	// The native object setter needs only security access and does not walk
+	// the enclosing checkout. Preserve the descriptor's inheritance controls.
+	// https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetsecurityobject
 	name, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return err
 	}
-	handle, err := windows.CreateFile(name, windows.MAXIMUM_ALLOWED, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	handle, err := windows.CreateFile(name, windows.READ_CONTROL|windows.WRITE_DAC, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
 	if err != nil {
 		return err
 	}
 	defer windows.CloseHandle(handle)
-	return windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
+	sd, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	absolute, err := sd.ToAbsolute()
+	if err != nil {
+		return err
+	}
+	if err := absolute.SetDACL(acl, true, false); err != nil {
+		return err
+	}
+	status, _, _ := ntSetSecurityObject.Call(uintptr(handle), uintptr(windows.DACL_SECURITY_INFORMATION), uintptr(unsafe.Pointer(absolute)))
+	runtime.KeepAlive(absolute)
+	runtime.KeepAlive(acl)
+	if status != 0 {
+		return windows.NTStatus(status).Errno()
+	}
+	return nil
 }
 func (b *ProcessBroker) cleanup(j aclJournal) error {
 	return b.cleanupJournals([]aclJournal{j}, revokeAccessBatch)

@@ -25,6 +25,18 @@ func TestGitSourceControlScope(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	writeGitMarker := func(directory string) {
+		t.Helper()
+		for _, name := range []string{"objects", "refs"} {
+			if err := os.MkdirAll(filepath.Join(directory, name), 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(directory, "HEAD"), []byte("ref: refs/heads/main\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeGitMarker(marker)
 	ignore := filepath.Join(repository, ".gitignore")
 	if err := os.WriteFile(ignore, []byte("ignored\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -71,16 +83,39 @@ func TestGitSourceControlScope(t *testing.T) {
 	if err := os.Remove(filepath.Join(marker, "commondir")); err != nil {
 		t.Fatal(err)
 	}
-	// Discover the nearest repository again; do not reuse a parent grant after
-	// an independent nested checkout appears in the bot folder.
+	// Git skips incomplete .git directories when looking for a repository.
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0700); err != nil {
 		t.Fatal(err)
 	}
+	if scope, err := s.gitSourceControlScope(bot, root); err != nil || !sameGitPath(scope.workTree, repository) {
+		t.Fatalf("incomplete nested marker hid the parent: %+v %v", scope, err)
+	}
+	// Discover the nearest repository again; do not reuse a parent grant after
+	// an independent nested checkout appears in the bot folder.
+	writeGitMarker(filepath.Join(root, ".git"))
 	if _, err := s.gitSourceControlScope(bot, repository); err == nil {
 		t.Fatal("stale parent repository remained authorized")
 	}
 	if scope, err := s.gitSourceControlScope(bot, root); err != nil || !sameGitPath(scope.workTree, root) || len(scope.roots) != 1 {
 		t.Fatalf("nested repository scope: %+v %v", scope, err)
+	}
+	for _, head := range []string{"invalid HEAD\n", strings.Repeat("1", 40) + "\n", strings.Repeat("2", 64) + "\n"} {
+		if err := os.WriteFile(filepath.Join(root, ".git", "HEAD"), []byte(head), 0600); err != nil {
+			t.Fatal(err)
+		}
+		want := root
+		if strings.HasPrefix(head, "invalid") {
+			want = repository
+		}
+		if scope, err := s.gitSourceControlScope(bot, root); err != nil || !sameGitPath(scope.workTree, want) {
+			t.Fatalf("repository with HEAD %q: %+v %v", head, scope, err)
+		}
+	}
+	if err := os.Remove(filepath.Join(root, ".git", "refs")); err != nil {
+		t.Fatal(err)
+	}
+	if scope, err := s.gitSourceControlScope(bot, root); err != nil || !sameGitPath(scope.workTree, repository) {
+		t.Fatalf("incomplete nested metadata hid the parent: %+v %v", scope, err)
 	}
 }
 
@@ -112,6 +147,14 @@ func TestEditorSourceControlNativeGitParentFolders(t *testing.T) {
 	fixtureSCM(t, repository, "git", "config", "core.autocrlf", "false")
 	fixtureSCM(t, repository, "git", "add", ".")
 	fixtureSCM(t, repository, "git", "commit", "-m", "initial")
+	// A leftover .git directory is not necessarily a repository. Terminal
+	// Git ignores this marker and finds the shared parent checkout.
+	if err := os.Mkdir(filepath.Join(roots[0], ".git"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if actual := strings.TrimSpace(fixtureSCM(t, roots[0], "git", "rev-parse", "--show-toplevel")); !sameGitPath(actual, repository) {
+		t.Fatalf("host Git selected %q instead of the parent", actual)
+	}
 	// Ignore and attribute files above the bot folders still affect their files.
 	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("ignored.tmp\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -147,6 +190,15 @@ func TestEditorSourceControlNativeGitParentFolders(t *testing.T) {
 	}
 	if err := s.Store.Put("source-control-settings", bot.ID, sourceControlSettings{SearchParentRepositories: true}); err != nil {
 		t.Fatal(err)
+	}
+	// Changing this setting stops the previous execution context and sessions.
+	// Discovery after the transition must use a fresh, live context.
+	s.Git.StopWorkspaceProcesses(bot.ID)
+	if err := s.Process.CloseSessions(bot.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Git.Repositories(ctx, bot.ID); err != nil {
+		t.Fatalf("Git discovery with an incomplete nested marker: %v", err)
 	}
 	repos, err = s.SourceControl.Repositories(ctx, bot.ID)
 	if err != nil || len(repos) != 1 || !repos[0].Parent || len(repos[0].Scopes) != 2 {

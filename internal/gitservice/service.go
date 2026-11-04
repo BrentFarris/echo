@@ -22,6 +22,7 @@ import (
 
 const (
 	localCommandTimeout   = 30 * time.Second
+	discoveryTimeout      = 5 * time.Minute
 	networkCommandTimeout = 5 * time.Minute
 	maximumCommandOutput  = 64 << 20
 )
@@ -202,6 +203,8 @@ func (s *Service) Repositories(ctx context.Context, workspaceID string) ([]Repos
 
 func (s *Service) discover(ctx context.Context, workspaceID string) ([]*repositoryState, error) {
 	ctx = s.executionContext(ctx, workspaceID)
+	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	defer cancel()
 	workspace, ok, err := s.workspaces.Get(workspaceID)
 	if err != nil {
 		return nil, err
@@ -433,7 +436,7 @@ func hasGitMarker(directory string) bool {
 }
 
 func discoverRepositoryRoot(parent context.Context, directory string) (string, error) {
-	ctx, cancel := context.WithTimeout(parent, localCommandTimeout)
+	ctx, cancel := context.WithTimeout(parent, discoveryTimeout)
 	defer cancel()
 	output, err := runGit(ctx, directory, nil, true, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -443,7 +446,7 @@ func discoverRepositoryRoot(parent context.Context, directory string) (string, e
 }
 
 func discoverGitDir(parent context.Context, root string) (string, error) {
-	ctx, cancel := context.WithTimeout(parent, localCommandTimeout)
+	ctx, cancel := context.WithTimeout(parent, discoveryTimeout)
 	defer cancel()
 	output, err := runGit(ctx, root, nil, true, "rev-parse", "--absolute-git-dir")
 	if err != nil {
@@ -453,7 +456,7 @@ func discoverGitDir(parent context.Context, root string) (string, error) {
 }
 
 func discoverCommonGitDir(parent context.Context, root string) (string, error) {
-	ctx, cancel := context.WithTimeout(parent, localCommandTimeout)
+	ctx, cancel := context.WithTimeout(parent, discoveryTimeout)
 	defer cancel()
 	output, err := runGit(ctx, root, nil, true, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {

@@ -9,7 +9,9 @@ const controllers: AbortController[] = [];
 afterEach(() => {
   controllers.splice(0).forEach(controller => controller.abort());
   document.body.replaceChildren();
+  vi.restoreAllMocks();
   vi.resetAllMocks();
+  vi.useRealTimers();
 });
 
 function createView() {
@@ -24,6 +26,28 @@ function createView() {
 }
 
 describe('source control discovery', () => {
+  it('allows slow initial discovery while keeping a bounded retryable timeout', async () => {
+    vi.useFakeTimers();
+    // Node's native AbortSignal timeout uses timers outside Vitest's clock.
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(milliseconds => {
+      const timeout = new AbortController();
+      setTimeout(() => timeout.abort(new DOMException('Timed out', 'TimeoutError')), milliseconds);
+      return timeout.signal;
+    });
+    vi.mocked(api.listRepositories).mockImplementation((_id, signal) => new Promise((_resolve, reject) => {
+      signal!.addEventListener('abort', () => reject(signal!.reason), { once: true });
+    }));
+    const { host, view } = createView();
+    const started = view.start();
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(vi.mocked(api.listRepositories).mock.calls[0][1]?.aborted).toBe(false);
+    expect(host.textContent).toContain('Discovering repositories');
+    await vi.advanceTimersByTimeAsync(300_000);
+    await started;
+    expect(host.textContent).toContain('Repository discovery timed out');
+    expect(host.querySelector('button')?.textContent).toBe('Retry');
+  });
+
   it('renders immediately while discovery is pending and shares repeated requests', async () => {
     let resolve!: (value: Awaited<ReturnType<typeof api.listRepositories>>) => void;
     vi.mocked(api.listRepositories).mockReturnValue(new Promise(done => { resolve = done; }));
