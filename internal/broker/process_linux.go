@@ -49,6 +49,18 @@ func unixSandbox(ctx context.Context, r ProcessRequest, scratch, private string,
 		}
 		argv = append(argv, "--ro-bind", real, real)
 	}
+	for _, path := range r.ReadPaths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, "", err
+		}
+		if info.IsDir() {
+			// Recreate the ancestor, without exposing its other children.
+			argv = append(argv, "--dir", path)
+		} else {
+			argv = append(argv, "--ro-bind", path, path)
+		}
+	}
 	for _, root := range r.Roots {
 		argv = append(argv, "--bind", root, root)
 	}

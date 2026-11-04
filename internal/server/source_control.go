@@ -131,10 +131,19 @@ func (s *Server) executeSCM(ctx context.Context, botID string, request scmexec.R
 	if err != nil {
 		return out, err
 	}
-	if !s.Files.Allowed(bot, request.WorkingDirectory) {
+	var gitScope gitProcessScope
+	if id == "git" && gitUsesRepository(request.Command[1:]) {
+		gitScope, err = s.gitSourceControlScope(bot, request.WorkingDirectory)
+		if err != nil {
+			return out, err
+		}
+	} else if !s.Files.Allowed(bot, request.WorkingDirectory) {
 		return out, errors.New("repository directory is outside the bot's folders")
 	}
 	roots := append([]string(nil), bot.Roots...)
+	if gitScope.roots != nil {
+		roots = gitScope.roots
+	}
 	if id == "fossil" {
 		roots, err = s.fossilProcessRoots(ctx, bot, request.WorkingDirectory)
 		if err != nil {
@@ -172,6 +181,16 @@ func (s *Server) executeSCM(ctx context.Context, botID string, request scmexec.R
 		key, value, ok := strings.Cut(entry, "=")
 		if ok {
 			env[key] = value
+		}
+	}
+	if gitScope.workTree != "" {
+		for key, path := range map[string]string{"GIT_DIR": gitScope.gitDir, "GIT_COMMON_DIR": gitScope.commonDir, "GIT_WORK_TREE": gitScope.workTree} {
+			// Git's loose-ref backend creates leading directories for ref
+			// locks. Relative metadata paths keep that walk inside the grant.
+			if relative, err := filepath.Rel(request.WorkingDirectory, path); err == nil {
+				path = relative
+			}
+			env[key] = filepath.ToSlash(path)
 		}
 	}
 	env["GIT_CONFIG_NOSYSTEM"] = "1"
@@ -243,7 +262,7 @@ func (s *Server) executeSCM(ctx context.Context, botID string, request scmexec.R
 	if request.CaptureOutputFile {
 		captureArgument = scmexec.OutputFileToken
 	}
-	result, err := s.Process.Run(ctx, broker.ProcessRequest{SandboxSession: "source-control:" + id, OutputFileArgument: captureArgument, BotID: bot.ID, Roots: roots, Executable: binary, Args: args, Directory: request.WorkingDirectory, Input: string(request.Input), Environment: env, Toolchains: toolchains, Internet: boolean(config, "internet"), PrivateNetwork: boolean(config, "privateNetwork"), SeparateOutput: true, OutputLimit: request.OutputLimit, TimeoutSeconds: 300}, nil)
+	result, err := s.Process.Run(ctx, broker.ProcessRequest{SandboxSession: "source-control:" + id, OutputFileArgument: captureArgument, BotID: bot.ID, Roots: roots, ReadPaths: gitScope.readPaths, Executable: binary, Args: args, Directory: request.WorkingDirectory, Input: string(request.Input), Environment: env, Toolchains: toolchains, Internet: boolean(config, "internet"), PrivateNetwork: boolean(config, "privateNetwork"), SeparateOutput: true, OutputLimit: request.OutputLimit, TimeoutSeconds: 300}, nil)
 	filter := &secretFilter{secret: secret}
 	out = scmexec.Result{Stdout: []byte(result.Stdout), Stderr: []byte(filter.redact(result.Stderr)), ExitCode: int(result.ExitCode), StdoutTruncated: result.Truncated}
 	if out.ExitCode != 0 && id == "git" {
@@ -380,6 +399,10 @@ func (s *Server) sourceControlEditorRoutes(mux *http.ServeMux) {
 		var e error
 		if request.SearchParentRepositories != nil {
 			e = s.Store.Put("source-control-settings", id, sourceControlSettings{*request.SearchParentRepositories})
+			if e == nil {
+				s.Git.StopWorkspaceProcesses(id)
+				e = s.Process.CloseSessions(id)
+			}
 		}
 		if e == nil && request.P4 != nil {
 			e = s.P4.Configure(id, *request.P4)

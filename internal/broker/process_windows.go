@@ -58,6 +58,10 @@ func profile(name string) (*windows.SID, error) {
 	return sid, nil
 }
 func changeAccess(path string, sid *windows.SID, remove bool, readOnly bool) error {
+	return changeAccessInheritance(path, sid, remove, readOnly, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
+}
+
+func changeAccessInheritance(path string, sid *windows.SID, remove, readOnly bool, inheritance uint32) error {
 	processAccessMu.Lock()
 	defer processAccessMu.Unlock()
 	sd, e := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
@@ -102,12 +106,33 @@ func changeAccess(path string, sid *windows.SID, remove bool, readOnly bool) err
 	if remove {
 		mode = windows.REVOKE_ACCESS
 	}
-	entries := []windows.EXPLICIT_ACCESS{{AccessPermissions: windows.ACCESS_MASK(access), AccessMode: windows.ACCESS_MODE(mode), Inheritance: windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT, Trustee: windows.TRUSTEE{TrusteeForm: windows.TRUSTEE_IS_SID, TrusteeType: windows.TRUSTEE_IS_UNKNOWN, TrusteeValue: windows.TrusteeValueFromSID(sid)}}}
+	entries := []windows.EXPLICIT_ACCESS{{AccessPermissions: windows.ACCESS_MASK(access), AccessMode: windows.ACCESS_MODE(mode), Inheritance: inheritance, Trustee: windows.TRUSTEE{TrusteeForm: windows.TRUSTEE_IS_SID, TrusteeType: windows.TRUSTEE_IS_UNKNOWN, TrusteeValue: windows.TrusteeValueFromSID(sid)}}}
 	merged, e := windows.ACLFromEntries(entries, acl)
 	if e != nil {
 		return e
 	}
-	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, merged, nil)
+	return setPathAccess(path, merged, inheritance != windows.NO_INHERITANCE)
+}
+
+func setPathAccess(path string, acl *windows.ACL, propagate bool) error {
+	if propagate {
+		return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
+	}
+	// SetNamedSecurityInfo propagates the DACL's existing inheritable entries,
+	// even when our own entry is non-inheritable. MAXIMUM_ALLOWED explicitly
+	// disables that traversal for SetSecurityInfo, so an ancestor-only grant
+	// never needs to walk a potentially enormous enclosing checkout.
+	// https://learn.microsoft.com/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	handle, err := windows.CreateFile(name, windows.MAXIMUM_ALLOWED, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(handle)
+	return windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
 }
 func (b *ProcessBroker) cleanup(j aclJournal) error {
 	return b.cleanupJournals([]aclJournal{j}, revokeAccessBatch)
@@ -331,6 +356,15 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 						rel, _ := filepath.Rel(p, program)
 						program = filepath.Join(mirror, rel)
 					}
+				}
+			}
+			for _, path := range r.ReadPaths {
+				j.Paths = append(j.Paths, path)
+				if err = b.journal(j); err != nil {
+					return result, err
+				}
+				if err = changeAccessInheritance(path, sid, false, true, windows.NO_INHERITANCE); err != nil {
+					return result, fmt.Errorf("grant AppContainer read access to %s: %w", path, err)
 				}
 			}
 			if r.duplex != nil {

@@ -31,6 +31,9 @@ func unixSandbox(ctx context.Context, r ProcessRequest, scratch, private string,
 		}
 		fmt.Fprintf(&policy, "(allow file-read* (subpath %s))\n", quote(real))
 	}
+	for _, path := range r.ReadPaths {
+		fmt.Fprintf(&policy, "(allow file-read* (literal %s))\n", quote(path))
+	}
 	roots := append([]string{}, r.Roots...)
 	if len(roots) == 0 {
 		roots = []string{"/"}

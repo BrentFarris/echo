@@ -54,15 +54,31 @@ func TestNativeSCMSandboxSessionScopeAndCleanup(t *testing.T) {
 	for _, session := range b.sessions {
 		original = session
 	}
-	request.Roots, request.Directory = []string{second}, second
+	additional := filepath.Join(second, "metadata.txt")
+	if err := os.WriteFile(additional, []byte("explicit read access"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	request.ReadPaths = []string{second, additional}
+	request.Args = []string{"hash-object", additional}
 	out, err := b.Run(ctx, request, nil)
+	if err != nil || out.ExitCode != 0 {
+		t.Fatalf("additional read access: %+v %v", out, err)
+	}
+	request.ReadPaths = nil
+	out, err = b.Run(ctx, request, nil)
+	if err != nil || out.ExitCode == 0 {
+		t.Fatalf("removed read path retained access: %+v %v", out, err)
+	}
+	request.Args = []string{"hash-object", file}
+	request.Roots, request.Directory = []string{second}, second
+	out, err = b.Run(ctx, request, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if out.ExitCode == 0 {
 		t.Fatal("changed scope retained access to the previous workspace")
 	}
-	if len(b.sessions) != 2 {
+	if len(b.sessions) != 3 {
 		t.Fatal("changed scope reused the previous sandbox identity")
 	}
 	// Closing a session cancels its current lease and waits for its job to end.

@@ -19,6 +19,7 @@ type ProcessRequest struct {
 	OutputFileArgument string         // Host-only marker replaced by a file inside command scratch.
 	BotID              string
 	Roots              []string
+	ReadPaths          []string // Host-only, nonrecursive read/execute access to files or directory entries.
 	Command            string
 	Executable         string
 	Args               []string
@@ -103,6 +104,28 @@ func (b *ProcessBroker) Run(ctx context.Context, r ProcessRequest, emit func(str
 	if r.SandboxSession != "" && (r.Command != "" || r.Executable == "" || !r.SeparateOutput) {
 		return ProcessResult{}, errors.New("sandbox sessions require host-owned structured native commands")
 	}
+	if len(r.ReadPaths) > 0 && (len(r.Roots) == 0 || r.Executable == "") {
+		return ProcessResult{}, errors.New("additional read paths require a scoped native command")
+	}
+	r.ReadPaths = append([]string(nil), r.ReadPaths...)
+	for i, path := range r.ReadPaths {
+		absolute, err := filepath.Abs(path)
+		real := absolute
+		if err == nil {
+			real, err = filepath.EvalSymlinks(real)
+		}
+		if err != nil {
+			return ProcessResult{}, err
+		}
+		if real != absolute && !(runtime.GOOS == "windows" && strings.EqualFold(real, absolute)) {
+			return ProcessResult{}, errors.New("additional read paths must not traverse links")
+		}
+		info, err := os.Stat(real)
+		if err != nil || !info.IsDir() && !info.Mode().IsRegular() {
+			return ProcessResult{}, errors.New("additional read paths must be existing files or directories")
+		}
+		r.ReadPaths[i] = real
+	}
 	if (r.Command == "") == (r.Executable == "") {
 		return ProcessResult{}, errors.New("provide exactly one shell command or native executable")
 	}
@@ -142,6 +165,11 @@ func (b *ProcessBroker) Run(ctx context.Context, r ProcessRequest, emit func(str
 		}
 		for _, root := range r.Roots {
 			if Within(root, real) {
+				valid = true
+			}
+		}
+		for _, path := range r.ReadPaths {
+			if path == real || runtime.GOOS == "windows" && strings.EqualFold(path, real) {
 				valid = true
 			}
 		}

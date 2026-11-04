@@ -49,6 +49,11 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 			return ProcessResult{}, errors.New("native toolchain cannot include Echo private state")
 		}
 	}
+	for _, path := range r.ReadPaths {
+		if Within(private, path) {
+			return ProcessResult{}, errors.New("native read paths cannot include Echo private state")
+		}
+	}
 	executable, args := r.Executable, captureArguments(r, scratch)
 	if r.Command != "" {
 		executable = "/bin/sh"

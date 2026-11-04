@@ -56,6 +56,45 @@ func hasRecoveryGrant(t *testing.T, path, sid string) bool {
 	return false
 }
 
+func TestNativeRecoveryNonrecursiveReadGrants(t *testing.T) {
+	if os.Getenv("ECHO2_NATIVE_TESTS") != "1" {
+		t.Skip("set ECHO2_NATIVE_TESTS=1")
+	}
+	b := &ProcessBroker{Dir: t.TempDir()}
+	parent := t.TempDir()
+	metadata := filepath.Join(parent, ".gitignore")
+	sibling := filepath.Join(parent, "unrelated.txt")
+	for _, path := range []string{metadata, sibling} {
+		if err := os.WriteFile(path, []byte("preserve content"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	j := recoveryFixture(t, b, parent, metadata)
+	sid, err := windows.StringToSid(j.SID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range j.Paths {
+		if err := changeAccessInheritance(path, sid, false, true, windows.NO_INHERITANCE); err != nil {
+			t.Fatal(err)
+		}
+		if !hasRecoveryGrant(t, path, j.SID) {
+			t.Fatalf("missing explicit grant on %s", path)
+		}
+	}
+	if hasRecoveryGrant(t, sibling, j.SID) {
+		t.Fatal("parent read grant was inherited by an unrelated file")
+	}
+	if err := b.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{parent, metadata, sibling} {
+		if hasRecoveryGrant(t, path, j.SID) {
+			t.Fatalf("read grant survived recovery on %s", path)
+		}
+	}
+}
+
 func TestNativeRecoveryBatchesGrants(t *testing.T) {
 	if os.Getenv("ECHO2_NATIVE_TESTS") != "1" {
 		t.Skip("set ECHO2_NATIVE_TESTS=1")

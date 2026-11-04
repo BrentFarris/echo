@@ -90,6 +90,7 @@ func revokeAccessBatch(path string, sids []*windows.SID) error {
 		wanted[sid.String()] = sid
 	}
 	owned := map[string]bool{}
+	propagate := false
 	for i := uint32(0); acl != nil && i < uint32(acl.AceCount); i++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if windows.GetAce(acl, i, &ace) != nil || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
@@ -98,6 +99,7 @@ func revokeAccessBatch(path string, sids []*windows.SID) error {
 		value := (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String()
 		if wanted[value] != nil {
 			owned[value] = true
+			propagate = propagate || ace.Header.AceFlags&(windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE) != 0
 		}
 	}
 	if len(owned) == 0 {
@@ -111,5 +113,5 @@ func revokeAccessBatch(path string, sids []*windows.SID) error {
 	if err != nil {
 		return err
 	}
-	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, merged, nil)
+	return setPathAccess(path, merged, propagate)
 }

@@ -23,7 +23,7 @@ import (
 // Journals still recover grants after a crash. Scope changes and shutdown revoke
 // sessions after cancelling and joining their current commands.
 func (b *ProcessBroker) acquireProcessSession(ctx context.Context, r ProcessRequest) (*processSession, func(), error) {
-	data, _ := json.Marshal([]any{r.BotID, r.SandboxSession, r.Roots, r.Toolchains, r.Executable, r.Internet, r.PrivateNetwork})
+	data, _ := json.Marshal([]any{r.BotID, r.SandboxSession, r.Roots, r.ReadPaths, r.Toolchains, r.Executable, r.Internet, r.PrivateNetwork})
 	sum := sha256.Sum256(data)
 	key := hex.EncodeToString(sum[:])
 	b.sessionsMu.Lock()
@@ -63,7 +63,8 @@ func (b *ProcessBroker) acquireProcessSession(ctx context.Context, r ProcessRequ
 			for _, item := range []struct {
 				paths    []string
 				readOnly bool
-			}{{r.Roots, false}, {r.Toolchains, true}} {
+				inherit  uint32
+			}{{r.Roots, false, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT}, {r.Toolchains, true, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT}, {r.ReadPaths, true, windows.NO_INHERITANCE}} {
 				for _, path := range item.paths {
 					if err = ctx.Err(); err != nil {
 						break
@@ -72,8 +73,8 @@ func (b *ProcessBroker) acquireProcessSession(ctx context.Context, r ProcessRequ
 					if err = b.journal(s.journal); err != nil {
 						break
 					}
-					err = changeAccess(path, sid, false, item.readOnly)
-					if err == windows.ERROR_ACCESS_DENIED && item.readOnly {
+					err = changeAccessInheritance(path, sid, false, item.readOnly, item.inherit)
+					if err == windows.ERROR_ACCESS_DENIED && item.readOnly && item.inherit != windows.NO_INHERITANCE {
 						var mirror string
 						mirror, err = b.mirrorToolchain(ctx, path)
 						if err == nil {

@@ -71,8 +71,14 @@ func (s *Service) readStatus(parent context.Context, state *repositoryState) (pa
 	case <-ctx.Done():
 		return parsedStatus{}, &Error{Code: "git_timeout", Message: "Git status timed out or was cancelled", Cause: ctx.Err()}
 	}
-	output, err := runGit(ctx, state.root, nil, true,
-		"status", "--porcelain=v2", "--branch", "--show-stash", "-z", "--untracked-files=all")
+	args := []string{"status", "--porcelain=v2", "--branch", "--show-stash", "-z", "--untracked-files=all"}
+	if state.parent {
+		args = append(args, "--")
+		for _, scope := range state.scopes {
+			args = append(args, ":(top,literal)"+scope.RepoPrefix)
+		}
+	}
+	output, err := runGit(ctx, state.root, nil, true, args...)
 	if err != nil {
 		return parsedStatus{}, err
 	}
@@ -81,6 +87,23 @@ func (s *Service) readStatus(parent context.Context, state *repositoryState) (pa
 		return parsedStatus{}, err
 	}
 	parsed.records = clearFilterOnlyWorktreeChanges(ctx, state, parsed.records)
+	if state.parent {
+		// Worktree status is limited to the bot folders. Inspect the shared
+		// index separately so committing still refuses hidden staged changes,
+		// without opening any working-tree files outside those folders.
+		staged, err := runGit(ctx, state.root, nil, true, "diff", "--cached", "--name-only", "--no-renames", "-z", "--no-ext-diff", "--no-textconv")
+		if err != nil {
+			return parsedStatus{}, err
+		}
+		for _, path := range bytes.Split(staged, []byte{0}) {
+			if len(path) == 0 {
+				continue
+			}
+			if _, allowed := state.refForPath(string(path)); !allowed {
+				parsed.records = append(parsed.records, statusRecord{kind: '1', path: string(path), index: 'M', worktree: '.'})
+			}
+		}
+	}
 	return parsed, nil
 }
 
