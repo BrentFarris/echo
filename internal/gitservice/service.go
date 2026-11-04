@@ -48,7 +48,7 @@ type repositoryState struct {
 	rootRef      *workspacefs.FileRef
 	scopes       []repositoryScope
 	revision     atomic.Uint64
-	mutationMu   *sync.Mutex
+	mutationMu   *repositoryLock
 	refreshMu    sync.Mutex
 	refreshing   bool
 	refreshAgain bool
@@ -77,7 +77,7 @@ type Service struct {
 	fs           *workspacefs.Service
 	mu           sync.RWMutex
 	repos        map[string]map[string]*repositoryState
-	locks        map[string]*sync.Mutex
+	locks        map[string]*repositoryLock
 	notify       func(Event)
 	watches      map[string]*workspaceWatch
 	statusSlots  chan struct{}
@@ -88,7 +88,7 @@ type Service struct {
 
 func New(workspaces *scmexec.Workspaces, fs *workspacefs.Service) *Service {
 	return &Service{
-		workspaces: workspaces, fs: fs, locks: make(map[string]*sync.Mutex), repos: make(map[string]map[string]*repositoryState),
+		workspaces: workspaces, fs: fs, locks: make(map[string]*repositoryLock), repos: make(map[string]map[string]*repositoryState),
 		watches: make(map[string]*workspaceWatch), statusSlots: make(chan struct{}, 4),
 		execStops: make(map[string]context.CancelFunc), execContexts: make(map[string]context.Context),
 	}
@@ -172,11 +172,11 @@ func (s *Service) CommandContext(parent context.Context, workspaceID string) (co
 }
 
 // Caller holds s.mu. All users of a shared Git index use the same lock.
-func (s *Service) commandLock(commonDir string) *sync.Mutex {
+func (s *Service) commandLock(commonDir string) *repositoryLock {
 	key := pathIdentity(commonDir)
 	lock := s.locks[key]
 	if lock == nil {
-		lock = &sync.Mutex{}
+		lock = &repositoryLock{gate: make(chan struct{}, 1)}
 		s.locks[key] = lock
 	}
 	return lock

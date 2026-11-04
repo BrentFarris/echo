@@ -102,9 +102,11 @@ func (s *Server) runTrackedProcess(ctx context.Context, bot domain.Bot, request 
 	if len(paths) == 0 {
 		paths = []string{directory}
 	}
+	request.ReportProgress("checking working files")
 	_, err := s.trackFileChanges(ctx, bot, paths, func() (any, error) {
 		var err error
 		result, err = s.Process.Run(ctx, request, emit)
+		request.ReportProgress("checking changed files")
 		return result, err
 	})
 	return result, err

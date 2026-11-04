@@ -122,10 +122,12 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 	if err = command.Start(); err != nil {
 		return ProcessResult{}, fmt.Errorf("start native containment (no host fallback): %w", err)
 	}
+	r.ReportProgress("running command")
 	if r.duplex != nil {
 		close(r.duplex.started)
 	}
 	err = command.Wait()
+	r.ReportProgress("finishing command")
 	_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 	result := output.snapshot()
 	if command.ProcessState != nil {

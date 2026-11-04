@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
@@ -54,6 +55,21 @@ func TestNativeSCMSandboxSessionScopeAndCleanup(t *testing.T) {
 	for _, session := range b.sessions {
 		original = session
 	}
+	// Bot tools stream combined output, while editor requests capture separate
+	// streams. Output handling must not prevent reuse of the same native grant.
+	request.SeparateOutput = false
+	var phases []string
+	request.Progress = func(phase string) { phases = append(phases, phase) }
+	var streamed strings.Builder
+	combined, err := b.Run(ctx, request, func(chunk string) { streamed.WriteString(chunk) })
+	if err != nil || combined.ExitCode != 0 || combined.Output == "" || combined.Output != streamed.String() || combined.Stdout != "" || combined.Stderr != "" || len(b.sessions) != 1 {
+		t.Fatalf("streamed session: %+v %v; output %q, sessions %d", combined, err, streamed.String(), len(b.sessions))
+	}
+	if strings.Join(phases, ",") != "preparing command access,running command,finishing command" {
+		t.Fatalf("native execution phases: %v", phases)
+	}
+	request.Progress = nil
+	request.SeparateOutput = true
 	additional := filepath.Join(second, "metadata.txt")
 	if err := os.WriteFile(additional, []byte("explicit read access"), 0600); err != nil {
 		t.Fatal(err)

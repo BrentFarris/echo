@@ -2,6 +2,21 @@ package gitservice
 
 import "context"
 
+// Editor operations and bot commands share this gate. A queued bot command
+// must honor Stop and its timeout even while another operation holds the lock.
+type repositoryLock struct{ gate chan struct{} }
+
+func (l *repositoryLock) Lock()   { l.gate <- struct{}{} }
+func (l *repositoryLock) Unlock() { <-l.gate }
+func (l *repositoryLock) LockContext(ctx context.Context) error {
+	select {
+	case l.gate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // RunCommand coordinates the bot's native Git CLI with editor mutations.
 // The host authorizes the checkout before calling this method; arguments,
 // working directory and native Git behavior belong to the process runner.
@@ -9,7 +24,9 @@ func (s *Service) RunCommand(ctx context.Context, workspaceID, commonDir string,
 	s.mu.Lock()
 	lock := s.commandLock(commonDir)
 	s.mu.Unlock()
-	lock.Lock()
+	if err := lock.LockContext(ctx); err != nil {
+		return err
+	}
 	defer lock.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err

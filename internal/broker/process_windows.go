@@ -582,6 +582,7 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 		windows.TerminateJobObject(job, 1)
 		return result, err
 	}
+	r.ReportProgress("running command")
 	if r.duplex != nil {
 		close(r.duplex.started)
 	}
@@ -604,6 +605,7 @@ func (b *ProcessBroker) run(ctx context.Context, r ProcessRequest, emit func(str
 		err = errors.Join(ctx.Err(), err)
 	case <-processDone:
 	}
+	r.ReportProgress("finishing command")
 	var exitCode uint32
 	windows.GetExitCodeProcess(pi.Process, &exitCode)
 	// Terminate background descendants before awaiting their inherited pipe handles.

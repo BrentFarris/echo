@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -134,10 +135,89 @@ func TestNativeSourceControlRepositories(t *testing.T) {
 				t.Fatal("outside directory allowed")
 			}
 			journals, _ := filepath.Glob(filepath.Join(s.Process.Dir, "*.json"))
+			if id == "git" {
+				if len(journals) == 0 {
+					t.Fatal("Git did not retain its reusable sandbox grant")
+				}
+				if err := s.Process.CloseSessions(bot.ID); err != nil {
+					t.Fatal(err)
+				}
+				journals, _ = filepath.Glob(filepath.Join(s.Process.Dir, "*.json"))
+			}
 			if len(journals) != 0 {
 				t.Fatal("ACL journal leaked", journals)
 			}
 		})
+	}
+}
+
+func TestNativeGitStatusReusesCheckoutGrant(t *testing.T) {
+	if os.Getenv("ECHO2_NATIVE_TESTS") != "1" {
+		t.Skip("native Git sandbox reuse")
+	}
+	s := testServer(t)
+	repository := t.TempDir()
+	folder := filepath.Join(repository, "src")
+	if err := os.Mkdir(folder, 0700); err != nil {
+		t.Fatal(err)
+	}
+	fixtureSCM(t, repository, "git", "init", "--ref-format=files")
+	// Ignored build files make Windows permission propagation expensive even
+	// when Git itself has almost nothing to inspect.
+	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("bulk/\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 1024 {
+		directory := filepath.Join(repository, "bulk", fmt.Sprint(i/64))
+		if err := os.MkdirAll(directory, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, fmt.Sprint(i)), []byte("fixture\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bot, err := s.saveBot(domain.Bot{Handle: "git-status-reuse", Roots: []string{folder}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Store.Put("source-control-settings", bot.ID, sourceControlSettings{SearchParentRepositories: true}); err != nil {
+		t.Fatal(err)
+	}
+	var firstJournals []string
+	for i := range 2 {
+		collector := &fileChangeCollector{}
+		ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), fileChangesKey{}, collector), 30*time.Second)
+		started := time.Now()
+		value, err := s.Plugins.Invoke(ctx, domain.ExecutionScope{Bot: bot}, "git_status", json.RawMessage(`{"args":["--short"]}`))
+		cancel()
+		t.Logf("Git status call %d: %s", i+1, time.Since(started))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := json.Marshal(value)
+		var result broker.ProcessResult
+		if err := json.Unmarshal(data, &result); err != nil || result.ExitCode != 0 || !strings.Contains(result.Output, ".gitignore") || result.Stdout != "" || result.Stderr != "" {
+			t.Fatalf("status output changed: %+v %v", result, err)
+		}
+		if len(collector.changes) != 0 || collector.incomplete {
+			t.Fatalf("status file tracking changed: %+v", collector)
+		}
+		journals, err := filepath.Glob(filepath.Join(s.Process.Dir, "*.json"))
+		if err != nil || len(journals) != 1 {
+			t.Fatalf("expected one retained Git grant: %v %v", journals, err)
+		}
+		if i == 0 {
+			firstJournals = journals
+		} else if !slices.Equal(firstJournals, journals) {
+			t.Fatal("repeated status replaced the sandbox identity")
+		}
+	}
+	response := scmAPI(t, s, "PUT", "/plugins/monaco-editor/bots/"+bot.ID+"/source-control/settings", map[string]any{"searchParentRepositories": false})
+	if response.Code != 200 {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	if journals, err := filepath.Glob(filepath.Join(s.Process.Dir, "*.json")); err != nil || len(journals) != 0 {
+		t.Fatalf("parent-search revocation retained Git grants: %v %v", journals, err)
 	}
 }
 

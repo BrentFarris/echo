@@ -304,6 +304,18 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 		s.nativeOutput(ctx, scope, chunk)
 	}
 	request := broker.ProcessRequest{BotID: scope.Bot.ID, Roots: roots, ReadPaths: gitScope.readPaths, Executable: binary, Args: args, Input: text(a, "input"), Environment: env, Directory: directory, Toolchains: toolchains, Internet: boolean(m.Config, "internet"), PrivateNetwork: boolean(m.Config, "privateNetwork"), TimeoutSeconds: timeout}
+	if id == "git" {
+		// Windows propagates permission edits through every checkout file.
+		// Reuse the same host-owned grant as Source Control instead of adding
+		// and removing it around every bot command. The broker keys sessions
+		// by the freshly resolved scope and revokes them on settings changes.
+		request.SandboxSession = "source-control:git"
+		var stopProgress func()
+		request.Progress, stopProgress = nativeCommandProgress(ctx, "Git "+command, 10*time.Second, func(message string) {
+			s.nativeOutput(ctx, scope, message)
+		})
+		defer stopProgress()
+	}
 	var result broker.ProcessResult
 	run := func(ctx context.Context) error {
 		var err error

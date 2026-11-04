@@ -16,6 +16,7 @@ import (
 type ProcessRequest struct {
 	duplex             *processDuplex // Host-internal persistent stdio; never accepted from plugin input.
 	SandboxSession     string         // Host-only opt-in: reuse an identical native sandbox's filesystem grants.
+	Progress           func(string)   `json:"-"` // Host-only execution phase; never mixed with command output.
 	OutputFileArgument string         // Host-only marker replaced by a file inside command scratch.
 	BotID              string
 	Roots              []string
@@ -41,6 +42,13 @@ type ProcessResult struct {
 	Stdout    string `json:"stdout,omitempty"`
 	Stderr    string `json:"stderr,omitempty"`
 }
+
+func (r ProcessRequest) ReportProgress(phase string) {
+	if r.Progress != nil {
+		r.Progress(phase)
+	}
+}
+
 type ProcessBroker struct {
 	Dir        string
 	mu         sync.Mutex
@@ -101,7 +109,7 @@ func (b *ProcessBroker) Run(ctx context.Context, r ProcessRequest, emit func(str
 	if r.OutputFileArgument != "" && (!r.SeparateOutput || r.Executable == "") {
 		return ProcessResult{}, errors.New("file capture requires a native structured command")
 	}
-	if r.SandboxSession != "" && (r.Command != "" || r.Executable == "" || !r.SeparateOutput) {
+	if r.SandboxSession != "" && (r.Command != "" || r.Executable == "") {
 		return ProcessResult{}, errors.New("sandbox sessions require host-owned structured native commands")
 	}
 	if len(r.ReadPaths) > 0 && (len(r.Roots) == 0 || r.Executable == "") {
@@ -177,6 +185,7 @@ func (b *ProcessBroker) Run(ctx context.Context, r ProcessRequest, emit func(str
 			return ProcessResult{}, errors.New("working directory is outside the bot's folders")
 		}
 	}
+	r.ReportProgress("preparing command access")
 	return b.run(ctx, r, emit)
 }
 

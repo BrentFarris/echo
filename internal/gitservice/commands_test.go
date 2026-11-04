@@ -20,6 +20,7 @@ func TestGitCommandCancellationAndSharedLock(t *testing.T) {
 	lock := s.commandLock(common)
 	s.mu.Unlock()
 	lock.Lock()
+	defer lock.Unlock()
 	called := make(chan struct{}, 1)
 	started := make(chan struct{})
 	done := make(chan error, 1)
@@ -45,13 +46,42 @@ func TestGitCommandCancellationAndSharedLock(t *testing.T) {
 	if ctx.Err() == nil || other.Err() != nil {
 		t.Fatal("workspace revocation did not isolate the affected bot")
 	}
-	lock.Unlock()
-	if err := <-done; !errors.Is(err, context.Canceled) || len(called) != 0 {
-		t.Fatalf("revoked queued command ran: called=%v, error=%v", len(called), err)
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) || len(called) != 0 {
+			t.Fatalf("revoked queued command ran: called=%v, error=%v", len(called), err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled command kept waiting for the repository lock")
 	}
 	fresh, cancelFresh := s.CommandContext(context.Background(), "bot")
 	defer cancelFresh()
 	if fresh.Err() != nil {
 		t.Fatal("new invocation inherited a revoked context")
+	}
+}
+
+func TestGitCommandTimeoutWhileQueued(t *testing.T) {
+	s := New(nil, nil)
+	common := filepath.Join(t.TempDir(), ".git")
+	lock := s.commandLock(common)
+	lock.Lock()
+	defer lock.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- s.RunCommand(ctx, "bot", common, func(context.Context) error {
+			t.Error("timed-out command ran")
+			return nil
+		})
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("command timeout did not interrupt the repository lock wait")
 	}
 }
