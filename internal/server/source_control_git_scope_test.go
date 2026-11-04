@@ -69,6 +69,33 @@ func TestGitSourceControlScope(t *testing.T) {
 	if _, err := s.gitSourceControlScope(bot, t.TempDir()); err == nil {
 		t.Fatal("authorized an unrelated repository directory")
 	}
+	// Bot Git commands receive the entire checkout, including sibling working
+	// directories, without changing the bot's ordinary file access.
+	for _, directory := range []string{root, repository, filepath.Dir(root)} {
+		scope, err := s.gitCommandScope(bot, directory)
+		if err != nil || !sameGitPath(scope.workTree, repository) || !slices.Equal(scope.roots, []string{repository}) || len(scope.readPaths) != 0 {
+			t.Fatalf("whole-checkout command scope: %+v %v", scope, err)
+		}
+	}
+	if s.Files.Allowed(bot, ignore) || s.Files.Allowed(bot, marker) {
+		t.Fatal("Git process grant changed file-tool permissions")
+	}
+	other := t.TempDir()
+	if _, err := s.gitCommandScope(bot, other); err == nil {
+		t.Fatal("Git command authorized an unrelated checkout")
+	}
+	multi := bot
+	multi.Roots = append(append([]string{}, bot.Roots...), other)
+	if scope, err := s.gitCommandScope(multi, root); err != nil || !slices.Equal(scope.roots, []string{repository, other}) {
+		t.Fatalf("lost another explicitly configured folder: %+v %v", scope, err)
+	}
+	privateCheckout := &Server{Dir: filepath.Join(repository, "private"), Store: s.Store, Files: s.Files}
+	if _, err := privateCheckout.gitCommandScope(bot, root); err == nil {
+		t.Fatal("whole-checkout grant included Echo private state")
+	}
+	if scope, err := s.gitCommandScope(domain.Bot{}, root); err != nil || len(scope.roots) != 0 {
+		t.Fatalf("unbound Git acquired folder restrictions: %+v %v", scope, err)
+	}
 	privateServer := &Server{Dir: filepath.Join(marker, "private"), Files: s.Files}
 	if _, _, err := privateServer.gitMetadataDirectories(bot, marker); err == nil {
 		t.Fatal("metadata grant included Echo private state")
@@ -79,6 +106,9 @@ func TestGitSourceControlScope(t *testing.T) {
 	}
 	if _, err := s.gitSourceControlScope(bot, root); err == nil {
 		t.Fatal("authorized unrelated common metadata")
+	}
+	if _, err := s.gitCommandScope(bot, root); err == nil {
+		t.Fatal("whole-checkout grant authorized unrelated common metadata")
 	}
 	if err := os.Remove(filepath.Join(marker, "commondir")); err != nil {
 		t.Fatal(err)

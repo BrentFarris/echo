@@ -114,12 +114,13 @@ func TestNativeGitPluginParentFolders(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(roots[0], "nested"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, directory := range []string{"", ".", "nested", roots[1], repository} {
+	for _, directory := range []string{"", ".", "nested", roots[1], repository, filepath.Dir(roots[0]), filepath.Dir(outside)} {
 		actual := strings.TrimSpace(success("git_command", directory, "rev-parse", "--show-toplevel"))
 		if !sameGitPath(actual, repository) {
 			t.Fatalf("resolved %q instead of %q", actual, repository)
 		}
 	}
+	success("git_command", filepath.Dir(outside), "version")
 	for _, root := range roots {
 		write(filepath.Join(root, "file with spaces.txt"), "modified\n")
 		write(filepath.Join(root, "new.txt"), "new\n")
@@ -130,49 +131,46 @@ func TestNativeGitPluginParentFolders(t *testing.T) {
 	}
 	write(outside, "outside modified\n")
 	status := success("git_status", "", "--short")
-	if strings.Count(status, "file with spaces.txt") != 2 || strings.Contains(status, "outside") || strings.Contains(status, "ignored.tmp") {
-		t.Fatalf("scoped status: %s", status)
+	if strings.Count(status, "file with spaces.txt") != 2 || !strings.Contains(status, "outside") || strings.Contains(status, "ignored.tmp") {
+		t.Fatalf("whole-repository status: %s", status)
 	}
 	diff := success("git_diff", repository)
-	if strings.Count(diff, "+modified") != 2 || strings.Contains(diff, "outside") {
-		t.Fatalf("scoped diff: %s", diff)
+	if strings.Count(diff, "+modified") != 2 || !strings.Contains(diff, "outside") {
+		t.Fatalf("whole-repository diff: %s", diff)
 	}
-	diff = success("git_diff", "", "--", "file with spaces.txt")
+	diff = success("git_diff", "", "file with spaces.txt")
 	if strings.Count(diff, "+modified") != 1 || strings.Contains(diff, prefixes[1]) {
 		t.Fatalf("explicit diff widened selection: %s", diff)
 	}
-	denied("git_command", repository, "add", "--", "outside/file.txt")
-	denied("git_command", repository, "hash-object", "--no-filters", outside)
-	denied("git_command", repository, "restore", "--worktree", "--", "outside/file.txt")
+	if actual := success("git_command", repository, "hash-object", "--no-filters", outside); actual != fixtureSCM(t, repository, "git", "hash-object", "--no-filters", outside) {
+		t.Fatalf("Git could not read a sibling working file: %q", actual)
+	}
+	success("git_command", filepath.Dir(outside), "restore", "--worktree", "--", "file.txt")
+	if data, err := os.ReadFile(outside); err != nil || string(data) != "outside original\n" {
+		t.Fatalf("Git could not restore a sibling working file: %q %v", data, err)
+	}
+	write(outside, "outside modified\n")
+	unrelated := filepath.Join(t.TempDir(), "unrelated.txt")
+	write(unrelated, "unrelated\n")
+	denied("git_command", repository, "hash-object", "--no-filters", unrelated)
 	success("git_command", "", "add", "-A")
 	staged := fixtureSCM(t, repository, "git", "diff", "--cached", "--name-only", "-z")
-	if strings.Count(staged, "\x00") != 6 || strings.Contains(staged, "outside") || strings.Contains(staged, "ignored.tmp") {
-		t.Fatalf("stage all crossed folder boundaries: %q", staged)
+	if strings.Count(staged, "\x00") != 7 || !strings.Contains(staged, "outside") || strings.Contains(staged, "ignored.tmp") {
+		t.Fatalf("stage all did not use the whole repository: %q", staged)
 	}
-	fixtureSCM(t, repository, "git", "add", "outside/file.txt")
-	before := fixtureSCM(t, repository, "git", "rev-parse", "HEAD")
-	for _, args := range [][]string{{"commit", "-m", "blocked"}, {"commit", "-am", "blocked"}} {
-		_, err := invokeGitTool(t, s, bot, "git_command", "", args...)
-		if err == nil || !strings.Contains(err.Error(), "staged changes outside") {
-			t.Fatalf("missing shared commit guard: %v", err)
-		}
-	}
-	if fixtureSCM(t, repository, "git", "rev-parse", "HEAD") != before {
-		t.Fatal("blocked commit changed HEAD")
-	}
-	fixtureSCM(t, repository, "git", "restore", "--staged", "--", "outside/file.txt")
-	success("git_command", repository, "commit", "-m", "scoped changes")
+	success("git_command", "", "commit", "-m", "repository changes")
 	committed := fixtureSCM(t, repository, "git", "diff-tree", "--no-commit-id", "--name-only", "-z", "-r", "HEAD")
-	if strings.Count(committed, "\x00") != 6 || strings.Contains(committed, "outside") {
-		t.Fatalf("commit crossed folder boundaries: %q", committed)
+	if strings.Count(committed, "\x00") != 7 || !strings.Contains(committed, "outside") {
+		t.Fatalf("commit did not include the shared index: %q", committed)
 	}
 	for _, root := range roots {
 		write(filepath.Join(root, "file with spaces.txt"), "tracked only\n")
 		write(filepath.Join(root, "untracked.txt"), "leave untracked\n")
 	}
+	write(outside, "tracked outside\n")
 	success("git_command", "", "commit", "-am", "tracked only")
 	committed = fixtureSCM(t, repository, "git", "diff-tree", "--no-commit-id", "--name-only", "-z", "-r", "HEAD")
-	if strings.Count(committed, "\x00") != 2 || strings.Contains(committed, "untracked.txt") || strings.Contains(committed, "outside") {
+	if strings.Count(committed, "\x00") != 3 || strings.Contains(committed, "untracked.txt") || !strings.Contains(committed, "outside") {
 		t.Fatalf("auto-stage included unintended files: %q", committed)
 	}
 	write(filepath.Join(roots[0], "file with spaces.txt"), "explicit selection\n")
@@ -194,8 +192,21 @@ func TestNativeGitPluginParentFolders(t *testing.T) {
 	if strings.Count(committed, "\x00") != 2 || !strings.Contains(committed, prefixes[0]+"/new.txt") || strings.Contains(committed, "untracked.txt") {
 		t.Fatalf("long auto-stage missed tracked deletions: %q", committed)
 	}
-	if data, err := os.ReadFile(outside); err != nil || string(data) != "outside modified\n" {
-		t.Fatalf("outside working file changed: %q %v", data, err)
+	if data, err := os.ReadFile(outside); err != nil || string(data) != "tracked outside\n" {
+		t.Fatalf("unexpected sibling working file content: %q %v", data, err)
+	}
+	// Native pathspec files, aliases and branch operations are passed through.
+	write(filepath.Join(roots[0], "ignored.tmp"), "untracked.txt\n")
+	success("git_command", "", "add", "--pathspec-from-file=ignored.tmp")
+	if staged := fixtureSCM(t, repository, "git", "diff", "--cached", "--name-only"); strings.TrimSpace(staged) != prefixes[0]+"/untracked.txt" {
+		t.Fatalf("native pathspec file changed meaning: %q", staged)
+	}
+	success("git_command", "", "restore", "--staged", "--", "untracked.txt")
+	success("git_command", "", "branch", "bot-branch")
+	success("git_command", "", "show-ref", "--verify", "refs/heads/bot-branch")
+	success("git_command", "", "config", "alias.bot-status", "status --short")
+	if status := success("git_command", "", "bot-status"); !strings.Contains(status, "untracked.txt") {
+		t.Fatalf("native alias did not run: %q", status)
 	}
 	if s.Files.Allowed(bot, outside) || s.Files.Allowed(bot, filepath.Join(repository, ".git", "config")) {
 		t.Fatal("Git metadata grants expanded bot file access")
@@ -214,10 +225,11 @@ func TestNativeGitPluginParentFolders(t *testing.T) {
 	}
 	denied("git_command", repository, "rev-parse", "--show-toplevel")
 	denied("git_command", "", "rev-parse", "--show-toplevel")
+	denied("git_command", filepath.Dir(outside), "status")
 	if err := s.Store.Put("source-control-settings", bot.ID, sourceControlSettings{SearchParentRepositories: true}); err != nil {
 		t.Fatal(err)
 	}
-	newCheckout := filepath.Join(roots[0], "new-checkout")
+	newCheckout := filepath.Join(repository, "new-checkout")
 	if err := os.Mkdir(newCheckout, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -228,13 +240,17 @@ func TestNativeGitPluginParentFolders(t *testing.T) {
 	if actual := strings.TrimSpace(success("git_command", newCheckout, "rev-parse", "--show-toplevel")); !sameGitPath(actual, newCheckout) {
 		t.Fatalf("nested repository not selected: %q", actual)
 	}
+	if scope, err := s.gitCommandScope(bot, newCheckout); err != nil || !sameGitPath(scope.workTree, newCheckout) || !sameGitPath(scope.commonDir, filepath.Join(newCheckout, ".git")) {
+		t.Fatalf("sibling checkout did not select its own metadata: %+v %v", scope, err)
+	}
 	linked := filepath.Join(roots[0], "linked")
 	write(filepath.Join(linked, ".git"), "gitdir: "+filepath.ToSlash(t.TempDir())+"\n")
 	_, err = invokeGitTool(t, s, bot, "git_command", linked, "status")
 	if err == nil || !strings.Contains(err.Error(), "linked Git metadata") {
 		t.Fatalf("linked metadata escaped bot folders: %v", err)
 	}
-	denied("git_command", filepath.Dir(roots[0]), "status")
+	success("git_command", linked, "version")
+	success("git_command", filepath.Dir(roots[0]), "status", "--short")
 	denied("git_command", t.TempDir(), "status")
 }
 

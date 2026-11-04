@@ -220,18 +220,25 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 		}
 	}
 	var gitScope gitProcessScope
-	if id == "git" && gitUsesRepository(args) {
+	if id == "git" {
 		if directory == "" {
 			directory, e = os.UserHomeDir()
 			if e != nil {
 				return nil, e
 			}
 		}
-		gitScope, e = s.gitSourceControlScope(scope.Bot, directory)
+		gitScope, e = s.gitCommandScope(scope.Bot, directory)
 		if e != nil {
-			return nil, e
+			// Version/init/clone do not require an existing valid repository.
+			// They can still run in an explicitly configured folder when a
+			// surrounding checkout has unavailable metadata.
+			if gitUsesRepository(args) || !s.Files.Allowed(scope.Bot, directory) {
+				return nil, e
+			}
+			gitScope = gitProcessScope{}
 		}
-		gitScope.environment(directory, env)
+		// The whole checkout is accessible, so Git can discover it normally.
+		// Preserve its native cwd/prefix handling instead of binding GIT_DIR.
 	} else if directory != "" && !s.Files.Allowed(scope.Bot, directory) {
 		return nil, errors.New("working directory is outside the bot's scope")
 	}
@@ -298,19 +305,16 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 	}
 	request := broker.ProcessRequest{BotID: scope.Bot.ID, Roots: roots, ReadPaths: gitScope.readPaths, Executable: binary, Args: args, Input: text(a, "input"), Environment: env, Directory: directory, Toolchains: toolchains, Internet: boolean(m.Config, "internet"), PrivateNetwork: boolean(m.Config, "privateNetwork"), TimeoutSeconds: timeout}
 	var result broker.ProcessResult
-	run := func(ctx context.Context, cwd string, arguments []string) error {
-		request.Directory = cwd
-		gitScope.environment(cwd, env)
-		request.Args = arguments
+	run := func(ctx context.Context) error {
 		var err error
 		result, err = s.runTrackedProcess(ctx, scope.Bot, request, func(chunk string) { emit(filter.push(chunk, false)) })
 		return err
 	}
 	var err error
 	if id == "git" && gitScope.workTree != "" {
-		err = s.Git.RunScopedCommand(ctx, scope.Bot.ID, gitScope.workTree, gitScope.commonDir, directory, command, stringsValue(a["args"]), run)
+		err = s.Git.RunCommand(ctx, scope.Bot.ID, gitScope.commonDir, run)
 	} else {
-		err = run(ctx, directory, args)
+		err = run(ctx)
 	}
 	emit(filter.push("", true))
 	result.Output = output.String()
