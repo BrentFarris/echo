@@ -79,7 +79,9 @@ func TestNativeGitPluginParentFolders(t *testing.T) {
 	fixtureSCM(t, repository, "git", "add", ".")
 	fixtureSCM(t, repository, "git", "commit", "-m", "initial")
 	plugin, _ := s.Plugins.Get("git")
-	plugin.Config = map[string]any{"userName": "Echo Test", "userEmail": "test@example.invalid"}
+	// Host status must not extend to other commands: the sibling read below
+	// still succeeds inside the checkout and fails for an unrelated file.
+	plugin.Config = map[string]any{"userName": "Echo Test", "userEmail": "test@example.invalid", "hostStatus": true}
 	if err := s.Plugins.Save(plugin); err != nil {
 		t.Fatal(err)
 	}

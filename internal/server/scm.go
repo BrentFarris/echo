@@ -29,8 +29,8 @@ var scmCommand = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 // exposed through this credential-bearing client.
 const p4WorkspaceCommands = " help info status diff diff2 opened files dirs fstat where have changes change changelist describe filelog annotate print clients client streams stream add edit reopen delete move reconcile revert resolve resolved sync submit shelve unshelve labels label labelsync branches branch integrate merge copy lock unlock protects groups users jobs job fixes fix review reviews sizes typemap depot depots monitor trust "
 
-// Configuration from chat can change ordinary preferences but cannot grant a
-// process network access or enlarge the executable/runtime grant.
+// Configuration from chat can change ordinary preferences but cannot grant
+// host execution, network access or a larger executable/runtime scope.
 func (s *Server) sourceControlConfig(m domain.PluginManifest, updates map[string]any, owner bool) (map[string]any, error) {
 	config := map[string]any{}
 	for k, v := range m.Config {
@@ -46,6 +46,9 @@ func (s *Server) sourceControlConfig(m domain.PluginManifest, updates map[string
 			continue
 		}
 		if !owner {
+			if k == "hostStatus" && v == true && m.Config[k] != true {
+				return nil, errors.New("grant Git status host permissions directly in Git settings")
+			}
 			if (k == "internet" || k == "privateNetwork") && v == true && m.Config[k] != true {
 				return nil, errors.New("grant network access directly in the plugin's settings")
 			}
@@ -255,11 +258,11 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 	if path := text(m.Config, "trustFile"); path != "" && (!filepath.IsAbs(path) || !s.Files.Allowed(scope.Bot, path)) {
 		return nil, errors.New("P4 trust file must be an absolute path inside the bot's scope")
 	}
-	runtime := filepath.Dir(binary)
-	if id == "git" && (strings.EqualFold(filepath.Base(runtime), "cmd") || strings.EqualFold(filepath.Base(runtime), "bin")) {
-		runtime = filepath.Dir(runtime)
+	runtimePath := filepath.Dir(binary)
+	if id == "git" && (strings.EqualFold(filepath.Base(runtimePath), "cmd") || strings.EqualFold(filepath.Base(runtimePath), "bin")) {
+		runtimePath = filepath.Dir(runtimePath)
 	}
-	runtimePaths := append([]string{runtime}, stringsValue(m.Config["toolchains"])...)
+	runtimePaths := append([]string{runtimePath}, stringsValue(m.Config["toolchains"])...)
 	toolchains := []string{}
 	for _, path := range runtimePaths {
 		if broker.Within(path, s.Dir) || broker.Within(s.Dir, path) {
@@ -304,10 +307,31 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 		s.nativeOutput(ctx, scope, chunk)
 	}
 	request := broker.ProcessRequest{BotID: scope.Bot.ID, Roots: roots, ReadPaths: gitScope.readPaths, Executable: binary, Args: args, Input: text(a, "input"), Environment: env, Directory: directory, Toolchains: toolchains, Internet: boolean(m.Config, "internet"), PrivateNetwork: boolean(m.Config, "privateNetwork"), TimeoutSeconds: timeout}
+	if id == "git" {
+		// Reuse the checkout's sandbox grants. Creating and revoking an
+		// inheritable Windows ACL walks the entire checkout on every call.
+		request.SandboxSession = "git-tools"
+		request.SeparateOutput = true
+		if runtime.GOOS == "windows" && command == "status" && boolean(m.Config, "hostStatus") {
+			// Explicit owner permission, never a fallback after sandbox failure.
+			// Resolve/authorize the checkout above before bypassing the expensive
+			// AppContainer grant. The broker still owns output, jobs and cancellation.
+			request.Roots, request.ReadPaths = nil, nil
+			request.SandboxSession = ""
+			request.Environment["GIT_OPTIONAL_LOCKS"] = "0"
+		}
+	}
 	var result broker.ProcessResult
 	run := func(ctx context.Context) error {
 		var err error
-		result, err = s.runTrackedProcess(ctx, scope.Bot, request, func(chunk string) { emit(filter.push(chunk, false)) })
+		stream := func(chunk string) { emit(filter.push(chunk, false)) }
+		if id == "git" && command == "status" {
+			// Status does not edit working files. Avoid hashing every bot file
+			// before and after this query for the chat's file-change collector.
+			result, err = s.Process.Run(ctx, request, stream)
+		} else {
+			result, err = s.runTrackedProcess(ctx, scope.Bot, request, stream)
+		}
 		return err
 	}
 	var err error
@@ -318,6 +342,8 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 	}
 	emit(filter.push("", true))
 	result.Output = output.String()
+	// Keep the tool response's existing combined, redacted output contract.
+	result.Stdout, result.Stderr = "", ""
 	if err != nil {
 		return nil, errors.New(filter.redact(err.Error()))
 	}

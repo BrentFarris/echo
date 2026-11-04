@@ -14,6 +14,7 @@ func sourceControlPlugins() []domain.PluginManifest {
 		case "git":
 			properties["userName"] = S("Commit author name")
 			properties["userEmail"] = S("Commit author email")
+			properties["hostStatus"] = B("Windows: run Git status with your account's full permissions to avoid sandbox setup. Repository helpers also receive your filesystem and network access.")
 		case "fossil":
 			properties["user"] = S("Fossil user name")
 		case "p4":
