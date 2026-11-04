@@ -64,6 +64,10 @@ func changeAccess(path string, sid *windows.SID, remove bool, readOnly bool) err
 func changeAccessInheritance(path string, sid *windows.SID, remove, readOnly bool, inheritance uint32) error {
 	processAccessMu.Lock()
 	defer processAccessMu.Unlock()
+	access := uint32(windows.FILE_GENERIC_READ | windows.FILE_GENERIC_EXECUTE)
+	if !readOnly {
+		access |= windows.FILE_GENERIC_WRITE | windows.DELETE | 0x40
+	}
 	sd, e := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if e != nil {
 		return e
@@ -74,7 +78,7 @@ func changeAccessInheritance(path string, sid *windows.SID, remove, readOnly boo
 	}
 	// Installed tools often already grant read/execute to AppContainers. Do not
 	// try to rewrite administrator-owned ACLs or journal a grant we don't need.
-	ownedEntry, publicRead := false, false
+	ownedEntry, ownedGrant, publicRead := false, false, false
 	if acl != nil {
 		for i := uint32(0); i < uint32(acl.AceCount); i++ {
 			var ace *windows.ACCESS_ALLOWED_ACE
@@ -84,6 +88,9 @@ func changeAccessInheritance(path string, sid *windows.SID, remove, readOnly boo
 			entrySID := (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String()
 			if entrySID == sid.String() {
 				ownedEntry = true
+				if uint32(ace.Mask)&access == access && ace.Header.AceFlags&windows.INHERIT_ONLY_ACE == 0 && uint32(ace.Header.AceFlags)&inheritance == inheritance {
+					ownedGrant = true
+				}
 			}
 			mask := uint32(ace.Mask)
 			required := uint32(windows.FILE_GENERIC_READ | windows.FILE_GENERIC_EXECUTE)
@@ -95,12 +102,13 @@ func changeAccessInheritance(path string, sid *windows.SID, remove, readOnly boo
 	if remove && !ownedEntry {
 		return nil
 	}
-	if !remove && readOnly && publicRead {
+	// Reused sessions must check for externally reset ACLs, while intact
+	// grants must not trigger another traversal of a large workspace.
+	if !remove && ownedGrant {
 		return nil
 	}
-	access := uint32(windows.FILE_GENERIC_READ | windows.FILE_GENERIC_EXECUTE)
-	if !readOnly {
-		access |= windows.FILE_GENERIC_WRITE | windows.DELETE | 0x40
+	if !remove && readOnly && publicRead {
+		return nil
 	}
 	mode := windows.GRANT_ACCESS
 	if remove {

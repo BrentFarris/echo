@@ -120,3 +120,68 @@ func TestNativeSCMSandboxSessionScopeAndCleanup(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeSCMSandboxSessionRestoresRemovedGrants(t *testing.T) {
+	if os.Getenv("ECHO2_NATIVE_TESTS") != "1" {
+		t.Skip("set ECHO2_NATIVE_TESTS=1")
+	}
+	git, err := NativeExecutable("git")
+	if err != nil {
+		t.Skip(err)
+	}
+	repository := t.TempDir()
+	if output, err := exec.Command(git, "init", repository).CombinedOutput(); err != nil {
+		t.Fatalf("fixture: %s %v", output, err)
+	}
+	folder := filepath.Join(repository, "folder")
+	if err := os.Mkdir(folder, 0700); err != nil {
+		t.Fatal(err)
+	}
+	metadata := filepath.Join(repository, ".git")
+	b := &ProcessBroker{Dir: t.TempDir()}
+	t.Cleanup(func() {
+		if err := b.CloseSessions(""); err != nil {
+			t.Error(err)
+		}
+	})
+	request := ProcessRequest{BotID: "fixture", SandboxSession: "scm:git", Roots: []string{folder, metadata}, ReadPaths: []string{repository}, Directory: repository,
+		Executable: git, Toolchains: []string{filepath.Dir(filepath.Dir(git))}, Args: []string{"status", "--porcelain"}, Environment: map[string]string{"GIT_DIR": ".git", "GIT_WORK_TREE": "."}, SeparateOutput: true}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if out, err := b.Run(ctx, request, nil); err != nil || out.ExitCode != 0 {
+		t.Fatalf("initial status: %+v %v", out, err)
+	}
+	var session *processSession
+	for _, item := range b.sessions {
+		session = item
+	}
+	sid, err := windows.StringToSid(session.journal.SID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalPaths := len(session.journal.Paths)
+	// Model another tool resetting permissions while Echo retains the
+	// sandbox session. The repository remains valid for the host user.
+	for _, path := range []string{metadata, repository} {
+		if err := revokeAccessBatch(path, []*windows.SID{sid}); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command(git, "-C", repository, "status", "--porcelain").CombinedOutput(); err != nil {
+			t.Fatalf("host Git stopped working: %s %v", output, err)
+		}
+		if out, err := b.Run(ctx, request, nil); err != nil || out.ExitCode != 0 {
+			t.Fatalf("status after permission reset on %s: %+v %v", path, out, err)
+		}
+	}
+	if len(b.sessions) != 1 {
+		t.Fatal("permission repair replaced the reusable sandbox")
+	}
+	for _, item := range b.sessions {
+		if item != session {
+			t.Fatal("permission repair replaced the reusable sandbox")
+		}
+	}
+	if len(session.journal.Paths) != journalPaths {
+		t.Fatal("permission repair duplicated journal paths")
+	}
+}

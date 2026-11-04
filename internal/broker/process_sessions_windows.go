@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"time"
 	"unsafe"
 
@@ -53,64 +54,81 @@ func (b *ProcessBroker) acquireProcessSession(ctx context.Context, r ProcessRequ
 		release()
 		return nil, nil, err
 	}
+	var sid *windows.SID
+	var err error
 	if s.journal.Name == "" {
 		nonce := sha256.Sum256([]byte(key + time.Now().String()))
 		name := "Echo2.SCM." + hex.EncodeToString(nonce[:12])
-		sid, err := profile(name)
+		sid, err = profile(name)
 		if err == nil {
+			defer freeSID.Call(uintptr(unsafe.Pointer(sid)))
 			s.journal = aclJournal{Name: name, SID: sid.String()}
 			s.aliases = map[string]string{}
-			for _, item := range []struct {
-				paths    []string
-				readOnly bool
-				inherit  uint32
-			}{{r.Roots, false, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT}, {r.Toolchains, true, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT}, {r.ReadPaths, true, windows.NO_INHERITANCE}} {
-				for _, path := range item.paths {
-					if err = ctx.Err(); err != nil {
-						break
-					}
-					s.journal.Paths = append(s.journal.Paths, path)
-					if err = b.journal(s.journal); err != nil {
-						break
-					}
-					err = changeAccessInheritance(path, sid, false, item.readOnly, item.inherit)
-					if err == windows.ERROR_ACCESS_DENIED && item.readOnly && item.inherit != windows.NO_INHERITANCE {
-						var mirror string
-						mirror, err = b.mirrorToolchain(ctx, path)
+		}
+	} else {
+		sid, err = windows.StringToSid(s.journal.SID)
+	}
+	remember := func(path string) error {
+		if slices.Contains(s.journal.Paths, path) {
+			return nil
+		}
+		s.journal.Paths = append(s.journal.Paths, path)
+		return b.journal(s.journal)
+	}
+	if err == nil {
+		// A saved session is not proof that its ACL entries still exist:
+		// other processes can replace/reset permissions.
+		// Recheck each grant; changeAccessInheritance leaves intact ACLs alone.
+		for _, item := range []struct {
+			paths    []string
+			readOnly bool
+			inherit  uint32
+		}{{r.Roots, false, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT}, {r.Toolchains, true, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT}, {r.ReadPaths, true, windows.NO_INHERITANCE}} {
+			for _, path := range item.paths {
+				if err = ctx.Err(); err != nil {
+					break
+				}
+				mirror := s.aliases[path]
+				if mirror != "" {
+					path = mirror
+				}
+				if err = remember(path); err != nil {
+					break
+				}
+				err = changeAccessInheritance(path, sid, false, item.readOnly, item.inherit)
+				if err == windows.ERROR_ACCESS_DENIED && mirror == "" && item.readOnly && item.inherit != windows.NO_INHERITANCE {
+					mirror, err = b.mirrorToolchain(ctx, path)
+					if err == nil {
+						err = remember(mirror)
 						if err == nil {
-							s.journal.Paths = append(s.journal.Paths, mirror)
-							err = b.journal(s.journal)
-							if err == nil {
-								err = changeAccess(mirror, sid, false, true)
-							}
-							if err == nil {
-								s.aliases[path] = mirror
-							}
+							err = changeAccess(mirror, sid, false, true)
 						}
-					}
-					if err != nil {
-						break
+						if err == nil {
+							s.aliases[path] = mirror
+						}
 					}
 				}
 				if err != nil {
 					break
 				}
 			}
-			freeSID.Call(uintptr(unsafe.Pointer(sid)))
-		}
-		if err != nil {
-			s.cancel()
-			if s.journal.Name != "" {
-				err = errors.Join(err, b.cleanup(s.journal))
+			if err != nil {
+				break
 			}
-			b.sessionsMu.Lock()
-			if b.sessions[key] == s {
-				delete(b.sessions, key)
-			}
-			b.sessionsMu.Unlock()
-			release()
-			return nil, nil, fmt.Errorf("prepare native sandbox: %w", err)
 		}
+	}
+	if err != nil {
+		s.cancel()
+		if s.journal.Name != "" {
+			err = errors.Join(err, b.cleanup(s.journal))
+		}
+		b.sessionsMu.Lock()
+		if b.sessions[key] == s {
+			delete(b.sessions, key)
+		}
+		b.sessionsMu.Unlock()
+		release()
+		return nil, nil, fmt.Errorf("prepare native sandbox: %w", err)
 	}
 	return s, release, nil
 }

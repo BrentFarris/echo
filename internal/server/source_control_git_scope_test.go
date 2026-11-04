@@ -154,6 +154,12 @@ func TestEditorSourceControlNativeGitParentFolders(t *testing.T) {
 		t.Fatalf("shared parent repository: %+v %v; Git: %v", repos, err, gitErr)
 	}
 	repo := repos[0]
+	if _, err := s.Git.Metadata(ctx, bot.ID, repo.ID); err != nil {
+		t.Fatalf("parent repository metadata: %v", err)
+	}
+	if history, err := s.Git.History(ctx, bot.ID, repo.ID, 0, 10); err != nil || len(history.Commits) != 1 {
+		t.Fatalf("parent repository history: %+v %v", history, err)
+	}
 	status, err := s.SourceControl.Status(ctx, bot.ID, repo.ID)
 	if err != nil || status.TotalChangeCount != 2 || status.HiddenChangeCount != 0 {
 		t.Fatalf("scoped status: %+v %v", status, err)
