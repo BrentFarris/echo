@@ -21,7 +21,9 @@ import (
 	"github.com/brent/echo/internal/plugins"
 )
 
-func sourceControl(id string) bool { return id == "git" || id == "fossil" || id == "p4" }
+var sourceControlPlugins = []string{"git", "fossil", "p4"}
+
+func sourceControl(id string) bool { return slices.Contains(sourceControlPlugins, id) }
 
 var scmCommand = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 

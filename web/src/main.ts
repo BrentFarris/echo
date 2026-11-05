@@ -1063,7 +1063,41 @@ function editBot(bot?: Bot) {
     return checkbox(`plugin:${p.id}`, p.name, description + status, botPluginSelected(bot, p.id));
   }).join('');
   const el = dialog(bot ? 'Edit bot' : 'Create a bot', `<form class="form"><label>Handle<input name="handle" required pattern="[A-Za-z][A-Za-z0-9_-]*" value="${esc(bot?.handle.split('.').pop())}" ${localID(bot?.id) === 'echo' ? 'readonly' : ''}></label><label>Name<input name="name" value="${esc(bot?.name)}"></label><label>System prompt<textarea name="prompt">${esc(bot?.prompt)}</textarea></label><label>Folders, one absolute path per line<textarea name="roots" placeholder="C:\\Users\\you\\project">${esc(bot?.roots?.join('\n'))}</textarea><small>Leave empty for unrestricted host access. Assigned folders apply to file tools and shell commands.</small></label>${parallelPrompts}<h3>Plugins</h3>${pluginCheckboxes}<button class="primary">Save bot</button></form>`);
-  q<HTMLFormElement>('form', el).onsubmit = e => { e.preventDefault(); action(async () => { const f = new FormData(q('form', el) as HTMLFormElement), overrides: Record<string, boolean> = {}; for (const input of el.querySelectorAll<HTMLInputElement>('[name^="plugin:"]')) overrides[input.name.slice(7)] = input.checked; await api('/bots', 'POST', { id: bot?.id || '', handle: f.get('handle'), name: f.get('name'), prompt: f.get('prompt'), roots: String(f.get('roots')).split('\n').map(v => v.trim()).filter(Boolean), plugins: overrides, maxParallelPrompts: Number(f.get('maxParallelPrompts')), revision: bot?.revision || 0 }); el.close(); await refresh(); settings('bots', node); })(); };
+  const form = q<HTMLFormElement>('form', el);
+  const save = q<HTMLButtonElement>('button.primary', form);
+  const error = document.createElement('p');
+  error.setAttribute('role', 'alert'); error.hidden = true;
+  save.before(error);
+  form.onsubmit = async event => {
+    event.preventDefault();
+    if (save.disabled) return;
+    const f = new FormData(form), overrides: Record<string, boolean> = {};
+    for (const input of form.querySelectorAll<HTMLInputElement>('[name^="plugin:"]')) overrides[input.name.slice(7)] = input.checked;
+    save.disabled = true; save.textContent = 'Saving…'; error.hidden = true;
+    let saved: Bot;
+    try {
+      saved = await api<Bot>('/bots', 'POST', {
+        id: bot?.id || '', handle: f.get('handle'), name: f.get('name'), prompt: f.get('prompt'),
+        roots: String(f.get('roots')).split('\n').map(v => v.trim()).filter(Boolean),
+        plugins: overrides, maxParallelPrompts: Number(f.get('maxParallelPrompts')), revision: bot?.revision || 0
+      });
+    } catch (reason) {
+      if (!el.open) notice(reason, true);
+      error.textContent = reason instanceof Error ? reason.message : String(reason);
+      error.hidden = false; save.disabled = false; save.textContent = 'Save bot';
+      return;
+    }
+    const ownerState = instances.get(node)?.state;
+    if (ownerState) {
+      const index = ownerState.bots.findIndex(b => b.id === saved.id);
+      if (index < 0) ownerState.bots.push(saved);
+      else ownerState.bots[index] = saved;
+    }
+    const showSettings = el.open;
+    el.close();
+    applyFreshState();
+    if (showSettings) settings('bots', node);
+  };
 }
 function modelSettings(root: HTMLElement, cloud: boolean, selectModel = true) {
   root.innerHTML = `${cloud ? `<p class="subtle">Connect a compatible cloud model service, then select it for the chat.</p>` : '<p class="subtle">Connect an existing Ollama, LM Studio, llama.cpp, or compatible server.</p>'}<button class="primary" id="add-model">＋ Add connection</button>${state.endpoints.filter(e => sameMachine(e, settingsNode) && e.cloud === cloud).map(e => `<div class="list-card"><div class="grow"><strong>${esc(e.name)}</strong><p class="subtle">${esc(e.model)}<br>${esc(e.url)}</p></div><button data-model="${esc(e.id)}">Edit</button><button data-discover="${esc(e.id)}">Models</button><button class="danger" data-remove="${esc(e.id)}">×</button></div>`).join('')}`;

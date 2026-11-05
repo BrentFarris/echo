@@ -414,8 +414,15 @@ func (p *Provider) Close() {
 func (p *Provider) ResetWorkspace(ctx context.Context, workspaceID string) error {
 	p.StopWorkspaceProcesses(workspaceID)
 	p.mu.Lock()
+	_, discovered := p.repos[workspaceID]
+	subscribed := p.subscribed[workspaceID]
 	delete(p.repos, workspaceID)
 	p.mu.Unlock()
+	// An unopened workspace has no Fossil metadata or watches to rebuild.
+	// Its first repository request will discover the current folders.
+	if !discovered && !subscribed {
+		return nil
+	}
 	p.fs.RemoveSourceControlMetadata(workspaceID, ID)
 	_, err := p.discover(ctx, workspaceID)
 	return err

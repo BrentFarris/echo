@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/brent/echo/internal/domain"
 )
@@ -194,6 +195,54 @@ func TestBotPluginScopeComparison(t *testing.T) {
 				t.Fatal("incorrect missing-entry equivalence", id, value)
 			}
 		}
+	}
+}
+
+func TestBotSaveOnlyResetsSourceControlWhenAccessChanges(t *testing.T) {
+	s := testServer(t)
+	bot, err := s.saveBot(domain.Bot{Handle: "worker", Roots: []string{t.TempDir()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan any, 1)
+	s.editorClients[bot.ID] = map[chan any]bool{events: true}
+	for _, tc := range []struct {
+		name  string
+		edit  func()
+		reset bool
+	}{
+		{"rename", func() { bot.Name = "Renamed" }, false},
+		{"prompt", func() { bot.Prompt = "New instructions" }, false},
+		{"shell", func() { bot.Plugins["shell"] = false }, false},
+		{"git", func() { bot.Plugins["git"] = false }, true},
+		{"fossil", func() { bot.Plugins["fossil"] = false }, true},
+		{"p4", func() { bot.Plugins["p4"] = false }, true},
+		{"folders", func() { bot.Roots = []string{t.TempDir()} }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.edit()
+			ctx, cancel := s.Git.CommandContext(t.Context(), bot.ID)
+			defer cancel()
+			w := scmAPI(t, s, "POST", "/bots", bot)
+			if w.Code != http.StatusOK {
+				t.Fatal(w.Body.String())
+			}
+			select {
+			case <-events:
+				if !tc.reset {
+					t.Fatal("edit triggered repository rediscovery")
+				}
+				select {
+				case <-ctx.Done():
+				case <-time.After(time.Second):
+					t.Fatal("previous source-control command scope is still active")
+				}
+			default:
+				if tc.reset || ctx.Err() != nil {
+					t.Fatalf("missing resync or unexpected command cancellation: %v", ctx.Err())
+				}
+			}
+		})
 	}
 }
 

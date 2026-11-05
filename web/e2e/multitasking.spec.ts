@@ -155,6 +155,44 @@ test('a never-opened chat requires confirmation before the X deletes it', async 
   await expect(page).toHaveURL(new RegExp('#' + selected + '$'));
 });
 
+test('bot saves show progress, allow retry, and update the list before inventory refresh', async ({ page }) => {
+  const created = await page.request.post('/api/v1/bots', { data: { handle: 'worker', name: 'Worker' } });
+  expect(created.ok()).toBe(true);
+  await page.reload();
+  const editor = await editBot(page, 'Worker');
+  await editor.getByLabel('Name', { exact: true }).fill('Renamed worker');
+  let attempts = 0;
+  let releaseSave!: () => void, releaseState!: () => void;
+  const saveGate = new Promise<void>(resolve => { releaseSave = resolve; });
+  const stateGate = new Promise<void>(resolve => { releaseState = resolve; });
+  await page.route('**/api/v1/bots', async route => {
+    if (++attempts === 1) {
+      await route.fulfill({ status: 400, json: { error: 'Try saving again' } });
+    } else {
+      await saveGate;
+      await route.continue();
+    }
+  });
+  await page.route('**/api/v1/state', async route => { await stateGate; await route.continue(); });
+  try {
+    const submit = editor.getByRole('button', { name: 'Save bot', exact: true });
+    await submit.click();
+    await expect(editor.getByRole('alert')).toHaveText('Try saving again');
+    await expect(editor.getByLabel('Name', { exact: true })).toHaveValue('Renamed worker');
+    await submit.click();
+    await expect(editor.getByRole('button', { name: 'Saving…' })).toBeDisabled();
+    await editor.locator('form').evaluate((form: HTMLFormElement) => form.requestSubmit());
+    releaseSave();
+    await expect(page.getByRole('dialog')).toHaveCount(1);
+    const row = page.locator('#settings .list-card').filter({ hasText: 'Renamed worker' });
+    await row.getByRole('button', { name: 'Edit', exact: true }).click();
+    await expect(editor.getByLabel('Name', { exact: true })).toHaveValue('Renamed worker');
+    expect(attempts).toBe(2);
+  } finally {
+    releaseSave(); releaseState();
+  }
+});
+
 test('parallel prompt limits default to one, validate, persist, and can be set through chat', async ({ page }) => {
   await page.getByRole('button', { name: '⚙ Settings', exact: true }).click();
   await page.locator('.settings-nav [data-section="bots"]').click();

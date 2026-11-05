@@ -134,20 +134,20 @@ func (s *Server) updateBotLocked(b domain.Bot, scope *domain.ExecutionScope) (do
 			return b, errors.New("manage this active bot from a separate Echo chat")
 		}
 	}
-	// Reserve the update before dropping the lock to wait for cancelled work.
-	// Other settings writes fail promptly instead of waiting inside a run that
-	// this update might itself be stopping.
-	s.revoking[b.ID]++
-	s.mu.Unlock()
-	finish := s.stopBot(b.ID)
+	rootsChanged := !slices.Equal(old.Roots, b.Roots)
+	resetSCM := rootsChanged || slices.ContainsFunc(sourceControlPlugins, func(id string) bool {
+		return old.PluginEnabled(id) != b.PluginEnabled(id)
+	})
+	finish := s.stopBotLocked(b.ID, resetSCM)
 	defer finish()
 	s.mu.Lock()
 	b, err = s.saveBotLocked(b)
-	s.revoking[b.ID]--
 	s.mu.Unlock()
-	if err == nil && s.SourceControl != nil {
-		s.EditorFS.Invalidate(b.ID)
-		s.EditorWatch.Refresh(b.ID)
+	if err == nil && resetSCM && s.SourceControl != nil {
+		if rootsChanged {
+			s.EditorFS.Invalidate(b.ID)
+			s.EditorWatch.Refresh(b.ID)
+		}
 		ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 		defer cancel()
 		// Each provider resets even when another provider is unavailable.

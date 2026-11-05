@@ -393,6 +393,12 @@ func (s *Server) stopChat(id string) func() {
 }
 func (s *Server) stopBot(id string) func() {
 	s.mu.Lock()
+	return s.stopBotLocked(id, true)
+}
+
+// stopBotLocked reserves the bot before releasing mu. Only changes to SCM
+// access need to retire the shared native sessions and their filesystem grants.
+func (s *Server) stopBotLocked(id string, stopSourceControl bool) func() {
 	s.revoking[id]++
 	s.mu.Unlock()
 	if s.Plugins != nil {
@@ -401,10 +407,10 @@ func (s *Server) stopBot(id string) func() {
 	if s.Debug != nil {
 		s.Debug.StopWorkspace(id)
 	}
-	if s.SourceControl != nil {
+	if stopSourceControl && s.SourceControl != nil {
 		s.SourceControl.StopWorkspaceProcesses(id)
 	}
-	if s.Process != nil {
+	if stopSourceControl && s.Process != nil {
 		_ = s.Process.CloseSessions(id)
 	}
 	s.mu.Lock()
