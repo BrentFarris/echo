@@ -24,7 +24,7 @@ export async function mountRollouts(root: HTMLElement, source: InstanceClient, b
   let busy = false, message = '', unavailable = '', entryEpoch = '', poll = false;
   let refreshDone = '';
   root.innerHTML = `<label>Update scope<select data-update-scope><option value="swarm">Connected swarm</option><option value="machine">This machine only</option></select></label>
-    <div class="button-row"><button data-rollout-check data-update-notice="${esc(source.nodeId || entryNode)}">Check for Updates</button><button data-rollout-start data-update-notice="${esc(source.nodeId || entryNode)}" hidden>Update &amp; Relaunch</button></div>
+    <div class="button-row"><button data-rollout-check data-update-notice="${esc(source.nodeId || entryNode)}">Check for Updates</button><button data-rollout-start data-update-notice="${esc(source.nodeId || entryNode)}" disabled>Update &amp; Relaunch</button></div>
     <p role="status" aria-live="polite" data-rollout-status></p><div data-rollout-members></div>
     <div class="button-row"><button data-rollout-retry hidden>Retry unsuccessful machines</button><button data-rollout-cancel hidden>Cancel pending updates</button></div>`;
   const q = <T extends HTMLElement>(selector: string) => root.querySelector<T>(selector)!;
@@ -32,20 +32,23 @@ export async function mountRollouts(root: HTMLElement, source: InstanceClient, b
     if (!root.isConnected) return;
     const opened = new Set([...root.querySelectorAll<HTMLDetailsElement>('details[open][data-update-node]')].map(d => d.dataset.updateNode));
     const running = current?.state === 'running';
+    const checked = current?.state === 'checked';
+    const blocked = checked && !canUpdate(current) && current?.members.some(m => m.error || m.check.error);
     busyChanged(busy || !!running);
     q<HTMLSelectElement>('[data-update-scope]').value = scope;
     q<HTMLSelectElement>('[data-update-scope]').disabled = busy || !!running;
     q<HTMLButtonElement>('[data-rollout-check]').disabled = busy || !!running || !!unavailable;
-    q<HTMLButtonElement>('[data-rollout-start]').hidden = !canUpdate(current);
-    q<HTMLButtonElement>('[data-rollout-start]').disabled = busy || !!unavailable;
-    q('[data-rollout-check]').dataset.updateSuppressed = String(!!canUpdate(current));
+    q<HTMLButtonElement>('[data-rollout-start]').disabled = busy || !!unavailable || !canUpdate(current);
+    q('[data-rollout-check]').dataset.updateSuppressed = String(checked);
+    q('[data-rollout-start]').dataset.updateSuppressed = String(!checked);
     q('[data-rollout-start]').dataset.updateFallback = String(!!canUpdate(current));
     renderDevelopmentUpdates();
     q<HTMLButtonElement>('[data-rollout-retry]').hidden = !current || !['partial', 'cancelled'].includes(current.state);
     q<HTMLButtonElement>('[data-rollout-retry]').disabled = busy;
     q<HTMLButtonElement>('[data-rollout-cancel]').hidden = !running;
     q<HTMLButtonElement>('[data-rollout-cancel]').disabled = busy || !!current?.cancelRequested;
-    q('[data-rollout-status]').textContent = message || unavailable || (current ? `${current.state === 'checked' ? canUpdate(current) ? 'Update available' : 'Check complete' : current.state === 'running' ? current.cancelRequested ? 'Cancelling pending updates…' : 'Updating machines…' : `Update ${current.state}`} · Target ${current.target.slice(0, 12)}` : 'Check the selected machine’s upstream and connected peers.');
+    q('[data-rollout-status]').textContent = message || unavailable || (current ? `${checked ? canUpdate(current) ? 'Update available' : blocked ? 'Update blocked. Resolve the machine issues below, then check again.' : 'All selected machines are already up to date.' : running ? current.cancelRequested ? 'Cancelling pending updates…' : 'Updating machines…' : `Update ${current.state}`} · Target ${current.target.slice(0, 12)}` : 'Check for updates to enable Update & Relaunch.');
+    q('[data-rollout-status]').classList.toggle('error', !!blocked && !busy);
     q('[data-rollout-members]').innerHTML = current?.members.map(m => `<div class="list-card"><div class="grow"><strong>${esc(m.name)}</strong><span class="machine-chip">${esc(m.status)}</span><p>${esc(m.error || m.update?.stage || (m.check.current ? 'Already running the target revision' : 'Ready for update'))}</p><small>Running: ${esc(m.update?.revision || m.check.revision || 'unknown')}</small>${m.update?.checkoutUpdated ? '<p class="subtle">The checkout was fast-forwarded.</p>' : ''}${m.update?.logPath ? `<details data-update-node="${esc(m.nodeId)}" ${opened.has(m.nodeId) ? 'open' : ''}><summary>Update log — ${esc(m.name)}</summary><p>${esc(m.update.logPath)}</p><pre>${esc(m.update.logTail)}</pre></details>` : ''}</div></div>`).join('') || '';
   };
   const monitor = async () => {

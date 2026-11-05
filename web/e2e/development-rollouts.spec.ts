@@ -3,24 +3,25 @@ import { test, expect, type Page } from '@playwright/test';
 // These tests route API responses; service workers can bypass page routing.
 test.use({ serviceWorkers: 'block' });
 
-async function fixture(page: Page) {
+async function fixture(page: Page, options: { outdated?: boolean; preflightError?: string } = {}) {
   await page.goto('/');
   await page.request.post('/api/v1/session', { data: {} });
   const directory = await (await page.request.get('/api/v1/swarm/peers')).json();
   await page.route('**/api/v1/swarm/peers', route => route.fulfill({ json: { ...directory, enabled: true } }));
   const source = directory.node.nodeId, target = 'a'.repeat(40);
-  const state = { repositoryPath: '/echo', repositoryValid: true, suggestedPath: '', branch: 'main', upstream: 'origin/main', instanceId: 'old', revision: target };
+  const state = { repositoryPath: '/echo', repositoryValid: true, suggestedPath: '', branch: 'main', upstream: 'origin/main', instanceId: 'old', revision: options.outdated ? 'previous' : target, updateAvailable: !!options.outdated };
+  let preflightError = options.preflightError || '';
   let rollout: any;
   const calls: { path: string; body: any }[] = [];
   let blocked = false;
   await page.route('**/api/v1/development**', async route => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/api/v1/development') { await route.fulfill({ json: state }); return; }
-    if (path === '/api/v1/development/update-status') { await route.fulfill({ json: { updateAvailable: false } }); return; }
+    if (path === '/api/v1/development/update-status') { await route.fulfill({ json: { updateAvailable: state.updateAvailable } }); return; }
     if (route.request().method() === 'POST') {
       const body = route.request().postDataJSON(); calls.push({ path, body });
       if (path.endsWith('/check')) rollout = { id: 'rollout-1', sourceNodeId: source, scope: body.scope, target, state: 'checked', cancelRequested: false, members: [
-        { nodeId: source, name: 'desktop', status: 'succeeded', check: { revision: target, current: true } },
+        { nodeId: source, name: 'desktop', status: preflightError ? 'skipped' : options.outdated ? 'queued' : 'succeeded', error: preflightError, check: { revision: state.revision, current: !options.outdated, error: preflightError } },
         ...(body.scope === 'swarm' ? [{ nodeId: 'linux', name: 'linux', status: 'queued', check: { revision: 'previous', current: false } }, { nodeId: 'mac', name: 'mac', status: 'skipped', error: 'Machine offline', check: { revision: '', current: false } }] : []),
       ] };
       else if (path.endsWith('/cancel')) { rollout.state = 'cancelled'; rollout.cancelRequested = true; }
@@ -41,7 +42,7 @@ async function fixture(page: Page) {
     await expect(page.getByLabel('Update scope')).toBeVisible();
   };
   await open();
-  return { calls, source, target, open, disconnect: (value: boolean) => { blocked = value; } };
+  return { calls, source, target, open, disconnect: (value: boolean) => { blocked = value; }, setPreflightError: (value: string) => { preflightError = value; } };
 }
 
 test('swarm update defaults, peer-only lag, confirmation, persistent progress and cancellation', async ({ page }) => {
@@ -74,8 +75,34 @@ test('machine-only scope excludes peers and reports an already-current selected 
   const f = await fixture(page);
   await page.getByLabel('Update scope').selectOption('machine');
   await page.getByRole('button', { name: 'Check for Updates', exact: true }).click();
-  await expect(page.locator('[data-rollout-status]')).toContainText('Check complete');
-  await expect(page.getByRole('button', { name: 'Update & Relaunch', exact: true })).toBeHidden();
+  await expect(page.locator('[data-rollout-status]')).toContainText('All selected machines are already up to date');
+  await expect(page.getByRole('button', { name: 'Update & Relaunch', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Update & Relaunch', exact: true })).toBeDisabled();
   await expect(page.locator('[data-rollout-members]')).not.toContainText('linux');
   expect(f.calls[0].body).toEqual({ sourceNodeId: f.source, scope: 'machine' });
+});
+
+test('an update dot leads to a visible blocked update and recovers after the issue is resolved', async ({ page }) => {
+  const error = 'checkout has local edits or untracked files; commit or move them before updating';
+  const f = await fixture(page, { outdated: true, preflightError: error });
+  const update = page.getByRole('button', { name: 'Update & Relaunch', exact: true });
+  await expect(update).toBeVisible();
+  await expect(update).toBeDisabled();
+  await expect(page.locator('[data-rollout-check] .update-dot')).toBeVisible();
+  await page.getByLabel('Update scope').selectOption('machine');
+  await page.getByRole('button', { name: 'Check for Updates', exact: true }).click();
+  await expect(page.locator('[data-rollout-status]')).toContainText('Update blocked');
+  await expect(page.locator('[data-rollout-members]')).toContainText(error);
+  await expect(update).toBeVisible();
+  await expect(update).toBeDisabled();
+  await expect(update.locator('.update-dot')).toBeVisible();
+  await expect(page.locator('[data-rollout-check] .update-dot')).toHaveCount(0);
+  expect(f.calls.map(c => c.path)).toEqual(['/api/v1/development/rollouts/check']);
+  await page.screenshot({ path: test.info().outputPath('blocked-update.png') });
+
+  f.setPreflightError('');
+  await page.getByRole('button', { name: 'Check for Updates', exact: true }).click();
+  await expect(update).toBeEnabled();
+  await expect(page.locator('[data-rollout-status]')).toContainText('Update available');
+  await expect(page.locator('[data-rollout-status]')).not.toHaveClass(/error/);
 });
