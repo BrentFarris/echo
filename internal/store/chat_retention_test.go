@@ -28,6 +28,104 @@ func retainedFixture(t *testing.T, s *Store, id string) domain.Chat {
 	return c
 }
 
+func TestBlankChatDeletionPurgesPendingUploads(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	c := domain.Chat{ID: "blank", Title: "New chat", Bots: map[string]string{"echo": "Echo"}}
+	if err = s.CreateChat(c); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.AddAttachment(domain.Attachment{ID: "draft", ChatID: c.ID, Size: 1}, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := s.TrashChat(c.ID, domain.Now())
+	if err != nil || deleted != nil {
+		t.Fatal(deleted, err)
+	}
+	if !s.ChatDeleted(c.ID) {
+		t.Fatal("blank chat has no permanent tombstone")
+	}
+	if chats, err := s.RetainedChats(); err != nil || len(chats) != 0 {
+		t.Fatal(chats, err)
+	}
+	if _, err = s.RestoreChat(c.ID, domain.Now()); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal("blank chat remained restorable", err)
+	}
+	var uploads int
+	if err = s.db.QueryRow("SELECT count(*) FROM attachments WHERE chat_id=?", c.ID).Scan(&uploads); err != nil || uploads != 0 {
+		t.Fatal(uploads, err)
+	}
+}
+
+func TestBlankChatDeletionSerializesWithFirstMessage(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for i := 0; i < 12; i++ {
+		c := domain.Chat{ID: domain.ID()}
+		if err = s.CreateChat(c); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		var messageErr, deleteErr error
+		var retained *domain.Chat
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			messageErr = s.AddMessage(domain.Message{ID: domain.ID(), ChatID: c.ID, Role: "user", Content: "first message"})
+		}()
+		go func() { defer wg.Done(); retained, deleteErr = s.TrashChat(c.ID, domain.Now()) }()
+		wg.Wait()
+		if deleteErr != nil {
+			t.Fatal(deleteErr)
+		}
+		if messageErr == nil {
+			if retained == nil {
+				t.Fatal("accepted first message was permanently deleted")
+			}
+			messages, err := s.Messages(c.ID)
+			if err != nil || len(messages) != 1 || messages[0].Content != "first message" {
+				t.Fatal(messages, err)
+			}
+		} else if retained != nil || !s.ChatDeleted(c.ID) {
+			t.Fatal("blank chat was retained", retained)
+		}
+	}
+}
+
+func TestBlankRetainedChatsAreCleanedUpBeforeExpiry(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := domain.Now()
+	for _, c := range []domain.Chat{{ID: "legacy-blank", DeletedAt: &now}, {ID: "active-blank"}, {ID: "restored-blank", DeletedAt: &now}} {
+		if err = s.CreateChat(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = s.RestoreChat("restored-blank", now); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := s.PurgeExpiredChats(now); err != nil || count != 1 {
+		t.Fatal(count, err)
+	}
+	if !s.ChatDeleted("legacy-blank") {
+		t.Fatal("previously retained blank chat survived cleanup")
+	}
+	for _, id := range []string{"active-blank", "restored-blank"} {
+		if _, err = s.Chat(id); err != nil {
+			t.Fatal("cleanup removed active chat", id, err)
+		}
+	}
+}
+
 func TestChatRetentionRestoreAndPermanentRemoval(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(dir)

@@ -26,6 +26,23 @@ async function conversation(page: Page, text: string) {
   return id;
 }
 
+test('blank chats are removed immediately and select another active chat', async ({ page }) => {
+  await setup(page);
+  const active = await conversation(page, 'Keep this history');
+  const created = page.waitForResponse(response => response.url().endsWith('/api/v1/chats') && response.request().method() === 'POST');
+  await page.locator('#new-chat').click();
+  const blank = (await (await created).json()).id;
+  await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Unsent draft');
+  await page.locator(`[data-delete="${blank}"]`).click();
+  await expect(page.locator(`[data-chat="${blank}"]`)).toHaveCount(0);
+  await expect(page.locator('[data-deleted-root]')).toHaveCount(0);
+  await expect(page).toHaveURL(new RegExp('#' + active + '$'));
+  await expect(page.locator('.chat-log')).toContainText('Keep this history');
+  await page.reload();
+  await expect(page.locator(`[data-chat="${blank}"]`)).toHaveCount(0);
+  expect((await page.request.post(`/api/v1/chats/${blank}/restore`, { data: {} })).ok()).toBe(false);
+});
+
 test('Deleted stays collapsed, groups chats, permits viewing and restores the same chat', async ({ page }) => {
   await setup(page);
   const id = await conversation(page, 'Retain this conversation');

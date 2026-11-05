@@ -443,10 +443,30 @@ func (s *Store) deleteChat(id string, requireDeleted bool, expiredAt *time.Time)
 		if err != nil && !errors.Is(err, ErrChatExpired) {
 			return err
 		}
-		if c.DeletedAt == nil || expiredAt != nil && expiredAt.Before(c.DeletedAt.Add(ChatRetention)) {
+		if c.DeletedAt == nil {
 			return ErrChatDeleted
 		}
+		if expiredAt != nil && expiredAt.Before(c.DeletedAt.Add(ChatRetention)) {
+			var hasHistory bool
+			if e = tx.QueryRow("SELECT EXISTS(SELECT 1 FROM messages WHERE chat_id=?)", id).Scan(&hasHistory); e != nil {
+				return e
+			}
+			if hasHistory {
+				return ErrChatDeleted
+			}
+		}
 	}
+	if e = purgeChatTx(tx, id); e != nil {
+		return e
+	}
+	if e = tx.Commit(); e != nil {
+		return e
+	}
+	return s.removeChatFiles(id)
+}
+
+func purgeChatTx(tx *sql.Tx, id string) error {
+	var e error
 	if _, e = tx.Exec("INSERT OR IGNORE INTO chat_tombstones VALUES(?,?)", id, domain.Now()); e != nil {
 		return e
 	}
@@ -471,10 +491,7 @@ func (s *Store) deleteChat(id string, requireDeleted bool, expiredAt *time.Time)
 	if _, e = tx.Exec("INSERT OR IGNORE INTO records VALUES('chat-file-cleanups',?,'{}')", id); e != nil {
 		return e
 	}
-	if e = tx.Commit(); e != nil {
-		return e
-	}
-	return s.removeChatFiles(id)
+	return nil
 }
 func (s *Store) AddMessage(m domain.Message) error {
 	b, e := pack(m)

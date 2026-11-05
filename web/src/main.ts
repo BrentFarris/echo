@@ -493,8 +493,9 @@ async function deleteChat(id: string) {
   if (reasons.length && !window.confirm(`Delete “${chat.title}”?\n\n${reasons.join(' ')}\n\nThis moves the chat to Deleted for 30 days${active ? ' and stops its work' : ''}. You can restore it during that time.`)) return;
   closingChats.add(id);
   try {
-    const retained = await api<Chat>(`/chats/${id}`, 'DELETE');
-    chatTransitions.set(id, retained);
+    const retained = await api<Chat | null>(`/chats/${id}`, 'DELETE');
+    if (retained) chatTransitions.set(id, retained);
+    else { deletedChats.add(id); chatTransitions.delete(id); }
     releaseAttachments(drafts.get(id)?.attachments || []); drafts.delete(id);
     if (chatId === id) {
       chatId = ''; ++chatNavigation; messages = []; attachments = []; references = [];

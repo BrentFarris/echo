@@ -116,37 +116,57 @@ func (s *Store) listChats(includeDeleted bool) ([]domain.Chat, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) TrashChat(id string, now time.Time) (domain.Chat, error) {
+// TrashChat retains chats with history and permanently removes blank chats.
+// A nil result means the chat was permanently removed.
+func (s *Store) TrashChat(id string, now time.Time) (*domain.Chat, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return domain.Chat{}, err
+		return nil, err
 	}
 	defer tx.Rollback()
 	var data []byte
 	if err = tx.QueryRow("SELECT data FROM chats WHERE id=?", id).Scan(&data); err != nil {
-		return domain.Chat{}, err
+		return nil, err
 	}
 	c, err := retainedChat(data, now)
-	if err != nil || c.DeletedAt != nil {
-		return c, err
+	if err != nil {
+		return nil, err
+	}
+	// Check inside the deletion transaction so an accepted first message
+	// cannot race with permanent removal of an otherwise blank chat.
+	var hasHistory bool
+	if err = tx.QueryRow("SELECT EXISTS(SELECT 1 FROM messages WHERE chat_id=?)", id).Scan(&hasHistory); err != nil {
+		return nil, err
+	}
+	if !hasHistory {
+		if err = purgeChatTx(tx, id); err != nil {
+			return nil, err
+		}
+		if err = tx.Commit(); err != nil {
+			return nil, err
+		}
+		return nil, s.removeChatFiles(id)
+	}
+	if c.DeletedAt != nil {
+		return &c, nil
 	}
 	// A stopped remote worker can report late. Retire every old source even
 	// across restoration; new dispatches get distinct source identities.
 	if _, err = tx.Exec("INSERT OR IGNORE INTO chat_retired_replicas SELECT chat_id,source FROM swarm_checkpoints WHERE chat_id=?", id); err != nil {
-		return c, err
+		return &c, err
 	}
 	if _, err = tx.Exec("INSERT OR IGNORE INTO chat_retired_replicas SELECT ?,host.key || ':' || r.id FROM records r,json_each(r.data,'$.hosts') host WHERE r.namespace='swarm-dispatches' AND json_extract(r.data,'$.chatId')=?", id, id); err != nil {
-		return c, err
+		return &c, err
 	}
 	if _, err = tx.Exec("UPDATE records SET data=json_set(data,'$.status','trashed','$.reconciled',json('{}')) WHERE namespace='swarm-dispatches' AND json_extract(data,'$.chatId')=?", id); err != nil {
-		return c, err
+		return &c, err
 	}
 	if _, err = tx.Exec("UPDATE records SET data=json_set(data,'$.status','cancelled') WHERE namespace='runs' AND json_extract(data,'$.chatId')=? AND json_extract(data,'$.status') IN ('running','waiting','queued')", id); err != nil {
-		return c, err
+		return &c, err
 	}
 	rows, err := tx.Query("SELECT data FROM messages WHERE chat_id=?", id)
 	if err != nil {
-		return c, err
+		return &c, err
 	}
 	var unfinished []domain.Message
 	for rows.Next() {
@@ -156,7 +176,7 @@ func (s *Store) TrashChat(id string, now time.Time) (domain.Chat, error) {
 		}
 		if err != nil {
 			rows.Close()
-			return c, err
+			return &c, err
 		}
 		if m.Status == "running" || m.Status == "waiting" || m.Status == "queued" {
 			m.Status = "cancelled"
@@ -166,37 +186,37 @@ func (s *Store) TrashChat(id string, now time.Time) (domain.Chat, error) {
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
-		return c, err
+		return &c, err
 	}
 	for _, m := range unfinished {
 		data, err = pack(m)
 		if err != nil {
-			return c, err
+			return &c, err
 		}
 		if _, err = tx.Exec("UPDATE messages SET data=? WHERE id=?", data, m.ID); err != nil {
-			return c, err
+			return &c, err
 		}
 	}
 	if _, err = tx.Exec("DELETE FROM records WHERE namespace='external-sessions' AND json_extract(data,'$.chatId')=?", id); err != nil {
-		return c, err
+		return &c, err
 	}
 	if _, err = tx.Exec("DELETE FROM attachments WHERE chat_id=? AND message_id IS NULL", id); err != nil {
-		return c, err
+		return &c, err
 	}
 	if err = cancelChatAlerts(tx, id); err != nil {
-		return c, err
+		return &c, err
 	}
 	c.DeletedAt = &now
 	expires := now.Add(ChatRetention)
 	c.ExpiresAt = &expires
 	data, err = json.Marshal(c)
 	if err != nil {
-		return c, err
+		return &c, err
 	}
 	if _, err = tx.Exec("UPDATE chats SET data=? WHERE id=?", data, id); err != nil {
-		return c, err
+		return &c, err
 	}
-	return c, tx.Commit()
+	return &c, tx.Commit()
 }
 
 func (s *Store) RestoreChat(id string, now time.Time) (domain.Chat, error) {
@@ -301,7 +321,8 @@ func purgeChatRecords(tx *sql.Tx, chatID string) error {
 }
 
 func (s *Store) PurgeExpiredChats(now time.Time) (int, error) {
-	rows, err := s.db.Query("SELECT id,data FROM chats WHERE json_extract(data,'$.deletedAt') IS NOT NULL")
+	// Also clean up blank chats retained by versions predating immediate removal.
+	rows, err := s.db.Query("SELECT id,data,EXISTS(SELECT 1 FROM messages WHERE chat_id=chats.id) FROM chats WHERE json_extract(data,'$.deletedAt') IS NOT NULL")
 	if err != nil {
 		return 0, err
 	}
@@ -309,11 +330,12 @@ func (s *Store) PurgeExpiredChats(now time.Time) (int, error) {
 	for rows.Next() {
 		var id string
 		var data []byte
-		if err = rows.Scan(&id, &data); err != nil {
+		var hasHistory bool
+		if err = rows.Scan(&id, &data, &hasHistory); err != nil {
 			rows.Close()
 			return 0, err
 		}
-		if _, err = retainedChat(data, now); errors.Is(err, ErrChatExpired) {
+		if _, err = retainedChat(data, now); errors.Is(err, ErrChatExpired) || err == nil && !hasHistory {
 			ids = append(ids, id)
 		} else if err != nil {
 			rows.Close()

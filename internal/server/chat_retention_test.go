@@ -104,6 +104,50 @@ func TestDeletedChatAPIStopsAndRestores(t *testing.T) {
 	}
 }
 
+func TestBlankChatDeletionAPI(t *testing.T) {
+	s := testServer(t)
+	c := chat(t, s, domain.Generation{})
+	call := retentionAPI(t, s)
+	response := call("DELETE", "/chats/"+c.ID, "")
+	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "null" {
+		t.Fatal(response.Code, response.Body)
+	}
+	if !s.Store.ChatDeleted(c.ID) {
+		t.Fatal("blank chat was retained")
+	}
+	if response = call("POST", "/chats/"+c.ID+"/restore", "{}"); response.Code == http.StatusOK {
+		t.Fatal("blank chat remained restorable")
+	}
+}
+
+func TestBlankRemoteChatDeletionInvalidatesCache(t *testing.T) {
+	a, _ := swarmFixture(t, "entry", remotePassword)
+	b, bh := swarmFixture(t, "home", remotePassword)
+	node := connectSwarm(t, a, bh, remotePassword)
+	c := chatForSwarm(t, b)
+	call := retentionAPI(t, a)
+	path := "/swarm/instances/" + node.ID + "/chats/" + c.ID
+	if response := call("GET", path+"/messages", ""); response.Code != http.StatusOK {
+		t.Fatal(response.Code, response.Body)
+	}
+	if response := call("DELETE", path, ""); response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "null" {
+		t.Fatal(response.Code, response.Body)
+	}
+	if !b.Store.ChatDeleted(c.ID) || !a.remoteChatUnavailable(node.ID, c.ID) {
+		t.Fatal("blank remote chat was retained")
+	}
+	var cached json.RawMessage
+	if err := a.Store.Get("swarm-transcripts", swarm.Key(node.ID, "/api/v1/chats/"+c.ID+"/messages"), &cached); err == nil {
+		t.Fatal("blank remote transcript remained cached")
+	}
+	if err := a.Swarm.SetDisconnected(node.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if response := call("GET", path+"/messages", ""); response.Code == http.StatusOK {
+		t.Fatal("blank deleted chat was served offline")
+	}
+}
+
 func TestDeletedRemoteChatCacheRestoreAndExpiry(t *testing.T) {
 	a, _ := swarmFixture(t, "entry", remotePassword)
 	b, bh := swarmFixture(t, "home", remotePassword)

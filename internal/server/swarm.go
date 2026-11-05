@@ -430,6 +430,7 @@ func (s *Server) swarmProxy(w http.ResponseWriter, r *http.Request) {
 			}
 			if response.StatusCode < 300 && (chatDelete || chatRestore || chatPurge) {
 				chat := domain.Chat{ID: parts[1]}
+				permanent := chatPurge
 				if !chatPurge {
 					body, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
 					response.Body.Close()
@@ -437,11 +438,19 @@ func (s *Server) swarmProxy(w http.ResponseWriter, r *http.Request) {
 						return err
 					}
 					response.Body = io.NopCloser(bytes.NewReader(body))
-					if err = json.Unmarshal(body, &chat); err != nil {
+					var retained *domain.Chat
+					if err = json.Unmarshal(body, &retained); err != nil {
 						return err
 					}
+					if retained != nil {
+						chat = *retained
+					} else if chatDelete {
+						permanent = true
+					} else {
+						return errors.New("remote restore returned no chat")
+					}
 				}
-				s.recordRemoteChatMutation(id, chat, chatPurge)
+				s.recordRemoteChatMutation(id, chat, permanent)
 				s.requestSwarmRefresh()
 			}
 			return nil
