@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/externalagent"
 	"github.com/brent/echo/internal/model"
 	"github.com/brent/echo/internal/swarm"
 )
@@ -133,6 +134,10 @@ func (s *Server) botGeneration(bot domain.Bot, g domain.Generation, query *slotQ
 		return fmt.Errorf("select a model on %s", s.Swarm.Node().Name)
 	}
 	if err := model.ValidateEndpoint(ep); err != nil {
+		return err
+	}
+	if ep.External() {
+		_, err := externalagent.Resolve(ep)
 		return err
 	}
 	if g.Model == "" && ep.Model == "" {

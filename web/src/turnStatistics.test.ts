@@ -22,6 +22,12 @@ it('summarizes full run statistics and distinguishes unknown usage', () => {
 it('uses only available historical metadata and labels it partial', () => {
   expect(turnStatisticsText(group)).toBe('100 in (partial) (cache breakdown unavailable) · 30 out · 1 tool call · 2 model calls · partial history');
 });
+it('does not invent native model-call counts or missing token statistics', () => {
+  const run: Run = { id: 'run', chatId: 'chat', botId: 'echo', status: 'completed', statistics: { externalAgent: true, startedAt: '', inputTokens: 0, outputTokens: 0, inputReports: 0, outputReports: 0, modelCalls: 1, toolCalls: 2 } };
+  expect(turnStatisticsText(group, run)).toBe('2 tool calls · native model-call count unavailable · token usage unavailable');
+  run.statistics!.outputTokens = 10; run.statistics!.outputReports = 1;
+  expect(turnStatisticsText(group, run)).toBe('10 out · 2 tool calls · native model-call count unavailable · input tokens unavailable');
+});
 it('shows cached, uncached and unknown input without treating missing reports as misses', () => {
   const counts = legacyUsage([
     message('cached', 'assistant', { inputTokens: 100, cachedInputTokens: 60 }),

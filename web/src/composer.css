@@ -24,6 +24,7 @@ button.send-button:hover:not(:disabled){filter:brightness(1.08)}button.send-butt
 .endpoint-options button{display:block;width:100%;border:0;background:transparent;text-align:left;text-overflow:ellipsis;white-space:nowrap;overflow:hidden;padding:10px;border-radius:6px;font-size:13px}
 .endpoint-options button:hover{background:var(--muted)}.endpoint-options button[aria-selected=true]{background:var(--accent);color:white}
 .model-popup label{display:block;margin:0;padding:10px 12px;border-top:1px solid var(--border);color:var(--subtle);font-size:12px}
+.generation-popup [hidden]{display:none}
 .model-popup label input:not([type=range]){display:block;margin-top:7px;width:100%}
 .model-popup .range-label{display:flex;justify-content:space-between;gap:12px;font-size:13px}.range-label output{color:var(--text);font-weight:600}
 .model-popup input[type=range]{display:block;width:100%;margin:10px 0 3px;height:17px;cursor:pointer}

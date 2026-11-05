@@ -91,6 +91,10 @@ func (s *Server) handleInlineChat(w http.ResponseWriter, r *http.Request) {
 		editorError(w, 400, "configure and select a model first")
 		return
 	}
+	if endpoint.External() {
+		editorError(w, 400, "external agents are available in chats and schedules, not inline editor AI")
+		return
+	}
 	if err = model.ValidateEndpoint(endpoint); err != nil {
 		editorError(w, 400, err.Error())
 		return

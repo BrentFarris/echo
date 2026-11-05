@@ -13,6 +13,8 @@ type processOutput struct {
 	limit    int
 	separate bool
 	stdout   io.Writer
+	onStdout func([]byte)
+	onStderr func([]byte)
 }
 type processStream struct {
 	output *processOutput
@@ -27,7 +29,7 @@ func newProcessOutput(r ProcessRequest, emit func(string)) *processOutput {
 	if limit > 64<<20 {
 		limit = 64 << 20
 	}
-	o := &processOutput{limit: limit, separate: r.SeparateOutput, emit: emit}
+	o := &processOutput{limit: limit, separate: r.SeparateOutput, emit: emit, onStdout: r.Stdout, onStderr: r.Stderr}
 	if r.duplex != nil {
 		o.stdout = r.duplex.output
 		o.separate = true
@@ -41,6 +43,12 @@ func (w processStream) Write(data []byte) (int, error) {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if w.stderr && o.onStderr != nil {
+		o.onStderr(data)
+	}
+	if !w.stderr && o.onStdout != nil {
+		o.onStdout(data)
+	}
 	n := len(data)
 	emitted := ""
 	appendBounded := func(target *string, limit int) {

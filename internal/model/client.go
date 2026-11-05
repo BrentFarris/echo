@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -83,6 +84,23 @@ func New() *Client {
 	return &Client{HTTP: &http.Client{Transport: &http.Transport{Proxy: nil, DialContext: dial, DisableKeepAlives: true}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("model redirects are not allowed") }}}
 }
 func ValidateEndpoint(e domain.Endpoint) error {
+	if e.External() {
+		if e.URL != "" || e.Provider != "" || e.Credential != "" {
+			return errors.New("external agents use CLI subscription login, not URLs, providers or API keys")
+		}
+		for _, path := range []string{e.Executable, e.WorkingDirectory} {
+			if path != "" && (!filepath.IsAbs(path) || strings.ContainsRune(path, 0)) {
+				return errors.New("external agent executable and starting directory must be absolute paths")
+			}
+		}
+		return nil
+	}
+	if e.Kind != "" && e.Kind != "http" {
+		return errors.New("unknown connection kind")
+	}
+	if e.Executable != "" || e.WorkingDirectory != "" {
+		return errors.New("executable settings require an external agent connection")
+	}
 	if err := ValidateSettings(e); err != nil {
 		return err
 	}

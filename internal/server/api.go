@@ -16,6 +16,7 @@ import (
 )
 
 func (s *Server) routes(mux *http.ServeMux) {
+	s.externalAgentRoutes(mux)
 	s.botGroupRoutes(mux)
 	s.slashCommandRoutes(mux)
 	s.usageRoutes(mux)
@@ -154,8 +155,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 		var old domain.Endpoint
 		s.Store.Get("endpoints", e.ID, &old)
 		e.Credential = old.Credential
-		if e.URL != old.URL {
+		if e.URL != old.URL || e.External() != old.External() {
 			e.Credential = ""
+		}
+		if e.External() && a.APIKey != nil {
+			respond(w, nil, errors.New("external agents use saved CLI subscription login, not API keys"))
+			return
 		}
 		if err := model.ValidateEndpoint(e); err != nil {
 			respond(w, nil, err)
@@ -182,7 +187,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 				}
 			}
 		}
-		if e.ContextTokens == 0 {
+		if e.ContextTokens == 0 && !e.External() {
 			e.ContextTokens = 32768
 		}
 		err := s.Store.Put("endpoints", e.ID, e)
@@ -204,6 +209,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 		var e domain.Endpoint
 		if err := s.Store.Get("endpoints", r.PathValue("id"), &e); err != nil {
 			respond(w, nil, err)
+			return
+		}
+		if e.External() {
+			respond(w, map[string]any{"data": []any{}}, nil)
 			return
 		}
 		key, err := s.key(r.Context(), e)

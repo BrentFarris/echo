@@ -61,9 +61,10 @@ func (c *UsageCounts) Add(u *TokenUsage) {
 
 type TurnStatistics struct {
 	UsageCounts
-	StartedAt   time.Time  `json:"startedAt"`
-	CompletedAt *time.Time `json:"completedAt,omitempty"`
-	ToolCalls   int64      `json:"toolCalls"`
+	ExternalAgent bool       `json:"externalAgent,omitempty"` // Native internal model-call counts are unavailable.
+	StartedAt     time.Time  `json:"startedAt"`
+	CompletedAt   *time.Time `json:"completedAt,omitempty"`
+	ToolCalls     int64      `json:"toolCalls"`
 }
 
 type UsageTotals struct {

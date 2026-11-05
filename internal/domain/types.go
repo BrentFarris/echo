@@ -41,6 +41,9 @@ type Generation struct {
 	Temperature float64 `json:"temperature"`
 }
 type Endpoint struct {
+	Kind                     string   `json:"kind,omitempty"`
+	Executable               string   `json:"executable,omitempty"`
+	WorkingDirectory         string   `json:"workingDirectory,omitempty"`
 	ID                       string   `json:"id"`
 	Name                     string   `json:"name"`
 	URL                      string   `json:"url"`
@@ -64,6 +67,8 @@ type Endpoint struct {
 	RequestTimeoutSeconds    int      `json:"requestTimeoutSeconds,omitempty"`
 	StreamIdleTimeoutSeconds int      `json:"streamIdleTimeoutSeconds,omitempty"`
 }
+
+func (e Endpoint) External() bool { return e.Kind == "codex-cli" || e.Kind == "claude-code-cli" }
 
 // Attachment metadata travels with the transcript; bytes are stored once in SQLite.
 type Attachment struct {

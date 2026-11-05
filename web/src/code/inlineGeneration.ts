@@ -1,6 +1,7 @@
 import { endpointGeneration, thinkingLevels } from '../generationSettings';
 import { InstanceClient, localID, resourceID, splitID } from '../instances';
 import type { Endpoint, Generation } from '../types';
+import { isExternalAgent } from '../externalAgents';
 
 export type InlineModelContext = { generationFor?(node: string): Generation; openModelSettings?(node: string): void };
 
@@ -26,8 +27,9 @@ export class InlineGeneration {
   }
   refresh(): Promise<void> {
     return this.loading ||= new InstanceClient(this.node).json<{ endpoints: Endpoint[] }>('/state').then(state => {
-      this.endpoints = state.endpoints.map(endpoint => ({ ...endpoint, nodeId: this.node, id: resourceID(this.node, endpoint.id) }));
-      this.save(this.value.endpointId ? this.value : endpointGeneration(this.endpoints[0]));
+      this.endpoints = state.endpoints.filter(endpoint => !isExternalAgent(endpoint)).map(endpoint => ({ ...endpoint, nodeId: this.node, id: resourceID(this.node, endpoint.id) }));
+      const selected = state.endpoints.find(e => resourceID(this.node, e.id) === this.value.endpointId);
+      this.save(this.value.endpointId && !isExternalAgent(selected) ? this.value : endpointGeneration(this.endpoints[0]));
     }).finally(() => { this.loading = undefined; });
   }
 }

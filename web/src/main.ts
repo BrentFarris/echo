@@ -25,6 +25,7 @@ import { createChatScrollFollower, type ChatScrollFollower } from './chatScroll'
 import { assertOnlineRecipients } from './offlineRecipients';
 import { ReferenceSearch, instanceReferenceDraft, validateInstanceReferences } from './referenceSearch';
 import { endpointForm, endpointValues } from './modelSettings';
+import { externalAgentForm, externalAgentValues, externalAgentNotice, isExternalAgent } from './externalAgents';
 import { mountDevelopment } from './development';
 import { developmentUpdateNode, refreshDevelopmentUpdates, renderDevelopmentUpdates, startDevelopmentUpdates } from './developmentUpdates';
 import { mountHosting } from './hosting';
@@ -151,7 +152,8 @@ function shell() {
     state: () => ({ generation, node: modelNode || entryNode, endpoints: state.endpoints.filter(e => sameMachine(e, modelNode || entryNode)), machines: [...instances.keys()].map(id => ({ id, name: machineName(id) })) }),
     change: (next, commit) => { generation = next; renderModels(); rememberDraft(); if (commit) void saveGeneration(); },
     selectMachine: node => { generationByNode[modelNode] = { ...generation }; modelNode = node; generation = ownedGeneration(node, generationByNode[node] || endpointGeneration(state.endpoints.find(e => sameMachine(e, node)))); renderModels(); rememberDraft(); },
-    manage: () => settings('models', modelNode || entryNode),
+    manage: () => settings(isExternalAgent(state.endpoints.find(e => e.id === generation.endpointId)) ? 'external-agents' : 'models', modelNode || entryNode),
+    resetExternal: action(async () => { if (!chatId) return; const [home, id] = splitID(chatId); await resourceAPI('/external-agents/reset', 'POST', { chatId: id, homeNodeId: home || entryNode }, modelNode || entryNode); await refresh(); notice('External sessions reset. The next task will start a new native conversation.'); }),
     discover: async endpoint => (await api<{ data: { id: string }[] }>(`/endpoints/${endpoint.id}/models`)).data?.map(m => m.id) || [],
   });
   const composer = q<ReferenceInput>('#composer'); composer.bots = () => state.bots; composer.groups = () => state.botGroups || []; composer.oninput = e => {
@@ -586,7 +588,7 @@ async function answerQuestions(m: Message, payload: QuestionSubmission) {
 function paintStreamedMessage(el: HTMLElement, m: Message, previous: Message, final: boolean, output?: string) {
   // Keep the native details, summary and scroll container mounted. Replacing
   // them between pointer down/up loses clicks and resets scroll on every token.
-  if (m.role === 'tool') {
+  if (m.role === 'tool' || m.role === 'activity') {
     updateStreamedText(q('details > pre', el), output || m.content);
     return;
   }
@@ -616,7 +618,7 @@ function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.da
   if (previous?.element === el && previous.grouped === grouped && previous.final === final && previous.output === output && (['content', 'segments', 'reasoning', 'status', 'author', 'role', 'toolCalls', 'attachments'] as const).every(key => previous.message[key] === m[key])) { mountMessageActions(el, m, grouped); return el; }
   messageMarkup.set(m.id, { message: { ...m }, element: el, grouped, final, output });
   if (previous?.element === el && previous.grouped === grouped && previous.final === final
-    && (m.role === 'assistant' || m.role === 'tool' && !isQuestionMessage(m) && previous.message.content === m.content)
+    && (m.role === 'assistant' || m.role === 'activity' || m.role === 'tool' && !isQuestionMessage(m) && previous.message.content === m.content)
     && (['segments', 'status', 'author', 'role', 'toolCalls', 'attachments'] as const).every(key => previous.message[key] === m[key])) {
     paintStreamedMessage(el, m, previous.message, final, output);
     mountMessageActions(el, m, grouped); return el;
@@ -632,6 +634,11 @@ function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.da
     if (m.deliveryError) {
       const error = document.createElement('span'); error.className = 'run-error'; error.textContent = m.deliveryError; el.append(error);
     }
+  }
+  if (m.role === 'activity') {
+    const name = grouped ? m.author.split(' · ').slice(1).join(' · ') || m.author : m.author;
+    el.innerHTML += `<details data-disclosure="${esc(m.id)}:output" ${m.status === 'running' && name === 'Response' ? 'open' : ''}><summary><span>${esc(name)}</span>${statusBadge(m.status)}</summary><pre>${esc(m.content)}</pre></details>`;
+    restoreDisclosures(el); return el;
   }
   if (m.role === 'tool') {
     if (isQuestionMessage(m)) {
@@ -1028,7 +1035,7 @@ function settings(section = 'general', node = settingsNode || entryNode, selectM
     event.preventDefault(); event.stopPropagation(); el.close();
   });
   const nav = q('.settings-nav', el), content = q('.settings-content', el);
-  const entries = [{ id: 'general', name: 'General' }, { id: 'bots', name: 'Bots' }, { id: 'models', name: 'Local Models' }, { id: 'cloud-models', name: 'Cloud Models' }, { id: 'notifications', name: 'Notifications' }, ...ownerPlugins.map(p => ({ id: localID(p.id), name: p.name }))];
+  const entries = [{ id: 'general', name: 'General' }, { id: 'bots', name: 'Bots' }, { id: 'models', name: 'Local Models' }, { id: 'cloud-models', name: 'Cloud Models' }, { id: 'external-agents', name: 'External Agents' }, { id: 'notifications', name: 'Notifications' }, ...ownerPlugins.map(p => ({ id: localID(p.id), name: p.name }))];
   const picker = document.createElement('select'); picker.setAttribute('aria-label', 'Settings machine'); picker.innerHTML = [...instances.keys()].map(id => `<option value="${id}">${esc(machineName(id))}</option>`).join(''); picker.value = node; picker.onchange = () => settings(section, picker.value, selectModel); q('.dialog-heading button', el).before(picker);
   nav.innerHTML = `<div class="settings-nav-main">${entries.map(e => `<button data-section="${esc(e.id)}" class="${section === e.id ? 'active' : ''}">${esc(e.name)}</button>`).join('')}</div><hr><button data-section="development" data-update-notice="*" class="${section === 'development' ? 'active' : ''}">Development</button>`;
   renderDevelopmentUpdates();
@@ -1041,6 +1048,7 @@ function settings(section = 'general', node = settingsNode || entryNode, selectM
   else if (section === 'bots') botSettings(content);
   else if (section === 'notifications') void notifications.mount(content);
   else if (section === 'models' || section === 'cloud-models') modelSettings(content, section === 'cloud-models', selectModel);
+  else if (section === 'external-agents') externalAgentSettings(content, selectModel);
   else if (section === 'development') void mountDevelopment(content, boundAPI, new InstanceClient(node), async () => { await refresh(true); await swarmRefreshing; });
   else pluginSettings(content, ownerPlugins.find(p => localID(p.id) === section)!);
 }
@@ -1119,7 +1127,7 @@ function editBot(bot?: Bot) {
   };
 }
 function modelSettings(root: HTMLElement, cloud: boolean, selectModel = true) {
-  root.innerHTML = `${cloud ? `<p class="subtle">Connect a compatible cloud model service, then select it for the chat.</p>` : '<p class="subtle">Connect an existing Ollama, LM Studio, llama.cpp, or compatible server.</p>'}<button class="primary" id="add-model">＋ Add connection</button>${state.endpoints.filter(e => sameMachine(e, settingsNode) && e.cloud === cloud).map(e => `<div class="list-card"><div class="grow"><strong>${esc(e.name)}</strong><p class="subtle">${esc(e.model)}<br>${esc(e.url)}</p></div><button data-model="${esc(e.id)}">Edit</button><button data-discover="${esc(e.id)}">Models</button><button class="danger" data-remove="${esc(e.id)}">×</button></div>`).join('')}`;
+  root.innerHTML = `${cloud ? `<p class="subtle">Connect a compatible cloud model service, then select it for the chat.</p>` : '<p class="subtle">Connect an existing Ollama, LM Studio, llama.cpp, or compatible server.</p>'}<button class="primary" id="add-model">＋ Add connection</button>${state.endpoints.filter(e => sameMachine(e, settingsNode) && e.cloud === cloud && !isExternalAgent(e)).map(e => `<div class="list-card"><div class="grow"><strong>${esc(e.name)}</strong><p class="subtle">${esc(e.model)}<br>${esc(e.url)}</p></div><button data-model="${esc(e.id)}">Edit</button><button data-discover="${esc(e.id)}">Models</button><button class="danger" data-remove="${esc(e.id)}">×</button></div>`).join('')}`;
   q('#add-model', root).onclick = () => editModel(undefined, cloud, selectModel);
   for (const button of root.querySelectorAll<HTMLButtonElement>('[data-model]')) button.onclick = () => editModel(state.endpoints.find(e => e.id === button.dataset.model), cloud, selectModel);
   for (const button of root.querySelectorAll<HTMLButtonElement>('[data-discover]')) button.onclick = action(async () => { const models = await api(`/endpoints/${button.dataset.discover}/models`); dialog('Available models', `<pre>${esc(JSON.stringify(models, null, 2))}</pre>`); });
@@ -1134,6 +1142,28 @@ function editModel(endpoint?: Endpoint, cloud = false, selectModel = true) {
   const provider = document.createElement('label'); provider.innerHTML = `Provider<select name="provider"><option value="">Compatible HTTP</option>${state.plugins.filter(p => sameMachine(p, node) && !p.builtin && p.enabled && !p.pending).flatMap(p => (p.providers || []).map(name => `<option value="${esc(name)}">${esc(p.name)} · ${esc(name)}</option>`)).join('')}</select>`;
   q('form', el).prepend(provider); q<HTMLSelectElement>('select', provider).value = endpoint?.provider || '';
   q<HTMLFormElement>('form', el).onsubmit = e => { e.preventDefault(); action(async () => { const form = q<HTMLFormElement>('form', el), key = q<HTMLInputElement>('[name=key]', el).value; const value = await api<Endpoint>('/endpoints', 'POST', { endpoint: { id: endpoint?.id || '', cloud, ...endpointValues(form) }, ...(key ? { apiKey: key } : {}) }); el.close(); await refresh(); if (selectModel) chooseEndpoint({ ...value, id: resourceID(node, value.id), nodeId: node }); settings(cloud ? 'cloud-models' : 'models', node, selectModel); })(); };
+}
+function externalAgentSettings(root: HTMLElement, selectModel: boolean) {
+  const node = settingsNode;
+  const endpoints = state.endpoints.filter(e => sameMachine(e, node) && isExternalAgent(e));
+  root.innerHTML = `<p class="subtle">${externalAgentNotice}</p><p class="subtle">Runs on ${esc(machineName(node))} using that account’s installed CLI and subscription login. Available in chats and schedules.</p><button class="primary" data-add-agent>＋ Add external agent</button>${endpoints.map(e => `<div class="list-card"><div class="grow"><strong>${esc(e.name)}</strong><p class="subtle">${esc(e.kind === 'codex-cli' ? 'Codex' : 'Claude Code')} · ${esc(e.model || 'CLI default')}<br>${esc(e.executable || 'Discover on PATH')}</p></div><button data-edit-agent="${esc(e.id)}">Edit</button><button data-check-agent="${esc(e.id)}">Check connection</button><button class="danger" data-remove-agent="${esc(e.id)}">×</button></div>`).join('')}`;
+  const edit = (endpoint?: Endpoint) => {
+    const el = dialog(endpoint ? 'Edit external agent' : 'Add external agent', externalAgentForm(endpoint));
+    q<HTMLFormElement>('form', el).onsubmit = event => { event.preventDefault(); action(async () => {
+      const value = await resourceAPI<Endpoint>('/endpoints', 'POST', { endpoint: { id: endpoint ? localID(endpoint.id) : '', ...externalAgentValues(q('form', el)) } }, node);
+      el.close(); await refresh();
+      if (selectModel) chooseEndpoint({ ...value, id: resourceID(node, value.id), nodeId: node });
+      settings('external-agents', node, selectModel);
+    })(); };
+  };
+  q<HTMLButtonElement>('[data-add-agent]', root).onclick = () => edit();
+  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-edit-agent]')) button.onclick = () => edit(endpoints.find(e => e.id === button.dataset.editAgent));
+  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-check-agent]')) button.onclick = action(async () => {
+    button.disabled = true;
+    try { const check = await resourceAPI<{ executable: string; version: string; message: string }>(`/endpoints/${button.dataset.checkAgent}/check`, 'POST', {}, node); dialog('External agent connection', `<p>${esc(check.message)}</p><pre>${esc(check.version)}\n${esc(check.executable)}</pre>`); }
+    finally { button.disabled = false; }
+  });
+  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-remove-agent]')) button.onclick = action(async () => { await resourceAPI(`/endpoints/${button.dataset.removeAgent}`, 'DELETE', undefined, node); await refresh(); externalAgentSettings(root, selectModel); });
 }
 function pluginSettings(root: HTMLElement, plugin: Plugin) {
   if (!plugin) return;

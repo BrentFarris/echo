@@ -226,7 +226,7 @@ func (s *Server) sendResolved(chatID string, req SendRequest) (*dispatch, error)
 	if req.Generation.Model == "" {
 		req.Generation.Model = endpoint.Model
 	}
-	if req.Generation.Model == "" {
+	if req.Generation.Model == "" && !endpoint.External() {
 		return nil, errors.New("select a model name")
 	}
 	if req.Generation.Temperature < 0 || req.Generation.Temperature > 2 {
@@ -474,7 +474,12 @@ func (s *Server) history(bot domain.Bot, chat string) ([]model.Message, error) {
 		if m.ModelContent != nil {
 			content = *m.ModelContent
 		}
-		out = append(out, model.Message{ID: m.ID, Role: m.Role, Content: content, Calls: m.Calls, CallID: m.CallID, Omitted: m.ModelContent != nil})
+		role := m.Role
+		if role == "activity" {
+			role = "assistant"
+			content = "External agent activity (" + m.Author + ", " + m.Status + "):\n" + content
+		}
+		out = append(out, model.Message{ID: m.ID, Role: role, Content: content, Calls: m.Calls, CallID: m.CallID, Omitted: m.ModelContent != nil})
 	}
 	// An interrupted tool group cannot produce orphan calls in the next request.
 	for i := 1; i < len(out); i++ {
@@ -503,6 +508,9 @@ func (s *Server) history(bot domain.Bot, chat string) ([]model.Message, error) {
 }
 func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run domain.Run, endpoint domain.Endpoint) error {
 	ctx = context.WithValue(ctx, providerKey{}, &providerInvocation{Statistics: run.Statistics, Scope: domain.ExecutionScope{Bot: bot, ChatID: run.ChatID, RunID: run.ID, DispatchID: d.id}})
+	if endpoint.External() {
+		return s.runExternalAgent(ctx, d, bot, run, endpoint)
+	}
 	history, e := s.history(bot, run.ChatID)
 	if e != nil {
 		return e

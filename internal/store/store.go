@@ -20,6 +20,7 @@ import (
 )
 
 type Store struct {
+	dir  string
 	db   *sql.DB
 	mu   sync.Mutex
 	lock *os.File
@@ -39,7 +40,7 @@ func Open(dir string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db, lock: lock}
+	s := &Store{db: db, lock: lock, dir: dir}
 	_, err = db.Exec(`PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA auto_vacuum=INCREMENTAL; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
 CREATE TABLE IF NOT EXISTS records(namespace TEXT NOT NULL,id TEXT NOT NULL,data BLOB NOT NULL,PRIMARY KEY(namespace,id));
 CREATE UNIQUE INDEX IF NOT EXISTS bot_handles ON records(lower(json_extract(data,'$.handle'))) WHERE namespace='bots';
@@ -451,13 +452,19 @@ func (s *Store) DeleteChat(id string) error {
 	if _, e = tx.Exec("DELETE FROM records WHERE namespace='runs' AND json_extract(data,'$.chatId')=?", id); e != nil {
 		return e
 	}
+	if _, e = tx.Exec("DELETE FROM records WHERE namespace='external-sessions' AND json_extract(data,'$.chatId')=?", id); e != nil {
+		return e
+	}
 	if _, e = tx.Exec("DELETE FROM chats WHERE id=?", id); e != nil {
 		return e
 	}
 	if e = cancelChatAlerts(tx, id); e != nil {
 		return e
 	}
-	return tx.Commit()
+	if e = tx.Commit(); e != nil {
+		return e
+	}
+	return os.RemoveAll(s.externalAttachmentDirectory(id))
 }
 func (s *Store) AddMessage(m domain.Message) error {
 	b, e := pack(m)

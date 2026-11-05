@@ -51,7 +51,10 @@ export function turnStatisticsText(group: ResponseGroup, run?: Run): string {
   if (counts.outputReports) parts.push(`${compactTokens(counts.outputTokens)} out${counts.outputReports < counts.modelCalls ? ' (partial)' : ''}`);
   const tools = stats?.toolCalls ?? group.messages.filter(m => m.role === 'tool').length;
   parts.push(`${exactTokens(tools)} tool ${tools === 1 ? 'call' : 'calls'}`);
-  parts.push(`${exactTokens(counts.modelCalls)} model ${counts.modelCalls === 1 ? 'call' : 'calls'}`);
+  parts.push(stats?.externalAgent ? 'native model-call count unavailable' : `${exactTokens(counts.modelCalls)} model ${counts.modelCalls === 1 ? 'call' : 'calls'}`);
+  if (stats?.externalAgent && !counts.inputReports && !counts.outputReports) parts.push('token usage unavailable');
+  else if (stats?.externalAgent && !counts.inputReports) parts.push('input tokens unavailable');
+  else if (stats?.externalAgent && !counts.outputReports) parts.push('output tokens unavailable');
   if (!stats) parts.push('partial history');
   return parts.join(' · ');
 }

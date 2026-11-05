@@ -14,6 +14,8 @@ import (
 )
 
 type ProcessRequest struct {
+	Stdout             func([]byte)   `json:"-"` // Host-only, untruncated stream callbacks.
+	Stderr             func([]byte)   `json:"-"`
 	duplex             *processDuplex // Host-internal persistent stdio; never accepted from plugin input.
 	SandboxSession     string         // Host-only opt-in: reuse an identical native sandbox's filesystem grants.
 	Progress           func(string)   `json:"-"` // Host-only execution phase; never mixed with command output.

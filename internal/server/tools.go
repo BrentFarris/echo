@@ -248,6 +248,9 @@ func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionSc
 		}
 		var old domain.Endpoint
 		existing := s.Store.Get("endpoints", endpoint.ID, &old) == nil
+		if endpoint.External() || old.External() || endpoint.Executable != "" || endpoint.WorkingDirectory != "" {
+			return nil, errors.New("external agent connections can only be configured in owner settings")
+		}
 		if existing {
 			endpoint = old
 			if e = json.Unmarshal(data, &endpoint); e != nil {

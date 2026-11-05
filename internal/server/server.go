@@ -97,6 +97,7 @@ type Server struct {
 	ctx               context.Context
 	cancel            context.CancelFunc
 	mu                sync.Mutex
+	externalLocks     sync.Map // Session key -> cancellable semaphore; never exposed to plugins.
 	dispatches        map[string]*dispatch
 	groupModels       map[string]groupModelCheck
 	groupLeases       map[groupLeaseKey]*time.Timer

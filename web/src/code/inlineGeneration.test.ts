@@ -12,6 +12,12 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+it('filters external agents and replaces a chat-inherited CLI selection', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ endpoints: [{ id: 'cli', kind: 'codex-cli', model: '' }, { id: 'http', model: 'model' }] })));
+  const inline = new InlineGeneration('echo', { generationFor: () => ({ endpointId: 'cli', model: '', thinking: '', temperature: .6 }) });
+  await inline.refresh(); expect(inline.endpoints.map(e => e.id)).toEqual(['http']); expect(inline.value.endpointId).toBe('http');
+});
+
 it('seeds once and persists preferences separately for each bot and machine', async () => {
   const chat = { endpointId: 'model', model: 'initial', thinking: '', temperature: .6 };
   vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ endpoints: [{ id: 'model', name: 'Model', model: 'default', url: 'http://localhost' }] })));

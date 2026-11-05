@@ -1,5 +1,6 @@
 import { escapeHTML as esc } from './helpers';
 import type { Endpoint, Generation } from './types';
+import { externalAgentNotice, isExternalAgent } from './externalAgents';
 
 export const thinkingLevels = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 export function endpointGeneration(endpoint?: Endpoint): Generation {
@@ -15,6 +16,8 @@ export function generationSettingsMarkup(prefix = ''): string {
       <div id="${id('endpoint-options')}" class="endpoint-options" data-setting="endpoints" role="listbox" aria-label="Model connection"></div>
       <label class="custom-model">Model identifier<input id="${id('model')}" data-setting="model" placeholder="Model identifier" list="${id('model-options')}"></label>
       <datalist id="${id('model-options')}" data-setting="models"></datalist>
+      <p class="subtle" data-setting="external-notice" hidden>${externalAgentNotice}</p>
+      <button type="button" data-setting="reset-external" hidden>Reset external sessions</button>
       <label class="slider-setting"><span class="range-label">Thinking <output id="${id('thinking-label')}" data-setting="thinking-label">Default</output></span><input id="${id('thinking')}" data-setting="thinking" aria-label="Thinking" type="range" min="0" max="7" value="0"></label>
       <label class="slider-setting"><span class="range-label">Temperature <output id="${id('temperature-label')}" data-setting="temperature-label">0.60</output></span><input id="${id('temperature')}" data-setting="temperature" aria-label="Temperature" type="range" min="0" max="2" step="0.01" value="0.6"></label>
       <button type="button" id="${id('manage-models')}" data-setting="manage" class="popover-footer">Manage models in Settings</button>
@@ -30,6 +33,7 @@ type Options = {
   manage(): void;
   discover(endpoint: Endpoint): Promise<string[]>;
   opened?(): void;
+  resetExternal?(): void;
 };
 
 /** One set of controls for chat and editor. The top-layer panel escapes Monaco
@@ -56,7 +60,7 @@ export class GenerationSettings {
     const keydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); this.close(); this.summary.focus(); return; }
       if (event.key === 'Tab' && menu.open) {
-        const controls = [...this.popup.querySelectorAll<HTMLElement>('input:not(:disabled), select:not(:disabled), button:not(:disabled)')];
+        const controls = [...this.popup.querySelectorAll<HTMLElement>('input:not(:disabled), select:not(:disabled), button:not(:disabled)')].filter(control => !control.closest('[hidden]'));
         if (event.target === this.summary && !event.shiftKey) { event.preventDefault(); controls[0]?.focus(); }
         else if (event.target === controls[0] && event.shiftKey) { event.preventDefault(); this.summary.focus(); }
         else if (event.target === controls.at(-1) && !event.shiftKey) { this.close(); this.summary.focus(); }
@@ -98,6 +102,7 @@ export class GenerationSettings {
       input.oninput = () => change(false); input.onchange = () => change(true);
     }
     this.field<HTMLButtonElement>('manage').onclick = () => { this.close(); options.manage(); };
+    this.field<HTMLButtonElement>('reset-external').onclick = () => { this.close(); options.resetExternal?.(); };
     this.render();
   }
   private field<T extends HTMLElement>(name: string): T { return this.popup.querySelector<T>(`[data-setting="${name}"]`)!; }
@@ -108,7 +113,7 @@ export class GenerationSettings {
     if (machine.innerHTML !== machineMarkup) machine.innerHTML = machineMarkup;
     machine.value = node; machine.disabled = this.disabled || !this.options.selectMachine;
     const list = this.field<HTMLElement>('endpoints');
-    const markup = endpoints.map(endpoint => `<button type="button" role="option" aria-selected="${endpoint.id === generation.endpointId}" data-endpoint="${esc(endpoint.id)}" title="${esc(endpoint.name)} — ${esc(endpoint.model)}">${esc(endpoint.name)} <span>— ${esc(endpoint.model)}</span></button>`).join('') || '<p class="subtle">Add a model connection in Settings.</p>';
+    const markup = endpoints.map(endpoint => `<button type="button" role="option" aria-selected="${endpoint.id === generation.endpointId}" data-endpoint="${esc(endpoint.id)}" title="${esc(endpoint.name)} — ${esc(isExternalAgent(endpoint) ? externalAgentNotice : endpoint.model)}">${esc(endpoint.name)} <span>— ${esc(endpoint.model || (isExternalAgent(endpoint) ? 'CLI default' : ''))}${isExternalAgent(endpoint) ? ' · Full access' : ''}</span></button>`).join('') || '<p class="subtle">Add a model connection in Settings.</p>';
     if (list.innerHTML !== markup) {
       list.innerHTML = markup;
       for (const button of list.querySelectorAll<HTMLButtonElement>('button')) button.onclick = () => {
@@ -119,8 +124,13 @@ export class GenerationSettings {
       };
     }
     const endpoint = endpoints.find(e => e.id === generation.endpointId);
+    const external = isExternalAgent(endpoint);
+    this.field<HTMLElement>('external-notice').hidden = !external;
+    this.field<HTMLButtonElement>('reset-external').hidden = !external || !this.options.resetExternal;
+    for (const name of ['thinking', 'temperature']) this.field<HTMLInputElement>(name).closest('label')!.hidden = external;
     this.summary.querySelector('span')!.textContent = endpoint?.name || generation.model || 'Choose a model';
     const model = this.field<HTMLInputElement>('model');
+    model.placeholder = external ? 'CLI default' : 'Model identifier';
     if (document.activeElement !== model) model.value = generation.model;
     this.field<HTMLInputElement>('thinking').value = String(Math.max(0, thinkingLevels.indexOf(generation.thinking)));
     const effort = generation.thinking || endpoint?.reasoningEffort;
@@ -130,7 +140,7 @@ export class GenerationSettings {
     for (const control of this.popup.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input, button')) control.disabled = this.disabled;
     const key = endpoint ? endpoint.id + ':' + endpoint.url : '';
     this.field('models').innerHTML = (this.models.get(key) || []).map(id => `<option value="${esc(id)}"></option>`).join('');
-    if (endpoint && !this.models.has(key)) {
+    if (endpoint && !external && !this.models.has(key)) {
       this.models.set(key, []);
       void this.options.discover(endpoint).then(models => { if (!this.abort.signal.aborted) { this.models.set(key, models); this.render(); } }).catch(() => { /* Manual model identifiers remain available. */ });
     }
