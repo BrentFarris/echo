@@ -72,6 +72,61 @@ test('new chat bot choices include remote Echo, dispatch qualified mentions, and
   await expect(select).toHaveValue('echo');
 });
 
+test('named bot groups keep their recipient snapshots across settings edits and deletion', async ({ page }) => {
+  const [linux] = await connect(page);
+  for (const g of await json(page, '/api/v1/bot-groups')) await json(page, '/api/v1/bot-groups/' + g.id, 'DELETE');
+  const openSettings = async () => {
+    await page.locator('#settings-button').click();
+    await page.getByRole('button', { name: 'Bots', exact: true }).click();
+  };
+  await openSettings();
+  await page.getByRole('button', { name: 'Add group' }).click();
+  let editor = page.getByRole('dialog', { name: 'Add group', exact: true });
+  await editor.getByLabel('Group handle').fill('kaiju');
+  await editor.getByRole('checkbox', { name: '@kaiju · desktop', exact: true }).check();
+  await editor.getByRole('checkbox', { name: '@linux.kaiju · linux', exact: true }).check();
+  await editor.getByRole('button', { name: 'Save group' }).click();
+  await expect(editor.getByRole('alert')).toContainText('already in use');
+  await editor.getByLabel('Group handle').fill('modbots');
+  await editor.getByRole('button', { name: 'Save group' }).click();
+  await expect(editor).toHaveCount(0);
+  await page.reload();
+  await page.locator('#new-chat').click();
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await composer.fill('@modb');
+  const option = page.getByRole('option').filter({ hasText: '@modbots' });
+  await expect(option).toContainText('Group'); await expect(option).toContainText('@linux.kaiju');
+  await composer.press('Tab'); await composer.pressSequentially('review this');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  const mention = page.locator('.message.user').getByRole('button', { name: 'Show members of @modbots' });
+  await expect(mention).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Stop response', exact: true })).toHaveCount(0);
+  const chatId = new URL(page.url()).hash.slice(1);
+  const prompt = (await json(page, '/api/v1/chats/' + chatId + '/messages')).find((m: any) => m.role === 'user');
+  expect(prompt.content).toBe('@modbots review this');
+  expect(new Set(prompt.recipients).size).toBe(2);
+  await json(page, `/api/v1/swarm/peers/${linux}`, 'PATCH', { disconnected: true });
+  await expect(page.locator('.machine-filter')).toContainText('linux · Offline');
+  await composer.fill('@modbots retry');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.locator('.notice[role="alert"]')).toContainText('offline');
+  await expect(composer).toHaveText('@modbots retry');
+
+  await openSettings();
+  const row = page.locator('#settings .list-card').filter({ hasText: '@modbots' });
+  await row.getByRole('button', { name: 'Edit' }).click();
+  editor = page.getByRole('dialog', { name: 'Edit group' });
+  await editor.getByLabel('Group handle').fill('moderators');
+  await editor.getByRole('checkbox', { name: /@linux\.kaiju.*Unavailable/ }).uncheck();
+  await editor.getByRole('button', { name: 'Save group' }).click();
+  await page.locator('#settings .list-card').filter({ hasText: '@moderators' }).getByRole('button', { name: 'Delete' }).click();
+  await expect(page.locator('#settings')).not.toContainText('@moderators');
+  await page.reload();
+  await mention.click();
+  const members = page.getByRole('dialog', { name: 'Group members' });
+  await expect(members.getByRole('listitem')).toHaveText(['@kaiju', '@linux.kaiju']);
+});
+
 test('local create and delete finish while swarm inventory is stalled', async ({ page }) => {
   await connect(page);
   await expect(page.locator('.chat-row')).toHaveCount(0);
@@ -169,7 +224,11 @@ test('stop cancels held responses on every chat home and across swarm workers', 
   for (const node of ['', ...nodes]) {
     const api = node ? `/api/v1/swarm/instances/${node}` : '/api/v1';
     const chat = await json(page, `${api}/chats`, 'POST', {});
-    await page.goto('/#' + (node ? `${node}:` : '') + chat.id);
+    // The chat was created through the API. Select it after the browser's
+    // inventory arrives so a pending refresh cannot discard the test draft.
+    const chatKey = node ? `${node}:${chat.id}` : chat.id;
+    await page.locator(`[data-chat="${chatKey}"]`).click();
+    await expect(page.locator('.chat-row.active [data-chat]')).toHaveAttribute('data-chat', chatKey);
     await page.getByRole('textbox', { name: 'Message', exact: true }).fill('@kaiju @linux.kaiju @mac.kaiju multitasking hold');
     await page.getByRole('button', { name: 'Send message', exact: true }).click();
     await expect.poll(async () => (await json(page, `${api}/state`)).runs.filter((r: any) => r.chatId === chat.id && r.status === 'running').length).toBe(3);

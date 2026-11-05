@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -206,6 +207,85 @@ func (s *Server) swarmRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/swarm/instances/{nodeId}/{path...}", s.swarmProxy)
 }
 
+// Bind bare handles to the browser entry. For reruns, the home supplies its
+// original IDs instead. In both cases the entry signs the concrete recipients.
+func (s *Server) prepareForwardedMessage(w http.ResponseWriter, r *http.Request, home, chat, path, action string) (bool, error) {
+	var req SendRequest
+	if err := decode(w, r, &req); err != nil {
+		return false, err
+	}
+	req.OriginNodeID = s.Swarm.Node().ID
+	if req.RequestID == "" {
+		req.RequestID = domain.ID()
+	}
+	if action == "resubmit" {
+		req.Segments = nil
+	}
+	if action == "rerun" {
+		var input struct {
+			domain.Message
+			DispatchID string `json:"dispatchId"`
+		}
+		err := s.Swarm.JSON(r.Context(), home, "POST", path+"-input", map[string]string{"requestId": req.RequestID}, &input)
+		if err != nil {
+			return false, err
+		}
+		if input.DispatchID != "" {
+			respond(w, map[string]string{"dispatchId": input.DispatchID}, nil)
+			return false, nil
+		}
+		req.Content, req.Segments, req.rerunMessageID = input.Content, input.Segments, "remote"
+		for _, id := range input.Recipients {
+			if node, _ := swarm.Split(id); node == "" {
+				id = swarm.Key(home, id)
+			}
+			req.rerunRecipients = append(req.rerunRecipients, id)
+		}
+	}
+	participants, segments, err := s.resolveSwarm(r.Context(), req)
+	if err != nil {
+		return false, err
+	}
+	if hasGroupSegment(segments) {
+		if err := s.checkGroupCapability(home); err != nil {
+			return false, err
+		}
+	}
+	req.Segments = slices.Clone(segments)
+	request := workerRequest{Home: home, Chat: domain.Chat{ID: chat}, RequestID: req.RequestID, Message: domain.Message{Content: req.Content, Segments: segments}, Participants: participants}
+	req.Permits = map[string]string{}
+	fingerprint := requestFingerprint(request)
+	for _, p := range participants {
+		req.Segments = append(req.Segments, domain.Segment{Type: "bot", NodeID: p.Ref.NodeID, BotID: p.Ref.ID, Text: "@" + p.Handle})
+		if p.Ref.NodeID == req.OriginNodeID || req.Permits[p.Ref.NodeID] != "" {
+			continue
+		}
+		proof, err := s.Swarm.Proof(p.Ref.NodeID, fingerprint)
+		if err != nil {
+			return false, err
+		}
+		req.Permits[p.Ref.NodeID] = proof
+	}
+	var body any = req
+	switch action {
+	case "resubmit":
+		edit := map[string]any{"content": req.Content, "requestId": req.RequestID}
+		if s.groupCapability(home) {
+			edit["segments"], edit["permits"] = req.Segments, req.Permits
+		}
+		body = edit
+	case "rerun":
+		body = map[string]any{"requestId": req.RequestID, "permits": req.Permits}
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return false, err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(data))
+	r.ContentLength = int64(len(data))
+	return true, nil
+}
+
 func (s *Server) swarmProxy(w http.ResponseWriter, r *http.Request) {
 	if !s.Swarm.Enabled() {
 		http.Error(w, "Swarm is disabled", 503)
@@ -230,47 +310,22 @@ func (s *Server) swarmProxy(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, s.offlineMachine(id, ""))
 		return
 	}
-	if len(parts) == 3 && parts[0] == "chats" && parts[2] == "messages" && r.Method == "POST" {
-		var req SendRequest
-		if err := decode(w, r, &req); err != nil {
-			respond(w, nil, err)
-			return
+	if r.Method == "POST" && len(parts) >= 3 && parts[0] == "chats" && parts[2] == "messages" {
+		send := len(parts) == 3
+		action := ""
+		if len(parts) == 5 {
+			action = parts[4]
 		}
-		req.OriginNodeID = s.Swarm.Node().ID
-		if req.RequestID == "" {
-			req.RequestID = domain.ID()
-		}
-		participants, segments, err := s.resolveSwarm(r.Context(), req)
-		if err != nil {
-			respond(w, nil, err)
-			return
-		}
-		// Resolve against the browser entry before forwarding. Structured stable
-		// references survive machine renames and a different home namespace.
-		req.Segments = segments
-		for _, p := range participants {
-			req.Segments = append(req.Segments, domain.Segment{Type: "bot", NodeID: p.Ref.NodeID, BotID: p.Ref.ID, Text: "@" + p.Handle})
-		}
-		request := workerRequest{Home: id, Chat: domain.Chat{ID: parts[1]}, RequestID: req.RequestID, Message: domain.Message{Content: req.Content, Segments: segments}, Participants: participants}
-		req.Permits = map[string]string{}
-		for _, p := range participants {
-			if p.Ref.NodeID == req.OriginNodeID {
-				continue
-			}
-			proof, err := s.Swarm.Proof(p.Ref.NodeID, requestFingerprint(request))
+		if send || action == "resubmit" || (action == "rerun" && s.groupCapability(id)) {
+			forward, err := s.prepareForwardedMessage(w, r, id, parts[1], path, action)
 			if err != nil {
 				respond(w, nil, err)
 				return
 			}
-			req.Permits[p.Ref.NodeID] = proof
+			if !forward {
+				return
+			}
 		}
-		body, err := json.Marshal(req)
-		if err != nil {
-			respond(w, nil, err)
-			return
-		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		r.ContentLength = int64(len(body))
 	}
 	cacheable := r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && (parts[2] == "messages" || parts[2] == "snapshot")
 	cacheKey := swarm.Key(id, path)

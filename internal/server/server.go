@@ -148,6 +148,9 @@ type SendRequest struct {
 	rerunMessageID         string
 	rerunRecipients        []string
 	rerunFingerprint       [32]byte
+	groupMentions          map[int]domain.Segment // Validated mention tokens keyed by byte offset.
+	botMentions            map[int]domain.Segment
+	forwardedGroups        bool // Only an authenticated entry can forward its resolved membership.
 }
 
 type coordination interface {
@@ -628,6 +631,9 @@ func (s *Server) normalizeBot(b domain.Bot) (domain.Bot, error) {
 	}
 	if b.ID != "echo" && b.Handle == "echo" {
 		return b, errors.New("echo is reserved")
+	}
+	if err := s.checkGroupHandle(b.Handle, ""); err != nil {
+		return b, err
 	}
 	bots, e := s.Bots()
 	if e != nil {

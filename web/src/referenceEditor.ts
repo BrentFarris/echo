@@ -1,4 +1,5 @@
-import type { Bot, Segment } from './types';
+import type { Bot, BotGroup, Segment } from './types';
+import { mentionTokens } from './recipientMentions';
 import { referenceFromElement, referenceText, renderReferenceText, typedBotSegments, updateReferenceChip } from './references';
 
 export type ReferenceDraft = { text: string; references: Segment[] };
@@ -41,6 +42,7 @@ export function trimmedDraft(draft: ReferenceDraft): ReferenceDraft {
  * never arbitrary HTML; programmatic chip insertion participates in undo. */
 export class ReferenceInput extends HTMLElement {
   bots: () => Bot[] = () => [];
+  groups: () => BotGroup[] = () => [];
   private history: Edit[] = [];
   private historyIndex = -1;
   private replaying = false;
@@ -166,10 +168,10 @@ export class ReferenceInput extends HTMLElement {
   private decorateBots() {
     if (this.replaying) return;
     const draft = this.snapshot(), start = this.selectionStart, end = this.selectionEnd;
-    const bots = typedBotSegments(draft.text, this.bots(), true).filter(ref => !draft.references.some(r => r.range!.start < ref.range!.end && r.range!.end > ref.range!.start));
+    const bots = typedBotSegments(draft.text, this.bots(), true, this.groups()).filter(ref => !draft.references.some(r => r.range!.start < ref.range!.end && r.range!.end > ref.range!.start));
     // A bot chip moved into a code span must become literal text again.
-    const valid = typedBotSegments(draft.text, this.bots());
-    const refs = draft.references.filter(ref => ref.type !== 'bot' || valid.some(v => v.range!.start === ref.range!.start && v.range!.end === ref.range!.end) || !this.bots().some(b => b.id === ref.botId));
+    const valid = mentionTokens(draft.text);
+    const refs = draft.references.filter(ref => ref.type === 'file' || valid.some(v => v.range.start === ref.range!.start && v.range.end === ref.range!.end));
     if (!bots.length && refs.length === draft.references.length) return;
     this.paint(draft.text, [...refs, ...bots].sort((a, b) => a.range!.start - b.range!.start)); this.setSelectionRange(start, end);
   }

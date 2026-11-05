@@ -5,7 +5,9 @@ import { InstanceClient, resourceAPI, resourceURL, resourceID, localID, splitID,
 import { mountSwarm } from './swarmSettings';
 import { InstanceEvents } from './instanceEvents';
 import { ReferenceInput, trimmedDraft } from './referenceEditor';
-import { referenceIcons, referenceFromElement, renderMessageReferences, showBotDetails } from './references';
+import { referenceIcon, referenceFromElement, renderMessageReferences, showBotDetails, showGroupDetails } from './references';
+import { groupReference, memberHandle, referencedGroup } from './recipientMentions';
+import { mountBotGroups } from './botGroupSettings';
 import { Renderers } from './renderers';
 import { updateStreamedText } from './messageContent';
 import { conversationItems, conversationThreads, threadMessages, type ResponseGroup } from './conversation';
@@ -65,7 +67,7 @@ let settingsNode = '', machineFilter = '', modelNode = '';
 let chatNavigation = 0;
 let generationByNode: Record<string, Generation> = {};
 let generation: Generation = { endpointId: '', model: '', thinking: '', temperature: .6 };
-let latestLocal: State | null = null, latestSwarm: SwarmState | null = null;
+let latestLocal: (State & { nodeId?: string }) | null = null, latestSwarm: SwarmState | null = null;
 let swarmRefreshing: Promise<void> | null = null;
 let refreshing: Promise<void> | null = null, refreshTimer = 0, selectedSuggestion = 0;
 const referenceSearch = new ReferenceSearch();
@@ -151,7 +153,7 @@ function shell() {
     manage: () => settings('models', modelNode || entryNode),
     discover: async endpoint => (await api<{ data: { id: string }[] }>(`/endpoints/${endpoint.id}/models`)).data?.map(m => m.id) || [],
   });
-  const composer = q<ReferenceInput>('#composer'); composer.bots = () => state.bots; composer.oninput = e => {
+  const composer = q<ReferenceInput>('#composer'); composer.bots = () => state.bots; composer.groups = () => state.botGroups || []; composer.oninput = e => {
     dismissedSlash = '';
     ++referenceVersion; references = composer.snapshot().references; autosizeComposer(); rememberDraft(); updateSendButton(); clearTimeout(referenceTimer);
     const automatic = automaticMentions.get(chatId);
@@ -297,7 +299,7 @@ async function openNotification(hash: string) {
 async function send() {
   if (busy() || submitting) return; const draft = trimmedDraft(q<ReferenceInput>('#composer').snapshot()), content = draft.text; if (!content && !attachments.length) return;
   if (/^\/(approve|missed)(?:\s|$)/.test(content) && !slashSupported(splitID(chatId)[0] || entryNode)) throw new Error('Update the chat’s machine before sending this text; older versions interpret it as a command.');
-  assertOnlineRecipients(content, draft.references, state.bots);
+  assertOnlineRecipients(content, draft.references, state.bots, state.botGroups);
   submitting = true; q<ReferenceInput>('#composer').disabled = true; updateSendButton();
   try {
     if (!chatId) { const c = await api<Chat>('/chats', 'POST', {}); chatId = c.id; drafts.delete(''); history.replaceState(null, '', '#' + chatId); }
@@ -361,7 +363,7 @@ function applyFreshState() {
   if (!latestLocal) return;
   const selectedWasListed = state.chats.some(c => c.id === chatId);
   const rendering = () => JSON.stringify([state.plugins.filter(p => p.renderers?.length).map(p => [p.id, p.enabled, p.pending, p.digest]), state.bots.map(b => b.plugins)]), beforeRendering = rendering();
-  state = combineState(latestLocal, latestSwarm || { node: { nodeId: '', name: 'This machine', epoch: '', version: 1 }, enabled: false, peers: [], instances: [] });
+  state = combineState(latestLocal, latestSwarm || { node: { nodeId: latestLocal.nodeId || '', name: 'This machine', epoch: '', version: 1 }, enabled: false, peers: [], instances: [] });
   notifyUsageMachinesChanged();
   notifySlashCommandsChanged();
   state.chats = state.chats.filter(c => !deletedChats.has(c.id));
@@ -873,6 +875,11 @@ async function validateReferences() {
 
 async function activateReference(chip: HTMLElement) {
   const ref = referenceFromElement(chip);
+  if (ref.type === 'group') {
+    const current = referencedGroup(ref, state.botGroups || []);
+    const handles = ref.members?.map(member => member.handle) || current?.members.map(member => memberHandle(member, state.bots)) || [];
+    showGroupDetails(chip, ref.text || '@group', handles); return;
+  }
   if (ref.type === 'bot') { showBotDetails(chip, ref, state.bots, bot => editBot(bot)); return; }
   try {
     const article = chip.closest<HTMLElement>('.message');
@@ -959,7 +966,12 @@ function showPicker() {
   selectedSuggestion = 0;
   if (match.type === '@') {
     suggestions = state.bots.filter(b => `${b.handle} ${b.name}`.toLowerCase().includes(match.query.toLowerCase())).map(b => ({ label: '@' + b.handle, offline: !instanceOnline(b.nodeId || splitID(b.id)[0]), hint: b.name + (instanceOnline(b.nodeId || splitID(b.id)[0]) ? '' : ' · Offline') + ' · ' + (b.roots?.length ? b.roots.join(', ') : 'Unrestricted host access'), insert: '@' + b.handle, ref: { type: 'bot', botId: b.id, text: '@' + b.handle } }));
-    pickerStatus = suggestions.length ? '' : 'No matching bots.'; renderPicker();
+    for (const group of state.botGroups || []) {
+      if (!group.handle.toLowerCase().includes(match.query.toLowerCase())) continue;
+      const label = '@' + group.handle;
+      suggestions.push({ label, hint: group.members.map(m => '@' + memberHandle(m, state.bots)).join(', '), insert: label, ref: groupReference(group), offline: !instanceOnline(group.nodeId || entryNode) });
+    }
+    pickerStatus = suggestions.length ? '' : 'No matching bots or groups.'; renderPicker();
   } else referenceSearch.search(composer.value, match.query, result => {
     const selected = suggestions[selectedSuggestion]?.ref?.path;
     suggestions = result.entries.map(e => ({ label: e.name, hint: machineName(e.nodeId) + ' · ' + e.allowedBots.map(id => currentBot(id)?.handle || id).join(', ') + ' · ' + e.path, insert: '#' + e.name, ref: { nodeId: e.nodeId, type: 'file', kind: e.directory ? 'directory' : 'file', path: e.path, text: e.name, allowedBots: e.allowedBots } }));
@@ -973,7 +985,7 @@ function renderPicker() {
   const picker = q('.picker'); picker.hidden = false;
   picker.setAttribute('aria-label', pickerMode === 'slash' ? 'Slash commands' : 'File and bot suggestions');
   picker.setAttribute('aria-busy', String(pickerLoading)); q('#composer').setAttribute('aria-expanded', 'true');
-  picker.innerHTML = (pickerStatus ? `<p class="picker-status" role="status">${esc(pickerStatus)}</p>` : '') + suggestions.map((s, i) => `<button type="button" id="reference-option-${i}" role="option" aria-disabled="${!!s.offline || !!s.unavailable}" aria-selected="${i === selectedSuggestion}" class="${i === selectedSuggestion ? 'selected' : ''}" data-suggestion="${i}">${s.command ? '<span aria-hidden="true">/</span>' : referenceIcons[s.ref?.type === 'bot' ? 'bot' : s.ref?.kind === 'directory' ? 'directory' : 'file']}<span class="picker-name"><strong>${esc(s.label)}</strong><small title="${esc(s.hint)}">${esc(s.unavailable || s.hint)}</small></span><span class="picker-kind">${s.command ? 'Command' : s.ref?.type === 'bot' ? 'Bot' : s.ref?.kind === 'directory' ? 'Folder' : 'File'}</span></button>`).join('');
+  picker.innerHTML = (pickerStatus ? `<p class="picker-status" role="status">${esc(pickerStatus)}</p>` : '') + suggestions.map((s, i) => `<button type="button" id="reference-option-${i}" role="option" aria-disabled="${!!s.offline || !!s.unavailable}" aria-selected="${i === selectedSuggestion}" class="${i === selectedSuggestion ? 'selected' : ''}" data-suggestion="${i}">${s.command ? '<span aria-hidden="true">/</span>' : referenceIcon(s.ref)}<span class="picker-name"><strong>${esc(s.label)}</strong><small title="${esc(s.hint)}">${esc(s.unavailable || s.hint)}</small></span><span class="picker-kind">${s.command ? 'Command' : s.ref?.type === 'group' ? 'Group' : s.ref?.type === 'bot' ? 'Bot' : s.ref?.kind === 'directory' ? 'Folder' : 'File'}</span></button>`).join('');
   if (suggestions.length) q('#composer').setAttribute('aria-activedescendant', `reference-option-${selectedSuggestion}`); else q('#composer').removeAttribute('aria-activedescendant');
   for (const el of picker.querySelectorAll<HTMLButtonElement>('button')) { el.onmousedown = e => e.preventDefault(); el.onclick = () => chooseSuggestion(Number(el.dataset.suggestion)); }
 }
@@ -981,12 +993,12 @@ function chooseSuggestion(index: number) {
   const composer = q<ReferenceInput>('#composer'), match = activeMention(composer.value, composer.selectionStart), item = suggestions[index];
   if (item?.command) { void invokeCommand(item.command); return; }
   if (!match || !item) return;
-  if (item.offline) { notice(`Machine '${machineName(splitID(item.ref?.botId)[0])}' is offline; ${item.label} is unavailable.`, true); return; }
+  if (item.offline) { notice(`Machine '${machineName(item.ref?.nodeId || splitID(item.ref?.botId)[0])}' is offline; ${item.label} is unavailable.`, true); return; }
   composer.replace(item.insert + ' ', match.start, match.end, item.ref); closePicker(); composer.focus();
 }
 function renderRefs() { q<ReferenceInput>('#composer').updateReferences(references); }
 
-function dialog(title: string, body: string) { const el = document.createElement('dialog'); el.innerHTML = `<div class="dialog-heading"><h2>${esc(title)}</h2><button class="icon" aria-label="Close">×</button></div>${body}`; document.body.append(el); q('.dialog-heading button', el).onclick = () => el.close(); el.addEventListener('close', () => el.remove()); el.showModal(); return el; }
+function dialog(title: string, body: string) { const el = document.createElement('dialog'); el.setAttribute('aria-label', title); el.innerHTML = `<div class="dialog-heading"><h2>${esc(title)}</h2><button class="icon" aria-label="Close">×</button></div>${body}`; document.body.append(el); q('.dialog-heading button', el).onclick = () => el.close(); el.addEventListener('close', () => el.remove()); el.showModal(); return el; }
 window.addEventListener('storage', event => { if (event.key === statisticsPreferenceKey) renderMessages(false, true); });
 function settings(section = 'general', node = settingsNode || entryNode, selectModel = true) {
   settingsNode = node; section = localID(section); const ownerPlugins = state.plugins.filter(p => sameMachine(p, node)); const boundAPI = <T = any>(path: string, method = 'GET', body?: unknown) => resourceAPI<T>(path, method, body, node);
@@ -1015,6 +1027,13 @@ function settings(section = 'general', node = settingsNode || entryNode, selectM
 }
 function botSettings(root: HTMLElement) { const bots = state.bots.filter(b => sameMachine(b, settingsNode));
   root.innerHTML = `<button class="primary" id="add-bot">＋ Add bot</button>${bots.map(b => `<div class="list-card"><div class="grow"><strong>${esc(b.name)}</strong><p class="subtle">@${esc(b.handle)} · ${esc(b.roots?.length ? b.roots.join(', ') : 'Unbound')}</p></div><button data-edit="${esc(b.id)}">Edit</button>${localID(b.id) !== 'echo' ? `<button class="danger" data-remove="${esc(b.id)}">Delete</button>` : ''}</div>`).join('')}`;
+  const section = document.createElement('section'); root.append(section);
+  const node = settingsNode || entryNode;
+  if (node !== entryNode && !instances.get(node)?.node.capabilities?.includes('bot-groups/1')) {
+    section.textContent = 'Update this machine to manage bot groups.';
+  } else {
+    mountBotGroups(section, node, () => state.bots, (state.botGroups || []).filter(g => sameMachine(g, node)), dialog, async () => { await refresh(true); await swarmRefreshing; }, error => notice(error, true));
+  }
   q('#add-bot', root).onclick = () => editBot();
   for (const button of root.querySelectorAll<HTMLButtonElement>('[data-edit]')) button.onclick = () => editBot(currentBot(button.dataset.edit));
   for (const button of root.querySelectorAll<HTMLButtonElement>('[data-remove]')) button.onclick = action(async () => { await api(`/bots/${button.dataset.remove}`, 'DELETE'); await refresh(); botSettings(root); });

@@ -72,6 +72,34 @@ test('pending reference requests cannot send a message or reopen a dismissed pic
   } finally { release(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('a local group can reference files and send while the Swarm directory is unavailable', async ({ page }) => {
+  const root = await mkdtemp(join(tmpdir(), 'echo-group-files-'));
+  let groupId = '';
+  try {
+    await writeFile(join(root, 'group-review.txt'), 'review');
+    await setup(page, root);
+    const state = await (await page.request.get('/api/v1/state')).json();
+    const bot = state.bots.find((b: any) => b.handle === 'kaiju');
+    const saved = await page.request.post('/api/v1/bot-groups', { data: { handle: 'localreview', members: [{ botId: bot.id }] } });
+    expect(saved.ok(), await saved.text()).toBe(true); groupId = (await saved.json()).id;
+    await page.request.post('/api/v1/endpoints', { data: { endpoint: { id: 'test', name: 'Test model', url: 'http://127.0.0.1:3743/v1', model: 'echo-test', contextTokens: 32768 } } });
+    await page.route('**/api/v1/swarm/state', route => route.fulfill({ status: 503, json: { error: 'Directory unavailable' } }));
+    await page.reload(); await page.locator('#new-chat').click();
+    const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+    await composer.fill('@localreview inspect #group-review');
+    await expect(page.getByRole('option').filter({ hasText: 'group-review.txt' })).toBeVisible();
+    await composer.press('Tab'); await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    await expect(page.locator('.message.assistant')).toContainText('Completed the requested work.');
+    const messages = await (await page.request.get('/api/v1/chats/' + new URL(page.url()).hash.slice(1) + '/messages')).json();
+    const prompt = messages.find((m: any) => m.role === 'user');
+    expect(prompt.recipients).toEqual([bot.id]);
+    expect(prompt.segments.find((s: any) => s.type === 'file').allowedBots).toEqual([bot.id]);
+  } finally {
+    if (groupId) await page.request.delete('/api/v1/bot-groups/' + groupId);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('inline references edit, restore, reveal and persist with distinct paths', async ({ page, context }, testInfo) => {
   const root = await mkdtemp(join(tmpdir(), 'echo-inline-'));
   try {

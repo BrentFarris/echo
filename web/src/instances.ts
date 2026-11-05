@@ -62,6 +62,7 @@ export function ownedMessage(node: string, message: Message): Message {
 export function ownedState(node: string, value: State): State {
   const key = (id: string) => resourceID(node, id);
   return { slashCommands: (value.slashCommands || []).map(command => ({ ...command, id: key(command.id), nodeId: node, action: command.action.type === 'text' ? command.action : { ...command.action, pluginId: key(command.action.pluginId), botId: command.action.botId && key(command.action.botId) } })),
+    botGroups: (value.botGroups || []).map(group => ({ ...group, nodeId: node, handle: node === entryNode ? group.handle : `${machineName(node)}.${group.handle}` })),
     bots: (value.bots || []).map(b => ({ ...b, id: key(b.id), nodeId: node, handle: node === entryNode ? b.handle : `${machineName(node)}.${b.handle}`, plugins: Object.fromEntries(Object.entries(b.plugins || {}).map(([id, enabled]) => [key(id), enabled])) })),
     chats: (value.chats || []).map(c => ({ ...c, id: key(c.id), nodeId: node, generation: ownedGeneration(node, c.generation), bots: Object.fromEntries(Object.entries(c.bots || {}).map(([id, v]) => [key(id), v])) })),
     plugins: (value.plugins || []).map(p => ({ ...p, id: key(p.id), nodeId: node })),

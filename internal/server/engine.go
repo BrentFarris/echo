@@ -31,17 +31,23 @@ func structuredSegments(req SendRequest, bots []domain.Bot) []domain.Segment {
 		lookup[b.Handle] = b.ID
 	}
 	content, _ := referenceContent(req)
-	masked := codeBlocks.ReplaceAllStringFunc(content, func(v string) string { return strings.Repeat(" ", len(v)) })
-	for _, match := range mentions.FindAllStringSubmatchIndex(masked, -1) {
+	for _, match := range mentionMatches(content) {
 		start, end := match[2]-1, match[3]
-		id := lookup[strings.ToLower(req.Content[match[2]:end])]
-		if id == "" {
-			continue
+		seg, grouped := req.groupMentions[start]
+		if !grouped {
+			id := lookup[strings.ToLower(req.Content[match[2]:end])]
+			if saved, ok := req.botMentions[start]; ok {
+				id = saved.BotID
+			}
+			if id == "" {
+				continue
+			}
+			seg = domain.Segment{Type: "bot", Text: req.Content[start:end], BotID: id, Range: &domain.SegmentRange{Start: utf16Offset(req.Content[:start]), End: utf16Offset(req.Content[:end])}}
 		}
 		if start > last {
 			segments = append(segments, domain.Segment{Type: "text", Text: req.Content[last:start]})
 		}
-		segments = append(segments, domain.Segment{Type: "bot", Text: req.Content[start:end], BotID: id, Range: &domain.SegmentRange{Start: utf16Offset(req.Content[:start]), End: utf16Offset(req.Content[:end])}})
+		segments = append(segments, seg)
 		last = end
 	}
 	if last < len(req.Content) {
@@ -59,6 +65,9 @@ func (s *Server) recipients(req SendRequest) ([]domain.Bot, error) {
 	if req.scheduledBot != "" {
 		b, e := s.Bot(req.scheduledBot)
 		return []domain.Bot{b}, e
+	}
+	if err := s.prepareGroupMentions(s.ctx, &req); err != nil {
+		return nil, err
 	}
 	content, err := referenceContent(req)
 	if err != nil {
@@ -94,7 +103,7 @@ func (s *Server) recipients(req SendRequest) ([]domain.Bot, error) {
 		}
 	}
 	for _, seg := range req.Segments {
-		if seg.Type == "bot" {
+		if seg.Type == "bot" && seg.Range == nil {
 			b, ok := byID[seg.BotID]
 			if !ok {
 				return nil, errors.New("mentioned bot no longer exists")
@@ -102,10 +111,31 @@ func (s *Server) recipients(req SendRequest) ([]domain.Bot, error) {
 			add(b)
 		}
 	}
-	for _, m := range mentions.FindAllStringSubmatch(codeBlocks.ReplaceAllString(content, ""), -1) {
-		b, ok := byName[strings.ToLower(m[1])]
+	for _, m := range mentionMatches(content) {
+		if group, ok := req.groupMentions[m[2]-1]; ok {
+			err := s.bindGroup(group, func(member domain.BotGroupMember) (string, bool) {
+				b, ok := byID[member.BotID]
+				if !ok || member.NodeID != s.Swarm.Node().ID {
+					return "", false
+				}
+				add(b)
+				return b.Handle, true
+			})
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
+		name := content[m[2]:m[3]]
+		b, ok := byName[strings.ToLower(name)]
+		if saved, bound := req.botMentions[m[2]-1]; bound {
+			b, ok = byID[saved.BotID]
+			if !ok {
+				return nil, errors.New("mentioned bot no longer exists")
+			}
+		}
 		if !ok {
-			return nil, fmt.Errorf("unknown bot @%s", m[1])
+			return nil, fmt.Errorf("unknown bot @%s", name)
 		}
 		add(b)
 	}
@@ -115,15 +145,21 @@ func (s *Server) recipients(req SendRequest) ([]domain.Bot, error) {
 	return result, nil
 }
 func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
+	if prior := s.Store.Accepted(chatID, req.RequestID); prior != "" {
+		return acceptedDispatch(prior), nil
+	}
 	if req.replaceMessageID != "" || req.rerunMessageID != "" {
-		if prior := s.Store.Accepted(chatID, req.RequestID); prior != "" {
-			return acceptedDispatch(prior), nil
-		}
 		var err error
 		req, err = s.prepareResubmit(chatID, req)
 		if err != nil {
 			return nil, err
 		}
+	}
+	if len(req.Content) > 1<<20 {
+		return nil, errors.New("message is too large")
+	}
+	if err := s.prepareGroupMentions(s.ctx, &req); err != nil {
+		return nil, err
 	}
 	if req.scheduledBot == "" && s.needsSwarm(req) {
 		return s.sendSwarm(chatID, req)
@@ -134,16 +170,8 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 	if len(req.RequestID) > 128 {
 		return nil, errors.New("request id exceeds 128 characters")
 	}
-	if prior := s.Store.Accepted(chatID, req.RequestID); prior != "" {
-		done := make(chan struct{})
-		close(done)
-		return &dispatch{id: prior, done: done}, nil
-	}
 	if strings.TrimSpace(req.Content) == "" && len(req.Attachments) == 0 {
 		return nil, errors.New("message is empty")
-	}
-	if len(req.Content) > 1<<20 {
-		return nil, errors.New("message is too large")
 	}
 	bots, e := s.recipients(req)
 	if e != nil {
@@ -375,7 +403,7 @@ func (s *Server) history(bot domain.Bot, chat string) ([]model.Message, error) {
 			if !slices.Contains(m.Recipients, bot.ID) {
 				continue
 			}
-			content := m.Content
+			content := groupModelContent(m)
 			for _, seg := range m.Segments {
 				if seg.Type == "file" && slices.Contains(seg.AllowedBots, bot.ID) {
 					content += "\nReferenced path (read with file tools): " + seg.Path

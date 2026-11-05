@@ -48,10 +48,14 @@ func (s *Server) swarmCacheAuthorized(id string) bool {
 }
 
 func (s *Server) offlineMachine(id, bot string) error {
-	if bot != "" {
-		return fmt.Errorf("Machine '%s' is offline; @%s is unavailable", s.Swarm.Namespace(id), bot)
+	name := s.Swarm.Namespace(id)
+	if name == "" {
+		name = id
 	}
-	return fmt.Errorf("Machine '%s' is offline", s.Swarm.Namespace(id))
+	if bot != "" {
+		return fmt.Errorf("Machine '%s' is offline; @%s is unavailable", name, bot)
+	}
+	return fmt.Errorf("Machine '%s' is offline", name)
 }
 
 func (s *Server) cachedSwarmState(id string) json.RawMessage {

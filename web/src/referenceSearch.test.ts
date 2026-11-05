@@ -53,7 +53,9 @@ test('empty results, incomplete searches and actionable errors are preserved', a
 test('reference activation keeps files and resolved recipients on their owning machine', () => {
   const local = 'a'.repeat(32), remote = 'b'.repeat(32);
   const state = (): State => ({ bots: [{ id: 'echo', handle: 'echo' }, { id: 'kaiju', handle: 'kaiju' }].map(bot => ({ ...bot, name: bot.handle, roots: [], plugins: {}, maxParallelPrompts: 1, prompt: '', revision: 0 })), chats: [], endpoints: [], plugins: [], appDock: [], schedules: [], occurrences: [], runs: [] });
-  combineState(state(), { node: { nodeId: local, name: 'desktop', epoch: '', version: 1 }, enabled: true, peers: [], instances: [{ node: { nodeId: remote, name: 'linux', epoch: '', version: 1 }, state: state(), online: true }] });
+  const localState = state();
+  localState.botGroups = [{ id: 'group', handle: 'mods', members: [local, remote].map(nodeId => ({ nodeId, botId: 'kaiju', handle: 'kaiju' })) }];
+  combineState(localState, { node: { nodeId: local, name: 'desktop', epoch: '', version: 1 }, enabled: true, peers: [], instances: [{ node: { nodeId: remote, name: 'linux', epoch: '', version: 1 }, state: state(), online: true }] });
   const content = '@kaiju @linux.kaiju inspect #local.txt and #@missing.txt';
   const file = (name: string, nodeId: string): Segment => ({ type: 'file', nodeId, text: name, path: `/${name}`, range: { start: content.indexOf('#' + name), end: content.indexOf('#' + name) + name.length + 1 } });
   const localFile = file('local.txt', local), remoteFile = file('@missing.txt', remote);
@@ -67,4 +69,10 @@ test('reference activation keeps files and resolved recipients on their owning m
   expect(localDraft.content).not.toContain('@missing');
   expect(instanceReferenceDraft('#file', [], local).segments).toEqual([{ type: 'bot', botId: 'echo' }]);
   expect(() => instanceReferenceDraft('No recipients on Linux', [remoteFile], remote)).toThrow('no longer available');
+  for (const node of [local, remote]) {
+    const explicit = instanceReferenceDraft('@kaiju @linux.kaiju', [], node).segments;
+    expect(instanceReferenceDraft('@mods @kaiju', [], node).segments).toEqual(explicit);
+    expect(instanceReferenceDraft('@old', [{ type: 'group', groupId: 'group', nodeId: local, text: '@old', range: { start: 0, end: 4 } }], node).segments).toEqual(explicit);
+  }
+  expect(instanceReferenceDraft('example `@mods`', [], local).segments).toEqual([{ type: 'bot', botId: 'echo' }]);
 });

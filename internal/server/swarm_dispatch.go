@@ -92,6 +92,13 @@ func (s *Server) displayBot(node, id string) string {
 	return swarm.Key(node, id)
 }
 func (s *Server) needsSwarm(req SendRequest) bool {
+	for _, group := range req.groupMentions {
+		for _, member := range group.Members {
+			if member.NodeID != s.Swarm.Node().ID {
+				return true
+			}
+		}
+	}
 	for _, id := range req.rerunRecipients {
 		if node, _ := swarm.Split(id); node != "" {
 			return true
@@ -107,6 +114,9 @@ func (s *Server) needsSwarm(req SendRequest) bool {
 		if seg.Type == "bot" && (seg.NodeID != "" && seg.NodeID != s.Swarm.Node().ID || strings.Contains(seg.BotID, ":")) {
 			return true
 		}
+	}
+	if req.rerunMessageID != "" {
+		return false
 	}
 	content, _ := referenceContent(req)
 	for _, match := range mentions.FindAllStringSubmatch(codeBlocks.ReplaceAllString(content, ""), -1) {
@@ -147,6 +157,16 @@ func (s *Server) swarmRoster(ctx context.Context, req SendRequest) ([]swarmParti
 		content, _ := referenceContent(req)
 		masked := codeBlocks.ReplaceAllStringFunc(content, func(value string) string { return strings.Repeat(" ", len(value)) })
 		boundaries := referenceBoundaries(req.Content)
+		for start, group := range req.groupMentions {
+			end := start + len(group.Text)
+			masked = masked[:start] + strings.Repeat(" ", end-start) + masked[end:]
+			for _, member := range group.Members {
+				if !s.swarmAvailable(member.NodeID) {
+					return nil, s.offlineMachine(member.NodeID, member.Handle)
+				}
+				wanted[member.NodeID] = member.Handle
+			}
+		}
 		for _, seg := range req.Segments {
 			if seg.Type != "bot" {
 				continue
@@ -218,6 +238,9 @@ func (s *Server) swarmRoster(ctx context.Context, req SendRequest) ([]swarmParti
 }
 
 func (s *Server) resolveSwarm(ctx context.Context, req SendRequest) ([]swarmParticipant, []domain.Segment, error) {
+	if err := s.prepareGroupMentions(ctx, &req); err != nil {
+		return nil, nil, err
+	}
 	content, err := referenceContent(req)
 	if err != nil {
 		return nil, nil, err
@@ -253,7 +276,7 @@ func (s *Server) resolveSwarm(ctx context.Context, req SendRequest) ([]swarmPart
 			}
 			selected = append(selected, p)
 		}
-		return selected, req.Segments, nil
+		return selected, req.Segments, s.checkGroupWorkers(req.Segments, selected)
 	}
 	structured := map[int]swarmParticipant{}
 	boundaries := referenceBoundaries(req.Content)
@@ -279,7 +302,6 @@ func (s *Server) resolveSwarm(ctx context.Context, req SendRequest) ([]swarmPart
 		if !ok {
 			return nil, nil, fmt.Errorf("mentioned bot is unavailable: %s", seg.Text)
 		}
-		add(p)
 		if seg.Range != nil {
 			start, startOK := boundaries[seg.Range.Start]
 			end, endOK := boundaries[seg.Range.End]
@@ -287,26 +309,50 @@ func (s *Server) resolveSwarm(ctx context.Context, req SendRequest) ([]swarmPart
 				return nil, nil, errors.New("bot reference no longer matches its message location")
 			}
 			structured[start] = p
+		} else {
+			add(p)
 		}
 	}
 	segments := []domain.Segment{}
 	last := 0
-	masked := codeBlocks.ReplaceAllStringFunc(content, func(v string) string { return strings.Repeat(" ", len(v)) })
-	for _, match := range mentions.FindAllStringSubmatchIndex(masked, -1) {
-		name := strings.ToLower(content[match[2]:match[3]])
-		p, ok := byName[name]
-		if saved, exists := structured[match[2]-1]; exists {
-			p, ok = saved, true
-		}
-		if !ok {
-			return nil, nil, fmt.Errorf("unknown bot @%s", name)
-		}
-		add(p)
+	for _, match := range mentionMatches(content) {
 		start, end := match[2]-1, match[3]
+		seg, grouped := req.groupMentions[start]
+		if grouped {
+			err := s.bindGroup(seg, func(member domain.BotGroupMember) (string, bool) {
+				p, ok := byID[swarm.Key(member.NodeID, member.BotID)]
+				if !ok {
+					return "", false
+				}
+				add(p)
+				if req.forwardedGroups {
+					return member.Handle, true
+				}
+				if member.NodeID == origin {
+					_, handle, _ := strings.Cut(p.Handle, ".")
+					return handle, true
+				}
+				return p.Handle, true
+			})
+			if err != nil {
+				return nil, nil, err
+			}
+		} else {
+			name := strings.ToLower(content[match[2]:end])
+			p, ok := byName[name]
+			if saved, exists := structured[start]; exists {
+				p, ok = saved, true
+			}
+			if !ok {
+				return nil, nil, fmt.Errorf("unknown bot @%s", name)
+			}
+			add(p)
+			seg = domain.Segment{Type: "bot", BotID: s.displayBot(p.Ref.NodeID, p.Ref.ID), NodeID: p.Ref.NodeID, Text: req.Content[start:end], Range: &domain.SegmentRange{Start: utf16Offset(req.Content[:start]), End: utf16Offset(req.Content[:end])}}
+		}
 		if start > last {
 			segments = append(segments, domain.Segment{Type: "text", Text: req.Content[last:start]})
 		}
-		segments = append(segments, domain.Segment{Type: "bot", BotID: s.displayBot(p.Ref.NodeID, p.Ref.ID), NodeID: p.Ref.NodeID, Text: req.Content[start:end], Range: &domain.SegmentRange{Start: utf16Offset(req.Content[:start]), End: utf16Offset(req.Content[:end])}})
+		segments = append(segments, seg)
 		last = end
 	}
 	if last < len(req.Content) {
@@ -327,7 +373,18 @@ func (s *Server) resolveSwarm(ctx context.Context, req SendRequest) ([]swarmPart
 		}
 		add(p)
 	}
-	return selected, segments, nil
+	return selected, segments, s.checkGroupWorkers(segments, selected)
+}
+
+func (s *Server) checkGroupWorkers(segments []domain.Segment, participants []swarmParticipant) error {
+	if hasGroupSegment(segments) {
+		for _, p := range participants {
+			if err := s.checkGroupCapability(p.Ref.NodeID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Server) defaultGeneration() domain.Generation {
@@ -351,22 +408,34 @@ func requestFingerprint(req workerRequest) string {
 	}
 	sort.Strings(participants)
 	files := []string{}
+	var groups []domain.Segment
 	for _, seg := range req.Message.Segments {
 		if seg.Type == "file" {
 			files = append(files, swarm.Key(seg.NodeID, seg.Path))
+		}
+		if seg.Type == "group" {
+			groups = append(groups, seg)
 		}
 	}
 	sort.Strings(files)
 	data, _ := json.Marshal(struct {
 		Home, Chat, Request, Content string
 		Participants, Files          []string
-	}{req.Home, req.Chat.ID, req.RequestID, req.Message.Content, participants, files})
+		Groups                       []domain.Segment `json:",omitempty"`
+	}{req.Home, req.Chat.ID, req.RequestID, req.Message.Content, participants, files, groups})
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:])
 }
 
 func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 	if !s.Swarm.Enabled() {
+		for _, group := range req.groupMentions {
+			for _, member := range group.Members {
+				if member.NodeID != s.Swarm.Node().ID {
+					return nil, fmt.Errorf("enable Swarm to reach %s member @%s on %s", group.Text, member.Handle, s.Swarm.Namespace(member.NodeID))
+				}
+			}
+		}
 		return nil, errors.New("enable Swarm before addressing another instance")
 	}
 	if s.ctx.Err() != nil {

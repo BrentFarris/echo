@@ -1,6 +1,6 @@
 import type { FileEntry, Segment } from './types';
 import { InstanceClient, entryNode, instances, ownedState, resourceID, splitID, localID } from './instances';
-import { typedBotSegments } from './references';
+import { draftRecipients } from './recipientMentions';
 
 export type ReferenceResults = { entries: FileEntry[]; indexing: boolean; incomplete: boolean };
 export type ReferenceSearchState = ReferenceResults & { loading?: boolean; error?: string };
@@ -17,13 +17,8 @@ async function fetchReferences(content: string, query: string, signal: AbortSign
 }
 
 function referenceGroups(content: string, segments: Segment[]) {
-  const bots = [...instances].flatMap(([node, i]) => i.state ? ownedState(node, i.state).bots : []);
-  let masked = content.replace(/```[\s\S]*?```|`[^`]*`/g, value => ' '.repeat(value.length));
-  for (const ref of segments) if (ref.range) masked = masked.slice(0, ref.range.start) + ' '.repeat(ref.range.end - ref.range.start) + masked.slice(ref.range.end);
-  for (const match of masked.matchAll(/(?:^|[^A-Za-z0-9_@])@([A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)*)/g)) {
-    if (!bots.some(bot => bot.handle.toLowerCase() === match[1].toLowerCase())) throw new Error(`unknown bot @${match[1].toLowerCase()}`);
-  }
-  const selected = [...segments.filter(s => s.type === 'bot'), ...typedBotSegments(masked, bots)];
+  const inventory = [...instances].flatMap(([node, i]) => i.state ? [ownedState(node, i.state)] : []);
+  const { selected } = draftRecipients(content, segments, inventory.flatMap(s => s.bots), inventory.flatMap(s => s.botGroups || []), true);
   const groups = new Map<string, string[]>();
   for (const ref of selected) { const [node, id] = splitID(ref.botId); const key = ref.nodeId || node; groups.set(key, [...new Set([...(groups.get(key) || []), id])]); }
   if (!groups.size) groups.set(entryNode, ['echo']);

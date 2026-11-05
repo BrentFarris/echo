@@ -16,6 +16,7 @@ import (
 )
 
 func (s *Server) routes(mux *http.ServeMux) {
+	s.botGroupRoutes(mux)
 	s.slashCommandRoutes(mux)
 	s.usageRoutes(mux)
 	s.messageActionRoutes(mux)
@@ -34,6 +35,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.attachmentRoutes(mux)
 	mux.HandleFunc("GET /api/v1/state", func(w http.ResponseWriter, r *http.Request) {
 		bots, e := s.Bots()
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		groups, e := s.botGroups()
 		if e != nil {
 			respond(w, nil, e)
 			return
@@ -89,7 +95,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 			}
 		}
 		runs = visibleRuns
-		respond(w, map[string]any{"bots": bots, "chats": chats, "endpoints": endpoints, "plugins": ps, "schedules": schedules, "occurrences": jobs, "runs": runs, "appDock": dock, "slashCommands": commands, "questions": s.pendingQuestionState()}, e)
+		respond(w, map[string]any{"nodeId": s.Swarm.Node().ID, "bots": bots, "botGroups": groups, "chats": chats, "endpoints": endpoints, "plugins": ps, "schedules": schedules, "occurrences": jobs, "runs": runs, "appDock": dock, "slashCommands": commands, "questions": s.pendingQuestionState()}, e)
 	})
 	mux.HandleFunc("POST /api/v1/bots", func(w http.ResponseWriter, r *http.Request) {
 		var input json.RawMessage
@@ -280,6 +286,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 		}
 		if caller, ok := swarm.Caller(r.Context()); ok {
 			a.OriginNodeID = caller.NodeID
+			a.forwardedGroups = true
 		} else {
 			a.OriginNodeID = s.Swarm.Node().ID
 		}

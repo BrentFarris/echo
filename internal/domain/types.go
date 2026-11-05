@@ -76,15 +76,29 @@ type Attachment struct {
 	MediaType    string `json:"mediaType"`
 	Size         int64  `json:"size"`
 }
+type BotGroupMember struct {
+	NodeID string `json:"nodeId"`
+	BotID  string `json:"botId"`
+	Handle string `json:"handle"`
+}
+
+type BotGroup struct {
+	ID      string           `json:"id"`
+	Handle  string           `json:"handle"`
+	Members []BotGroupMember `json:"members"`
+}
+
 type Segment struct {
-	NodeID      string        `json:"nodeId,omitempty"`
-	Type        string        `json:"type"`
-	Text        string        `json:"text,omitempty"`
-	BotID       string        `json:"botId,omitempty"`
-	Path        string        `json:"path,omitempty"`
-	AllowedBots []string      `json:"allowedBots,omitempty"`
-	Kind        string        `json:"kind,omitempty"`
-	Range       *SegmentRange `json:"range,omitempty"`
+	GroupID     string           `json:"groupId,omitempty"`
+	Members     []BotGroupMember `json:"members,omitempty"`
+	NodeID      string           `json:"nodeId,omitempty"`
+	Type        string           `json:"type"`
+	Text        string           `json:"text,omitempty"`
+	BotID       string           `json:"botId,omitempty"`
+	Path        string           `json:"path,omitempty"`
+	AllowedBots []string         `json:"allowedBots,omitempty"`
+	Kind        string           `json:"kind,omitempty"`
+	Range       *SegmentRange    `json:"range,omitempty"`
 }
 
 // SegmentRange uses half-open UTF-16 offsets, matching browser string indexes.

@@ -136,9 +136,28 @@ func (s *Server) sendAttachments(chatID string, req SendRequest) ([]domain.Attac
 }
 
 func (s *Server) messageActionRoutes(mux *http.ServeMux) {
+	// The entry signs a remote rerun using the same immutable input the home
+	// will resubmit. A changed transcript or roster invalidates that proof.
+	mux.HandleFunc("POST /api/v1/chats/{id}/messages/{messageId}/rerun-input", func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			RequestID string `json:"requestId"`
+		}
+		if err := decode(w, r, &input); err != nil {
+			respond(w, nil, err)
+			return
+		}
+		chat := r.PathValue("id")
+		if prior := s.Store.Accepted(chat, input.RequestID); prior != "" {
+			respond(w, map[string]string{"dispatchId": prior}, nil)
+			return
+		}
+		req, err := s.prepareResubmit(chat, SendRequest{RequestID: input.RequestID, rerunMessageID: r.PathValue("messageId")})
+		respond(w, domain.Message{Content: req.Content, Segments: req.Segments, Recipients: req.rerunRecipients}, err)
+	})
 	mux.HandleFunc("POST /api/v1/chats/{id}/messages/{messageId}/rerun", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			RequestID string `json:"requestId"`
+			RequestID string            `json:"requestId"`
+			Permits   map[string]string `json:"permits,omitempty"`
 		}
 		if err := decode(w, r, &body); err != nil {
 			respond(w, nil, err)
@@ -147,6 +166,7 @@ func (s *Server) messageActionRoutes(mux *http.ServeMux) {
 		req := SendRequest{RequestID: body.RequestID, rerunMessageID: r.PathValue("messageId"), OriginNodeID: s.Swarm.Node().ID}
 		if caller, ok := swarm.Caller(r.Context()); ok {
 			req.OriginNodeID = caller.NodeID
+			req.Permits = body.Permits
 		}
 		d, err := s.send(r.PathValue("id"), req)
 		if err != nil {
@@ -183,8 +203,10 @@ func (s *Server) messageActionRoutes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /api/v1/chats/{id}/messages/{messageId}/resubmit", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Content   string `json:"content"`
-			RequestID string `json:"requestId"`
+			Content   string            `json:"content"`
+			RequestID string            `json:"requestId"`
+			Segments  []domain.Segment  `json:"segments,omitempty"`
+			Permits   map[string]string `json:"permits,omitempty"`
 		}
 		if err := decode(w, r, &body); err != nil {
 			respond(w, nil, err)
@@ -193,6 +215,7 @@ func (s *Server) messageActionRoutes(mux *http.ServeMux) {
 		req := SendRequest{Content: body.Content, RequestID: body.RequestID, replaceMessageID: r.PathValue("messageId"), OriginNodeID: s.Swarm.Node().ID}
 		if caller, ok := swarm.Caller(r.Context()); ok {
 			req.OriginNodeID = caller.NodeID
+			req.Segments, req.Permits, req.forwardedGroups = body.Segments, body.Permits, true
 		}
 		d, err := s.send(r.PathValue("id"), req)
 		if err != nil {

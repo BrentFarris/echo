@@ -85,6 +85,11 @@ func sameBotScope(a, b domain.Bot) bool {
 }
 
 func (s *Server) saveBotLocked(b domain.Bot) (domain.Bot, error) {
+	// Scope changes can release mu during cancellation. Check the shared
+	// namespace here, immediately before committing the new handle.
+	if err := s.checkGroupHandle(b.Handle, ""); err != nil {
+		return b, err
+	}
 	b.Revision = 1
 	if old, err := s.Bot(b.ID); err == nil {
 		b.Revision = old.Revision
