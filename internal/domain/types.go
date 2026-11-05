@@ -17,14 +17,32 @@ func ID() string {
 func Now() time.Time { return time.Now().UTC() }
 
 type Bot struct {
-	MaxParallelPrompts *int            `json:"maxParallelPrompts,omitempty"`
-	ID                 string          `json:"id"`
-	Handle             string          `json:"handle"`
-	Name               string          `json:"name"`
-	Prompt             string          `json:"prompt"`
-	Roots              []string        `json:"roots"`
-	Plugins            map[string]bool `json:"plugins"`
-	Revision           int64           `json:"revision"`
+	ModelOverride      *BotModelOverride `json:"modelOverride,omitempty"`
+	ThinkingOverride   *string           `json:"thinkingOverride,omitempty"`
+	MaxParallelPrompts *int              `json:"maxParallelPrompts,omitempty"`
+	ID                 string            `json:"id"`
+	Handle             string            `json:"handle"`
+	Name               string            `json:"name"`
+	Prompt             string            `json:"prompt"`
+	Roots              []string          `json:"roots"`
+	Plugins            map[string]bool   `json:"plugins"`
+	Revision           int64             `json:"revision"`
+}
+
+type BotModelOverride struct {
+	EndpointID string `json:"endpointId"`
+	Model      string `json:"model,omitempty"`
+}
+
+// OverrideGeneration leaves the user's selection intact for other bots.
+func (b Bot) OverrideGeneration(g Generation) Generation {
+	if b.ModelOverride != nil {
+		g.EndpointID, g.Model = b.ModelOverride.EndpointID, b.ModelOverride.Model
+	}
+	if b.ThinkingOverride != nil && *b.ThinkingOverride != "" {
+		g.Thinking = *b.ThinkingOverride
+	}
+	return g
 }
 
 // PluginEnabled is the bot's saved selection, independent of global availability.

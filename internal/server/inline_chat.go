@@ -86,6 +86,7 @@ func (s *Server) handleInlineChat(w http.ResponseWriter, r *http.Request) {
 		editorError(w, 403, err.Error())
 		return
 	}
+	input.Generation = bot.OverrideGeneration(input.Generation)
 	var endpoint domain.Endpoint
 	if input.Generation.EndpointID == "" || s.Store.Get("endpoints", input.Generation.EndpointID, &endpoint) != nil {
 		editorError(w, 400, "configure and select a model first")

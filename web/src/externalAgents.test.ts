@@ -21,6 +21,7 @@ test('selector skips HTTP discovery and hides unsupported tuning for CLI connect
   const settings = new GenerationSettings(root.querySelector('details')!, { state: () => ({ generation: { endpointId: 'cli', model: '', thinking: '', temperature: .6 }, endpoints: [endpoint], node: 'local', machines: [{ id: 'local', name: 'Local' }] }), change: vi.fn(), manage: vi.fn(), discover, resetExternal });
   expect(discover).not.toHaveBeenCalled();
   expect(settings.popup.querySelector<HTMLInputElement>('[data-setting="temperature"]')!.closest('label')!.hidden).toBe(true);
+  expect(settings.popup.querySelector<HTMLInputElement>('[data-setting="thinking"]')!.closest('label')!.hidden).toBe(false);
   expect(settings.popup.querySelector<HTMLElement>('[data-setting="external-notice"]')!.hidden).toBe(false);
   settings.popup.querySelector<HTMLButtonElement>('[data-setting="reset-external"]')!.click(); expect(resetExternal).toHaveBeenCalledOnce();
   settings.dispose(); settings.popup.remove(); root.remove();

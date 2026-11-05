@@ -203,7 +203,9 @@ test('shared model popup matches chat, supports keyboard access and stays inside
     const style = getComputedStyle(element.querySelector(selector)!);
     return [selector, [style.fontFamily, style.fontSize, style.lineHeight, style.padding, style.borderRadius, style.backgroundColor]];
   })));
-  await page.locator('.composer .model-settings summary').click(); const chatAppearance = await appearance(); await popup.press('Escape');
+  await page.locator('.composer .model-settings summary').click();
+  await popup.getByRole('option', { name: /Inline test/ }).click();
+  const chatAppearance = await appearance(); await popup.press('Escape');
   await openChat(page); const trigger = zone(page).locator('.model-settings summary');
   await trigger.focus(); await trigger.press('Enter'); await expect(popup).toBeVisible();
   expect(await appearance()).toEqual(chatAppearance);

@@ -216,29 +216,17 @@ func (s *Server) sendResolved(chatID string, req SendRequest) (*dispatch, error)
 	if req.Generation.EndpointID == "" {
 		req.Generation = c.Generation
 	}
-	var endpoint domain.Endpoint
-	if e = s.Store.Get("endpoints", req.Generation.EndpointID, &endpoint); e != nil {
-		return nil, errors.New("configure and select a model first")
-	}
-	if e = model.ValidateEndpoint(endpoint); e != nil {
-		return nil, e
-	}
-	if req.Generation.Model == "" {
-		req.Generation.Model = endpoint.Model
-	}
-	if req.Generation.Model == "" && !endpoint.External() {
-		return nil, errors.New("select a model name")
-	}
-	if req.Generation.Temperature < 0 || req.Generation.Temperature > 2 {
-		return nil, errors.New("temperature must be between 0 and 2")
-	}
+	generations := make([]domain.Generation, len(bots))
+	endpoints := make([]domain.Endpoint, len(bots))
 	ids := []string{}
-	for _, b := range bots {
+	for i, b := range bots {
 		ids = append(ids, b.ID)
-		if endpoint.Provider != "" {
-			if _, e := s.Plugins.Provider(b, endpoint.Provider); e != nil {
-				return nil, e
-			}
+		generations[i], endpoints[i], e = s.resolveGeneration(b.OverrideGeneration(req.Generation))
+		if e == nil {
+			e = s.validateGeneration(b, generations[i], nil)
+		}
+		if e != nil {
+			return nil, fmt.Errorf("@%s: %w", b.Handle, e)
 		}
 	}
 	if e := s.validateFileSegments(&req, bots, true); e != nil {
@@ -319,7 +307,7 @@ func (s *Server) sendResolved(chatID string, req SendRequest) (*dispatch, error)
 	m.Recipients = ids
 	runs := make([]domain.Run, len(bots))
 	for i, b := range bots {
-		runs[i] = domain.Run{ID: domain.ID(), UserMessageID: m.ID, ChatID: chatID, DispatchID: d.id, BotID: b.ID, Generation: req.Generation, Status: "queued", CreatedAt: domain.Now()}
+		runs[i] = domain.Run{ID: domain.ID(), UserMessageID: m.ID, ChatID: chatID, DispatchID: d.id, BotID: b.ID, Generation: generations[i], Status: "queued", CreatedAt: domain.Now()}
 	}
 	if e = s.acceptTurn(req, c, m, runs, d.id, nil); e != nil {
 		return failed(e)
@@ -345,6 +333,7 @@ func (s *Server) sendResolved(chatID string, req SendRequest) (*dispatch, error)
 		}
 	}
 	for i, bot := range bots {
+		endpoint := endpoints[i]
 		d.wg.Add(1)
 		go func(bot domain.Bot, run domain.Run) {
 			defer d.wg.Done()

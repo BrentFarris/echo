@@ -1,0 +1,104 @@
+import { test, expect } from '@playwright/test';
+
+let remoteNode = '';
+test.afterEach(async ({ page }) => {
+  for (const base of ['/api/v1', ...(remoteNode ? [`/api/v1/swarm/instances/${remoteNode}`] : [])]) {
+    const response = await page.request.get(`${base}/state`);
+    if (!response.ok()) continue;
+    const state = await response.json();
+    for (const bot of state.bots) if (['modeloverridefixture', 'remoteoverridefixture'].includes(bot.handle)) await page.request.delete(`${base}/bots/${bot.id}`);
+    for (const endpoint of state.endpoints) if (['override-cli-fixture', 'remote-override-fixture'].includes(endpoint.id)) await page.request.delete(`${base}/endpoints/${endpoint.id}`);
+  }
+  if (remoteNode) await page.request.delete(`/api/v1/swarm/peers/${remoteNode}`);
+  remoteNode = '';
+});
+
+test('bot model overrides default to chat choices and persist independently', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('#new-chat')).toBeVisible();
+  const state = await (await page.request.get('/api/v1/state')).json();
+  const endpoint = state.endpoints.find((e: any) => !['codex-cli', 'claude-code-cli'].includes(e.kind));
+  expect(endpoint).toBeTruthy();
+  for (const bot of state.bots) if (bot.handle === 'modeloverridefixture') await page.request.delete(`/api/v1/bots/${bot.id}`);
+  await page.locator('#settings-button').click();
+  await page.locator('.settings-nav').getByRole('button', { name: 'Bots', exact: true }).click();
+  await page.getByRole('button', { name: '＋ Add bot', exact: true }).click();
+  let editor = page.getByRole('dialog').last();
+  await expect(editor.getByLabel('Model connection', { exact: true })).toHaveValue('');
+  await expect(editor.getByLabel('Thinking', { exact: true })).toHaveValue('');
+  await expect(editor.getByLabel('Model identifier', { exact: true })).toBeDisabled();
+  await editor.getByLabel('Handle', { exact: true }).fill('modeloverridefixture');
+  await editor.getByLabel('Model connection', { exact: true }).selectOption(endpoint.id);
+  await editor.getByLabel('Model identifier', { exact: true }).fill('fixture-pinned');
+  await editor.getByLabel('Thinking', { exact: true }).selectOption('high');
+  await page.screenshot({ path: test.info().outputPath('bot-model-settings.png') });
+  await editor.getByRole('button', { name: 'Save bot', exact: true }).click();
+  await expect(page.locator('.list-card').filter({ hasText: '@modeloverridefixture' })).toContainText('fixture-pinned');
+  await page.reload();
+  await page.locator('#settings-button').click();
+  await page.locator('.settings-nav').getByRole('button', { name: 'Bots', exact: true }).click();
+  const row = page.locator('.list-card').filter({ hasText: '@modeloverridefixture' });
+  await row.getByRole('button', { name: 'Edit', exact: true }).click();
+  editor = page.getByRole('dialog').last();
+  await expect(editor.getByLabel('Model identifier', { exact: true })).toHaveValue('fixture-pinned');
+  await expect(editor.getByLabel('Thinking', { exact: true })).toHaveValue('high');
+  await editor.getByLabel('Model connection', { exact: true }).selectOption('');
+  await editor.getByRole('button', { name: 'Save bot', exact: true }).click();
+  const after = await (await page.request.get('/api/v1/state')).json();
+  const saved = after.bots.find((b: any) => b.handle === 'modeloverridefixture');
+  expect(saved.modelOverride).toBeUndefined(); expect(saved.thinkingOverride).toBe('high');
+  const cliResponse = await page.request.post('/api/v1/endpoints', { data: { endpoint: { id: 'override-cli-fixture', name: 'Override CLI fixture', kind: 'claude-code-cli' } } });
+  expect(cliResponse.ok()).toBe(true);
+  await page.reload(); await page.locator('#settings-button').click();
+  await page.locator('.settings-nav').getByRole('button', { name: 'Bots', exact: true }).click();
+  await page.locator('.list-card').filter({ hasText: '@modeloverridefixture' }).getByRole('button', { name: 'Edit', exact: true }).click();
+  editor = page.getByRole('dialog').last();
+  await editor.getByLabel('Model connection', { exact: true }).selectOption('override-cli-fixture');
+  await expect(editor.locator('[data-bot-external-notice]')).toBeVisible();
+  await expect(editor.getByLabel('Model identifier', { exact: true })).toHaveAttribute('placeholder', 'CLI default');
+  await editor.getByRole('button', { name: 'Save bot', exact: true }).click();
+  const cliState = await (await page.request.get('/api/v1/state')).json();
+  expect(cliState.bots.find((b: any) => b.id === saved.id).modelOverride).toEqual({ endpointId: 'override-cli-fixture' });
+  await page.locator('.list-card').filter({ hasText: '@modeloverridefixture' }).getByRole('button', { name: 'Edit', exact: true }).click();
+  editor = page.getByRole('dialog').last();
+  await editor.getByLabel('Model connection', { exact: true }).selectOption('');
+  await editor.getByLabel('Thinking', { exact: true }).selectOption('');
+  await editor.getByRole('button', { name: 'Save bot', exact: true }).click();
+  const cleared = (await (await page.request.get('/api/v1/state')).json()).bots.find((b: any) => b.id === saved.id);
+  expect(cleared.modelOverride).toBeUndefined(); expect(cleared.thinkingOverride).toBeUndefined();
+  await page.request.delete(`/api/v1/bots/${saved.id}`);
+  await page.request.delete('/api/v1/endpoints/override-cli-fixture');
+});
+
+test('remote bot model choices are saved to their owning machine', async ({ page }) => {
+  await page.goto('/'); await expect(page.locator('#new-chat')).toBeVisible();
+  const paired = await page.request.post('/api/v1/swarm/peers', { data: { url: 'http://127.0.0.1:3744', password: 'echo-test-password' } });
+  expect(paired.ok()).toBe(true); const node = (await paired.json()).nodeId;
+  remoteNode = node;
+  const base = `/api/v1/swarm/instances/${node}`;
+  const connection = 'remote-override-fixture';
+  const prior = await (await page.request.get(`${base}/state`)).json();
+  for (const bot of prior.bots) if (bot.handle === 'remoteoverridefixture') await page.request.delete(`${base}/bots/${bot.id}`);
+  expect((await page.request.post(`${base}/endpoints`, { data: { endpoint: { id: connection, name: 'Remote override fixture', url: 'http://127.0.0.1:3743/v1', model: 'echo-test' } } })).ok()).toBe(true);
+  const response = await page.request.post(`${base}/bots`, { data: { handle: 'remoteoverridefixture' } });
+  expect(response.ok()).toBe(true); const bot = await response.json();
+  await expect.poll(async () => {
+    const snapshot = await (await page.request.get('/api/v1/swarm/state')).json();
+    return snapshot.instances.find((i: any) => i.node.nodeId === node)?.state?.bots.some((b: any) => b.id === bot.id);
+  }).toBe(true);
+  await page.reload(); await page.locator('#settings-button').click();
+  await page.getByLabel('Settings machine').selectOption(node);
+  await page.locator('.settings-nav').getByRole('button', { name: 'Bots', exact: true }).click();
+  await page.locator('.list-card').filter({ hasText: 'remoteoverridefixture' }).getByRole('button', { name: 'Edit', exact: true }).click();
+  const editor = page.getByRole('dialog', { name: 'Edit bot', exact: true });
+  await editor.getByLabel('Model connection', { exact: true }).selectOption(`${node}:${connection}`);
+  await editor.getByLabel('Thinking', { exact: true }).selectOption('low');
+  const saving = page.waitForRequest(r => r.url().endsWith(`${base}/bots`) && r.method() === 'POST');
+  await editor.getByRole('button', { name: 'Save bot', exact: true }).click();
+  expect((await saving).postDataJSON().modelOverride.endpointId).toBe(connection);
+  await expect(editor).not.toBeVisible();
+  const state = await (await page.request.get(`${base}/state`)).json();
+  expect(state.bots.find((b: any) => b.id === bot.id)).toMatchObject({ modelOverride: { endpointId: connection }, thinkingOverride: 'low' });
+  await page.request.delete(`${base}/bots/${bot.id}`); await page.request.delete(`${base}/endpoints/${connection}`);
+  await page.request.delete(`/api/v1/swarm/peers/${node}`);
+});

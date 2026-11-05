@@ -63,7 +63,7 @@ export function ownedState(node: string, value: State): State {
   const key = (id: string) => resourceID(node, id);
   return { slashCommands: (value.slashCommands || []).map(command => ({ ...command, id: key(command.id), nodeId: node, action: command.action.type === 'text' ? command.action : { ...command.action, pluginId: key(command.action.pluginId), botId: command.action.botId && key(command.action.botId) } })),
     botGroups: (value.botGroups || []).map(group => ({ ...group, nodeId: node, handle: node === entryNode ? group.handle : `${machineName(node)}.${group.handle}` })),
-    bots: (value.bots || []).map(b => ({ ...b, id: key(b.id), nodeId: node, handle: node === entryNode ? b.handle : `${machineName(node)}.${b.handle}`, plugins: Object.fromEntries(Object.entries(b.plugins || {}).map(([id, enabled]) => [key(id), enabled])) })),
+    bots: (value.bots || []).map(b => ({ ...b, modelOverride: b.modelOverride && { ...b.modelOverride, endpointId: key(b.modelOverride.endpointId) }, id: key(b.id), nodeId: node, handle: node === entryNode ? b.handle : `${machineName(node)}.${b.handle}`, plugins: Object.fromEntries(Object.entries(b.plugins || {}).map(([id, enabled]) => [key(id), enabled])) })),
     chats: (value.chats || []).map(c => ({ ...c, id: key(c.id), nodeId: node, generation: ownedGeneration(node, c.generation), bots: Object.fromEntries(Object.entries(c.bots || {}).map(([id, v]) => [key(id), v])) })),
     plugins: (value.plugins || []).map(p => ({ ...p, id: key(p.id), nodeId: node })),
     endpoints: (value.endpoints || []).map(e => ({ ...e, id: key(e.id), nodeId: node })),
@@ -122,6 +122,11 @@ export async function resourceAPI<T = any>(path: string, method = 'GET', body?: 
     body = { ...body };
     for (const key of ['id', 'botId', 'workspaceId', 'messageId']) if (typeof body[key] === 'string') body[key] = localID(body[key]);
     if (body.endpoint) body.endpoint = { ...body.endpoint, id: localID(body.endpoint.id) };
+    if (body.modelOverride) {
+      const [owner, id] = splitID(body.modelOverride.endpointId);
+      if (id !== body.modelOverride.endpointId && owner !== node) throw new Error('The bot model connection belongs to a different machine.');
+      body.modelOverride = { ...body.modelOverride, endpointId: id };
+    }
     if (body.plugins) body.plugins = Object.fromEntries(Object.entries(body.plugins).map(([id, value]) => [localID(id), value]));
     if (body.generation) body.generation = { ...body.generation, endpointId: localID(body.generation.endpointId) };
     if (body.endpointId) body.endpointId = localID(body.endpointId);

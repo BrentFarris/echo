@@ -6,6 +6,16 @@ const a = 'a'.repeat(32), b = 'b'.repeat(32);
 const empty = (): State => ({ bots: [], chats: [], endpoints: [], plugins: [], appDock: [], schedules: [], occurrences: [], runs: [] });
 beforeEach(() => { vi.restoreAllMocks(); combineState(empty(), { node: { nodeId: a, name: 'desktop', epoch: '1', version: 1 }, enabled: true, peers: [], instances: [{ node: { nodeId: b, name: 'linux', epoch: '2', version: 1 }, online: true, state: empty() }] }); });
 describe('instance ownership', () => {
+  it('owns bot override connections and localizes them when saving to their machine', async () => {
+    const bot = { id: 'bot', handle: 'worker', plugins: {}, modelOverride: { endpointId: 'cli', model: 'fixed' }, thinkingOverride: 'high' } as State['bots'][number];
+    const owned = ownedState(b, { ...empty(), bots: [bot] }).bots[0];
+    expect(owned.modelOverride?.endpointId).toBe(`${b}:cli`);
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'));
+    await resourceAPI('/bots', 'POST', owned, b);
+    expect(fetcher.mock.calls[0][0]).toBe(`/api/v1/swarm/instances/${b}/bots`);
+    expect(JSON.parse(fetcher.mock.calls[0][1]!.body as string).modelOverride).toEqual(bot.modelOverride);
+    await expect(resourceAPI('/bots', 'POST', { modelOverride: { endpointId: `${b}:cli` } }, a)).rejects.toThrow('different machine');
+  });
   it('combines pending questions with machine-qualified IDs and accepts older state', () => {
     const question = { chatId: 'chat', messageId: 'question', botId: 'echo' };
     const local = { ...empty(), questions: [question] }, remote = { ...empty(), questions: [question] };

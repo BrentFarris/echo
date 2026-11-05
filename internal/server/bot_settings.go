@@ -17,6 +17,7 @@ import (
 type botSaveInput struct {
 	domain.Bot
 	Limit              json.RawMessage `json:"maxParallelPrompts"`
+	ModelSelection     json.RawMessage `json:"modelOverride"`
 	EnableMultitasking *bool           `json:"enableMultitasking"`
 }
 
@@ -49,6 +50,15 @@ func (s *Server) saveBotInput(raw json.RawMessage, scope *domain.ExecutionScope)
 		return domain.Bot{}, err
 	}
 	b := input.Bot
+	if input.ModelSelection != nil {
+		b.ModelOverride = nil
+		selection := json.NewDecoder(bytes.NewReader(input.ModelSelection))
+		selection.DisallowUnknownFields()
+		if err := selection.Decode(&b.ModelOverride); err != nil {
+			s.mu.Unlock()
+			return b, err
+		}
+	}
 	switch {
 	case input.Limit != nil:
 		var limit *int

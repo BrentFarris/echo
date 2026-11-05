@@ -129,6 +129,12 @@ func (s *Server) botGeneration(bot domain.Bot, g domain.Generation, query *slotQ
 	if g.EndpointID == "" {
 		g = s.defaultGeneration()
 	}
+	g = bot.OverrideGeneration(g)
+	return s.validateGeneration(bot, g, query)
+}
+
+// Captured run settings are validated without consulting current overrides.
+func (s *Server) validateGeneration(bot domain.Bot, g domain.Generation, query *slotQuery) error {
 	var ep domain.Endpoint
 	if err := s.Store.Get("endpoints", g.EndpointID, &ep); err != nil {
 		return fmt.Errorf("select a model on %s", s.Swarm.Node().Name)
@@ -136,15 +142,18 @@ func (s *Server) botGeneration(bot domain.Bot, g domain.Generation, query *slotQ
 	if err := model.ValidateEndpoint(ep); err != nil {
 		return err
 	}
+	if err := model.ValidateSettings(domain.Endpoint{Temperature: &g.Temperature, ReasoningEffort: g.Thinking}); err != nil {
+		return err
+	}
 	if ep.External() {
+		if err := externalagent.ValidateThinking(ep.Kind, g.Thinking); err != nil {
+			return err
+		}
 		_, err := externalagent.Resolve(ep)
 		return err
 	}
 	if g.Model == "" && ep.Model == "" {
 		return errors.New("select a model name")
-	}
-	if g.Temperature < 0 || g.Temperature > 2 {
-		return errors.New("temperature must be between 0 and 2")
 	}
 	if ep.Provider != "" {
 		provider, err := s.Plugins.Provider(bot, ep.Provider)

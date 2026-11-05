@@ -16,6 +16,29 @@ import (
 	"github.com/brent/echo/internal/externalagent/testdata/mockcli"
 )
 
+func TestThinkingArgumentsAndUnsupportedLevels(t *testing.T) {
+	for _, kind := range []string{"codex-cli", "claude-code-cli"} {
+		q := Request{Endpoint: domain.Endpoint{Kind: kind}, Model: "selected", Thinking: "high", SessionID: "session"}
+		args := Arguments(q)
+		want := `model_reasoning_effort="high"`
+		if kind == "claude-code-cli" {
+			want = "high"
+		}
+		if !slices.Contains(args, want) || !slices.Contains(args, q.Model) || !slices.Contains(args, q.SessionID) {
+			t.Fatal(args)
+		}
+		q.Thinking = ""
+		if slices.Contains(Arguments(q), "--effort") || slices.Contains(Arguments(q), want) {
+			t.Fatal("unset thinking emitted an override", Arguments(q))
+		}
+	}
+	for _, value := range []string{"none", "minimal", "unknown"} {
+		if err := ValidateThinking("claude-code-cli", value); err == nil {
+			t.Fatal("unsupported effort accepted", value)
+		}
+	}
+}
+
 // Opt-in: consumes the signed-in account's subscription and writes only inside
 // the test's temporary directory. Normal tests never invoke real inference.
 func TestLiveCodexSubscriptionSmoke(t *testing.T) {

@@ -83,7 +83,7 @@ func (s *Server) runExternalAgent(ctx context.Context, d *dispatch, bot domain.B
 	if err != nil {
 		return err
 	}
-	fingerprint := externalHash([]any{endpoint.Kind, endpoint.Executable, dir, bot.Prompt, bot.Name, bot.Handle, bot.Roots})
+	fingerprint := externalHash([]any{endpoint.Kind, endpoint.Executable, dir, bot.Prompt, bot.Name, bot.Handle, bot.Roots, run.Generation.Model, run.Generation.Thinking})
 	var saved externalSession
 	_ = s.Store.Get("external-sessions", id, &saved)
 	var pending []string
@@ -194,7 +194,7 @@ func (s *Server) runExternalAgent(ctx context.Context, d *dispatch, bot domain.B
 		s.emit("message", m.ChatID, m.RunID, m.BotID, m)
 		return nil
 	}
-	result, runErr := (externalagent.Runner{Process: s.Process}).Run(ctx, externalagent.Request{Endpoint: endpoint, Directory: dir, Model: run.Generation.Model, SessionID: sessionID, Prompt: prompt}, emit)
+	result, runErr := (externalagent.Runner{Process: s.Process}).Run(ctx, externalagent.Request{Endpoint: endpoint, Directory: dir, Model: run.Generation.Model, Thinking: run.Generation.Thinking, SessionID: sessionID, Prompt: prompt}, emit)
 	status := "completed"
 	if runErr != nil {
 		status = "failed"

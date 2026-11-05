@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"maps"
 	"regexp"
 	"strings"
 
@@ -55,13 +56,15 @@ func (s *Server) startDelegatedChat(ctx context.Context, scope domain.ExecutionS
 		id = hex.EncodeToString(sum[:16])
 	}
 	now := domain.Now()
+	base := parent.Generation
+	if selected := parent.GenerationByNode[s.Swarm.Node().ID]; selected.EndpointID != "" {
+		base = selected
+	} else if parent.Projection {
+		base = s.defaultGeneration()
+	}
 	c := domain.Chat{
 		ID: id, Title: truncate(strings.TrimSpace(prompt), 70), Bots: map[string]string{},
-		Generation: run.Generation, GenerationByNode: parent.GenerationByNode, CreatedAt: now, UpdatedAt: now,
-	}
-	// The caller's actual run may override the chat home's default.
-	if c.GenerationByNode != nil {
-		c.GenerationByNode[s.Swarm.Node().ID] = run.Generation
+		Generation: base, GenerationByNode: maps.Clone(parent.GenerationByNode), CreatedAt: now, UpdatedAt: now,
 	}
 	req := SendRequest{
 		Content: "@" + to + "\n" + prompt, inputAuthor: delegatedAuthorPrefix + scope.Bot.Handle,

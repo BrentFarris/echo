@@ -20,10 +20,12 @@ import (
 )
 
 type swarmParticipant struct {
-	Ref      swarm.Ref `json:"ref"`
-	Handle   string    `json:"handle"`
-	Name     string    `json:"name"`
-	Revision int64     `json:"revision"`
+	bot       domain.Bot
+	endpoints []domain.Endpoint
+	Ref       swarm.Ref `json:"ref"`
+	Handle    string    `json:"handle"`
+	Name      string    `json:"name"`
+	Revision  int64     `json:"revision"`
 }
 
 func (p swarmParticipant) key() string { return swarm.Key(p.Ref.NodeID, p.Ref.ID) }
@@ -135,12 +137,24 @@ func (s *Server) swarmRoster(ctx context.Context, req SendRequest) ([]swarmParti
 		return nil, err
 	}
 	out := []swarmParticipant{}
-	add := func(node string, bots []domain.Bot) {
+	add := func(node string, bots []domain.Bot, endpoints []domain.Endpoint) {
 		for _, b := range bots {
-			out = append(out, swarmParticipant{Ref: swarm.Ref{NodeID: node, ID: b.ID}, Handle: s.Swarm.Namespace(node) + "." + b.Handle, Name: b.Name, Revision: b.Revision})
+			out = append(out, swarmParticipant{bot: b, endpoints: endpoints, Ref: swarm.Ref{NodeID: node, ID: b.ID}, Handle: s.Swarm.Namespace(node) + "." + b.Handle, Name: b.Name, Revision: b.Revision})
 		}
 	}
-	add(self, bots)
+	var endpoints []domain.Endpoint
+	entries, err := s.Store.List("endpoints")
+	if err != nil {
+		return nil, err
+	}
+	for _, raw := range entries {
+		var ep domain.Endpoint
+		if err := json.Unmarshal(raw, &ep); err != nil {
+			return nil, err
+		}
+		endpoints = append(endpoints, ep)
+	}
+	add(self, bots, endpoints)
 	origin := req.OriginNodeID
 	if origin == "" {
 		origin = self
@@ -219,7 +233,8 @@ func (s *Server) swarmRoster(ctx context.Context, req SendRequest) ([]swarmParti
 			continue
 		}
 		var state struct {
-			Bots []domain.Bot `json:"bots"`
+			Bots      []domain.Bot      `json:"bots"`
+			Endpoints []domain.Endpoint `json:"endpoints"`
 		}
 		_ = json.Unmarshal(s.cachedSwarmState(peer.Node.ID), &state)
 		if _, selected := wanted[peer.Node.ID]; selected {
@@ -232,7 +247,7 @@ func (s *Server) swarmRoster(ctx context.Context, req SendRequest) ([]swarmParti
 				return nil, err
 			}
 		}
-		add(peer.Node.ID, state.Bots)
+		add(peer.Node.ID, state.Bots, state.Endpoints)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].key() < out[j].key() })
 	return out, nil
@@ -556,6 +571,23 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 		if p.Ref.NodeID == self && g.EndpointID == "" {
 			g = c.Generation
 		}
+		if g.EndpointID == "" && len(p.endpoints) > 0 {
+			ep := p.endpoints[0]
+			g = domain.Generation{EndpointID: ep.ID, Model: ep.Model, Temperature: .6}
+			if ep.Temperature != nil {
+				g.Temperature = *ep.Temperature
+			}
+		}
+		g = p.bot.OverrideGeneration(g)
+		for _, ep := range p.endpoints {
+			if ep.ID == g.EndpointID && g.Model == "" {
+				g.Model = ep.Model
+			}
+			if ep.ID == g.EndpointID && ep.External() && g.Thinking != "" && !s.peerSupports(p.Ref.NodeID, "bot-model-overrides/1") {
+				cancel()
+				return nil, errors.New("update the execution machine to use CLI thinking settings")
+			}
+		}
 		run := domain.Run{ID: domain.ID(), UserMessageID: message.ID, ChatID: chatID, DispatchID: id, BotID: key, Status: "queued", Generation: g, CreatedAt: domain.Now()}
 		runs = append(runs, run)
 		host := f.Hosts[p.Ref.NodeID]
@@ -678,6 +710,9 @@ func (s *Server) checkWorker(req workerRequest, fingerprint string) error {
 		if err != nil {
 			return err
 		}
+		if (bot.ModelOverride != nil || bot.ThinkingOverride != nil) && !s.peerSupports(req.Home, "bot-model-overrides/1") {
+			return errors.New("update the chat home machine to honor bot model and thinking overrides")
+		}
 		found := false
 		for _, p := range req.Participants {
 			if p.Ref.NodeID == s.Swarm.Node().ID && p.Ref.ID == bot.ID && p.Revision == bot.Revision {
@@ -687,7 +722,11 @@ func (s *Server) checkWorker(req workerRequest, fingerprint string) error {
 		if !found {
 			return errors.New("bot scope changed; retry with the current bot settings")
 		}
-		if err = s.botGeneration(bot, run.Generation, nil); err != nil {
+		g := run.Generation
+		if g.EndpointID == "" {
+			g = s.defaultGeneration()
+		}
+		if err = s.validateGeneration(bot, g, nil); err != nil {
 			return err
 		}
 	}

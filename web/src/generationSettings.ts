@@ -3,6 +3,9 @@ import type { Endpoint, Generation } from './types';
 import { externalAgentNotice, isExternalAgent } from './externalAgents';
 
 export const thinkingLevels = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+export function generationThinkingLevels(endpoint?: Endpoint): string[] {
+  return endpoint?.kind === 'claude-code-cli' ? ['', 'low', 'medium', 'high', 'xhigh', 'max'] : thinkingLevels;
+}
 export function endpointGeneration(endpoint?: Endpoint): Generation {
   return { endpointId: endpoint?.id || '', model: endpoint?.model || '', thinking: '', temperature: endpoint?.temperature ?? .6 };
 }
@@ -25,7 +28,7 @@ export function generationSettingsMarkup(prefix = ''): string {
   </details>`;
 }
 
-type SettingsState = { generation: Generation; endpoints: Endpoint[]; node: string; machines: { id: string; name: string }[] };
+type SettingsState = { generation: Generation; endpoints: Endpoint[]; node: string; machines: { id: string; name: string }[]; cliThinking?: boolean };
 type Options = {
   state(): SettingsState;
   change(generation: Generation, commit: boolean): void;
@@ -95,7 +98,7 @@ export class GenerationSettings {
       const change = (commit: boolean) => {
         const generation = { ...options.state().generation };
         if (field === 'model') generation.model = input.value;
-        else if (field === 'thinking') generation.thinking = thinkingLevels[Number(input.value)];
+        else if (field === 'thinking') generation.thinking = generationThinkingLevels(options.state().endpoints.find(e => e.id === generation.endpointId))[Number(input.value)];
         else generation.temperature = Number(input.value);
         options.change(generation, commit); this.render();
       };
@@ -107,7 +110,7 @@ export class GenerationSettings {
   }
   private field<T extends HTMLElement>(name: string): T { return this.popup.querySelector<T>(`[data-setting="${name}"]`)!; }
   render(): void {
-    const { generation, endpoints, machines, node } = this.options.state();
+    const { generation, endpoints, machines, node, cliThinking = true } = this.options.state();
     const machine = this.field<HTMLSelectElement>('machine');
     const machineMarkup = machines.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
     if (machine.innerHTML !== machineMarkup) machine.innerHTML = machineMarkup;
@@ -127,12 +130,15 @@ export class GenerationSettings {
     const external = isExternalAgent(endpoint);
     this.field<HTMLElement>('external-notice').hidden = !external;
     this.field<HTMLButtonElement>('reset-external').hidden = !external || !this.options.resetExternal;
-    for (const name of ['thinking', 'temperature']) this.field<HTMLInputElement>(name).closest('label')!.hidden = external;
+    this.field<HTMLInputElement>('temperature').closest('label')!.hidden = external;
+    this.field<HTMLInputElement>('thinking').closest('label')!.hidden = external && !cliThinking;
     this.summary.querySelector('span')!.textContent = endpoint?.name || generation.model || 'Choose a model';
     const model = this.field<HTMLInputElement>('model');
     model.placeholder = external ? 'CLI default' : 'Model identifier';
     if (document.activeElement !== model) model.value = generation.model;
-    this.field<HTMLInputElement>('thinking').value = String(Math.max(0, thinkingLevels.indexOf(generation.thinking)));
+    const levels = generationThinkingLevels(endpoint);
+    this.field<HTMLInputElement>('thinking').max = String(levels.length - 1);
+    this.field<HTMLInputElement>('thinking').value = String(Math.max(0, levels.indexOf(generation.thinking)));
     const effort = generation.thinking || endpoint?.reasoningEffort;
     this.field('thinking-label').textContent = effort ? (generation.thinking ? '' : 'Default · ') + effort[0].toUpperCase() + effort.slice(1) : 'Default';
     this.field<HTMLInputElement>('temperature').value = String(generation.temperature);

@@ -25,7 +25,7 @@ test('external settings, selector and native activity survive reload', async ({ 
   const selector = page.getByRole('dialog', { name: 'Model Settings', exact: true });
   await expect(selector).toContainText('External agent · Full access.');
   await expect(selector.getByRole('slider', { name: 'Temperature' })).toBeHidden();
-  await expect(selector.getByRole('slider', { name: 'Thinking' })).toBeHidden();
+  await expect(selector.getByRole('slider', { name: 'Thinking' })).toBeVisible();
   await expect(selector.getByLabel('Model identifier', { exact: true })).toHaveAttribute('placeholder', 'CLI default');
   const reset = page.waitForResponse(r => r.url().endsWith('/external-agents/reset'));
   await selector.getByRole('button', { name: 'Reset external sessions' }).click();

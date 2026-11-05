@@ -634,6 +634,11 @@ func (s *Server) saveBot(b domain.Bot) (domain.Bot, error) {
 }
 
 func (s *Server) normalizeBot(b domain.Bot) (domain.Bot, error) {
+	var generationErr error
+	b, generationErr = s.normalizeBotGeneration(b)
+	if generationErr != nil {
+		return b, generationErr
+	}
 	b.Handle = strings.ToLower(strings.TrimSpace(b.Handle))
 	if !handlePattern.MatchString(b.Handle) {
 		return b, errors.New("handle must start with a letter and contain letters, digits, - or _")

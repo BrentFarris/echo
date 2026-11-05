@@ -64,11 +64,13 @@ func (s *Server) coreTools(bot domain.Bot) []domain.Tool {
 	}
 	if bot.ID == "echo" {
 		out = append(out,
-			coreTool("bot_list", "List available bots, their ids, prompts, folders, parallel prompt limits and plugin selections.", map[string]any{}),
+			coreTool("bot_list", "List available bots, their ids, prompts, folders, model and thinking overrides, parallel prompt limits and plugin selections.", map[string]any{}),
 			coreTool("bot_save", "Create or update a bot. Existing fields are preserved when omitted. New named bots receive installed plugin defaults once; plugins added later require explicit opt-in. Echo automatically accepts new plugins unless explicitly disabled. Pass folders to bind its filesystem scope.", map[string]any{
 				"id": S("Existing bot id"), "handle": S("Unique @handle"), "name": S("Display name"), "prompt": S("System prompt"), "roots": A("Existing absolute folders; empty array removes restrictions"), "plugins": map[string]any{"type": "object"},
 				"maxParallelPrompts": map[string]any{"type": "integer", "minimum": 0, "description": "Maximum simultaneous prompts for this bot. Defaults to 1. Use 0 for unlimited."},
 				"enableMultitasking": plugins.B("Legacy setting. Use maxParallelPrompts instead."),
+				"modelOverride":      map[string]any{"type": []string{"object", "null"}, "description": "Pin this bot to a connection on its machine. Omit to preserve; null inherits the chat model.", "properties": map[string]any{"endpointId": S("Model connection id"), "model": S("Model identifier; empty uses the connection or CLI default")}, "required": []string{"endpointId"}, "additionalProperties": false},
+				"thinkingOverride":   map[string]any{"type": []string{"string", "null"}, "description": "Thinking override: none, minimal, low, medium, high, xhigh or max. Omit to preserve; null or empty inherits chat thinking."},
 			}, "handle"),
 			coreTool("bot_delete", "Delete a named bot and its schedules. Historical messages remain attributed.", map[string]any{"id": S("Bot id or handle")}, "id"),
 			coreTool("model_list", "List configured model endpoints.", map[string]any{}),

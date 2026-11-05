@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,8 +30,8 @@ type Check struct {
 	Message       string `json:"message"`
 }
 type Request struct {
-	Endpoint                            domain.Endpoint
-	Directory, Model, SessionID, Prompt string
+	Endpoint                                      domain.Endpoint
+	Directory, Model, Thinking, SessionID, Prompt string
 }
 type Event struct {
 	ID, Name, Content, Status string
@@ -156,6 +158,17 @@ func (r Runner) Check(ctx context.Context, e domain.Endpoint, dir string) (check
 	return check, nil
 }
 
+func ValidateThinking(kind, thinking string) error {
+	levels := []string{"", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
+	if kind == "claude-code-cli" {
+		levels = []string{"", "low", "medium", "high", "xhigh", "max"}
+	}
+	if !slices.Contains(levels, thinking) {
+		return fmt.Errorf("thinking level %q is unsupported by %s", thinking, kind)
+	}
+	return nil
+}
+
 func Arguments(q Request) []string {
 	var args []string
 	if q.Endpoint.Kind == "codex-cli" {
@@ -167,6 +180,9 @@ func Arguments(q Request) []string {
 		if q.Model != "" {
 			args = append(args, "--model", q.Model)
 		}
+		if q.Thinking != "" {
+			args = append(args, "-c", "model_reasoning_effort="+strconv.Quote(q.Thinking))
+		}
 		return append(args, "-")
 	}
 	args = []string{"-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions", "--permission-prompts", "none", "--settings", `{"sandbox":{"enabled":false}}`}
@@ -176,10 +192,16 @@ func Arguments(q Request) []string {
 	if q.Model != "" {
 		args = append(args, "--model", q.Model)
 	}
+	if q.Thinking != "" {
+		args = append(args, "--effort", q.Thinking)
+	}
 	return args
 }
 
 func (r Runner) Run(ctx context.Context, q Request, emit func(Event) error) (Result, error) {
+	if err := ValidateThinking(q.Endpoint.Kind, q.Thinking); err != nil {
+		return Result{}, err
+	}
 	check, err := r.Check(ctx, q.Endpoint, q.Directory)
 	if err != nil {
 		return Result{}, err

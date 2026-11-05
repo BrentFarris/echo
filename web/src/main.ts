@@ -8,6 +8,7 @@ import { ReferenceInput, trimmedDraft } from './referenceEditor';
 import { referenceIcon, referenceFromElement, renderMessageReferences, showBotDetails, showGroupDetails } from './references';
 import { groupReference, memberHandle, referencedGroup } from './recipientMentions';
 import { mountBotGroups } from './botGroupSettings';
+import { botModelSummary, botModelSettingsMarkup, mountBotModelSettings, botModelSettingsValues } from './botModelSettings';
 import { Renderers } from './renderers';
 import { updateStreamedText } from './messageContent';
 import { conversationItems, conversationThreads, delegatedChatTarget, threadMessages, type ResponseGroup } from './conversation';
@@ -149,7 +150,7 @@ function shell() {
   q<HTMLFormElement>('.composer').onsubmit = e => { e.preventDefault(); action(async () => { if (busy()) await stop(); else await send(); })(); };
   wireComposerMenus(addFiles);
   chatGenerationSettings = new GenerationSettings(q<HTMLDetailsElement>('[data-generation-settings]'), {
-    state: () => ({ generation, node: modelNode || entryNode, endpoints: state.endpoints.filter(e => sameMachine(e, modelNode || entryNode)), machines: [...instances.keys()].map(id => ({ id, name: machineName(id) })) }),
+    state: () => ({ generation, cliThinking: (modelNode || entryNode) === entryNode || !!instances.get(modelNode)?.node.capabilities?.includes('bot-model-overrides/1'), node: modelNode || entryNode, endpoints: state.endpoints.filter(e => sameMachine(e, modelNode || entryNode)), machines: [...instances.keys()].map(id => ({ id, name: machineName(id) })) }),
     change: (next, commit) => { generation = next; renderModels(); rememberDraft(); if (commit) void saveGeneration(); },
     selectMachine: node => { generationByNode[modelNode] = { ...generation }; modelNode = node; generation = ownedGeneration(node, generationByNode[node] || endpointGeneration(state.endpoints.find(e => sameMachine(e, node)))); renderModels(); rememberDraft(); },
     manage: () => settings(isExternalAgent(state.endpoints.find(e => e.id === generation.endpointId)) ? 'external-agents' : 'models', modelNode || entryNode),
@@ -1062,11 +1063,17 @@ function botSettings(root: HTMLElement) { const bots = state.bots.filter(b => sa
     mountBotGroups(section, node, () => state.bots, (state.botGroups || []).filter(g => sameMachine(g, node)), dialog, async () => { await refresh(true); await swarmRefreshing; }, error => notice(error, true));
   }
   q('#add-bot', root).onclick = () => editBot();
-  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-edit]')) button.onclick = () => editBot(currentBot(button.dataset.edit));
+  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-edit]')) {
+    const bot = currentBot(button.dataset.edit);
+    if (bot) button.parentElement!.querySelector('.grow')!.insertAdjacentHTML('beforeend', `<p class="subtle">${esc(botModelSummary(bot, state.endpoints))}</p>`);
+    button.onclick = () => editBot(currentBot(button.dataset.edit));
+  }
   for (const button of root.querySelectorAll<HTMLButtonElement>('[data-remove]')) button.onclick = action(async () => { await api(`/bots/${button.dataset.remove}`, 'DELETE'); await refresh(); botSettings(root); });
 }
 function editBot(bot?: Bot) {
   const node = bot?.nodeId || settingsNode || entryNode; const api = <T = any>(path: string, method = 'GET', body?: unknown) => resourceAPI<T>(path, method, body, node); const plugins = state.plugins.filter(p => sameMachine(p, node));
+  const supportsOverrides = node === entryNode || !!instances.get(node)?.node.capabilities?.includes('bot-model-overrides/1');
+  const endpoints = state.endpoints.filter(e => sameMachine(e, node));
   const descriptions: Record<string, string> = {
     calendar: 'Create, update, and delete scheduled tasks for this bot.',
     comfyui: 'Generate and edit images, videos, and animated GIFs using the configured ComfyUI server.',
@@ -1091,6 +1098,13 @@ function editBot(bot?: Bot) {
   }).join('');
   const el = dialog(bot ? 'Edit bot' : 'Create a bot', `<form class="form"><label>Handle<input name="handle" required pattern="[A-Za-z][A-Za-z0-9_-]*" value="${esc(bot?.handle.split('.').pop())}" ${localID(bot?.id) === 'echo' ? 'readonly' : ''}></label><label>Name<input name="name" value="${esc(bot?.name)}"></label><label>System prompt<textarea name="prompt">${esc(bot?.prompt)}</textarea></label><label>Folders, one absolute path per line<textarea name="roots" placeholder="C:\\Users\\you\\project">${esc(bot?.roots?.join('\n'))}</textarea><small>Leave empty for unrestricted host access. Assigned folders apply to file tools and shell commands.</small></label>${parallelPrompts}<h3>Plugins</h3>${pluginCheckboxes}<button class="primary">Save bot</button></form>`);
   const form = q<HTMLFormElement>('form', el);
+  if (supportsOverrides) {
+    q('[name=roots]', form).closest('label')!.insertAdjacentHTML('beforebegin', botModelSettingsMarkup(bot, endpoints));
+    mountBotModelSettings(form, bot, endpoints, async endpoint => {
+      const value = await api<{ data?: { id: string }[] }>(`/endpoints/${endpoint.id}/models`);
+      return (value.data || []).map(model => model.id);
+    });
+  }
   const save = q<HTMLButtonElement>('button.primary', form);
   const error = document.createElement('p');
   error.setAttribute('role', 'alert'); error.hidden = true;
@@ -1106,7 +1120,8 @@ function editBot(bot?: Bot) {
       saved = await api<Bot>('/bots', 'POST', {
         id: bot?.id || '', handle: f.get('handle'), name: f.get('name'), prompt: f.get('prompt'),
         roots: String(f.get('roots')).split('\n').map(v => v.trim()).filter(Boolean),
-        plugins: overrides, maxParallelPrompts: Number(f.get('maxParallelPrompts')), revision: bot?.revision || 0
+        plugins: overrides, maxParallelPrompts: Number(f.get('maxParallelPrompts')), revision: bot?.revision || 0,
+        ...(supportsOverrides ? botModelSettingsValues(form) : {})
       });
     } catch (reason) {
       if (!el.open) notice(reason, true);
