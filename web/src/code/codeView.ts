@@ -161,6 +161,7 @@ export class CodeView {
   private mruSwitcherOverlay: HTMLElement | null = null;
   private untitledCounter = 1;
   private sourceControlView: SourceControlView | null = null;
+  private diffPreviewRequest: AbortController | null = null;
   private diffEditor!: MonacoEditor.IStandaloneDiffEditor;
   private diffHunkGutter: DiffHunkGutter | null = null;
   private diffScroll: SharedDiffScroll | null = null;
@@ -1582,6 +1583,9 @@ export class CodeView {
     keepOpen: boolean,
   ): Promise<void> {
     if (!this.workspace) return;
+    this.diffPreviewRequest?.abort();
+    this.diffPreviewRequest = keepOpen ? null : new AbortController();
+    const signal = this.diffPreviewRequest ? AbortSignal.any([this.abort.signal, this.diffPreviewRequest.signal]) : this.abort.signal;
     const scope = sourceControlTabScope(target);
     const reviewRef = target.kind === "revision" || target.kind === "stash" ? target.ref : undefined;
     const identity = `${repository.id}:${target.kind}:${target.groupId || ""}:${reviewRef || ""}:${target.path}`;
@@ -1595,8 +1599,8 @@ export class CodeView {
     try {
       const document = await loadSourceControlDiff(this.workspace.id, repository.id, {
         ...target, scope,
-      });
-      if (this.abort.signal.aborted) return;
+      }, signal);
+      if (signal.aborted) return;
       // Click and double-click may load the same diff concurrently. Reuse the
       // tab created by the first response before allocating any shared models.
       const opened = this.tabs.find((candidate) => candidate.kind === "diff" && candidate.id === identity);
@@ -1665,6 +1669,7 @@ export class CodeView {
       this.schedulePersist();
 
     } catch (error) {
+      if (signal.aborted) return;
       const message = error instanceof Error ? error.message : String(error);
       this.openUnavailableSourceControlDiff(identity, repository, target, scope, reviewRef, keepOpen, message);
       toast(message, { sticky: true });
@@ -1857,7 +1862,11 @@ export class CodeView {
       else this.diffEditor.goToDiff(button.dataset.diffAction==='previous'?'previous':'next');
     },{signal:this.abort.signal}));
     this.diffEditor.getModifiedEditor().onDidChangeCursorPosition(()=>{this.renderStatus();this.observeNavigationLocation(true);});
-    this.diffEditor.getModifiedEditor().onDidScrollChange(()=>this.schedulePersist());
+    this.diffEditor.getModifiedEditor().onDidScrollChange(event => {
+      // Shared-scrollbar layout changes also emit scroll events. They must not
+      // continually postpone the debounced session write for revision tabs.
+      if (event.scrollTopChanged || event.scrollLeftChanged) this.schedulePersist();
+    });
   }
 
   private worktreeRef(tab: OpenTab): FileRef | null {

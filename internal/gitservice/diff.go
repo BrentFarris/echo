@@ -62,11 +62,39 @@ func (s *Service) diffState(ctx context.Context, state *repositoryState, reposit
 
 	// Share this request's index snapshot with hunk validation. Re-read it on
 	// every new diff/mutation so external index changes still invalidate tokens.
-	index, err := readHunkGit(ctx, state, "ls-files", "--stage", "-z", "--", path)
-	if err != nil {
-		return DiffDocument{}, err
+	var index []byte
+	var commitRef, parentRef string
+	submodule := false
+	if scope == "commit" || scope == "stash" {
+		commitRef, err = validateCommitRef(ctx, state, ref)
+		if err != nil {
+			return DiffDocument{}, err
+		}
+		parents, parentErr := runGit(ctx, state.root, nil, true, "rev-list", "--parents", "-n", "1", commitRef)
+		if parentErr != nil {
+			return DiffDocument{}, parentErr
+		}
+		if fields := strings.Fields(string(parents)); len(fields) > 1 {
+			parentRef = fields[1]
+		}
+		for _, side := range []struct{ ref, path string }{{commitRef, path}, {parentRef, oldPath}} {
+			if side.ref == "" {
+				continue
+			}
+			entry, treeErr := runGit(ctx, state.root, nil, true, "--literal-pathspecs", "ls-tree", "-z", side.ref, "--", side.path)
+			if treeErr != nil {
+				return DiffDocument{}, treeErr
+			}
+			submodule = submodule || bytes.HasPrefix(entry, []byte("160000 "))
+		}
+	} else {
+		index, err = readHunkGit(ctx, state, "ls-files", "--stage", "-z", "--", path)
+		if err != nil {
+			return DiffDocument{}, err
+		}
+		submodule = bytes.HasPrefix(index, []byte("160000 "))
 	}
-	if bytes.HasPrefix(index, []byte("160000 ")) {
+	if submodule {
 		document.Kind = "submodule"
 		document.UnavailableReason = "Submodule changes are represented by commit IDs and cannot be edited as text."
 		return document, nil
@@ -90,13 +118,13 @@ func (s *Service) diffState(ctx context.Context, state *repositoryState, reposit
 		}
 		document.Editable = true
 	case "commit", "stash":
-		validated, validateErr := validateCommitRef(ctx, state, ref)
-		if validateErr != nil {
-			return DiffDocument{}, validateErr
+		if parentRef == "" {
+			original.side = DiffSide{Label: "Empty tree", Exists: false, EOL: "lf"}
+		} else {
+			original, err = readBlob(ctx, state, parentRef+":"+oldPath, shortGitRevision(parentRef))
 		}
-		original, err = readBlob(ctx, state, validated+"^:"+oldPath, validated+"^")
 		if err == nil {
-			modified, err = readBlob(ctx, state, validated+":"+path, validated)
+			modified, err = readBlob(ctx, state, commitRef+":"+path, shortGitRevision(commitRef))
 		}
 		document.Editable = false
 	default:

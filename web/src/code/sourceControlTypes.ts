@@ -154,7 +154,7 @@ export type SourceControlCommit = {
   subject: string;
 };
 
-export type SourceControlHistory = { commits: SourceControlCommit[]; nextOffset?: number; hasMore: boolean };
+export type SourceControlHistory = { commits: SourceControlCommit[]; nextOffset?: number; hasMore: boolean; truncated?: boolean };
 export type SourceControlRevisionDetail = { ref: string; files: Array<{ path: string; oldPath?: string; status: string }> };
 
 // Providers validate the inputs belonging to their declared action IDs. The

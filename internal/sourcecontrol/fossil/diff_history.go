@@ -455,31 +455,25 @@ func (p *Provider) RevisionDetail(ctx context.Context, workspaceID, repositoryID
 	if len(commit.Parents) == 0 && info.Parent != "" {
 		commit.Parents = []string{info.Parent}
 	}
-	if info.Parent == "" {
-		output, listErr := p.run(ctx, state.workspaceID, state.root, false, "ls", "-r", ref)
-		if listErr != nil {
-			return sourcecontrol.RevisionDetail{}, listErr
-		}
-		files := []sourcecontrol.RevisionFile{}
-		for _, pathValue := range strings.Split(strings.ReplaceAll(string(output), "\r\n", "\n"), "\n") {
-			if pathValue = filepathClean(pathValue); pathValue != "" && state.pathAllowed(pathValue) {
-				files = append(files, sourcecontrol.RevisionFile{Path: pathValue, Status: "A"})
-			}
-		}
-		return sourcecontrol.RevisionDetail{Ref: ref, Commit: commit, Files: files}, nil
-	}
-	output, err := p.run(ctx, state.workspaceID, state.root, false, "diff", "--from", info.Parent, "--to", ref, "--internal", "--brief")
+	after, err := p.revisionEntries(ctx, state, commit.Hash, 0)
 	if err != nil {
 		return sourcecontrol.RevisionDetail{}, err
 	}
-	files := parseBriefDiff(string(output))
+	before := map[string]revisionEntry{}
+	if info.Parent != "" {
+		before, err = p.revisionEntries(ctx, state, info.Parent, 0)
+		if err != nil {
+			return sourcecontrol.RevisionDetail{}, err
+		}
+	}
+	files := changedRevisionFiles(before, after)
 	filtered := files[:0]
 	for _, file := range files {
-		if state.pathAllowed(file.Path) {
+		if state.pathAllowed(file.Path) && (file.OldPath == "" || state.pathAllowed(file.OldPath)) {
 			filtered = append(filtered, file)
 		}
 	}
-	return sourcecontrol.RevisionDetail{Ref: ref, Commit: commit, Files: filtered}, nil
+	return sourcecontrol.RevisionDetail{Ref: commit.Hash, Commit: commit, Files: filtered}, nil
 }
 
 func parseBriefDiff(output string) []sourcecontrol.RevisionFile {

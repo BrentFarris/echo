@@ -15,6 +15,7 @@ import { presentationFor, supports, type ChangeActionPresentation } from "./sour
 import type { FileRef, WorkspaceRoot } from "./types";
 import { choiceDialog, escapeHTML, promptDialog, showContextMenu, toast } from "./ui";
 import { randomUUID } from "./randomUUID";
+import { SourceControlHistoryView, operationChangesHistory } from './sourceControlHistory';
 
 type SourceControlViewCallbacks = {
   beforeAction?(repository: SourceControlRepository, request: SourceControlActionRequest): Promise<boolean>;
@@ -62,12 +63,17 @@ export class SourceControlView {
   private loading = true;
   private disposed = false;
   private repositoryLoad: Promise<void> | null = null;
+  private readonly history: SourceControlHistoryView;
 
   constructor(host: HTMLElement, workspaceId: string, signal: AbortSignal, callbacks: SourceControlViewCallbacks) {
     this.host = host;
     this.workspaceId = workspaceId;
     this.signal = signal;
     this.callbacks = callbacks;
+    this.history = new SourceControlHistoryView(workspaceId, signal, {
+      repositories: () => this.repositories, render: () => this.render(),
+      openDiff: (repository, target, keep) => callbacks.openDiff(repository, target, keep),
+    });
     this.installEvents();
     this.installSocket();
   }
@@ -105,12 +111,13 @@ export class SourceControlView {
       if (event.operation.state === "running") this.busyRepositories.set(event.operation.repositoryId, event.operation);
       else this.busyRepositories.delete(event.operation.repositoryId);
       this.callbacks.operationChanged?.(event.operation.repositoryId, event.operation.state === "running");
+      if (event.operation.state === "completed" && operationChangesHistory(event.operation.action)) this.history.refresh(event.operation.repositoryId);
       this.render();
     });
     const unsubscribeResync = onSocket("source_control_resync_required", (data: object) => {
       const event = data as { workspaceId: string; repositoryId?: string };
       if (event.workspaceId !== this.workspaceId) return;
-      if (event.repositoryId) void this.refreshStatus(event.repositoryId);
+      if (event.repositoryId) { this.history.refresh(event.repositoryId); void this.refreshStatus(event.repositoryId); }
       else void this.reloadRepositories();
     });
     this.signal.addEventListener("abort", () => {
@@ -140,6 +147,8 @@ export class SourceControlView {
       const response = await sourceControlAPI.listRepositories(this.workspaceId, signal);
       if (this.disposed) return;
       this.repositories = response.repositories || [];
+      this.history.reconcile();
+      for (const repository of this.repositories) this.history.refresh(repository.id);
       this.providers = response.providers || [];
       this.searchParents = response.searchParentRepositories;
       if (!this.discovered) this.repositories.forEach((repository) => this.expandedRepositories.add(repository.id));
@@ -168,6 +177,7 @@ export class SourceControlView {
     const current = this.statuses.get(status.repositoryId);
     if (current && status.revision < current.revision) return;
     this.statuses.set(status.repositoryId, status);
+    if (current && (current.head !== status.head || current.branch !== status.branch)) this.history.refresh(status.repositoryId);
     if (!current || current.revision !== status.revision || !sameStatusContent(current, status)) this.callbacks.statusChanged?.(status.repositoryId);
     if (current && sameStatusContent(current, status)) return;
     this.render();
@@ -221,6 +231,7 @@ export class SourceControlView {
 
   private render(): void {
     if (this.disposed) return;
+    this.history.remember(this.host);
     const focused = document.activeElement instanceof HTMLElement && this.host.contains(document.activeElement) ? document.activeElement.closest<HTMLElement>('[data-git-change-key]') : null;
     const focusedKey = focused?.dataset.gitChangeKey;
     const focusedList = focused?.closest<HTMLElement>('[data-git-list-key]')?.dataset.gitListKey;
@@ -259,6 +270,7 @@ export class SourceControlView {
     this.mountVirtualLists();
     this.restoreCommitInputState(commitInputState);
     if (focusedKey && focusedList) this.focusChange(focusedList, focusedKey);
+    this.history.restore(this.host);
   }
 
   private renderError(error: unknown): void {
@@ -325,6 +337,7 @@ export class SourceControlView {
       ${status.groups.map((group) => this.renderGroup(repository, group, this.groupChanges(status, group))).join("")}
       ${status.totalChangeCount === 0 && !status.stale && !status.detectionIncomplete ? `<div class="git-empty compact"><span class="codicon codicon-check-all"></span>No changes</div>` : ""}
       ${this.reviews.has(repository.id) ? this.renderReview(repository, this.reviews.get(repository.id)!) : ""}
+      ${this.history.render(repository)}
     </div>`;
   }
 
@@ -433,6 +446,7 @@ export class SourceControlView {
       }
     }, { signal: this.signal });
     this.host.addEventListener("keydown", (event) => {
+      if (this.history.keydown(event)) return;
       const row = (event.target as Element).closest<HTMLElement>('[data-git-change-index]');
       if (row && !(event.target as Element).closest('button')) {
         const context = this.changeContext(row);
@@ -459,6 +473,7 @@ export class SourceControlView {
       }
     }, { signal: this.signal });
     this.host.addEventListener("dblclick", (event) => {
+      if (this.history.doubleClick(event)) return;
       const row = (event.target as Element).closest<HTMLElement>("[data-git-change-index]");
       if (row && !(event.target as Element).closest("button")) void this.openChange(row, true);
     }, { signal: this.signal });
@@ -477,6 +492,7 @@ export class SourceControlView {
   }
 
   private async handleClick(event: MouseEvent): Promise<void> {
+    if (this.history.click(event)) return;
     const target = event.target as Element;
     const global = target.closest<HTMLElement>("[data-git-global]");
     if (global) {
@@ -510,7 +526,7 @@ export class SourceControlView {
     const repoAction = target.closest<HTMLElement>("[data-git-repo-action]");
     if (repoAction) {
       const action = repoAction.dataset.gitRepoAction;
-      if (action === "refresh") await this.refreshStatus(repository.id);
+      if (action === "refresh") { this.history.refresh(repository.id); await this.refreshStatus(repository.id); }
       if (action?.startsWith("commit_")) await this.commit(repository.id, action);
       if (action === "sync") await this.runSimple(repository, "sync");
       if (action === "menu") this.showRepositoryMenu(repository, event.clientX, event.clientY);
@@ -735,6 +751,7 @@ ${paths.join("\n")}`,
       const status = this.statuses.get(repository.id);
       const actionRequest = { ...request, expectedRevision: status?.revision } as SourceControlActionRequest;
       const result = await sourceControlAPI.runAction(this.workspaceId, repository.id, actionRequest);
+      if (operationChangesHistory(request.action)) this.history.refresh(repository.id);
       if (result.url) { const localBot = this.workspaceId.split(":").at(-1)!; const routed = result.url.replace(`/bots/${encodeURIComponent(localBot)}/`, `/bots/${encodeURIComponent(this.workspaceId)}/`); window.open(resourceURL(routed),"_blank","noopener"); }
       this.applyPrediction(repository.id, request, result);
       if (result.diagnostic) toast(result.diagnostic, { sticky: true });
@@ -1066,7 +1083,8 @@ ${paths.join("\n")}`,
 
   private async loadReview(repositoryId: string, ref: string, kind: "commit" | "stash"): Promise<void> {
     try {
-      const detail = await sourceControlAPI.loadRevisionDetail(this.workspaceId, repositoryId, ref, kind);
+      const detail = await sourceControlAPI.loadRevisionDetail(this.workspaceId, repositoryId, ref, kind, this.signal);
+      if (this.disposed) return;
       this.reviews.set(repositoryId, { ref, kind, detail });
       this.render();
     } catch (error) { toast(error instanceof Error ? error.message : String(error)); }

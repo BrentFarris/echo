@@ -13,7 +13,7 @@ import (
 const ID = "git"
 
 var capabilities = []sourcecontrol.Capability{
-	sourcecontrol.CapabilityStatus, sourcecontrol.CapabilityDiff,
+	sourcecontrol.CapabilityStatus, sourcecontrol.CapabilityDiff, sourcecontrol.CapabilityHistory,
 	sourcecontrol.CapabilityStage, sourcecontrol.CapabilityCommitAll, sourcecontrol.CapabilityCommitSelected,
 	sourcecontrol.CapabilitySync, sourcecontrol.CapabilityPull, sourcecontrol.CapabilityPush,
 	sourcecontrol.CapabilityBranches, sourcecontrol.CapabilityMerge, sourcecontrol.CapabilityStashes,
@@ -210,7 +210,7 @@ func (p *Provider) RevisionDetail(ctx context.Context, workspaceID, repositoryID
 	if err != nil {
 		return sourcecontrol.RevisionDetail{}, convertError(err)
 	}
-	result := sourcecontrol.RevisionDetail{Ref: detail.Ref}
+	result := sourcecontrol.RevisionDetail{Ref: detail.Ref, Files: []sourcecontrol.RevisionFile{}}
 	for _, file := range detail.Files {
 		result.Files = append(result.Files, sourcecontrol.RevisionFile(file))
 	}

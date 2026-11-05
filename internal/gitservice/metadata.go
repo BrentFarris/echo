@@ -59,7 +59,7 @@ func (s *Service) History(ctx context.Context, workspaceID, repositoryID string,
 	ctx, cancel := context.WithTimeout(ctx, localCommandTimeout)
 	defer cancel()
 	format := "%H%x00%P%x00%an%x00%aI%x00%D%x00%s%x00"
-	output, err := runGit(ctx, state.root, nil, true, "log", "--all", "--topo-order", "--date=iso-strict",
+	output, err := runGit(ctx, state.root, nil, true, "log", "--exclude=refs/stash", "--all", "--topo-order", "--date=iso-strict",
 		"--pretty=format:"+format, "--skip="+strconv.Itoa(offset), "-n", strconv.Itoa(limit+1))
 	if err != nil {
 		// An unborn repository has no history and is not an exceptional UI state.
@@ -92,7 +92,9 @@ func (s *Service) CommitDetail(ctx context.Context, workspaceID, repositoryID, r
 	}
 	ctx, cancel := context.WithTimeout(ctx, localCommandTimeout)
 	defer cancel()
-	args := []string{"diff-tree", "--no-commit-id", "--name-status", "-r", "-z", "-M", validated}
+	// Use the same first-parent baseline as the per-file revision diff. --root
+	// includes the initial commit, and --diff-merges=first-parent includes merges.
+	args := []string{"diff-tree", "--root", "--diff-merges=first-parent", "--no-commit-id", "--name-status", "-r", "-z", "-M", validated}
 	if stash {
 		args = []string{"diff", "--name-status", "-z", "-M", validated + "^", validated}
 	}
@@ -103,7 +105,7 @@ func (s *Service) CommitDetail(ctx context.Context, workspaceID, repositoryID, r
 	files := parseNameStatus(output)
 	visible := files[:0]
 	for _, file := range files {
-		if state.pathAllowed(file.Path) {
+		if state.pathAllowed(file.Path) && (file.OldPath == "" || state.pathAllowed(file.OldPath)) {
 			visible = append(visible, file)
 		}
 	}

@@ -31,13 +31,19 @@ export class SharedDiffScroll {
     this.frame = requestAnimationFrame(() => {
       this.updating = true;
       const left = this.host.scrollLeft;
-      // Measure the real content without the padding used to keep shorter
-      // panes scrollable. Padding is never included in the visible range.
-      for (const pane of this.panes) pane.updateOptions({ scrollBeyondLastColumn: 0 });
-      const extent = Math.max(0, ...this.panes.map(pane => pane.getScrollWidth() - pane.getLayoutInfo().contentWidth));
-      for (const pane of this.panes) {
-        const width = pane.getOption(monaco.editor.EditorOption.fontInfo).typicalHalfwidthCharacterWidth;
-        pane.updateOptions({ scrollBeyondLastColumn: Math.ceil((extent + pane.getLayoutInfo().contentWidth) / Math.max(1, width)) });
+      // Subtract our existing padding without temporarily removing it. Setting
+      // it to zero clamps the shorter pane's scroll position and emits delayed
+      // scroll/layout events that can snap both panes back to the beginning.
+      const metrics = this.panes.map(pane => {
+        const width = Math.max(1, pane.getOption(monaco.editor.EditorOption.fontInfo).typicalHalfwidthCharacterWidth);
+        const columns = pane.getOption(monaco.editor.EditorOption.scrollBeyondLastColumn);
+        const content = Math.max(0, Math.ceil(pane.getContentWidth() - columns * width));
+        return { pane, width, columns, content, viewport: pane.getLayoutInfo().contentWidth };
+      });
+      const extent = Math.max(0, ...metrics.map(metric => metric.content - metric.viewport));
+      for (const { pane, width, columns, content, viewport } of metrics) {
+        const padding = Math.ceil(Math.max(0, extent + viewport - content) / width);
+        if (padding !== columns) pane.updateOptions({ scrollBeyondLastColumn: padding });
       }
       (this.host.firstElementChild as HTMLElement).style.width = `${this.host.clientWidth + extent}px`;
       this.host.scrollLeft = Math.min(left, extent);

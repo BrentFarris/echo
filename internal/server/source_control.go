@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -347,11 +348,27 @@ func (s *Server) sourceControlEditorRoutes(mux *http.ServeMux) {
 		reply(w, v, e)
 	})
 	handle("GET", "/repositories/{repositoryId}/detail", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("kind") != "stash" {
-			reply(w, nil, errors.New("repository history is not enabled"))
+		kind := r.URL.Query().Get("kind")
+		if kind != "stash" && kind != "commit" {
+			reply(w, nil, errors.New("revision detail kind must be commit or stash"))
 			return
 		}
-		v, e := s.SourceControl.RevisionDetail(r.Context(), r.PathValue("botId"), r.PathValue("repositoryId"), r.URL.Query().Get("ref"), "stash")
+		v, e := s.SourceControl.RevisionDetail(r.Context(), r.PathValue("botId"), r.PathValue("repositoryId"), r.URL.Query().Get("ref"), kind)
+		reply(w, v, e)
+	})
+	handle("GET", "/repositories/{repositoryId}/history", func(w http.ResponseWriter, r *http.Request) {
+		offset, limit := 0, sourcecontrol.HistoryPageSize
+		for name, dest := range map[string]*int{"offset": &offset, "limit": &limit} {
+			if value := r.URL.Query().Get(name); value != "" {
+				n, err := strconv.Atoi(value)
+				if err != nil || n < 0 || name == "limit" && (n == 0 || n > sourcecontrol.HistoryPageSize) {
+					reply(w, nil, fmt.Errorf("invalid history %s", name))
+					return
+				}
+				*dest = n
+			}
+		}
+		v, e := s.SourceControl.History(r.Context(), r.PathValue("botId"), r.PathValue("repositoryId"), offset, limit)
 		reply(w, v, e)
 	})
 	handle("POST", "/repositories/{repositoryId}/actions", func(w http.ResponseWriter, r *http.Request) {

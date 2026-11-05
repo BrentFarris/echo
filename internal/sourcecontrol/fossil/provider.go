@@ -22,7 +22,7 @@ import (
 const ID = "fossil"
 
 var capabilities = []sourcecontrol.Capability{
-	sourcecontrol.CapabilityStatus, sourcecontrol.CapabilityDiff,
+	sourcecontrol.CapabilityStatus, sourcecontrol.CapabilityDiff, sourcecontrol.CapabilityHistory,
 	sourcecontrol.CapabilityTrack, sourcecontrol.CapabilityCommitAll, sourcecontrol.CapabilityCommitSelected,
 	sourcecontrol.CapabilityUpdate, sourcecontrol.CapabilitySync, sourcecontrol.CapabilityPull,
 	sourcecontrol.CapabilityPush, sourcecontrol.CapabilityBranches, sourcecontrol.CapabilityMerge,

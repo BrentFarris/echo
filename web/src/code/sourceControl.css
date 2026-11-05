@@ -11,3 +11,25 @@
 .code-diff-scroll::-webkit-scrollbar { height: 12px; }
 .code-diff-scroll::-webkit-scrollbar-thumb { background: var(--code-muted); border-radius: 4px; }
 .code-diff-scroll::-webkit-scrollbar-track { background: var(--code-hover); }
+
+.scm-history { margin-top: 8px; border-top: 1px solid var(--code-border); }
+.scm-history header { display: flex; align-items: center; }
+.scm-history button { color: inherit; background: transparent; border: 0; cursor: pointer; text-align: left; font: inherit; }
+.scm-history header > button { display: flex; align-items: center; gap: 5px; padding: 6px; }
+.scm-history header > button:first-child { flex: 1; text-transform: uppercase; font-size: 11px; }
+.scm-history button:hover { background: var(--code-hover); }
+.scm-history button:focus-visible { outline: 1px solid var(--code-accent); outline-offset: -1px; }
+.scm-history-list { max-height: 440px; overflow: auto; }
+.scm-history-commit { display: flex; gap: 5px; width: 100%; padding: 6px; }
+.scm-history-commit > .codicon { margin-top: 2px; flex: none; }
+.scm-history-commit[aria-expanded="true"], .scm-history-file[aria-pressed="true"] { background: var(--code-hover); }
+.scm-history-summary { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.scm-history-summary strong { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scm-history-summary small { font-size: 11px; color: var(--code-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scm-history-ref { border: 1px solid var(--code-border); border-radius: 3px; padding: 0 3px; }
+.scm-history-files { padding: 0 0 5px 16px; }
+.scm-history-file { display: flex; align-items: center; gap: 5px; width: 100%; min-height: 24px; padding: 3px 6px; }
+.scm-history-file > span:nth-child(2) { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.scm-history-file b { font-size: 11px; flex: none; }
+.scm-history .scm-history-more { display: block; width: 100%; padding: 7px 22px; color: var(--code-accent); }
+.scm-history button:disabled { cursor: default; opacity: .6; }

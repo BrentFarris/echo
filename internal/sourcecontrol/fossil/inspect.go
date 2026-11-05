@@ -211,7 +211,9 @@ func (p *Provider) inspectCommit(ctx context.Context, state *repositoryState, re
 		infoOutput = string(info)
 	}
 	revision := parseRevisionInfo(infoOutput)
-	if revision.Hash != "" {
+	// `info` abbreviates SHA3 hashes to 40 characters; timeline %H already
+	// supplies the immutable full identifier used by history tabs.
+	if len(revision.Hash) > len(commit.Hash) {
 		commit.Hash = revision.Hash
 	}
 	commit.Parents = revision.Parents
@@ -271,9 +273,13 @@ func parseInspectionTimeline(output string) ([]sourcecontrol.Commit, error) {
 		if branch != "" && !containsFold(refs, branch) {
 			refs = append([]string{branch}, refs...)
 		}
+		authoredAt := strings.TrimSpace(fields[4])
+		if when, ok := parseTimelineTime(authoredAt); ok {
+			authoredAt = when.UTC().Format(time.RFC3339)
+		}
 		result = append(result, sourcecontrol.Commit{
 			Hash: strings.TrimSpace(fields[0]), ShortHash: strings.TrimSpace(fields[1]),
-			Author: strings.TrimSpace(fields[3]), AuthoredAt: strings.TrimSpace(fields[4]),
+			Author: strings.TrimSpace(fields[3]), AuthoredAt: authoredAt,
 			Branch: branch, Tags: tags, Refs: refs, Subject: firstLine(message), Message: message,
 		})
 	}
