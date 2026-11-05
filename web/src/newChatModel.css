@@ -1,0 +1,6 @@
+.new-chat-model-settings{margin-bottom:22px;min-width:0}
+.new-chat-model-settings h4{margin:0 0 12px}
+.new-chat-model-settings .form{gap:10px}
+.new-chat-model-settings label,.new-chat-model-settings input,.new-chat-model-settings select{min-width:0;width:100%}
+.new-chat-model-settings select{text-overflow:ellipsis}
+.new-chat-model-settings p{margin:10px 0 0;line-height:1.5;overflow-wrap:anywhere}

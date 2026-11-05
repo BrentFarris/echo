@@ -1,6 +1,7 @@
 import { updateTerminalDock, openTerminalDock } from './terminal';
 import { pluginNetworkNotice } from './pluginNetwork';
 import { GenerationSettings, endpointGeneration } from './generationSettings';
+import { mountNewChatModel, newChatGeneration, newChatGenerations } from './newChatModel';
 import { InstanceClient, resourceAPI, resourceURL, resourceID, localID, splitID, entryNode, instances, machineName, sameMachine, combineState, ownedEvent, ownedGeneration, instanceOnline, attachmentURL, attachmentPreviewURL, type SwarmState } from './instances';
 import { mountSwarm } from './swarmSettings';
 import { InstanceEvents } from './instanceEvents';
@@ -246,13 +247,14 @@ async function newChat() {
     const c = await api<Chat>('/chats', 'POST', {}); createdId = c.id;
     await refresh(true);
     const bot = botId === 'echo' ? undefined : currentBot(botId);
-    await selectChat(c.id, bot && instanceOnline(splitID(bot.id)[0]) ? bot : undefined);
+    await selectChat(c.id, bot && instanceOnline(splitID(bot.id)[0]) ? bot : undefined, newChatGenerations(instances.keys(), state.endpoints));
+    await generationSaves.get(c.id);
   } finally {
     creatingChat = false; composer.disabled = false;
     if ((!createdId || chatId === createdId) && !showingApps && !showingApp) composer.focus();
   }
 }
-async function selectChat(id: string, initialRecipient?: Bot) {
+async function selectChat(id: string, initialRecipient?: Bot, initialGenerations?: Record<string, Generation>) {
   if (submitting) return;
   if (!openingNotification) pendingNotificationHash = null;
   const navigation = ++chatNavigation, previous = chatId;
@@ -260,8 +262,9 @@ async function selectChat(id: string, initialRecipient?: Bot) {
   closePicker(); ++referenceVersion; clearTimeout(referenceTimer); document.querySelector('.bot-details')?.dispatchEvent(new Event('dismiss'));
   if (id !== chatId) rememberDraft(); chatId = id; commandResults.show(chatId); if (id !== previous) markRead(previous); markRead(id); history.replaceState(null, '', '#' + id); const c = state.chats.find(c => c.id === id), draft = drafts.get(id);
   if (initialRecipient) selectedBotThreads.set(id, initialRecipient.id);
-  generationByNode = { ...(c?.generationByNode || {}), ...(draft?.generationByNode || {}) }; modelNode = draft?.modelNode || c?.nodeId || splitID(id)[0] || entryNode;
-  generation = { ...(draft?.generation || c?.generation || endpointGeneration(state.endpoints.find(e => sameMachine(e, modelNode)))) }; references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references }); renderModels(); renderRefs(); renderAttachments(); renderSidebar(); updateSendButton(); autosizeComposer(); setSidebarOpen(false, false);
+  generationByNode = initialGenerations || { ...(c?.generationByNode || {}), ...(draft?.generationByNode || {}) }; modelNode = draft?.modelNode || c?.nodeId || splitID(id)[0] || entryNode;
+  generation = { ...(initialGenerations?.[modelNode] || draft?.generation || c?.generation || endpointGeneration(state.endpoints.find(e => sameMachine(e, modelNode)))) }; references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references }); renderModels(); renderRefs(); renderAttachments(); renderSidebar(); updateSendButton(); autosizeComposer(); setSidebarOpen(false, false);
+  if (initialGenerations) saveGeneration();
   const initialBot = initialRecipient || selectedThreadBot([]);
   if (initialBot) addressThread(initialBot);
   // Focus before the network request so a slow remote transcript cannot steal
@@ -379,9 +382,20 @@ function applyFreshState() {
       if (chatId) { releaseAttachments(drafts.get(chatId)?.attachments || attachments); drafts.delete(chatId); }
       chatId = fallbackChatId; if (!showingApps && !showingApp) history.replaceState(null, '', chatId ? '#' + chatId : location.pathname);
       const draft = drafts.get(chatId);
-      if (chatId) generation = { ...(draft?.generation || state.chats[0].generation) };
+      modelNode = draft?.modelNode || state.chats[0]?.nodeId || entryNode;
+      generationByNode = { ...(draft?.generationByNode || state.chats[0]?.generationByNode || {}) };
+      generation = { ...(draft?.generation || state.chats[0]?.generation || newChatGeneration(entryNode, state.endpoints)) };
       references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references });
       renderRefs(); renderAttachments(); autosizeComposer(); messages = []; ++chatNavigation; renderMessages(); if (chatId) void reloadTranscript(chatId).catch(e => notice(e, true));
+    }
+    if (!chatId && entryNode) {
+      // Inventory can arrive after the welcome view. Seed newly known machines
+      // once, without replacing a model the user has already selected.
+      if (!drafts.has('')) {
+        modelNode = entryNode; generationByNode = newChatGenerations(instances.keys(), state.endpoints);
+        generation = { ...generationByNode[entryNode] }; rememberDraft();
+      }
+      for (const node of instances.keys()) if (!generationByNode[node]) generationByNode[node] = newChatGeneration(node, state.endpoints);
     }
     renderSidebar(); renderModels(); if (rendering() !== beforeRendering) { renderers.sync(state.plugins); renderMessages(false, true); } else renderMessages(); updateSendButton();
     renderApps(); pluginWindows.sync(state.plugins, state.bots); updateTerminalDock(q(".terminal-region"), state.bots, state.plugins);
@@ -1043,6 +1057,8 @@ function settings(section = 'general', node = settingsNode || entryNode, selectM
   for (const button of nav.querySelectorAll<HTMLButtonElement>('button')) button.onclick = () => settings(button.dataset.section, node, selectModel);
   if (section === 'general') {
     mountGeneral(content, () => renderMessages(false, true));
+    const defaultModel = document.createElement('section'); q('.general-settings h3', content).after(defaultModel);
+    mountNewChatModel(defaultModel, node, state.endpoints, async endpoint => (await api<{ data?: { id: string }[] }>(`/endpoints/${endpoint.id}/models`)).data?.map(model => model.id) || []);
     const commands = document.createElement('section'); commands.className = 'slash-command-settings'; content.append(commands);
     mountSlashCommandSettings(commands, boundAPI, state.bots.filter(bot => sameMachine(bot, node)), () => refresh(), slashSupported(node));
   }
