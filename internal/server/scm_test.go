@@ -65,6 +65,22 @@ func TestSourceControlContractsAndSettings(t *testing.T) {
 				t.Fatal("model expanded grants", id, grant)
 			}
 		}
+		if id == "git" {
+			if _, e = s.sourceControlConfig(m, map[string]any{"hostStatus": true}, false); e == nil {
+				t.Fatal("model granted itself host Git status execution")
+			}
+			granted, err := s.sourceControlConfig(m, map[string]any{"hostStatus": true}, true)
+			if err != nil || granted["hostStatus"] != true {
+				t.Fatal("owner could not grant host Git status", granted, err)
+			}
+			withGrant := m
+			withGrant.Config = granted
+			for _, enabled := range []bool{true, false} {
+				if _, err := s.sourceControlConfig(withGrant, map[string]any{"hostStatus": enabled}, false); err != nil {
+					t.Fatal("model could not retain or narrow the existing grant", err)
+				}
+			}
+		}
 		config, e := s.sourceControlConfig(m, map[string]any{"internet": true}, true)
 		if e != nil || config["internet"] != true {
 			t.Fatal(e, config)

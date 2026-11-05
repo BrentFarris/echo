@@ -30,8 +30,8 @@ var scmCommand = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 // exposed through this credential-bearing client.
 const p4WorkspaceCommands = " help info status diff diff2 opened files dirs fstat where have changes change changelist describe filelog annotate print clients client streams stream add edit reopen delete move reconcile revert resolve resolved sync submit shelve unshelve labels label labelsync branches branch integrate merge copy lock unlock protects groups users jobs job fixes fix review reviews sizes typemap depot depots monitor trust "
 
-// Configuration from chat can change ordinary preferences but cannot grant a
-// process network access or enlarge the executable/runtime grant.
+// Configuration from chat can change ordinary preferences but cannot grant
+// host execution, network access or a larger executable/runtime scope.
 func (s *Server) sourceControlConfig(m domain.PluginManifest, updates map[string]any, owner bool) (map[string]any, error) {
 	config := map[string]any{}
 	for k, v := range m.Config {
@@ -50,6 +50,9 @@ func (s *Server) sourceControlConfig(m domain.PluginManifest, updates map[string
 			if k == "runOutsideSandbox" {
 				return nil, errors.New("only the owner can set Run Git outside the sandbox in Git settings")
 			}
+			if k == "hostStatus" && v == true && m.Config[k] != true {
+				return nil, errors.New("grant Git status host permissions directly in Git settings")
+			}
 			if (k == "internet" || k == "privateNetwork") && v == true && m.Config[k] != true {
 				return nil, errors.New("grant network access directly in the plugin's settings")
 			}
@@ -65,7 +68,7 @@ func (s *Server) sourceControlConfig(m domain.PluginManifest, updates map[string
 	}
 	// Previously saved paths may have disappeared. A mode change can reuse
 	// them without setup, and the sandbox checks them again before execution.
-	modeChanged := m.ID == "git" && boolean(config, "runOutsideSandbox") != boolean(m.Config, "runOutsideSandbox")
+	modeChanged := m.ID == "git" && !sameGitExecutionMode(config, m.Config)
 	if path := text(config, "executable"); path != "" && (!modeChanged || path != text(m.Config, "executable")) {
 		if !filepath.IsAbs(path) || runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(path), ".exe") {
 			return nil, errors.New("executable must be an absolute executable path")
@@ -270,6 +273,13 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 		}
 	} else {
 		commonDir, e = s.prepareSandboxedSCM(ctx, scope.Bot, id, m, &request)
+		if e == nil && id == "git" && command == "status" && windowsHostStatus(m.Config) {
+			// Keep the authorized directory and clean broker environment. Only
+			// the Windows AppContainer grants are skipped for this status call.
+			request.Roots, request.ReadPaths = nil, nil
+			request.SandboxSession = ""
+			env["GIT_OPTIONAL_LOCKS"] = "0"
+		}
 	}
 	if e != nil {
 		return nil, e
@@ -293,6 +303,8 @@ func (s *Server) runSourceControl(ctx context.Context, scope domain.ExecutionSco
 	}
 	emit(filter.push("", true))
 	result.Output = output.String()
+	// Keep the tool response's existing combined, redacted output contract.
+	result.Stdout, result.Stderr = "", ""
 	if err != nil {
 		return nil, errors.New(filter.redact(err.Error()))
 	}

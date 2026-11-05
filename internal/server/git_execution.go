@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,14 @@ type gitExecutionPolicy struct {
 	active   sync.WaitGroup
 }
 
+func windowsHostStatus(config map[string]any) bool {
+	return runtime.GOOS == "windows" && boolean(config, "hostStatus")
+}
+
+func sameGitExecutionMode(a, b map[string]any) bool {
+	return boolean(a, "runOutsideSandbox") == boolean(b, "runOutsideSandbox") && windowsHostStatus(a) == windowsHostStatus(b)
+}
+
 func (s *Server) beginGit(parent context.Context, bot domain.Bot, expected domain.PluginManifest) (context.Context, domain.PluginManifest, context.CancelFunc, error) {
 	p := &s.gitPolicy
 	p.mu.Lock()
@@ -37,11 +46,10 @@ func (s *Server) beginGit(parent context.Context, bot domain.Bot, expected domai
 	if !m.Builtin || !m.Enabled || m.Pending || !bot.PluginEnabled("git") {
 		return nil, m, nil, errors.New("Git plugin is disabled")
 	}
-	hostMode := boolean(m.Config, "runOutsideSandbox")
-	if p.changing || hostMode != boolean(expected.Config, "runOutsideSandbox") {
+	if p.changing || !sameGitExecutionMode(m.Config, expected.Config) {
 		return nil, m, nil, errors.New("Git settings changed; retry the command")
 	}
-	if hostMode {
+	if boolean(m.Config, "runOutsideSandbox") || windowsHostStatus(m.Config) {
 		// A delayed tool call can still carry a bot snapshot from before its
 		// Git permission or configured folders changed.
 		current, err := s.Bot(bot.ID)
@@ -74,7 +82,7 @@ func (s *Server) saveConfiguredPlugin(m domain.PluginManifest) error {
 	if err != nil {
 		return err
 	}
-	if old.Enabled == m.Enabled && boolean(old.Config, "runOutsideSandbox") == boolean(m.Config, "runOutsideSandbox") {
+	if old.Enabled == m.Enabled && sameGitExecutionMode(old.Config, m.Config) {
 		return s.Plugins.Save(m)
 	}
 	p := &s.gitPolicy
