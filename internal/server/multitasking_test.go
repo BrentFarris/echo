@@ -13,6 +13,7 @@ import (
 	"github.com/brent/echo/internal/domain"
 	"github.com/brent/echo/internal/model"
 	"github.com/brent/echo/internal/store"
+	"github.com/brent/echo/internal/swarm"
 )
 
 type modelInvocation struct {
@@ -115,18 +116,14 @@ func eventually(t *testing.T, check func() bool) {
 
 func TestMultitaskingDefaultsAndToolSettings(t *testing.T) {
 	s := testServer(t)
-	legacy := json.RawMessage(`{"id":"legacy","handle":"legacy","name":"Legacy","revision":1}`)
-	if err := s.Store.Put("bots", "legacy", legacy); err != nil {
-		t.Fatal(err)
-	}
-	b, _ := s.Bot("legacy")
-	if b.EnableMultitasking {
-		t.Fatal("legacy bot enabled multitasking")
-	}
 	echo, _ := s.Bot("echo")
-	if echo.EnableMultitasking {
-		t.Fatal("Echo enabled multitasking")
+	checkLimit := func(b domain.Bot, want int) {
+		t.Helper()
+		if b.MaxParallelPrompts == nil || *b.MaxParallelPrompts != want {
+			t.Fatalf("bot %s: want maxParallelPrompts %d, got %+v", b.Handle, want, b.MaxParallelPrompts)
+		}
 	}
+	checkLimit(echo, 1)
 	toolSave := func(args map[string]any) domain.Bot {
 		t.Helper()
 		raw, _ := json.Marshal(args)
@@ -136,41 +133,60 @@ func TestMultitaskingDefaultsAndToolSettings(t *testing.T) {
 		}
 		return value.(domain.Bot)
 	}
-	b = toolSave(map[string]any{"handle": "serial"})
-	if b.EnableMultitasking {
-		t.Fatal("new bot default is not off")
-	}
-	b = toolSave(map[string]any{"handle": "parallel", "enableMultitasking": true})
-	if !b.EnableMultitasking {
-		t.Fatal("chat creation ignored true")
-	}
+	checkLimit(toolSave(map[string]any{"handle": "serial"}), 1)
+	b := toolSave(map[string]any{"handle": "parallel", "enableMultitasking": true})
+	checkLimit(b, 0)
 	b = toolSave(map[string]any{"id": b.ID, "handle": b.Handle, "name": "Updated"})
-	if !b.EnableMultitasking {
-		t.Fatal("omitted setting was reset")
-	}
+	checkLimit(b, 0)
 	revision := b.Revision
 	b = toolSave(map[string]any{"id": b.ID, "handle": b.Handle, "enableMultitasking": false})
-	if b.EnableMultitasking || b.Revision != revision {
-		t.Fatal("toggle changed scope", b)
+	checkLimit(b, 1)
+	b = toolSave(map[string]any{"id": b.ID, "handle": b.Handle, "maxParallelPrompts": 2, "enableMultitasking": true})
+	checkLimit(b, 2)
+	if b.Revision != revision {
+		t.Fatal("changing the limit changed the bot's scope", b)
 	}
-	b.EnableMultitasking = true
-	w := scmAPI(t, s, "POST", "/bots", b)
-	if w.Code != http.StatusOK {
-		t.Fatal(w.Body.String())
+	for _, tc := range []struct {
+		settings map[string]any
+		want     int
+	}{
+		{map[string]any{}, 2},
+		{map[string]any{"enableMultitasking": true}, 0},
+		{map[string]any{"enableMultitasking": false}, 1},
+		{map[string]any{"maxParallelPrompts": 2, "enableMultitasking": true}, 2},
+	} {
+		tc.settings["id"], tc.settings["handle"] = b.ID, b.Handle
+		w := scmAPI(t, s, "POST", "/bots", tc.settings)
+		var saved domain.Bot
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &saved) != nil {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		checkLimit(saved, tc.want)
+		if saved.Name != b.Name || saved.Revision != revision {
+			t.Fatal("partial limit update changed bot scope", saved)
+		}
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &b); err != nil || !b.EnableMultitasking {
-		t.Fatal("API round trip", b, err)
+	for _, invalid := range []any{-1, 1.5, nil, "2"} {
+		args := map[string]any{"id": b.ID, "handle": b.Handle, "maxParallelPrompts": invalid, "enableMultitasking": true}
+		if w := scmAPI(t, s, "POST", "/bots", args); w.Code != http.StatusBadRequest {
+			t.Fatalf("API accepted invalid limit %v: %s", invalid, w.Body)
+		}
+		raw, _ := json.Marshal(args)
+		if _, err := s.tool(context.Background(), nil, domain.ExecutionScope{Bot: echo}, domain.ToolCall{Function: domain.FunctionCall{Name: "bot_save", Arguments: string(raw)}}); err == nil {
+			t.Fatalf("tool accepted invalid limit %v", invalid)
+		}
 	}
-	w = scmAPI(t, s, "GET", "/state", nil)
-	if !strings.Contains(w.Body.String(), `"enableMultitasking":true`) {
-		t.Fatal("state omits setting")
+	w := scmAPI(t, s, "GET", "/state", nil)
+	if !strings.Contains(w.Body.String(), `"maxParallelPrompts":2`) || strings.Contains(w.Body.String(), `"enableMultitasking"`) {
+		t.Fatal("unexpected settings in state", w.Body)
 	}
-	var reloaded domain.Bot
-	if err := s.Store.Get("bots", b.ID, &reloaded); err != nil || !reloaded.EnableMultitasking {
-		t.Fatal("setting not persisted", err)
+	reloaded, err := s.Bot(b.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
+	checkLimit(reloaded, 2)
 	for _, tool := range s.coreTools(echo) {
-		if tool.Name == "bot_save" && tool.Parameters["properties"].(map[string]any)["enableMultitasking"] == nil {
+		if tool.Name == "bot_save" && tool.Parameters["properties"].(map[string]any)["maxParallelPrompts"] == nil {
 			t.Fatal("missing tool schema property")
 		}
 	}
@@ -178,12 +194,19 @@ func TestMultitaskingDefaultsAndToolSettings(t *testing.T) {
 
 func TestMultitaskingFIFOAndIdempotency(t *testing.T) {
 	s := testServer(t)
+	bot, _ := s.Bot("echo")
+	bot.MaxParallelPrompts = new(2)
+	if _, err := s.updateBot(bot, nil); err != nil {
+		t.Fatal(err)
+	}
 	g, started := controlledModel(t, s)
 	d1 := sendWork(t, s, g, "one")
 	first := nextInvocation(t, started, "echo", "one")
 	d2 := sendWork(t, s, g, "two")
+	second := nextInvocation(t, started, "echo", "two")
 	d3 := sendWork(t, s, g, "three")
-	for _, d := range []*dispatch{d2, d3} {
+	d4 := sendWork(t, s, g, "four")
+	for _, d := range []*dispatch{d3, d4} {
 		runs := dispatchRuns(t, s, d)
 		if len(runs) != 1 || runs[0].Status != "queued" {
 			t.Fatal("not queued", runs)
@@ -192,23 +215,25 @@ func TestMultitaskingFIFOAndIdempotency(t *testing.T) {
 			t.Fatal("queued dispatch has an execution deadline")
 		}
 	}
-	duplicate, err := s.send(d2.chatID, SendRequest{Content: "two", RequestID: "request", Generation: g})
-	if err != nil || duplicate.id != d2.id {
+	duplicate, err := s.send(d3.chatID, SendRequest{Content: "three", RequestID: "request", Generation: g})
+	if err != nil || duplicate.id != d3.id {
 		t.Fatal("queued retry duplicated", err)
 	}
-	if _, err = s.send(d2.chatID, SendRequest{Content: "another", Generation: g}); err == nil {
+	if _, err = s.send(d3.chatID, SendRequest{Content: "another", Generation: g}); err == nil {
 		t.Fatal("second request in busy chat accepted")
 	}
 	noInvocation(t, started)
 	first.finish <- "done"
 	waitDispatch(t, d1)
-	second := nextInvocation(t, started, "echo", "two")
+	third := nextInvocation(t, started, "echo", "three")
 	noInvocation(t, started)
 	second.finish <- "done"
 	waitDispatch(t, d2)
-	third := nextInvocation(t, started, "echo", "three")
+	fourth := nextInvocation(t, started, "echo", "four")
 	third.finish <- "done"
+	fourth.finish <- "done"
 	waitDispatch(t, d3)
+	waitDispatch(t, d4)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.botQueues) != 0 || len(s.botReservations) != 0 {
@@ -216,44 +241,88 @@ func TestMultitaskingFIFOAndIdempotency(t *testing.T) {
 	}
 }
 
-func TestMultitaskingLiveTogglesKeepWork(t *testing.T) {
+func TestMultitaskingSwarmWorkersShareLocalSlots(t *testing.T) {
+	s := testServer(t)
+	bot, _ := s.Bot("echo")
+	bot.MaxParallelPrompts = new(2)
+	if _, err := s.updateBot(bot, nil); err != nil {
+		t.Fatal(err)
+	}
+	g, started := controlledModel(t, s)
+	local := sendWork(t, s, g, "local")
+	first := nextInvocation(t, started, "echo", "local")
+	node := s.Swarm.Node().ID
+	worker := workerRequest{
+		ID: domain.ID(), Home: node, Origin: node, Token: strings.Repeat("a", 64),
+		Chat: chat(t, s, g), Runs: []domain.Run{{BotID: bot.ID, Generation: g}},
+		Participants: []swarmParticipant{{Ref: swarm.Ref{NodeID: node, ID: bot.ID}, Revision: bot.Revision}},
+	}
+	if err := s.prepareWorker(worker); err != nil {
+		t.Fatal("worker could not take the second slot", err)
+	}
+	other := worker
+	other.ID = domain.ID()
+	if err := s.prepareWorker(other); err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatal("expected a busy worker at the limit", err)
+	}
+	queued := sendWork(t, s, g, "queued")
+	noInvocation(t, started)
+	if _, err := s.controlWorker(workerControl{ID: worker.ID, Home: node, Token: worker.Token, Action: "release"}); err != nil {
+		t.Fatal(err)
+	}
+	next := nextInvocation(t, started, "echo", "queued")
+	next.finish <- "done"
+	first.finish <- "done"
+	waitDispatch(t, queued)
+	waitDispatch(t, local)
+}
+
+func TestMultitaskingLiveLimitsKeepWork(t *testing.T) {
 	s := testServer(t)
 	g, started := controlledModel(t, s)
 	d1 := sendWork(t, s, g, "one")
 	first := nextInvocation(t, started, "echo", "one")
 	d2 := sendWork(t, s, g, "two")
+	d3 := sendWork(t, s, g, "three")
 	bot, _ := s.Bot("echo")
 	revision := bot.Revision
-	bot.EnableMultitasking = true
+	bot.MaxParallelPrompts = new(2)
 	bot.Plugins = map[string]bool{"shell": true, "calendar": true}
 	w := scmAPI(t, s, "POST", "/bots", bot)
 	if w.Code != http.StatusOK {
 		t.Fatal(w.Body.String())
 	}
 	second := nextInvocation(t, started, "echo", "two")
+	noInvocation(t, started)
+	if w := scmAPI(t, s, "POST", "/bots", map[string]any{"id": bot.ID, "maxParallelPrompts": 0}); w.Code != http.StatusOK {
+		t.Fatal(w.Code, w.Body)
+	}
+	third := nextInvocation(t, started, "echo", "three")
 	bot, _ = s.Bot("echo")
 	if bot.Revision != revision {
 		t.Fatal("equivalent plugin defaults changed scope")
 	}
 	// A bot may change only its own scheduler preference without cancelling itself.
-	raw := `{"id":"echo","handle":"echo","enableMultitasking":false}`
+	raw := `{"id":"echo","handle":"echo","maxParallelPrompts":2}`
 	_, err := s.tool(d1.ctx, d1, domain.ExecutionScope{Bot: bot, DispatchID: d1.id}, domain.ToolCall{Function: domain.FunctionCall{Name: "bot_save", Arguments: raw}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	d3 := sendWork(t, s, g, "three")
+	d4 := sendWork(t, s, g, "four")
 	noInvocation(t, started)
 	first.finish <- "done"
 	waitDispatch(t, d1)
 	noInvocation(t, started)
 	second.finish <- "done"
 	waitDispatch(t, d2)
-	third := nextInvocation(t, started, "echo", "three")
+	fourth := nextInvocation(t, started, "echo", "four")
+	fourth.finish <- "done"
 	third.finish <- "done"
 	waitDispatch(t, d3)
-	for _, d := range []*dispatch{d1, d2, d3} {
+	waitDispatch(t, d4)
+	for _, d := range []*dispatch{d1, d2, d3, d4} {
 		if d.err != nil {
-			t.Fatal("toggle interrupted work", d.err)
+			t.Fatal("changing limit interrupted work", d.err)
 		}
 	}
 }

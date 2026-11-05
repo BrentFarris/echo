@@ -18,10 +18,10 @@ func (s *Store) migrate() error {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 6 {
+	if version > 7 {
 		return errors.New("this profile was created by a newer Echo; update Echo before opening it")
 	}
-	if version >= 6 {
+	if version == 7 {
 		return nil
 	}
 	tx, err := s.db.Begin()
@@ -55,11 +55,19 @@ func (s *Store) migrate() error {
 	}
 	// Older connection forms saved these execution limits automatically. Remove
 	// those defaults once, retaining custom limits and unrelated endpoint fields.
-	if _, err = tx.Exec(`UPDATE records SET data=json_remove(data,'$.requestTimeoutSeconds')
+	if version < 6 {
+		if _, err = tx.Exec(`UPDATE records SET data=json_remove(data,'$.requestTimeoutSeconds')
  WHERE namespace='endpoints' AND json_extract(data,'$.requestTimeoutSeconds')=600;
  UPDATE records SET data=json_remove(data,'$.streamIdleTimeoutSeconds')
  WHERE namespace='endpoints' AND json_extract(data,'$.streamIdleTimeoutSeconds')=120;
  PRAGMA user_version=6;`); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec(`UPDATE records SET data=json_remove(
+ json_insert(data, '$.maxParallelPrompts', CASE json_type(data, '$.enableMultitasking') WHEN 'true' THEN 0 ELSE 1 END),
+ '$.enableMultitasking') WHERE namespace='bots';
+ PRAGMA user_version=7;`); err != nil {
 		return err
 	}
 	return tx.Commit()

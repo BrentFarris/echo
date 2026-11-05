@@ -52,7 +52,7 @@ test('empty results, incomplete searches and actionable errors are preserved', a
 
 test('reference activation keeps files and resolved recipients on their owning machine', () => {
   const local = 'a'.repeat(32), remote = 'b'.repeat(32);
-  const state = (): State => ({ bots: [{ id: 'echo', handle: 'echo' }, { id: 'kaiju', handle: 'kaiju' }].map(bot => ({ ...bot, name: bot.handle, roots: [], plugins: {}, enableMultitasking: false, prompt: '', revision: 0 })), chats: [], endpoints: [], plugins: [], appDock: [], schedules: [], occurrences: [], runs: [] });
+  const state = (): State => ({ bots: [{ id: 'echo', handle: 'echo' }, { id: 'kaiju', handle: 'kaiju' }].map(bot => ({ ...bot, name: bot.handle, roots: [], plugins: {}, maxParallelPrompts: 1, prompt: '', revision: 0 })), chats: [], endpoints: [], plugins: [], appDock: [], schedules: [], occurrences: [], runs: [] });
   combineState(state(), { node: { nodeId: local, name: 'desktop', epoch: '', version: 1 }, enabled: true, peers: [], instances: [{ node: { nodeId: remote, name: 'linux', epoch: '', version: 1 }, state: state(), online: true }] });
   const content = '@kaiju @linux.kaiju inspect #local.txt and #@missing.txt';
   const file = (name: string, nodeId: string): Segment => ({ type: 'file', nodeId, text: name, path: `/${name}`, range: { start: content.indexOf('#' + name), end: content.indexOf('#' + name) + name.length + 1 } });

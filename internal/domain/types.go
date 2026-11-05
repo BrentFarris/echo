@@ -17,7 +17,7 @@ func ID() string {
 func Now() time.Time { return time.Now().UTC() }
 
 type Bot struct {
-	EnableMultitasking bool            `json:"enableMultitasking"`
+	MaxParallelPrompts *int            `json:"maxParallelPrompts,omitempty"`
 	ID                 string          `json:"id"`
 	Handle             string          `json:"handle"`
 	Name               string          `json:"name"`

@@ -206,7 +206,7 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 	}
 	var echo domain.Bot
 	if db.Get("bots", "echo", &echo) != nil {
-		e = db.Put("bots", "echo", domain.Bot{ID: "echo", Handle: "echo", Name: "Echo", Prompt: "You are Echo, a chat-first assistant and bot manager. Use tools to complete the user's request. A bot's handle identifies it in @mentions. Ask only for missing information. Plugin source must be self-contained and use the documented capability bridge.", Plugins: map[string]bool{}, Roots: []string{}, Revision: 1})
+		e = db.Put("bots", "echo", domain.Bot{ID: "echo", Handle: "echo", Name: "Echo", Prompt: "You are Echo, a chat-first assistant and bot manager. Use tools to complete the user's request. A bot's handle identifies it in @mentions. Ask only for missing information. Plugin source must be self-contained and use the documented capability bridge.", Plugins: map[string]bool{}, Roots: []string{}, Revision: 1, MaxParallelPrompts: new(1)})
 		if e != nil {
 			s.Close()
 			return nil, e
@@ -655,6 +655,15 @@ func (s *Server) normalizeBot(b domain.Bot) (domain.Bot, error) {
 		b.Handle = "echo"
 	}
 	b.Plugins = maps.Clone(b.Plugins)
+	if b.MaxParallelPrompts == nil && existing != nil {
+		b.MaxParallelPrompts = existing.MaxParallelPrompts
+	}
+	if b.MaxParallelPrompts == nil {
+		b.MaxParallelPrompts = new(1)
+	}
+	if *b.MaxParallelPrompts < 0 {
+		return b, errors.New("maxParallelPrompts must be a nonnegative whole number")
+	}
 	if existing != nil && b.Plugins == nil {
 		b.Plugins = maps.Clone(existing.Plugins)
 	}

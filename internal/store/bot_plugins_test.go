@@ -27,7 +27,7 @@ func TestBotPluginMigrationPreservesOnlyStoredCatalog(t *testing.T) {
 	legacy := json.RawMessage(`{"id":"worker","handle":"worker","name":"Worker","prompt":"Keep me","roots":["unchanged"],"enableMultitasking":true,"revision":7,"futureField":{"value":42},"plugins":{"existing":false,"unknown":true}}`)
 	for id, bot := range map[string]json.RawMessage{
 		"worker": legacy,
-		"empty":  json.RawMessage(`{"id":"empty","handle":"empty","plugins":{}}`),
+		"empty":  json.RawMessage(`{"id":"empty","handle":"empty","plugins":{},"enableMultitasking":false}`),
 		"nil":    json.RawMessage(`{"id":"nil","handle":"nil","plugins":null}`),
 		"absent": json.RawMessage(`{"id":"absent","handle":"absent"}`),
 		"echo":   json.RawMessage(`{"id":"echo","handle":"echo","plugins":{"existing":false}}`),
@@ -68,6 +68,8 @@ func TestBotPluginMigrationPreservesOnlyStoredCatalog(t *testing.T) {
 	json.Unmarshal(legacy, &original)
 	delete(migrated, "plugins")
 	delete(original, "plugins")
+	delete(original, "enableMultitasking")
+	original["maxParallelPrompts"] = json.RawMessage("0")
 	if !reflect.DeepEqual(migrated, original) {
 		t.Fatal("migration changed unrelated bot fields", migrated)
 	}
@@ -89,11 +91,17 @@ func TestBotPluginMigrationPreservesOnlyStoredCatalog(t *testing.T) {
 	if err = s.Get("bots", "worker", &worker); err != nil {
 		t.Fatal(err)
 	}
+	for id, want := range map[string]int{"worker": 0, "empty": 1, "absent": 1, "echo": 1} {
+		var bot domain.Bot
+		if err := s.Get("bots", id, &bot); err != nil || bot.MaxParallelPrompts == nil || *bot.MaxParallelPrompts != want {
+			t.Fatalf("bot %s after upgrade and restart: want limit %d, got %+v (%v)", id, want, bot, err)
+		}
+	}
 	if _, exists := worker.Plugins["new-after-upgrade"]; exists {
 		t.Fatal("restart reapplied plugin defaults")
 	}
 	var version int
-	if err = s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 6 {
+	if err = s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 7 {
 		t.Fatal("migration version", version, err)
 	}
 }

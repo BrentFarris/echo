@@ -139,7 +139,7 @@ func (s *Server) prepareWorker(req workerRequest) error {
 	}
 	for _, run := range req.Runs {
 		bot, err := s.Bot(run.BotID)
-		if err != nil || s.revoking[run.BotID] > 0 || !bot.EnableMultitasking && (len(s.botReservations[run.BotID]) > 0 || len(s.botQueues[run.BotID]) > 0) {
+		if err != nil || s.revoking[run.BotID] > 0 || s.promptSlotsFullLocked(bot) || len(s.botQueues[run.BotID]) > 0 {
 			s.mu.Unlock()
 			cancel()
 			return errors.New("worker bots are busy")

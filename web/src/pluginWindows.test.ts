@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { PluginWindows, appRoute, parseAppRoute } from './pluginWindows';
 import type { Bot, Plugin } from './types';
 
-const echo: Bot = { id: 'echo', name: 'Echo', handle: 'echo', prompt: '', roots: [], plugins: {}, enableMultitasking: false, revision: 1 };
+const echo: Bot = { id: 'echo', name: 'Echo', handle: 'echo', prompt: '', roots: [], plugins: {}, maxParallelPrompts: 1, revision: 1 };
 const plugin: Plugin = { id: 'calculator', name: 'Calculator', enabled: true, pending: false, scope: 'bot', builtin: false, capabilities: [], config: {}, settings: { properties: {} }, digest: 'one', app: { viewId: 'main' }, views: [{ id: 'main', title: 'Calculator', kind: 'floating', html: '<input>' }] };
 const view = { ...plugin.views![0], digest: 'one' };
 let windows: PluginWindows;

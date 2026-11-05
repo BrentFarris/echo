@@ -3,7 +3,17 @@ package server
 import (
 	"context"
 	"slices"
+
+	"github.com/brent/echo/internal/domain"
 )
+
+func (s *Server) promptSlotsFullLocked(bot domain.Bot) bool {
+	limit := 1
+	if bot.MaxParallelPrompts != nil {
+		limit = *bot.MaxParallelPrompts
+	}
+	return limit > 0 && len(s.botReservations[bot.ID]) >= limit
+}
 
 // All scheduler state is protected by Server.mu. Enqueue every recipient in one
 // critical section, so shared bots always observe the same dispatch order.
@@ -33,7 +43,7 @@ func (s *Server) admitLocked(id string) {
 			queue = queue[1:]
 			continue
 		}
-		if !bot.EnableMultitasking && len(s.botReservations[id]) > 0 {
+		if s.promptSlotsFullLocked(bot) {
 			break
 		}
 		queue[0] = nil

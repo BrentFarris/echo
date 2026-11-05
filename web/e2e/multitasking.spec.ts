@@ -2,8 +2,10 @@ import { test, expect, type Page } from '@playwright/test';
 
 async function state(page: Page) { return (await page.request.get('/api/v1/state')).json(); }
 async function send(page: Page, prompt: string) {
-  await page.getByRole('textbox', { name: 'Message', exact: true }).fill(prompt);
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await composer.fill(prompt);
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(composer).toBeEnabled();
 }
 async function newChat(page: Page) {
   const created = page.waitForResponse(response => response.url().endsWith('/api/v1/chats') && response.request().method() === 'POST');
@@ -29,7 +31,7 @@ test.beforeEach(async ({ page }) => {
   for (const bot of initial.bots) if (bot.id !== 'echo') await page.request.delete('/api/v1/bots/' + bot.id);
   for (const schedule of initial.schedules) await page.request.delete('/api/v1/schedules/' + schedule.id);
   for (const plugin of initial.plugins) if (!plugin.builtin) await page.request.patch('/api/v1/plugins/' + plugin.id, { data: { enabled: false, config: plugin.config } });
-  await page.request.post('/api/v1/bots', { data: { ...initial.bots.find((b: any) => b.id === 'echo'), enableMultitasking: false } });
+  await page.request.post('/api/v1/bots', { data: { ...initial.bots.find((b: any) => b.id === 'echo'), maxParallelPrompts: 1 } });
   await page.request.post('/api/v1/endpoints', { data: { endpoint: { id: 'test', name: 'Test local model', url: 'http://127.0.0.1:3743/v1', model: 'echo-test', contextTokens: 32768 } } });
   await page.reload();
   await newChat(page);
@@ -153,31 +155,40 @@ test('a never-opened chat requires confirmation before the X deletes it', async 
   await expect(page).toHaveURL(new RegExp('#' + selected + '$'));
 });
 
-test('checkbox defaults off, persists, and chat creation accepts multitasking', async ({ page }) => {
+test('parallel prompt limits default to one, validate, persist, and can be set through chat', async ({ page }) => {
   await page.getByRole('button', { name: '⚙ Settings', exact: true }).click();
   await page.locator('.settings-nav [data-section="bots"]').click();
   await page.getByRole('button', { name: '＋ Add bot', exact: true }).click();
-  let editor = page.getByRole('dialog').last();
-  await expect(editor.getByRole('checkbox', { name: 'Enable Multitasking', exact: true })).not.toBeChecked();
+  const editor = page.getByRole('dialog').last();
+  const limit = editor.getByRole('spinbutton', { name: 'Maximum parallel prompts', exact: true });
+  await expect(limit).toHaveValue('1');
+  await expect(limit).toHaveAccessibleDescription('Use 0 for unlimited');
   await editor.getByLabel('Handle', { exact: true }).fill('builder');
   await editor.getByLabel('Name', { exact: true }).fill('Builder');
-  await editor.getByRole('checkbox', { name: 'Enable Multitasking', exact: true }).check();
+  for (const value of ['-1', '1.5', '']) {
+    await limit.fill(value);
+    await editor.getByRole('button', { name: 'Save bot', exact: true }).click();
+    await expect(limit).toBeFocused();
+    await expect(limit).toHaveValue(value);
+  }
+  await limit.fill('2');
   await editor.getByRole('button', { name: 'Save bot', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(1);
   await page.locator('#settings').getByRole('button', { name: 'Close', exact: true }).click();
   await page.reload();
-  editor = await editBot(page, 'Builder');
-  await expect(editor.getByRole('checkbox', { name: 'Enable Multitasking', exact: true })).toBeChecked();
-  await editor.getByRole('checkbox', { name: 'Enable Multitasking', exact: true }).uncheck();
+  await editBot(page, 'Builder');
+  await expect(limit).toHaveValue('2');
+  await limit.fill('0');
   await editor.getByRole('button', { name: 'Save bot', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(1);
   await page.locator('#settings').getByRole('button', { name: 'Close', exact: true }).click();
-  expect((await state(page)).bots.find((b: any) => b.handle === 'builder').enableMultitasking).toBe(false);
-  await send(page, 'Create a bot named parallel with multitasking enabled');
-  await expect.poll(async () => (await state(page)).bots.find((b: any) => b.handle === 'parallel')?.enableMultitasking).toBe(true);
-  await expect(page.getByRole('button', { name: 'Stop response' })).toBeHidden();
-  await send(page, 'Create a bot named serial with multitasking disabled');
-  await expect.poll(async () => (await state(page)).bots.find((b: any) => b.handle === 'serial')?.enableMultitasking).toBe(false);
+  await page.reload();
+  await editBot(page, 'Builder');
+  await expect(limit).toHaveValue('0');
+  await editor.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.locator('#settings').getByRole('button', { name: 'Close', exact: true }).click();
+  await send(page, 'Create a bot named parallel that can run 3 parallel prompts');
+  await expect.poll(async () => (await state(page)).bots.find((b: any) => b.handle === 'parallel')?.maxParallelPrompts).toBe(3);
 });
 
 test('queued chats display a status, survive reload, can be stopped, and advance', async ({ page }) => {
@@ -201,7 +212,7 @@ test('queued chats display a status, survive reload, can be stopped, and advance
   await expect(page.locator('.message.assistant')).toContainText('Holding this request.');
 });
 
-test('saving only the checkbox admits queued work without stopping active chats', async ({ page }) => {
+test('raising the parallel prompt limit admits queued work while active chats continue', async ({ page }) => {
   const first = new URL(page.url()).hash.slice(1);
   await send(page, 'multitasking hold first');
   await expect(page.locator('.message.assistant')).toContainText('Holding this request.');
@@ -210,7 +221,7 @@ test('saving only the checkbox admits queued work without stopping active chats'
   await expect(page.locator('.run-queued')).toBeVisible();
   const revision = (await state(page)).bots.find((b: any) => b.id === 'echo').revision;
   const editor = await editBot(page, 'Echo');
-  await editor.getByRole('checkbox', { name: 'Enable Multitasking', exact: true }).check();
+  await editor.getByRole('spinbutton', { name: 'Maximum parallel prompts', exact: true }).fill('2');
   await editor.getByRole('button', { name: 'Save bot', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(1);
   await page.locator('#settings').getByRole('button', { name: 'Close', exact: true }).click();

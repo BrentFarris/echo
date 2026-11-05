@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -198,11 +199,8 @@ func main() {
 			}
 			tool = "bot_save"
 			args = map[string]any{"handle": name, "name": name, "prompt": "Help with this workspace."}
-			if strings.Contains(lower, "multitasking enabled") {
-				args["enableMultitasking"] = true
-			}
-			if strings.Contains(lower, "multitasking disabled") {
-				args["enableMultitasking"] = false
+			if match := regexp.MustCompile(`(\d+) parallel prompts`).FindStringSubmatch(lower); match != nil {
+				args["maxParallelPrompts"], _ = strconv.Atoi(match[1])
 			}
 		} else if strings.Contains(lower, "list my bots") {
 			tool = "bot_list"

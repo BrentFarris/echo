@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { Apps, appIcon, appStatus, botPluginSelected, dockedApps, pluginAvailable, registeredApps } from './apps';
 import type { Bot, Plugin } from './types';
 
-const echo: Bot = { id: 'echo', name: 'Echo', handle: 'echo', prompt: '', roots: [], plugins: {}, enableMultitasking: false, revision: 1 };
+const echo: Bot = { id: 'echo', name: 'Echo', handle: 'echo', prompt: '', roots: [], plugins: {}, maxParallelPrompts: 1, revision: 1 };
 const plugin = (id: string, extra: Partial<Plugin> = {}): Plugin => ({ id, name: id, enabled: true, pending: false, scope: 'bot', builtin: false, capabilities: [], config: {}, settings: { properties: {} }, app: { viewId: 'main' }, ...extra });
 afterEach(() => document.body.replaceChildren());
 

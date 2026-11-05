@@ -92,12 +92,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 		respond(w, map[string]any{"bots": bots, "chats": chats, "endpoints": endpoints, "plugins": ps, "schedules": schedules, "occurrences": jobs, "runs": runs, "appDock": dock, "slashCommands": commands, "questions": s.pendingQuestionState()}, e)
 	})
 	mux.HandleFunc("POST /api/v1/bots", func(w http.ResponseWriter, r *http.Request) {
-		var b domain.Bot
-		if e := decode(w, r, &b); e != nil {
+		var input json.RawMessage
+		if e := decode(w, r, &input); e != nil {
 			respond(w, nil, e)
 			return
 		}
-		value, e := s.updateBot(b, nil)
+		value, e := s.saveBotInput(input, nil)
 		if e == nil {
 			e = s.Calendar.ReconcileActivation(domain.Now())
 		}

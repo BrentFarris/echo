@@ -1,13 +1,71 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"slices"
 	"time"
 
 	"github.com/brent/echo/internal/domain"
 )
+
+// Keep input-only fields separate from the saved bot. RawMessage distinguishes
+// an omitted limit (preserve it) from zero (unlimited) and null (invalid).
+type botSaveInput struct {
+	domain.Bot
+	Limit              json.RawMessage `json:"maxParallelPrompts"`
+	EnableMultitasking *bool           `json:"enableMultitasking"`
+}
+
+func (s *Server) saveBotInput(raw json.RawMessage, scope *domain.ExecutionScope) (domain.Bot, error) {
+	var target struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &target); err != nil {
+		return domain.Bot{}, err
+	}
+	s.mu.Lock()
+	var input botSaveInput
+	if target.ID != "" {
+		b, err := s.Bot(target.ID)
+		if err != nil && (scope != nil || !errors.Is(err, sql.ErrNoRows)) {
+			s.mu.Unlock()
+			return b, err
+		}
+		input.Bot = b
+		// The settings API replaces an explicit plugin map. Tool calls merge
+		// individual selections. normalizeBot preserves an omitted map.
+		if scope == nil {
+			input.Plugins = nil
+		}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		s.mu.Unlock()
+		return domain.Bot{}, err
+	}
+	b := input.Bot
+	switch {
+	case input.Limit != nil:
+		var limit *int
+		if err := json.Unmarshal(input.Limit, &limit); err != nil || limit == nil {
+			s.mu.Unlock()
+			return b, errors.New("maxParallelPrompts must be a nonnegative whole number")
+		}
+		b.MaxParallelPrompts = limit
+	case input.EnableMultitasking != nil:
+		limit := 1
+		if *input.EnableMultitasking {
+			limit = 0
+		}
+		b.MaxParallelPrompts = &limit
+	}
+	return s.updateBotLocked(b, scope)
+}
 
 func sameBotScope(a, b domain.Bot) bool {
 	if a.ID != b.ID || a.Handle != b.Handle || a.Name != b.Name || a.Prompt != b.Prompt || !slices.Equal(a.Roots, b.Roots) {
@@ -45,6 +103,11 @@ func (s *Server) saveBotLocked(b domain.Bot) (domain.Bot, error) {
 // work; scheduler preferences take effect under the same lock as admission.
 func (s *Server) updateBot(b domain.Bot, scope *domain.ExecutionScope) (domain.Bot, error) {
 	s.mu.Lock()
+	return s.updateBotLocked(b, scope)
+}
+
+// updateBotLocked releases mu, including while waiting for revoked work.
+func (s *Server) updateBotLocked(b domain.Bot, scope *domain.ExecutionScope) (domain.Bot, error) {
 	b, err := s.normalizeBot(b)
 	if err != nil {
 		s.mu.Unlock()

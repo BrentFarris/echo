@@ -328,7 +328,7 @@ func TestInlineEditsAtomicValidationAndLineEndings(t *testing.T) {
 func TestInlineChatMultitaskingDisconnectAndShutdown(t *testing.T) {
 	s := testServer(t)
 	bot, input, _ := inlineFixture(t, s)
-	bot.EnableMultitasking = true
+	bot.MaxParallelPrompts = new(2)
 	var err error
 	bot, err = s.updateBot(bot, nil)
 	if err != nil {

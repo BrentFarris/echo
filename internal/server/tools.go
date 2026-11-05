@@ -64,8 +64,12 @@ func (s *Server) coreTools(bot domain.Bot) []domain.Tool {
 	}
 	if bot.ID == "echo" {
 		out = append(out,
-			coreTool("bot_list", "List available bots, their ids, prompts, folders, multitasking settings and plugin selections.", map[string]any{}),
-			coreTool("bot_save", "Create or update a bot. Existing fields are preserved when omitted. New named bots receive installed plugin defaults once; plugins added later require explicit opt-in. Echo automatically accepts new plugins unless explicitly disabled. Pass folders to bind its filesystem scope. Multitasking defaults to off for new bots; enable it to work in multiple chats simultaneously, or disable it to queue requests.", map[string]any{"id": S("Existing bot id"), "handle": S("Unique @handle"), "name": S("Display name"), "prompt": S("System prompt"), "roots": A("Existing absolute folders; empty array removes restrictions"), "plugins": map[string]any{"type": "object"}, "enableMultitasking": plugins.B("Allow simultaneous work across chats; false queues requests in order")}, "handle"),
+			coreTool("bot_list", "List available bots, their ids, prompts, folders, parallel prompt limits and plugin selections.", map[string]any{}),
+			coreTool("bot_save", "Create or update a bot. Existing fields are preserved when omitted. New named bots receive installed plugin defaults once; plugins added later require explicit opt-in. Echo automatically accepts new plugins unless explicitly disabled. Pass folders to bind its filesystem scope.", map[string]any{
+				"id": S("Existing bot id"), "handle": S("Unique @handle"), "name": S("Display name"), "prompt": S("System prompt"), "roots": A("Existing absolute folders; empty array removes restrictions"), "plugins": map[string]any{"type": "object"},
+				"maxParallelPrompts": map[string]any{"type": "integer", "minimum": 0, "description": "Maximum simultaneous prompts for this bot. Defaults to 1. Use 0 for unlimited."},
+				"enableMultitasking": plugins.B("Legacy setting. Use maxParallelPrompts instead."),
+			}, "handle"),
 			coreTool("bot_delete", "Delete a named bot and its schedules. Historical messages remain attributed.", map[string]any{"id": S("Bot id or handle")}, "id"),
 			coreTool("model_list", "List configured model endpoints.", map[string]any{}),
 			coreTool("model_save", "Configure a local or cloud endpoint, preserving omitted fields on updates. Credentials must be entered through the protected settings field.", modelSettingsProperties(), "name", "url", "model"),
@@ -206,18 +210,7 @@ func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionSc
 	case "bot_list":
 		return s.Bots()
 	case "bot_save":
-		var b domain.Bot
-		if id := text(a, "id"); id != "" {
-			b, e = s.Bot(id)
-			if e != nil {
-				return nil, e
-			}
-		}
-		data, _ := json.Marshal(a)
-		if e = json.Unmarshal(data, &b); e != nil {
-			return nil, e
-		}
-		b, e = s.updateBot(b, &scope)
+		b, e := s.saveBotInput(raw, &scope)
 		s.emit("changed", "", "", "", nil)
 		return b, e
 	case "bot_delete":
