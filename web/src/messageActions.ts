@@ -3,6 +3,7 @@ import type { Message } from './types';
 
 const waitMessage = 'Wait for the current response to finish before editing or deleting messages.';
 type Options = {
+	readOnly?: (chatId: string) => boolean;
   busy: (chatId: string) => boolean;
   notice: (error: unknown, failure?: boolean) => void;
   save: (message: Message, content: string, requestId: string) => Promise<void>;
@@ -77,7 +78,12 @@ export class MessageActionUI {
     entry.container = container; entry.body = body; entry.message = { ...message };
     container.dataset.messageActions = message.id; container.tabIndex = 0; container.classList.toggle('is-open', open);
     container.append(entry.toolbar);
-    for (const button of entry.toolbar.querySelectorAll('button')) button.setAttribute('aria-disabled', String(this.options.busy(message.chatId) || entry.saving));
+    const readOnly = !!this.options.readOnly?.(message.chatId);
+    if (readOnly && entry.form) this.close(entry);
+    for (const button of entry.toolbar.querySelectorAll('button')) {
+      button.hidden = readOnly && button.dataset.action !== 'copy';
+      button.setAttribute('aria-disabled', String(this.options.busy(message.chatId) || entry.saving || button.hidden));
+    }
     const rerun = entry.toolbar.querySelector<HTMLButtonElement>('[data-action="rerun"]')!;
     rerun.disabled = !!message.rerunUnavailable;
     if (rerun.disabled) rerun.setAttribute('aria-disabled', 'true');
@@ -95,6 +101,7 @@ export class MessageActionUI {
   }
   private async act(entry: Entry, action: string, button: HTMLButtonElement) {
     if (entry.saving) return;
+    if (action !== 'copy' && this.options.readOnly?.(entry.message.chatId)) return;
     if (this.options.busy(entry.message.chatId)) { this.options.notice(action === 'fork' ? 'Wait for the current response to finish before forking the chat.' : action === 'rerun' ? 'Wait for the current response to finish before rerunning messages.' : waitMessage, true); return; }
     try {
       if (action === 'fork') {

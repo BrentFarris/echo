@@ -10,6 +10,12 @@ const question = (overrides: Partial<PendingQuestion> = {}): PendingQuestion => 
 const read = chat({ lastReadAt: '2026-01-01T00:00:00Z' });
 const finished = run({ status: 'completed', updatedAt: '2026-01-02T00:00:00Z' });
 
+test('deleted chats never show unread, busy, or question indicators', () => {
+  const deleted = chat({ deletedAt: '2026-01-03T00:00:00Z', waitingForGroup: true });
+  expect(chatUnread(deleted, [finished], '', false)).toBe(false);
+  expect(chatDotState(deleted, [run(), finished], [question()], '', false)).toBe('');
+});
+
 test('pending questions take priority over busy and unread states, even in the selected chat', () => {
   for (const runs of [[run()], [finished], [run(), finished], []]) {
     expect(chatDotState(read, runs, [question()], '', false)).toBe('question');

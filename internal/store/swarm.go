@@ -18,10 +18,10 @@ func (s *Store) migrate() error {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 7 {
+	if version > 8 {
 		return errors.New("this profile was created by a newer Echo; update Echo before opening it")
 	}
-	if version == 7 {
+	if version == 8 {
 		return nil
 	}
 	tx, err := s.db.Begin()
@@ -64,10 +64,15 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
-	if _, err = tx.Exec(`UPDATE records SET data=json_remove(
+	if version < 7 {
+		if _, err = tx.Exec(`UPDATE records SET data=json_remove(
  json_insert(data, '$.maxParallelPrompts', CASE json_type(data, '$.enableMultitasking') WHEN 'true' THEN 0 ELSE 1 END),
  '$.enableMultitasking') WHERE namespace='bots';
  PRAGMA user_version=7;`); err != nil {
+			return err
+		}
+	}
+	if err = migrateChatRetention(tx); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -81,8 +86,15 @@ func (s *Store) MergeReplica(chat, source, epoch string, sequence int64, message
 		return err
 	}
 	defer tx.Rollback()
+	var retiredCount int
+	if err = tx.QueryRow("SELECT count(*) FROM chat_retired_replicas WHERE chat_id=? AND source=?", chat, source).Scan(&retiredCount); err != nil {
+		return err
+	}
+	if retiredCount != 0 {
+		return ErrStaleReplica
+	}
 	var exists string
-	if err = tx.QueryRow("SELECT id FROM chats WHERE id=?", chat).Scan(&exists); err != nil {
+	if err = tx.QueryRow("SELECT id FROM chats WHERE id=? AND json_extract(data,'$.deletedAt') IS NULL", chat).Scan(&exists); err != nil {
 		return err
 	}
 	var previousEpoch string

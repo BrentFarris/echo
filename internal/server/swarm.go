@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/store"
 	"github.com/brent/echo/internal/swarm"
 	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/bcrypt"
@@ -339,6 +340,26 @@ func (s *Server) swarmProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(path, "/api/v1/"), "/")
+	chatDelete := r.Method == "DELETE" && len(parts) == 2 && parts[0] == "chats"
+	chatRestore := r.Method == "POST" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "restore"
+	chatPurge := r.Method == "DELETE" && len(parts) == 3 && parts[0] == "chats" && parts[2] == "permanent"
+	if chatDelete || chatRestore || chatPurge {
+		capable := false
+		for _, peer := range s.Swarm.Directory() {
+			if peer.Node.ID == id {
+				capable = slices.Contains(peer.Node.Capabilities, "chat-retention/1")
+			}
+		}
+		if !capable {
+			http.Error(w, "Update this chat's machine to support 30-day retention", http.StatusConflict)
+			return
+		}
+	}
+	if r.Method == "GET" && len(parts) >= 3 && parts[0] == "chats" && s.remoteChatUnavailable(id, parts[1]) {
+		s.removeRemoteTranscript(id, parts[1])
+		respond(w, nil, store.ErrChatExpired)
+		return
+	}
 	if r.Method != "GET" && !s.swarmAvailable(id) {
 		respond(w, nil, s.offlineMachine(id, ""))
 		return
@@ -362,6 +383,12 @@ func (s *Server) swarmProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	cacheable := r.Method == "GET" && len(parts) == 3 && parts[0] == "chats" && (parts[2] == "messages" || parts[2] == "snapshot")
 	cacheKey := swarm.Key(id, path)
+	s.swarmCacheMu.Lock()
+	cacheRevision := uint64(0)
+	if cacheable {
+		cacheRevision = s.swarmCache[id].transcriptRevisions[parts[1]]
+	}
+	s.swarmCacheMu.Unlock()
 	proxy := &httputil.ReverseProxy{Rewrite: func(p *httputil.ProxyRequest) {
 		p.Out.URL = &url.URL{Scheme: "http", Host: "swarm", Path: path, RawQuery: p.In.URL.RawQuery}
 		p.Out.Host = "swarm"
@@ -375,6 +402,11 @@ func (s *Server) swarmProxy(w http.ResponseWriter, r *http.Request) {
 	}, Transport: s.Swarm.Client(id).Transport, FlushInterval: -1,
 		ModifyResponse: func(response *http.Response) error {
 			if response.StatusCode < 300 && r.Method != "GET" {
+				s.swarmCacheMu.Lock()
+				cached := s.swarmCache[id]
+				cached.mutation++
+				s.swarmCache[id] = cached
+				s.swarmCacheMu.Unlock()
 				s.requestSwarmRefresh()
 			}
 			response.Header.Del("Set-Cookie")
@@ -389,16 +421,37 @@ func (s *Server) swarmProxy(w http.ResponseWriter, r *http.Request) {
 					return errors.New("remote transcript exceeds cache limit")
 				}
 				response.Body = io.NopCloser(bytes.NewReader(body))
-				_ = s.Store.Put("swarm-transcripts", cacheKey, json.RawMessage(body))
+				s.swarmCacheMu.Lock()
+				cached := s.swarmCache[id]
+				if cached.transcriptRevisions[parts[1]] == cacheRevision && !s.remoteChatUnavailableIn(id, parts[1], cached.state) {
+					_ = s.Store.Put("swarm-transcripts", cacheKey, json.RawMessage(body))
+				}
+				s.swarmCacheMu.Unlock()
 			}
-			if response.StatusCode < 300 && r.Method == "DELETE" && len(parts) == 2 && parts[0] == "chats" {
-				_ = s.Store.Put("swarm-remote-deletions", swarm.Key(id, parts[1]), true)
-				_ = s.Store.Delete("swarm-transcripts", swarm.Key(id, path+"/messages"))
-				_ = s.Store.Delete("swarm-transcripts", swarm.Key(id, path+"/snapshot"))
+			if response.StatusCode < 300 && (chatDelete || chatRestore || chatPurge) {
+				chat := domain.Chat{ID: parts[1]}
+				if !chatPurge {
+					body, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
+					response.Body.Close()
+					if err != nil {
+						return err
+					}
+					response.Body = io.NopCloser(bytes.NewReader(body))
+					if err = json.Unmarshal(body, &chat); err != nil {
+						return err
+					}
+				}
+				s.recordRemoteChatMutation(id, chat, chatPurge)
+				s.requestSwarmRefresh()
 			}
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if cacheable && s.remoteChatUnavailable(id, parts[1]) {
+				s.removeRemoteTranscript(id, parts[1])
+				respond(w, nil, store.ErrChatExpired)
+				return
+			}
 			var cached json.RawMessage
 			if cacheable && s.swarmCacheAuthorized(id) && s.Store.Get("swarm-transcripts", cacheKey, &cached) == nil {
 				w.Header().Set("X-Echo-Cached", "true")
@@ -432,16 +485,36 @@ func (s *Server) filterRemoteDeleted(node string, raw json.RawMessage) json.RawM
 		return raw
 	}
 	kept := []json.RawMessage{}
+	visible := map[string]bool{}
 	for _, chat := range chats {
-		var c struct {
-			ID string `json:"id"`
-		}
+		var c domain.Chat
 		var deleted bool
-		if json.Unmarshal(chat, &c) != nil || s.Store.Get("swarm-remote-deletions", swarm.Key(node, c.ID), &deleted) != nil || !deleted {
+		if json.Unmarshal(chat, &c) == nil && c.DeletedAt != nil && !domain.Now().Before(c.DeletedAt.Add(store.ChatRetention)) {
+			s.removeRemoteTranscript(node, c.ID)
+			continue
+		}
+		if s.Store.Get("swarm-remote-deletions", swarm.Key(node, c.ID), &deleted) != nil || !deleted {
 			kept = append(kept, chat)
+			visible[c.ID] = true
 		}
 	}
 	state["chats"], _ = json.Marshal(kept)
+	for _, field := range []string{"runs", "questions"} {
+		var records []json.RawMessage
+		if json.Unmarshal(state[field], &records) != nil {
+			continue
+		}
+		kept := []json.RawMessage{}
+		for _, record := range records {
+			var owner struct {
+				ChatID string `json:"chatId"`
+			}
+			if json.Unmarshal(record, &owner) == nil && visible[owner.ChatID] {
+				kept = append(kept, record)
+			}
+		}
+		state[field], _ = json.Marshal(kept)
+	}
 	result, err := json.Marshal(state)
 	if err != nil {
 		return raw

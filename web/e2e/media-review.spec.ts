@@ -48,7 +48,7 @@ test('turn media combines uploads and file snapshots through streaming, lightbox
     await page.goto('/'); await page.request.post('/api/v1/session', { data: {} });
     originalEcho = (await (await page.request.get('/api/v1/state')).json()).bots.find((bot: any) => bot.id === 'echo');
     const state = await (await page.request.get('/api/v1/state')).json();
-    for (const chat of state.chats) await page.request.delete(`/api/v1/chats/${chat.id}`);
+    for (const chat of state.chats) { await page.request.delete(`/api/v1/chats/${chat.id}`); await page.request.delete(`/api/v1/chats/${chat.id}/permanent`); }
     for (const bot of state.bots) if (bot.handle === 'viewer') await page.request.delete(`/api/v1/bots/${bot.id}`);
     await page.request.post('/api/v1/bots', { data: { ...originalEcho, roots: [directory] } });
     await page.request.post('/api/v1/endpoints', { data: { endpoint: { id: 'media-review', name: 'Media review', url: base + '/v1', model: 'test', contextTokens: 32768 } } });

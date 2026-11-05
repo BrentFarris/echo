@@ -115,6 +115,13 @@ func (s *Store) AcceptTurn(c domain.Chat, m domain.Message, runs []domain.Run, r
 			return e
 		}
 	}
+	// A restored home sends a new epoch to its projections. Reset native
+	// mappings atomically with accepting the first post-restore turn.
+	if c.Projection {
+		if _, e = tx.Exec("DELETE FROM records WHERE namespace='external-sessions' AND json_extract(data,'$.chatId')=? AND EXISTS(SELECT 1 FROM chats WHERE id=? AND coalesce(json_extract(data,'$.executionEpoch'),'')<>?)", c.ID, c.ID, c.ExecutionEpoch); e != nil {
+			return e
+		}
+	}
 	chat, e := json.Marshal(c)
 	if e != nil {
 		return e
@@ -123,7 +130,7 @@ func (s *Store) AcceptTurn(c domain.Chat, m domain.Message, runs []domain.Run, r
 	if e != nil {
 		return e
 	}
-	query := "UPDATE chats SET data=? WHERE id=?"
+	query := "UPDATE chats SET data=? WHERE id=? AND json_extract(data,'$.deletedAt') IS NULL"
 	if mode == CreateChatWithTurn {
 		// A rejected first turn leaves no empty chat. A delayed retry must
 		// also respect deletion of a chat created with a stable task key.
@@ -365,7 +372,7 @@ func (s *Store) SaveChat(c domain.Chat) error {
 	if e != nil {
 		return e
 	}
-	r, e := s.db.Exec("UPDATE chats SET data=? WHERE id=?", b, c.ID)
+	r, e := s.db.Exec("UPDATE chats SET data=? WHERE id=? AND json_extract(data,'$.deletedAt') IS NULL", b, c.ID)
 	if e != nil {
 		return e
 	}
@@ -376,11 +383,9 @@ func (s *Store) SaveChat(c domain.Chat) error {
 	return nil
 }
 func (s *Store) Chat(id string) (domain.Chat, error) {
-	var c domain.Chat
-	var b []byte
-	e := s.db.QueryRow("SELECT data FROM chats WHERE id=?", id).Scan(&b)
-	if e == nil {
-		e = json.Unmarshal(b, &c)
+	c, e := s.RetainedChat(id)
+	if e == nil && c.DeletedAt != nil {
+		e = ErrChatDeleted
 	}
 	return c, e
 }
@@ -389,7 +394,7 @@ func (s *Store) SetChatGeneration(id string, generation domain.Generation) error
 	if e != nil {
 		return e
 	}
-	r, e := s.db.Exec("UPDATE chats SET data=json_set(data,'$.generation',json(?)) WHERE id=?", string(data), id)
+	r, e := s.db.Exec("UPDATE chats SET data=json_set(data,'$.generation',json(?)) WHERE id=? AND json_extract(data,'$.deletedAt') IS NULL", string(data), id)
 	if e != nil {
 		return e
 	}
@@ -407,7 +412,7 @@ func (s *Store) SetChatReadAt(id string, at time.Time) error {
 	if e != nil {
 		return e
 	}
-	r, e := s.db.Exec("UPDATE chats SET data=json_set(data,'$.lastReadAt',json(?)) WHERE id=?", string(stamp), id)
+	r, e := s.db.Exec("UPDATE chats SET data=json_set(data,'$.lastReadAt',json(?)) WHERE id=? AND json_extract(data,'$.deletedAt') IS NULL", string(stamp), id)
 	if e != nil {
 		return e
 	}
@@ -418,31 +423,30 @@ func (s *Store) SetChatReadAt(id string, at time.Time) error {
 	return nil
 }
 func (s *Store) Chats() ([]domain.Chat, error) {
-	rows, e := s.db.Query("SELECT data FROM chats ORDER BY json_extract(data,'$.updatedAt') DESC")
-	if e != nil {
-		return nil, e
-	}
-	defer rows.Close()
-	out := []domain.Chat{}
-	for rows.Next() {
-		var b []byte
-		var c domain.Chat
-		if e = rows.Scan(&b); e != nil {
-			return nil, e
-		}
-		if e = json.Unmarshal(b, &c); e != nil {
-			return nil, e
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
+	return s.listChats(false)
 }
 func (s *Store) DeleteChat(id string) error {
+	return s.deleteChat(id, false, nil)
+}
+func (s *Store) deleteChat(id string, requireDeleted bool, expiredAt *time.Time) error {
 	tx, e := s.db.Begin()
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback()
+	if requireDeleted {
+		var data []byte
+		if e = tx.QueryRow("SELECT data FROM chats WHERE id=?", id).Scan(&data); e != nil {
+			return e
+		}
+		c, err := retainedChat(data, domain.Now())
+		if err != nil && !errors.Is(err, ErrChatExpired) {
+			return err
+		}
+		if c.DeletedAt == nil || expiredAt != nil && expiredAt.Before(c.DeletedAt.Add(ChatRetention)) {
+			return ErrChatDeleted
+		}
+	}
 	if _, e = tx.Exec("INSERT OR IGNORE INTO chat_tombstones VALUES(?,?)", id, domain.Now()); e != nil {
 		return e
 	}
@@ -461,10 +465,16 @@ func (s *Store) DeleteChat(id string) error {
 	if e = cancelChatAlerts(tx, id); e != nil {
 		return e
 	}
+	if e = purgeChatRecords(tx, id); e != nil {
+		return e
+	}
+	if _, e = tx.Exec("INSERT OR IGNORE INTO records VALUES('chat-file-cleanups',?,'{}')", id); e != nil {
+		return e
+	}
 	if e = tx.Commit(); e != nil {
 		return e
 	}
-	return os.RemoveAll(s.externalAttachmentDirectory(id))
+	return s.removeChatFiles(id)
 }
 func (s *Store) AddMessage(m domain.Message) error {
 	b, e := pack(m)
@@ -520,6 +530,9 @@ func (s *Store) AppendChunk(id, content, reasoning string) error {
 	return e
 }
 func (s *Store) Messages(chat string) ([]domain.Message, error) {
+	if _, err := s.RetainedChat(chat); errors.Is(err, ErrChatExpired) {
+		return nil, err
+	}
 	rows, e := s.db.Query("SELECT data FROM messages WHERE chat_id=? ORDER BY seq", chat)
 	if e != nil {
 		return nil, e

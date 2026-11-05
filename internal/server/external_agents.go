@@ -83,7 +83,15 @@ func (s *Server) runExternalAgent(ctx context.Context, d *dispatch, bot domain.B
 	if err != nil {
 		return err
 	}
-	fingerprint := externalHash([]any{endpoint.Kind, endpoint.Executable, dir, bot.Prompt, bot.Name, bot.Handle, bot.Roots, run.Generation.Model, run.Generation.Thinking})
+	chat, err := s.Store.Chat(run.ChatID)
+	if err != nil {
+		return err
+	}
+	identity := []any{endpoint.Kind, endpoint.Executable, dir, bot.Prompt, bot.Name, bot.Handle, bot.Roots, run.Generation.Model, run.Generation.Thinking}
+	if chat.ExecutionEpoch != "" {
+		identity = append(identity, chat.ExecutionEpoch)
+	}
+	fingerprint := externalHash(identity)
 	var saved externalSession
 	_ = s.Store.Get("external-sessions", id, &saved)
 	var pending []string

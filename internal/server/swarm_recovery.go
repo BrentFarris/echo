@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/store"
 	"github.com/brent/echo/internal/swarm"
 )
 
@@ -203,8 +204,11 @@ func (s *Server) reconcileSwarm() {
 			}
 			input := workerControl{Home: req.Home, ID: req.ID, Token: req.Token}
 			ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
-			if deleted {
-				input.Action = "delete"
+			if deleted || f.Status == "trashed" {
+				input.Action = "stop"
+				if deleted {
+					input.Action = "delete"
+				}
 				if s.Swarm.JSON(ctx, node, "POST", "/api/v1/swarm/workers/control", input, nil) == nil {
 					f.Reconciled[node] = true
 					changed = true
@@ -225,7 +229,20 @@ func (s *Server) reconcileSwarm() {
 			}
 		}
 		if changed && s.Store.ChatDeleted(f.ChatID) == deleted {
-			_ = s.Store.Put("swarm-dispatches", id, &f)
+			_ = s.Store.Update("swarm-dispatches", id, func(raw json.RawMessage) (any, error) {
+				var current swarmDispatch
+				if err := json.Unmarshal(raw, &current); err != nil {
+					return nil, err
+				}
+				if current.Status != f.Status {
+					return nil, store.ErrStaleReplica
+				}
+				if current.Status == "deleted" {
+					current.Reconciled = f.Reconciled
+					return &current, nil
+				}
+				return &f, nil
+			})
 		}
 	}
 }

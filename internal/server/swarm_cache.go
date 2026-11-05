@@ -11,9 +11,11 @@ import (
 )
 
 type swarmCachedState struct {
-	state  json.RawMessage
-	token  string
-	failed bool
+	transcriptRevisions map[string]uint64
+	mutation            uint64
+	state               json.RawMessage
+	token               string
+	failed              bool
 }
 
 func (s *Server) requestSwarmRefresh() {
@@ -121,15 +123,29 @@ func (s *Server) startSwarmCache() {
 					ctx, cancel := context.WithTimeout(s.ctx, 4*time.Second)
 					defer cancel()
 					var raw json.RawMessage
+					s.swarmCacheMu.Lock()
+					mutation := s.swarmCache[id].mutation
+					s.swarmCacheMu.Unlock()
 					err := s.Swarm.JSON(ctx, id, "GET", "/api/v1/state", nil, &raw)
 					if s.ctx.Err() != nil || s.Swarm.RouteToken(id) != token {
 						return
 					}
 					s.swarmCacheMu.Lock()
 					previous := s.swarmCache[id]
+					if previous.mutation != mutation {
+						s.swarmCacheMu.Unlock()
+						s.requestSwarmRefresh()
+						return
+					}
 					changed := previous.token != token || previous.failed != (err != nil)
 					if err == nil {
+						for _, chatID := range s.pruneRemoteHistory(id, previous.state, raw) {
+							previous.retireTranscript(chatID)
+						}
 						changed = changed || !bytes.Equal(previous.state, raw)
+						if !bytes.Equal(previous.state, raw) {
+							previous.mutation++
+						}
 						previous.state = raw
 						if changed {
 							_ = s.Store.Put("swarm-state", id, raw)

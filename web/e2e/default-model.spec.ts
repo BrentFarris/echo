@@ -10,7 +10,7 @@ async function json(page: Page, path: string, method = 'GET', data?: unknown) {
 async function setup(page: Page) {
   await page.goto('/'); await expect(page.locator('#new-chat')).toBeVisible();
   const state = await json(page, '/state');
-  for (const chat of state.chats) await json(page, `/chats/${chat.id}`, 'DELETE');
+  for (const chat of state.chats) { await json(page, `/chats/${chat.id}`, 'DELETE'); await json(page, `/chats/${chat.id}/permanent`, 'DELETE'); }
   for (const id of [preferred, other]) await json(page, '/endpoints', 'POST', { endpoint: { id, name: id === preferred ? 'Preferred fixture' : 'Other fixture', url: 'http://127.0.0.1:3743/v1', model: 'connection-model', temperature: .27, reasoningEffort: 'high' } });
   await page.reload(); await expect(page.locator('#new-chat')).toBeVisible();
 }
@@ -46,7 +46,7 @@ test.afterEach(async ({ page }) => {
     if (!response.ok()) continue;
     const state = await response.json();
     for (const bot of state.bots) if (bot.handle === 'newchatpinnedfixture') await json(page, `${base}/bots/${bot.id}`, 'DELETE');
-    for (const chat of state.chats) await json(page, `${base}/chats/${chat.id}`, 'DELETE');
+    for (const chat of state.chats) { await json(page, `${base}/chats/${chat.id}`, 'DELETE'); await json(page, `${base}/chats/${chat.id}/permanent`, 'DELETE'); }
     for (const endpoint of state.endpoints) if ([preferred, other].includes(endpoint.id)) await json(page, `${base}/endpoints/${endpoint.id}`, 'DELETE');
   }
   if (remoteNode) await json(page, `/swarm/peers/${remoteNode}`, 'DELETE');

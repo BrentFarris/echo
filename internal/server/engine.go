@@ -154,6 +154,11 @@ func (s *Server) recipients(req SendRequest) ([]domain.Bot, error) {
 	return result, nil
 }
 func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
+	if req.newChat == nil {
+		if _, err := s.Store.Chat(chatID); err != nil {
+			return nil, err
+		}
+	}
 	if prior := s.Store.Accepted(chatID, req.RequestID); prior != "" {
 		return acceptedDispatch(prior), nil
 	}

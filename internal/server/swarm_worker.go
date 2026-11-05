@@ -480,10 +480,14 @@ func (s *Server) controlWorker(input workerControl) (any, error) {
 	w := s.swarmWorkers[key]
 	s.swarmMu.Unlock()
 	if w == nil {
+		if req.Status == "deleted" {
+			return map[string]any{"status": req.Status}, nil
+		}
 		if input.Action == "delete" && req.Home != s.Swarm.Node().ID {
-			_ = s.Store.DeleteChat(projectionID(req.Home, req.Chat.ID))
+			if err := s.Store.DeleteChat(projectionID(req.Home, req.Chat.ID)); err != nil {
+				return nil, err
+			}
 			req.Status = "deleted"
-			_ = s.Store.Put("swarm-workers", key, req)
 		}
 		if input.Action == "stop" {
 			req.Status = "cancelled"
@@ -548,9 +552,9 @@ func (s *Server) controlWorker(input workerControl) (any, error) {
 		if started {
 			<-w.d.done
 		}
-		_ = s.Store.DeleteChat(projectionID(req.Home, req.Chat.ID))
-		req.Status = "deleted"
-		_ = s.Store.Put("swarm-workers", key, req)
+		if err := s.Store.DeleteChat(projectionID(req.Home, req.Chat.ID)); err != nil {
+			return nil, err
+		}
 	}
 	return true, nil
 }

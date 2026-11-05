@@ -17,7 +17,7 @@ async function connect(page: Page) {
   for (const node of ['', ...nodes]) {
     const api = node ? `/api/v1/swarm/instances/${node}` : '/api/v1';
     const state = await json(page, `${api}/state`);
-    for (const c of state.chats) await json(page, `${api}/chats/${c.id}`, 'DELETE');
+    for (const c of state.chats) { await json(page, `${api}/chats/${c.id}`, 'DELETE'); await json(page, `${api}/chats/${c.id}/permanent`, 'DELETE'); }
     for (const b of state.bots) if (b.id !== 'echo') await json(page, `${api}/bots/${b.id}`, 'DELETE');
     for (const s of state.schedules) await json(page, `${api}/schedules/${s.id}`, 'DELETE');
     const bot = await json(page, `${api}/bots`, 'POST', { handle: 'kaiju', name: 'Kaiju', prompt: 'Complete the requested work.' });
@@ -140,10 +140,49 @@ test('local create and delete finish while swarm inventory is stalled', async ({
     await expect(page.locator('.chat-row.active')).toHaveCount(1, { timeout: 1000 });
     await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeEnabled({ timeout: 1000 });
     await page.locator('.chat-remove').click();
-    await expect(page.locator('.chat-row')).toHaveCount(0, { timeout: 1000 });
+    await expect(page.locator('.chat-row:not(.deleted-chat-row)')).toHaveCount(0, { timeout: 1000 });
+    await expect(page.locator('[data-deleted-root]')).toHaveAttribute('aria-expanded', 'false');
     await page.locator('#settings-button').click();
     await expect(page.locator('#settings')).toBeVisible({ timeout: 1000 });
   } finally { release(); }
+});
+
+test('Deleted respects machine filters, remote capability, and offline recovery controls', async ({ page }) => {
+  const [linux] = await connect(page);
+  const local = await json(page, '/api/v1/chats', 'POST', {});
+  const remoteBase = `/api/v1/swarm/instances/${linux}`;
+  const remote = await json(page, `${remoteBase}/chats`, 'POST', {});
+  await page.route('**/api/v1/swarm/state', async route => {
+    const state = await (await route.fetch()).json();
+    for (const instance of state.instances) if (instance.node.nodeId === linux) instance.node.capabilities = instance.node.capabilities.filter((value: string) => value !== 'chat-retention/1');
+    await route.fulfill({ json: state });
+  });
+  await page.reload();
+  const remoteID = `${linux}:${remote.id}`;
+  await expect(page.locator(`[data-delete="${remoteID}"]`)).toBeDisabled();
+  await expect(page.locator(`[data-delete="${remoteID}"]`)).toHaveAttribute('title', /Update/);
+  await page.unroute('**/api/v1/swarm/state');
+  await page.reload();
+  await expect(page.locator(`[data-delete="${remoteID}"]`)).toBeEnabled();
+  await json(page, `/api/v1/chats/${local.id}`, 'DELETE');
+  await json(page, `${remoteBase}/chats/${remote.id}`, 'DELETE');
+  await page.goto('/');
+  const root = page.locator('[data-deleted-root]');
+  await expect(root).toHaveText('Deleted (2)');
+  await page.getByLabel('Filter machines').selectOption(linux);
+  await expect(root).toHaveText('Deleted (1)');
+  await root.click(); await page.locator('[data-deleted-group]').click();
+  await page.locator(`[data-chat="${remoteID}"]`).click();
+  await expect(page.locator('.deleted-chat-banner')).toBeVisible();
+  await json(page, `/api/v1/swarm/peers/${linux}`, 'PATCH', { disconnected: true });
+  await expect(page.getByRole('button', { name: 'Restore', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Delete permanently', exact: true })).toBeDisabled();
+  await json(page, `/api/v1/swarm/peers/${linux}`, 'PATCH', { disconnected: false });
+  await expect(page.getByRole('button', { name: 'Restore', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Restore', exact: true }).click();
+  await expect(page.locator('.deleted-chat-banner')).toBeHidden();
+  await expect(page.locator(`[data-chat="${remoteID}"]`)).toBeVisible();
+  await expect(root).toHaveCount(0);
 });
 
 test('offline bots stay visible and block mixed sends without losing the draft', async ({ page }) => {

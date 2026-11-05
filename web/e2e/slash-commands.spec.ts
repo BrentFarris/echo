@@ -23,7 +23,7 @@ test.beforeEach(async ({ page }) => {
     else if (!command.enabled) await json(page, '/slash-commands/' + command.id + '/restore', 'POST', {});
   }
   const state = await json(page, '/state');
-  for (const chat of state.chats) await json(page, '/chats/' + chat.id, 'DELETE');
+  for (const chat of state.chats) { await json(page, '/chats/' + chat.id, 'DELETE'); await json(page, '/chats/' + chat.id + '/permanent', 'DELETE'); }
   for (const bot of state.bots) if (bot.id !== 'echo') await json(page, '/bots/' + bot.id, 'DELETE');
   const echo = state.bots.find((b: any) => b.id === 'echo');
   await json(page, '/bots', 'POST', { ...echo, plugins: { ...echo.plugins, calendar: true } });

@@ -27,7 +27,7 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByRole('button', { name: '＋ New chat', exact: true })).toBeVisible();
   await page.request.post('/api/v1/session', { data: {} });
   const initial = await state(page);
-  for (const chat of initial.chats) await page.request.delete('/api/v1/chats/' + chat.id);
+  for (const chat of initial.chats) { await page.request.delete('/api/v1/chats/' + chat.id); await page.request.delete('/api/v1/chats/' + chat.id + '/permanent'); }
   for (const bot of initial.bots) if (bot.id !== 'echo') await page.request.delete('/api/v1/bots/' + bot.id);
   for (const schedule of initial.schedules) await page.request.delete('/api/v1/schedules/' + schedule.id);
   for (const plugin of initial.plugins) if (!plugin.builtin) await page.request.patch('/api/v1/plugins/' + plugin.id, { data: { enabled: false, config: plugin.config } });

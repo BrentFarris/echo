@@ -45,6 +45,10 @@ func TestAttachmentsReachOnlyRecipientsAndDeleteWithChat(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitDispatch(t, d)
+	if len(received) == 0 {
+		runs, _ := s.Store.ChatRuns(c.ID)
+		t.Fatalf("model received no request; runs: %+v", runs)
+	}
 	last := received[len(received)-1]
 	if len(last.Parts) != 1 || last.Parts[0].ImageURL == nil || !strings.HasPrefix(last.Parts[0].ImageURL.URL, "data:image/png;base64,") {
 		t.Fatalf("lost image: %+v", last)

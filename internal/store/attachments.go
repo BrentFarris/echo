@@ -104,6 +104,9 @@ func (s *Store) AddAttachment(a domain.Attachment, data []byte) error {
 }
 
 func (s *Store) Attachment(chatID, id string, pendingOnly bool) (domain.Attachment, []byte, error) {
+	if _, err := s.RetainedChat(chatID); err != nil {
+		return domain.Attachment{}, nil, err
+	}
 	var a domain.Attachment
 	var metadata, compressed []byte
 	query := "SELECT metadata,data FROM attachments WHERE chat_id=? AND id=?"

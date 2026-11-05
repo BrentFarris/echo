@@ -7,7 +7,7 @@ async function setup(page: Page) {
   await expect(page.getByRole('button', { name: '＋ New chat', exact: true })).toBeVisible();
   await page.request.post('/api/v1/session', { data: {} });
   const response = await page.request.get('/api/v1/state'); const state = await response.json();
-  for (const c of state.chats) await page.request.delete('/api/v1/chats/' + c.id);
+  for (const c of state.chats) { await page.request.delete('/api/v1/chats/' + c.id); await page.request.delete('/api/v1/chats/' + c.id + '/permanent'); }
   for (const b of state.bots) if (b.id !== 'echo') await page.request.delete('/api/v1/bots/' + b.id);
   for (const s of state.schedules) await page.request.delete('/api/v1/schedules/' + s.id);
   for (const p of state.plugins) if (!p.builtin) await page.request.patch('/api/v1/plugins/' + p.id, { data: { enabled: false, config: p.config } });
@@ -22,7 +22,7 @@ for (const welcome of [true, false]) test(`background refreshes preserve editing
   await setup(page);
   if (welcome) {
     const state = await (await page.request.get('/api/v1/state')).json();
-    for (const chat of state.chats) await page.request.delete(`/api/v1/chats/${chat.id}`);
+    for (const chat of state.chats) { await page.request.delete(`/api/v1/chats/${chat.id}`); await page.request.delete(`/api/v1/chats/${chat.id}/permanent`); }
     await page.goto('/');
   }
   await expect(page.locator('#connection')).toHaveText('');
@@ -452,8 +452,10 @@ test('composer pastes images, attaches files, preserves drafts and renders persi
   await input.fill('This draft belongs only to the deleted chat');
   await input.press('Control+V'); await expect(page.locator('.attachment-drafts .attachment-card')).toHaveCount(1);
   await page.request.delete('/api/v1/chats/' + oldChat);
-  expect((await page.request.get(imageURL!)).status()).toBe(404);
+  expect((await page.request.get(imageURL!)).status()).toBe(200);
   await expect(input).toHaveText(''); await expect(page.locator('.attachment-drafts')).toBeHidden();
+  await page.request.delete('/api/v1/chats/' + oldChat + '/permanent');
+  expect((await page.request.get(imageURL!)).ok()).toBe(false);
 });
 
 test('composer grows to half height, opens upward menus and uses one send/stop icon', async ({ page }) => {
@@ -757,14 +759,16 @@ test('completed replies open changed files in the editor and fall back when it i
   }
 });
 
-test('stream reconnect, stop, and deletion leave no running dispatch or transcript', async ({ page }) => {
+test('stream reconnect, stop, and deletion retain a stopped transcript', async ({ page }) => {
   await setup(page); await send(page, 'slow stream');
   await expect(page.locator('.message.assistant')).toContainText('A stream'); await page.reload();
   await expect(page.locator('.message.assistant')).toContainText('A stream that survives a browser reload.');
   await send(page, 'slow stream again'); await expect(page.getByRole('button', { name: 'Stop response' })).toBeVisible(); await page.getByRole('button', { name: 'Stop response' }).click();
   await expect(page.getByRole('button', { name: 'Stop response' })).toBeHidden();
   const state = await (await page.request.get('/api/v1/state')).json(); await page.request.delete('/api/v1/chats/' + state.chats[0].id);
-  expect(await (await page.request.get('/api/v1/chats/' + state.chats[0].id + '/messages')).json()).toEqual([]);
+  const retained = await (await page.request.get('/api/v1/chats/' + state.chats[0].id + '/messages')).json();
+  expect(retained.length).toBeGreaterThan(0);
+  expect(retained.some((message: any) => message.status === 'running')).toBe(false);
 });
 
 test('missed jobs select exactly one, skip others, and support unlimited batches', async ({ page }) => {
@@ -845,7 +849,7 @@ test('schedules survive chat deletion and mobile layout remains usable', async (
   const state = await (await page.request.get('/api/v1/state')).json(); expect(state.schedules).toHaveLength(1);
   await page.request.delete('/api/v1/chats/' + state.chats[0].id);
   expect((await (await page.request.get('/api/v1/state')).json()).schedules).toHaveLength(1);
-  await page.setViewportSize({ width: 390, height: 844 }); await page.reload();
+  await page.setViewportSize({ width: 390, height: 844 }); await page.goto('/');
   await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });

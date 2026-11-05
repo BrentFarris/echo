@@ -97,6 +97,8 @@ type Server struct {
 	ctx               context.Context
 	cancel            context.CancelFunc
 	mu                sync.Mutex
+	chatRetentionMu   sync.Mutex
+	chatRetentionWG   sync.WaitGroup
 	externalLocks     sync.Map // Session key -> cancellable semaphore; never exposed to plugins.
 	dispatches        map[string]*dispatch
 	groupModels       map[string]groupModelCheck
@@ -224,6 +226,14 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 			return nil, e
 		}
 	}
+	if _, e = db.PurgeExpiredChats(domain.Now()); e != nil {
+		s.Close()
+		return nil, e
+	}
+	if e = s.expireRemoteChatCache(); e != nil {
+		s.Close()
+		return nil, e
+	}
 	if e = db.Recover(); e != nil {
 		s.Close()
 		return nil, e
@@ -251,7 +261,9 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 	s.initDebugger()
 	s.startNotifications()
 	s.Development.StartAutomaticChecks()
+	s.chatRetentionWG.Add(1)
 	go func() {
+		defer s.chatRetentionWG.Done()
 		t := time.NewTicker(5 * time.Minute)
 		defer t.Stop()
 		for {
@@ -259,6 +271,16 @@ func New(dir string, assets fs.FS, guest []byte) (*Server, error) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
+				s.chatRetentionMu.Lock()
+				count, err := db.PurgeExpiredChats(domain.Now())
+				err = errors.Join(err, s.expireRemoteChatCache())
+				s.chatRetentionMu.Unlock()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "purging expired chats: %v\n", err)
+				}
+				if count > 0 {
+					s.emit("changed", "", "", "", nil)
+				}
 				db.Reclaim()
 			}
 		}
@@ -273,6 +295,7 @@ func (s *Server) Close() {
 func (s *Server) close() {
 	s.ready.Store(false)
 	s.cancel()
+	s.chatRetentionWG.Wait()
 	s.goLanguageMu.Lock()
 	languageSessions := make([]*goLanguageSession, 0, len(s.goLanguages))
 	for _, g := range s.goLanguages {
@@ -444,6 +467,9 @@ func (s *Server) messages(id string) ([]domain.Message, error) {
 func (s *Server) snapshot(id string) ([]domain.Message, int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, err := s.Store.RetainedChat(id); err != nil {
+		return nil, 0, err
+	}
 	ms, e := s.Store.Messages(id)
 	if e != nil {
 		return nil, 0, e
@@ -472,6 +498,10 @@ func respond(w http.ResponseWriter, v any, e error) {
 		if errors.Is(e, errMaintenance) {
 			w.Header().Set("Retry-After", "2")
 			w.WriteHeader(http.StatusServiceUnavailable)
+		} else if errors.Is(e, store.ErrChatDeleted) {
+			w.WriteHeader(http.StatusConflict)
+		} else if errors.Is(e, store.ErrChatExpired) {
+			w.WriteHeader(http.StatusGone)
 		} else {
 			w.WriteHeader(http.StatusBadRequest)
 		}
@@ -536,6 +566,9 @@ func (s *Server) Handler() http.Handler {
 				http.Error(w, "Sign in required", 401)
 				return
 			}
+		}
+		if !s.guardRetainedChat(w, r) {
+			return
 		}
 		mux.ServeHTTP(w, r)
 	})

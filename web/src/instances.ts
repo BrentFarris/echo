@@ -136,6 +136,9 @@ export async function resourceAPI<T = any>(path: string, method = 'GET', body?: 
   if (/^\/chats\/[^/]+\/messages$/.test(target.path) && method === 'GET') value = value.map((m: Message) => ownedMessage(node, m));
   if (/^\/chats\/[^/]+\/snapshot$/.test(target.path)) value = { ...value, messages: value.messages.map((m: Message) => ownedMessage(node, m)) };
   if (/^\/chats$/.test(target.path) && method === 'POST') value = { ...value, id: resourceID(node, value.id), nodeId: node, generation: ownedGeneration(node, value.generation) };
+  if ((/^\/chats\/[^/]+$/.test(target.path) && method === 'DELETE') || (/^\/chats\/[^/]+\/restore$/.test(target.path) && method === 'POST')) {
+    if (value && typeof value === 'object') value = { ...value, id: resourceID(node, value.id), nodeId: node, generation: ownedGeneration(node, value.generation), bots: Object.fromEntries(Object.entries(value.bots || {}).map(([id, label]) => [resourceID(node, id), label])) };
+  }
   if (/\/app\/dock$/.test(target.path)) value = value.map((id: string) => resourceID(node, id));
   return value as T;
 }

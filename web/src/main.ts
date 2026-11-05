@@ -84,6 +84,10 @@ let sidebarMarkup = '';
 let newChatBotId = 'echo', newChatBotMarkup = '';
 const collapsedChatGroups = new Set<string>();
 const deletedChats = new Set<string>();
+const chatTransitions = new Map<string, Chat>();
+const expandedDeletedGroups = new Set<string>();
+let deletedExpanded = false;
+let chatExpiryTimer: ReturnType<typeof setTimeout> | undefined;
 const closingChats = new Set<string>();
 let creatingChat = false;
 let attachments: DraftAttachment[] = [], submitting = false;
@@ -106,10 +110,13 @@ function notice(value: unknown, error = false) {
 }
 function action(fn: () => unknown | Promise<unknown>) { return () => { Promise.resolve().then(fn).catch(e => notice(e, true)); }; }
 function groupWaiting(id: string) { return !!state.chats.find(chat => chat.id === id)?.waitingForGroup; }
+function chatReadOnly(id = chatId) { return !!state.chats.find(chat => chat.id === id)?.deletedAt; }
+function canRetainChat(id: string) { const node = splitID(id)[0]; return !node || node === entryNode || !!instances.get(node)?.node.capabilities?.includes('chat-retention/1'); }
+function expiredChat(chat: Chat) { return !!chat.expiresAt && Date.parse(chat.expiresAt) <= Date.now(); }
 function busy() { return groupWaiting(chatId) || messages.some(m => m.chatId === chatId && m.role === 'user' && m.status === 'queued') || state.runs.some(r => r.chatId === chatId && ['running', 'waiting', 'queued'].includes(r.status)); }
 function currentBot(id?: string) { return state.bots.find(b => b.id === id); }
 function pluginEnabled(id: string, botId?: string) { return pluginAvailable(state.plugins.find(p => p.id === id), currentBot(botId)); }
-function markRead(id: string) { if (id) void api(`/chats/${id}/read`, 'POST', {}).catch(() => { /* Sidebar state recovers on the next refresh. */ }); }
+function markRead(id: string) { if (id && !chatReadOnly(id)) void api(`/chats/${id}/read`, 'POST', {}).catch(() => { /* Sidebar state recovers on the next refresh. */ }); }
 function chatDot(c: Chat) {
   return chatDotMarkup(chatDotState(c, state.runs, state.questions, chatId, !showingApps && !showingApp));
 }
@@ -120,6 +127,8 @@ function shell() {
   <main class="main"><header class="chat-header"><button class="icon mobile-menu" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">☰</button><strong id="chat-title">Echo</strong><span id="connection" class="subtle">Connecting…</span></header><div class="chat-view"><div class="bot-tabs-shell" hidden><button type="button" class="bot-tabs-scroll previous" aria-label="Scroll tabs left" title="Scroll tabs left">${icons.chevron}</button><div class="bot-tabs" role="tablist" aria-label="Bot threads"></div><button type="button" class="bot-tabs-scroll next" aria-label="Scroll tabs right" title="Scroll tabs right">${icons.chevron}</button></div><div id="bot-thread-panel" class="conversation-panel"><div class="chat-log" role="log" aria-label="Conversation"></div></div>
   ${composerMarkup}</div><section class="apps-view" aria-labelledby="apps-heading" hidden><h1 id="apps-heading" tabindex="-1">Apps</h1><p class="subtle">Open your plugin apps or dock them for quick access.</p><div id="apps-catalog"></div></section><section class="embedded-app-view" hidden aria-label="App"></section><div class="terminal-region" hidden></div></main>`;
   q('.chat-log').tabIndex = 0;
+  const deletedBanner = document.createElement('div'); deletedBanner.className = 'deleted-chat-banner'; deletedBanner.hidden = true; deletedBanner.setAttribute('role', 'status');
+  q('.chat-view').prepend(deletedBanner);
   const resultPanel = document.createElement('section'); resultPanel.className = 'slash-command-results'; resultPanel.setAttribute('aria-label', 'Command results'); resultPanel.hidden = true;
   q('.composer').before(resultPanel); commandResults = new SlashCommandResults(resultPanel); commandResults.show(chatId);
   chatScroll = createChatScrollFollower(q('.chat-log'));
@@ -231,6 +240,7 @@ function showApps() {
   setSidebarOpen(false, false); q('#apps-heading').focus();
 }
 function saveGeneration() {
+  if (chatReadOnly()) return;
   generationByNode[modelNode || entryNode] = { ...generation };
   if (!chatId || !generation.endpointId || (modelNode || entryNode) !== splitID(chatId)[0]) return;
   const id = chatId, value = { ...generation };
@@ -304,6 +314,7 @@ async function openNotification(hash: string) {
   } finally { openingNotification = false; }
 }
 async function send() {
+  if (chatReadOnly()) return;
   if (busy() || submitting) return; const draft = trimmedDraft(q<ReferenceInput>('#composer').snapshot()), content = draft.text; if (!content && !attachments.length) return;
   if (/^\/(approve|missed)(?:\s|$)/.test(content) && !slashSupported(splitID(chatId)[0] || entryNode)) throw new Error('Update the chat’s machine before sending this text; older versions interpret it as a command.');
   assertOnlineRecipients(content, draft.references, state.bots, state.botGroups);
@@ -338,15 +349,16 @@ async function stop() {
   catch (error) { stoppingChats.delete(id); updateSendButton(); throw error; }
 }
 function updateSendButton() {
+  renderDeletedChat();
   const button = q<HTMLButtonElement>('#send'), active = busy();
   if (!active) stoppingChats.delete(chatId);
   const stopping = stoppingChats.has(chatId);
   const label = stopping ? 'Stopping response' : active ? 'Stop response' : submitting ? 'Sending message' : 'Send message';
   button.innerHTML = active ? icons.stop : icons.send; button.setAttribute('aria-label', label); button.title = label;
-  button.disabled = stopping || !instanceOnline(splitID(chatId)[0]) || submitting || (!active && !q<ReferenceInput>('#composer').value.trim() && !attachments.length);
+  button.disabled = chatReadOnly() || stopping || !instanceOnline(splitID(chatId)[0]) || submitting || (!active && !q<ReferenceInput>('#composer').value.trim() && !attachments.length);
 }
 function addFiles(files: File[]) {
-  if (submitting) return;
+  if (submitting || chatReadOnly()) return;
   for (const file of files) {
     if (attachments.length >= 8 || attachments.reduce((n, a) => n + a.file.size, 0) + file.size > 64 * 1024 * 1024) { notice('Attach up to 8 files totaling 64 MB per message.', true); break; }
     if (file.size > 32 * 1024 * 1024) { notice(`${file.name} exceeds 32 MB.`, true); continue; }
@@ -369,22 +381,33 @@ function renderAttachments() {
 function applyFreshState() {
   if (!latestLocal) return;
   const selectedWasListed = state.chats.some(c => c.id === chatId);
+  const selectedWasActive = state.chats.some(c => c.id === chatId && !c.deletedAt);
   const rendering = () => JSON.stringify([state.plugins.filter(p => p.renderers?.length).map(p => [p.id, p.enabled, p.pending, p.digest]), state.bots.map(b => b.plugins)]), beforeRendering = rendering();
   state = combineState(latestLocal, latestSwarm || { node: { nodeId: latestLocal.nodeId || '', name: 'This machine', epoch: '', version: 1 }, enabled: false, peers: [], instances: [] });
   notifyUsageMachinesChanged();
   notifySlashCommandsChanged();
   state.chats = state.chats.filter(c => !deletedChats.has(c.id));
+  for (const [id, chat] of chatTransitions) {
+    const index = state.chats.findIndex(c => c.id === id);
+    if (index >= 0 && state.chats[index].deletedAt === chat.deletedAt) chatTransitions.delete(id);
+    else if (index >= 0) state.chats[index] = chat;
+    else state.chats.push(chat);
+  }
+  state.chats = state.chats.filter(c => !expiredChat(c));
+  clearTimeout(chatExpiryTimer);
+  const expirations = state.chats.flatMap(c => c.expiresAt ? [Date.parse(c.expiresAt)] : []);
+  if (expirations.length) chatExpiryTimer = setTimeout(() => applyFreshState(), Math.min(2147483647, Math.max(1, Math.min(...expirations) - Date.now())));
   chatId = resourceID(...splitID(chatId)); settingsNode ||= entryNode; modelNode ||= entryNode;
-  const fallbackChatId = state.chats[0]?.id || '';
+  const fallbackChat = state.chats.find(c => !c.deletedAt), fallbackChatId = fallbackChat?.id || '';
   // Restore drafts only when the selected chat changes. Repainting the welcome
   // draft on background updates resets its caret and undo history.
-  if (!pendingNotificationHash && (!chatId || splitID(chatId)[0] === entryNode || selectedWasListed) && !state.chats.some(c => c.id === chatId) && chatId !== fallbackChatId) {
+  if (!pendingNotificationHash && (!chatId || splitID(chatId)[0] === entryNode || selectedWasListed) && (!state.chats.some(c => c.id === chatId) || selectedWasActive && chatReadOnly()) && chatId !== fallbackChatId) {
       if (chatId) { releaseAttachments(drafts.get(chatId)?.attachments || attachments); drafts.delete(chatId); }
       chatId = fallbackChatId; if (!showingApps && !showingApp) history.replaceState(null, '', chatId ? '#' + chatId : location.pathname);
       const draft = drafts.get(chatId);
-      modelNode = draft?.modelNode || state.chats[0]?.nodeId || entryNode;
-      generationByNode = { ...(draft?.generationByNode || state.chats[0]?.generationByNode || {}) };
-      generation = { ...(draft?.generation || state.chats[0]?.generation || newChatGeneration(entryNode, state.endpoints)) };
+      modelNode = draft?.modelNode || fallbackChat?.nodeId || entryNode;
+      generationByNode = { ...(draft?.generationByNode || fallbackChat?.generationByNode || {}) };
+      generation = { ...(draft?.generation || fallbackChat?.generation || newChatGeneration(entryNode, state.endpoints)) };
       references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references });
       renderRefs(); renderAttachments(); autosizeComposer(); messages = []; ++chatNavigation; renderMessages(); if (chatId) void reloadTranscript(chatId).catch(e => notice(e, true));
     }
@@ -434,16 +457,27 @@ function renderSidebar() {
   if (filter.innerHTML !== options) { filter.innerHTML = options; filter.value = machineFilter; } filter.onchange = () => { machineFilter = filter.value; renderSidebar(); };
   const machines = (c: Chat) => [c.nodeId || entryNode, ...Object.keys(c.bots || {}).map(id => splitID(id)[0])];
   const chips = (nodes: string[]) => [...new Set(nodes)].filter(n => n !== entryNode).map(n => `<small class="machine-chip" title="${esc(n)}">${esc(machineName(n))}${instanceOnline(n) ? '' : ' · Offline'}</small>`).join('');
-  const markup = groupChats(state.chats.filter(c => !machineFilter || machines(c).includes(machineFilter))).map((group, index) => {
-    const expanded = !collapsedChatGroups.has(group.key), rowsId = `chat-group-rows-${index}`;
-    return `<section><button type="button" class="group-label" data-group="${esc(group.key)}" aria-expanded="${expanded}" aria-controls="${rowsId}"><span class="group-chevron" aria-hidden="true"></span><span class="group-heading">${esc(group.label)}<span class="chat-machines">${chips(group.chats.flatMap(machines))}</span></span></button><div class="chat-group-rows" id="${rowsId}"${expanded ? '' : ' hidden'}>${group.chats.map(c => `<div class="chat-row ${!showingApps && !showingApp && c.id === chatId ? 'active' : ''}">${chatDot(c)}<button class="chat-link" data-chat="${esc(c.id)}" title="${esc(c.title)}"><span class="chat-link-title">${esc(c.title)}</span><span class="chat-machines">${chips(machines(c))}</span></button><button class="icon chat-remove" data-delete="${esc(c.id)}" aria-label="Delete ${esc(c.title)}">×</button></div>`).join('')}</div></section>`;
-  }).join('') || '<p class="empty-list">Your chats will appear here.</p>';
+  const visible = state.chats.filter(c => !machineFilter || machines(c).includes(machineFilter));
+  const retained = visible.filter(c => c.deletedAt).sort((a, b) => b.deletedAt!.localeCompare(a.deletedAt!));
+  const groupsMarkup = (chats: Chat[], deleted: boolean) => groupChats(chats).map((group, index) => {
+    const expanded = deleted ? expandedDeletedGroups.has(group.key) : !collapsedChatGroups.has(group.key), rowsId = `${deleted ? 'deleted' : 'chat'}-group-rows-${index}`;
+    return `<section><button type="button" class="group-label" ${deleted ? 'data-deleted-group' : 'data-group'}="${esc(group.key)}" aria-expanded="${expanded}" aria-controls="${rowsId}"><span class="group-chevron" aria-hidden="true"></span><span class="group-heading">${esc(group.label)}<span class="chat-machines">${chips(group.chats.flatMap(machines))}</span></span></button><div class="chat-group-rows" id="${rowsId}"${expanded ? '' : ' hidden'}>${group.chats.map(c => `<div class="chat-row ${deleted ? 'deleted-chat-row' : ''} ${!showingApps && !showingApp && c.id === chatId ? 'active' : ''}">${chatDot(c)}<button class="chat-link" data-chat="${esc(c.id)}" title="${esc(c.title)}${deleted ? ' (deleted)' : ''}"><span class="chat-link-title">${esc(c.title)}</span><span class="chat-machines">${chips(machines(c))}</span></button>${deleted ? '' : `<button class="icon chat-remove" data-delete="${esc(c.id)}" aria-label="Delete ${esc(c.title)}"${canRetainChat(c.id) ? '' : ' disabled title="Update this chat’s machine to support 30-day retention"'}>×</button>`}</div>`).join('')}</div></section>`;
+  }).join('');
+  const activeMarkup = groupsMarkup(visible.filter(c => !c.deletedAt), false);
+  const markup = activeMarkup + (retained.length ? `<section class="deleted-chat-category"><button type="button" class="group-label" data-deleted-root aria-expanded="${deletedExpanded}" aria-controls="deleted-chat-groups"><span class="group-chevron" aria-hidden="true"></span><span class="group-heading">Deleted (${retained.length})</span></button><div id="deleted-chat-groups"${deletedExpanded ? '' : ' hidden'}>${groupsMarkup(retained, true)}</div></section>` : '') || '<p class="empty-list">Your chats will appear here.</p>';
   if (markup !== sidebarMarkup) { q('.chat-groups').innerHTML = markup; sidebarMarkup = markup; }
   for (const el of q('.chat-groups').querySelectorAll<HTMLButtonElement>('[data-group]')) el.onclick = () => {
     const key = el.dataset.group!, collapsed = !collapsedChatGroups.has(key);
     if (collapsed) collapsedChatGroups.add(key); else collapsedChatGroups.delete(key);
     el.setAttribute('aria-expanded', String(!collapsed));
     q<HTMLElement>('.chat-group-rows', el.parentElement!).hidden = collapsed;
+  };
+  const deletedRoot = q<HTMLButtonElement>('[data-deleted-root]');
+  if (deletedRoot) deletedRoot.onclick = () => { deletedExpanded = !deletedExpanded; deletedRoot.setAttribute('aria-expanded', String(deletedExpanded)); q('#deleted-chat-groups').hidden = !deletedExpanded; };
+  for (const el of q('.chat-groups').querySelectorAll<HTMLButtonElement>('[data-deleted-group]')) el.onclick = () => {
+    const key = el.dataset.deletedGroup!, expanded = !expandedDeletedGroups.has(key);
+    if (expanded) expandedDeletedGroups.add(key); else expandedDeletedGroups.delete(key);
+    el.setAttribute('aria-expanded', String(expanded)); q<HTMLElement>('.chat-group-rows', el.parentElement!).hidden = !expanded;
   };
   for (const el of document.querySelectorAll<HTMLButtonElement>('[data-chat]')) el.onclick = action(() => selectChat(el.dataset.chat!));
   for (const el of document.querySelectorAll<HTMLButtonElement>('[data-delete]')) el.onclick = action(() => deleteChat(el.dataset.delete!));
@@ -452,13 +486,15 @@ function renderSidebar() {
 async function deleteChat(id: string) {
   if (submitting || closingChats.has(id)) return;
   const chat = state.chats.find(c => c.id === id); if (!chat) return;
+  if (chat.deletedAt) return;
+  if (!canRetainChat(id)) { notice('Update this chat’s machine to support 30-day retention.', true); return; }
   const active = groupWaiting(id) || state.runs.some(r => r.chatId === id && activeRunStatuses.includes(r.status)), unread = chatUnread(chat, state.runs, chatId, !showingApps && !showingApp);
   const reasons = [active ? 'This chat is still busy.' : '', unread ? 'This chat has not been read yet.' : ''].filter(Boolean);
-  if (reasons.length && !window.confirm(`Close “${chat.title}”?\n\n${reasons.join(' ')}\n\nClosing permanently deletes this chat${active ? ' and stops its work' : ''}.`)) return;
+  if (reasons.length && !window.confirm(`Delete “${chat.title}”?\n\n${reasons.join(' ')}\n\nThis moves the chat to Deleted for 30 days${active ? ' and stops its work' : ''}. You can restore it during that time.`)) return;
   closingChats.add(id);
   try {
-    await api(`/chats/${id}`, 'DELETE');
-    deletedChats.add(id);
+    const retained = await api<Chat>(`/chats/${id}`, 'DELETE');
+    chatTransitions.set(id, retained);
     releaseAttachments(drafts.get(id)?.attachments || []); drafts.delete(id);
     if (chatId === id) {
       chatId = ''; ++chatNavigation; messages = []; attachments = []; references = [];
@@ -470,6 +506,40 @@ async function deleteChat(id: string) {
   } finally {
     closingChats.delete(id);
   }
+}
+
+function renderDeletedChat() {
+  const chat = state.chats.find(c => c.id === chatId), deleted = !!chat?.deletedAt;
+  const banner = q('.deleted-chat-banner'); if (!banner) return;
+  banner.hidden = !deleted;
+  q('.composer').hidden = deleted;
+  q<ReferenceInput>('#composer').disabled = deleted || submitting || creatingChat;
+  if (!deleted) { banner.replaceChildren(); return; }
+  const online = instanceOnline(splitID(chatId)[0]), pending = closingChats.has(chatId);
+  const markup = `<span>Deleted · Permanently removed ${esc(new Date(chat!.expiresAt!).toLocaleString())}. Restore this chat to continue.</span><button type="button" data-restore-chat${!online || pending ? ' disabled' : ''}>Restore</button><button type="button" class="danger" data-purge-chat${!online || pending ? ' disabled' : ''}>Delete permanently</button>${online ? '' : '<small>Reconnect to this chat’s machine to restore or delete it.</small>'}`;
+  if (banner.innerHTML !== markup) banner.innerHTML = markup;
+  q('[data-restore-chat]', banner).onclick = action(() => recoverChat(chat!.id, false));
+  q('[data-purge-chat]', banner).onclick = action(() => recoverChat(chat!.id, true));
+  closePicker();
+  for (const card of questionCards.values()) for (const input of card.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,textarea,button,select')) input.disabled = true;
+}
+
+async function recoverChat(id: string, permanent: boolean) {
+  if (closingChats.has(id)) return;
+  const chat = state.chats.find(c => c.id === id); if (!chat?.deletedAt) return;
+  if (permanent && !window.confirm(`Permanently delete “${chat.title}”? Its conversation and attachments will be removed. This cannot be undone.`)) return;
+  closingChats.add(id); renderDeletedChat();
+  try {
+    if (permanent) {
+      await api(`/chats/${id}/permanent`, 'DELETE'); deletedChats.add(id); chatTransitions.delete(id);
+    } else {
+      const restored = await api<Chat>(`/chats/${id}/restore`, 'POST', {});
+      chatTransitions.set(id, restored);
+      collapsedChatGroups.delete(groupChats([restored])[0].key);
+    }
+    applyFreshState(); await refresh(true);
+    if (!permanent) await selectChat(id);
+  } finally { closingChats.delete(id); renderDeletedChat(); }
 }
 
 function chooseEndpoint(endpoint: Endpoint) { if (modelNode) generationByNode[modelNode] = { ...generation }; modelNode = endpoint.nodeId || splitID(endpoint.id)[0]; generation = { endpointId: endpoint.id, model: endpoint.model, temperature: endpoint.temperature ?? .6, thinking: '' }; renderModels(); rememberDraft(); saveGeneration(); }
@@ -487,6 +557,7 @@ async function reloadTranscript(id: string) {
   if (id === chatId && navigation === chatNavigation) { messages = loaded; renderMessages(); }
 }
 const messageActionUI = new MessageActionUI({
+  readOnly: id => chatReadOnly(id),
   busy: id => groupWaiting(id) || state.runs.some(run => run.chatId === id && activeRunStatuses.includes(run.status)) || (id === chatId && submitting),
   notice,
   rerun: async (message, requestId) => {
@@ -547,7 +618,7 @@ function renderThreadIdentity() {
   if (identity.innerHTML !== markup) identity.innerHTML = markup;
 }
 function addressThread(bot: Bot | undefined) {
-  if (!bot) return;
+  if (!bot || chatReadOnly()) return;
   const automatic = prefixBotMention(q<ReferenceInput>('#composer'), bot, automaticMentions.get(chatId));
   if (automatic) automaticMentions.set(chatId, automatic); else automaticMentions.delete(chatId);
   rememberDraft();
@@ -598,6 +669,7 @@ function reasoningMarkup(m: Message) { return `<details class="reasoning" data-d
 function restoreDisclosures(root: HTMLElement) { for (const details of root.querySelectorAll<HTMLDetailsElement>('details[data-disclosure]')) { const open = disclosureState.get(details.dataset.disclosure!); if (open !== undefined) details.open = open; } }
 function rememberDisclosures(root: HTMLElement) { for (const details of root.querySelectorAll<HTMLDetailsElement>('details[data-disclosure]')) disclosureState.set(details.dataset.disclosure!, details.open); }
 async function answerQuestions(m: Message, payload: QuestionSubmission) {
+  if (chatReadOnly(m.chatId)) return;
   await api(`/chats/${encodeURIComponent(m.chatId)}/questions/${encodeURIComponent(m.id)}`, 'POST', payload);
 }
 function paintStreamedMessage(el: HTMLElement, m: Message, previous: Message, final: boolean, output?: string) {
@@ -771,7 +843,7 @@ function renderMessages(tail = false, force = false) {
   const visibleRuns = state.runs.filter(r => r.chatId === chatId && (!visibleBotId || r.botId === visibleBotId));
   const transcript = JSON.stringify([
     threadKey, visibleMessages, visibleRuns.map(({ updatedAt, ...run }) => run),
-    submitting || busy(),
+    submitting || busy(), chatReadOnly(),
     state.bots.map(bot => [bot.id, bot.name, bot.handle]),
     visibleMessages.map(message => {
       const editorID = resourceID(splitID(message.chatId)[0], 'monaco-editor');
@@ -877,6 +949,7 @@ function connect() {
 }
 function receive(e: any) {
     if (e.type === 'notification') { notifications.receive(e.payload); return; }
+    if (e.chatId && (chatReadOnly(e.chatId) || deletedChats.has(e.chatId)) && ['message', 'delta', 'run', 'tool-output', 'plugin-open'].includes(e.type)) return;
     if (e.type === 'questions') { queueRefresh(); return; }
     if (e.type === 'plugin-open') { action(() => openPlugin(e.payload.id, e.payload.viewId, e.botId))(); return; }
     if (e.type === 'run') { state.runs = [...state.runs.filter(r => r.id !== e.payload.id), e.payload]; updateSendButton(); if (e.chatId === chatId) renderMessages(); queueRefresh(); }
@@ -1260,5 +1333,16 @@ async function start() {
   catch { app.innerHTML = '<form class="login form"><div class="brand">Echo</div><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="primary">Sign in</button></form>'; q<HTMLFormElement>('form').onsubmit = e => { e.preventDefault(); action(async () => { const f = new FormData(q('form') as HTMLFormElement); await api('/session', 'POST', { password: f.get('password') }); await ready(); })(); }; return; }
   await ready();
 }
-async function ready() { const route = parseAppRoute(location.hash); shell(); await refresh(); if (pendingNotificationHash) await openNotification(pendingNotificationHash); else if (route) await pluginWindows.open(route.pluginId, route.viewId, route.botId, 'embedded', route.feature); else if (chatId && !showingApps) await selectChat(chatId); else renderMessages(); connect(); connectSwarm(); startDevelopmentUpdates(); void notifications.start(); }
+async function ready() {
+  const route = parseAppRoute(location.hash); shell(); await refresh();
+  try {
+    if (pendingNotificationHash) await openNotification(pendingNotificationHash);
+    else if (route) await pluginWindows.open(route.pluginId, route.viewId, route.botId, 'embedded', route.feature);
+    else if (chatId && !showingApps) await selectChat(chatId);
+    else renderMessages();
+  } catch (error) { notice(error, true); }
+  // A cached destination may have expired or been purged on its home machine.
+  // Keep live updates running so authoritative state can select a valid chat.
+  connect(); connectSwarm(); startDevelopmentUpdates(); void notifications.start();
+}
 void start().catch(e => notice(e, true));

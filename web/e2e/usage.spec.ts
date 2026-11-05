@@ -10,7 +10,7 @@ async function detach(page: Page) {
 }
 async function prepare(page: Page, prefix = '') {
   const state = await api(page, prefix + '/state');
-  for (const chat of state.chats) await api(page, prefix + '/chats/' + chat.id, 'DELETE');
+  for (const chat of state.chats) { await api(page, prefix + '/chats/' + chat.id, 'DELETE'); await api(page, prefix + '/chats/' + chat.id + '/permanent', 'DELETE'); }
   for (const schedule of state.schedules) await api(page, prefix + '/schedules/' + schedule.id, 'DELETE');
   await api(page, prefix + '/endpoints', 'POST', { endpoint: { id: 'usage-test', name: 'Usage test', url: 'http://127.0.0.1:3743/v1', model: 'echo-test', contextTokens: 32768 } });
   await api(page, prefix + '/usage/reset', 'POST', { requestId: crypto.randomUUID() });

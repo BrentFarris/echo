@@ -45,7 +45,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
-		chats, e := s.Store.Chats()
+		chats, e := s.Store.RetainedChats()
 		if e != nil {
 			respond(w, nil, e)
 			return
@@ -59,10 +59,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 		}
 		s.mu.Unlock()
 		visible := chats[:0]
+		visibleChatIDs := map[string]bool{}
 		for _, chat := range chats {
 			if !chat.Projection {
 				chat.WaitingForGroup = waiting[chat.ID]
 				visible = append(visible, chat)
+				visibleChatIDs[chat.ID] = true
 			}
 		}
 		chats = visible
@@ -100,7 +102,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 		visibleRuns := runs[:0]
 		for _, raw := range runs {
 			var run domain.Run
-			if json.Unmarshal(raw, &run) == nil && !strings.HasPrefix(run.ChatID, "swarm:") {
+			if json.Unmarshal(raw, &run) == nil && visibleChatIDs[run.ChatID] && !strings.HasPrefix(run.ChatID, "swarm:") {
 				visibleRuns = append(visibleRuns, raw)
 			}
 		}
@@ -240,11 +242,27 @@ func (s *Server) routes(mux *http.ServeMux) {
 		respond(w, c, e)
 	})
 	mux.HandleFunc("DELETE /api/v1/chats/{id}", func(w http.ResponseWriter, r *http.Request) {
+		s.chatRetentionMu.Lock()
+		defer s.chatRetentionMu.Unlock()
 		id := r.PathValue("id")
 		finish := s.stopChat(id)
 		defer finish()
-		e := s.Store.DeleteChat(id)
+		c, e := s.Store.TrashChat(id, domain.Now())
 		s.emit("changed", id, "", "", nil)
+		respond(w, c, e)
+	})
+	mux.HandleFunc("POST /api/v1/chats/{id}/restore", func(w http.ResponseWriter, r *http.Request) {
+		s.chatRetentionMu.Lock()
+		defer s.chatRetentionMu.Unlock()
+		c, e := s.Store.RestoreChat(r.PathValue("id"), domain.Now())
+		s.emit("changed", r.PathValue("id"), "", "", nil)
+		respond(w, c, e)
+	})
+	mux.HandleFunc("DELETE /api/v1/chats/{id}/permanent", func(w http.ResponseWriter, r *http.Request) {
+		s.chatRetentionMu.Lock()
+		defer s.chatRetentionMu.Unlock()
+		e := s.Store.PurgeChat(r.PathValue("id"))
+		s.emit("changed", r.PathValue("id"), "", "", nil)
 		respond(w, true, e)
 	})
 	mux.HandleFunc("PUT /api/v1/chats/{id}/generation", func(w http.ResponseWriter, r *http.Request) {

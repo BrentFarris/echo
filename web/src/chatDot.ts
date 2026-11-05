@@ -4,6 +4,7 @@ export const activeRunStatuses = ['running', 'waiting', 'queued'];
 export const finishedRunStatuses = ['completed', 'failed', 'cancelled', 'interrupted'];
 
 export function chatUnread(chat: Chat, runs: Run[], selectedChatId: string, viewingChat: boolean) {
+	if (chat.deletedAt) return false;
   if (chat.id === selectedChatId && viewingChat) return false;
   const lastReadAt = chat.lastReadAt;
   if (!lastReadAt) return true;
@@ -19,6 +20,7 @@ export type ChatDotState = 'question' | 'busy' | 'done' | '';
 // Questions take priority even in the selected chat: opening a chat does not
 // resolve its questions. Yellow and green retain their existing busy/unread rules.
 export function chatDotState(chat: Chat, runs: Run[], questions: PendingQuestion[] | undefined, selectedChatId: string, viewingChat: boolean): ChatDotState {
+	if (chat.deletedAt) return '';
   if (hasPendingQuestion(questions, chat.id)) return 'question';
   if (chat.waitingForGroup || runs.some(run => run.chatId === chat.id && activeRunStatuses.includes(run.status))) return 'busy';
   if (!chat.lastReadAt) return '';

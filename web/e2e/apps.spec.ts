@@ -15,7 +15,7 @@ async function install(page: Page, value: object) {
 test.beforeEach(async ({ page }) => {
   await page.goto('/'); await expect(page.locator('#apps-button')).toBeVisible();
   const current = await state(page);
-  for (const chat of current.chats) await page.request.delete(`/api/v1/chats/${chat.id}`);
+  for (const chat of current.chats) { await page.request.delete(`/api/v1/chats/${chat.id}`); await page.request.delete(`/api/v1/chats/${chat.id}/permanent`); }
   for (const bot of current.bots) if (bot.id !== 'echo') await page.request.delete(`/api/v1/bots/${bot.id}`);
   for (const id of current.appDock) await page.request.put(`/api/v1/plugins/${id}/app/dock`, { data: { docked: false } });
   for (const plugin of current.plugins) if (!plugin.builtin) await page.request.patch(`/api/v1/plugins/${plugin.id}`, { data: { enabled: false, config: plugin.config } });

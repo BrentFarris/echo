@@ -9,7 +9,7 @@ async function setup(page: Page) {
   await page.goto('/');
   await expect(page.locator('#new-chat')).toBeVisible();
   const state = await json(page, '/state');
-  for (const chat of state.chats) await json(page, `/chats/${chat.id}`, 'DELETE');
+  for (const chat of state.chats) { await json(page, `/chats/${chat.id}`, 'DELETE'); await json(page, `/chats/${chat.id}/permanent`, 'DELETE'); }
   for (const bot of state.bots) if (bot.id !== 'echo') await json(page, `/bots/${bot.id}`, 'DELETE');
   await json(page, '/endpoints', 'POST', { endpoint: { id: 'test', name: 'Test model', url: 'http://127.0.0.1:3743/v1', model: 'echo-test', contextTokens: 32768 } });
   const bot = await json(page, '/bots', 'POST', { handle: 'partner', name: 'Partner', roots: [], plugins: {} });

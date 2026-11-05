@@ -13,7 +13,7 @@ beforeEach(() => {
 });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 function setup(m = message) {
-  const options = { busy: vi.fn(() => false), notice: vi.fn(), save: vi.fn().mockResolvedValue(undefined), remove: vi.fn().mockResolvedValue(undefined), fork: vi.fn().mockResolvedValue(undefined), rerun: vi.fn().mockResolvedValue(undefined) };
+  const options = { readOnly: vi.fn(() => false), busy: vi.fn(() => false), notice: vi.fn(), save: vi.fn().mockResolvedValue(undefined), remove: vi.fn().mockResolvedValue(undefined), fork: vi.fn().mockResolvedValue(undefined), rerun: vi.fn().mockResolvedValue(undefined) };
   const ui = new MessageActionUI(options);
   const container = document.createElement('section'), body = document.createElement('article'); container.append(body); document.body.append(container);
   ui.mount(container, body, m);
@@ -21,6 +21,20 @@ function setup(m = message) {
   return { ui, options, container, body, click };
 }
 describe('message actions', () => {
+  it('keeps copy available in deleted chats and restores editing controls', async () => {
+    const { ui, options, container, body, click } = setup();
+    click('edit'); expect(container.querySelector('form')).not.toBeNull();
+    options.readOnly.mockReturnValue(true); ui.mount(container, body, message);
+    expect(container.querySelector('form')).toBeNull();
+    for (const action of ['fork', 'edit', 'rerun', 'trash']) {
+      expect(container.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!.hidden).toBe(true);
+      click(action);
+    }
+    click('copy'); await vi.waitFor(() => expect(clipboard).toHaveBeenCalledWith(message.content));
+    expect(options.fork).not.toHaveBeenCalled(); expect(options.rerun).not.toHaveBeenCalled(); expect(options.remove).not.toHaveBeenCalled();
+    options.readOnly.mockReturnValue(false); ui.mount(container, body, message);
+    expect([...container.querySelectorAll('button')].every(button => !button.hidden)).toBe(true);
+  });
   it.each(['user', 'assistant'])('confirms a %s rerun and respects cancellation', async role => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const m = { ...message, role }; const { click, options, container } = setup(m);

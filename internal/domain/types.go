@@ -136,6 +136,9 @@ type SegmentRange struct {
 // LastReadAt records when the transcript was last opened, so the sidebar can
 // flag chats that finished work nobody has looked at yet.
 type Chat struct {
+	ExecutionEpoch   string                `json:"executionEpoch,omitempty"` // Restoring starts fresh external sessions on every worker.
+	DeletedAt        *time.Time            `json:"deletedAt,omitempty"`
+	ExpiresAt        *time.Time            `json:"expiresAt,omitempty"`       // Derived from DeletedAt.
 	WaitingForGroup  bool                  `json:"waitingForGroup,omitempty"` // Derived for state responses.
 	ForkedFrom       *ForkOrigin           `json:"forkedFrom,omitempty"`
 	OwnerNodeID      string                `json:"ownerNodeId,omitempty"`
