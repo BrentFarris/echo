@@ -23,8 +23,8 @@ export type SlashAction =
   | { type: 'app'; pluginId: string; viewId: string; feature?: string; botId?: string };
 export type SlashCommand = { nodeId?: string; id: string; name: string; description: string; builtin: boolean; enabled: boolean; action: SlashAction };
 export type Plugin = { nodeId?: string; id: string; name: string; enabled: boolean; pending: boolean; builtin: boolean; scope: string; digest?: string; app?: AppRegistration; capabilities: string[]; network?: { origins: string[] }; requestedNetworkOrigins?: string[]; config: Record<string, unknown>; providers?: string[]; renderers?: string[]; settings: { properties: Record<string, { type: string; description?: string }> }; views?: { id: string; title: string; html: string; kind?: string; features?: AppFeature[] }[] };
-export type Schedule = { nodeId?: string; id: string; botId: string; prompt: string; recurrence: string; timezone: string; paused: boolean; generation: Generation; next: string };
-export type Occurrence = { nodeId?: string; id: string; scheduleId: string; botId: string; prompt: string; intendedAt: string; status: string; error?: string; timezone?: string; recurrence?: string };
+export type Schedule = { nodeId?: string; id: string; botId: string; prompt: string; recurrence: string; timezone: string; paused: boolean; oneShotConsumed?: boolean; generation: Generation; next: string };
+export type Occurrence = { nodeId?: string; id: string; scheduleId: string; botId: string; prompt: string; intendedAt: string; status: string; manual?: boolean; error?: string; timezone?: string; recurrence?: string };
 export type ToolCall = { id: string; type: 'function'; function: { name: string; arguments: string } };
 export type ExecutionScope = { bot: Bot; chatId: string; runId: string; dispatchId: string; pluginId: string; toolMessageId?: string };
 export type PluginManifest = Plugin & { api: 1; version: string; tools: { name: string; description: string; parameters: Record<string, unknown>; capability?: string }[]; providers?: string[]; renderers?: string[]; digest?: string; backend?: string };

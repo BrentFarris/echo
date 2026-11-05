@@ -1,6 +1,7 @@
 package server
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -521,6 +522,44 @@ func (s *Server) routes(mux *http.ServeMux) {
 		e := s.Calendar.Delete(r.PathValue("id"))
 		s.emit("changed", "", "", "", nil)
 		respond(w, true, e)
+	})
+	mux.HandleFunc("POST /api/v1/schedules/{id}/run", func(w http.ResponseWriter, r *http.Request) {
+		fail := func(status int, message string) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			json.NewEncoder(w).Encode(map[string]string{"error": message})
+		}
+		var saved calendar.Schedule
+		if err := s.Store.Get("calendar:schedules", r.PathValue("id"), &saved); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				fail(http.StatusNotFound, "schedule not found")
+			} else {
+				fail(http.StatusInternalServerError, err.Error())
+			}
+			return
+		}
+		if _, err := s.Bot(saved.BotID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				fail(http.StatusNotFound, "scheduled bot not found")
+			} else {
+				fail(http.StatusInternalServerError, err.Error())
+			}
+			return
+		}
+		schedule, occurrence, err := s.Calendar.RunNow(s.ctx, saved.ID, domain.Now())
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, calendar.ErrActive) || errors.Is(err, calendar.ErrDisabled) {
+				status = http.StatusConflict
+			} else if errors.Is(err, calendar.ErrScheduleNotFound) {
+				status = http.StatusNotFound
+			}
+			fail(status, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]any{"schedule": schedule, "occurrence": occurrence})
 	})
 	mux.HandleFunc("POST /api/v1/missed/review", func(w http.ResponseWriter, r *http.Request) {
 		var a struct {

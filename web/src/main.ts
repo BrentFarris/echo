@@ -421,7 +421,7 @@ function applyFreshState() {
       for (const node of instances.keys()) if (!generationByNode[node]) generationByNode[node] = newChatGeneration(node, state.endpoints);
     }
     renderSidebar(); renderModels(); if (rendering() !== beforeRendering) { renderers.sync(state.plugins); renderMessages(false, true); } else renderMessages(); updateSendButton();
-    renderApps(); pluginWindows.sync(state.plugins, state.bots); updateTerminalDock(q(".terminal-region"), state.bots, state.plugins);
+    renderApps(); pluginWindows.sync(state.plugins, state.bots); updateTerminalDock(q(".terminal-region"), state.bots, state.plugins); renderCalendarSchedules();
 }
 async function refresh(fresh = false) {
   if (refreshing) { await refreshing; if (!fresh) return; }
@@ -1307,11 +1307,39 @@ function pluginSettings(root: HTMLElement, plugin: Plugin) {
     q('#clear-p4-secret', root).onclick = action(async () => { await api('/plugins/p4/credential', 'POST', { secret: '' }); await refresh(); settings('p4'); });
   }
 }
-function calendarSettings(root: HTMLElement) { const schedules = state.schedules.filter(s => sameMachine(s, settingsNode));
-  root.innerHTML = `<hr><h3>Schedules</h3><button id="new-schedule">＋ Add schedule</button>${schedules.map(s => `<div class="list-card"><div class="grow"><strong>${esc(currentBot(s.botId)?.name || s.botId)}</strong><p>${esc(s.prompt)}</p><small>${esc(s.recurrence)} · ${esc(s.timezone)} ${s.paused ? '· Paused' : ''}</small></div><button data-schedule="${esc(s.id)}">Edit</button><button class="danger" data-delete-schedule="${esc(s.id)}">×</button></div>`).join('')}`;
+const pendingSchedules = new Set<string>();
+const calendarMarkup = new WeakMap<HTMLElement, string>();
+function calendarSettings(root: HTMLElement) {
+  root.innerHTML = `<hr><h3>Schedules</h3><button id="new-schedule">＋ Add schedule</button><div data-calendar-node="${esc(settingsNode)}"></div>`;
   q('#new-schedule', root).onclick = () => editSchedule();
+  renderCalendarSchedules();
+}
+function renderCalendarSchedules() {
+  const root = document.querySelector<HTMLElement>('[data-calendar-node]'); if (!root) return;
+  const node = root.dataset.calendarNode!;
+  const schedules = state.schedules.filter(s => sameMachine(s, node));
+  const calendar = state.plugins.find(p => sameMachine(p, node) && localID(p.id) === 'calendar');
+  const markup = schedules.map(s => {
+    const bot = currentBot(s.botId), active = state.occurrences.find(o => o.scheduleId === s.id && ['queued', 'running', 'deferred'].includes(o.status));
+    const disabled = pendingSchedules.has(s.id) ? 'Submitting…' : !instanceOnline(node) ? 'Machine is offline' : !bot ? 'Scheduled bot is unavailable' : !pluginAvailable(calendar, bot) ? 'Calendar is disabled for this bot' : active ? `Work is ${active.status}` : '';
+    const interval = /^every\s/i.test(s.recurrence.trim()), fixed = /^(daily|weekly)\s/i.test(s.recurrence.trim());
+    const effect = interval ? 'Runs now and restarts the interval from acceptance.' : fixed ? 'Runs an extra occurrence now without changing scheduled times.' : 'Runs now with no future automatic run. You can run it manually again.';
+    const next = s.oneShotConsumed || !s.next || s.next.startsWith('0001-') ? 'No future automatic run' : `${s.paused ? 'Next when active' : 'Next'}: ${new Date(s.next).toLocaleString(undefined, { timeZone: s.timezone })}`;
+    return `<div class="list-card" data-schedule-card="${esc(s.id)}"><div class="grow"><strong>${esc(bot?.name || s.botId)}</strong><p>${esc(s.prompt)}</p><small>${esc(s.recurrence)} · ${esc(s.timezone)} ${s.paused ? '· Paused' : ''}<br>${esc(next)}${active ? ` · ${esc(active.status)}` : ''}<br>${esc(effect)}</small></div><button data-run-schedule="${esc(s.id)}" title="${esc(disabled || effect)}" ${disabled ? 'disabled' : ''}>${pendingSchedules.has(s.id) ? 'Queuing…' : 'Run Now'}</button><button data-schedule="${esc(s.id)}">Edit</button><button class="danger" data-delete-schedule="${esc(s.id)}">×</button></div>`;
+  }).join('');
+  if (calendarMarkup.get(root) === markup) return;
+  calendarMarkup.set(root, markup); root.innerHTML = markup;
+  for (const b of root.querySelectorAll<HTMLButtonElement>('[data-run-schedule]')) b.onclick = action(async () => {
+    const id = b.dataset.runSchedule!; if (pendingSchedules.has(id)) return;
+    pendingSchedules.add(id); renderCalendarSchedules();
+    try {
+      await resourceAPI(`/schedules/${encodeURIComponent(id)}/run`, 'POST', undefined, node);
+      notice('Run queued');
+      await refresh(true); await swarmRefreshing;
+    } finally { pendingSchedules.delete(id); renderCalendarSchedules(); }
+  });
   for (const b of root.querySelectorAll<HTMLButtonElement>('[data-schedule]')) b.onclick = () => editSchedule(state.schedules.find(s => s.id === b.dataset.schedule));
-  for (const b of root.querySelectorAll<HTMLButtonElement>('[data-delete-schedule]')) b.onclick = action(async () => { await api(`/schedules/${b.dataset.deleteSchedule}`, 'DELETE'); await refresh(); calendarSettings(root); });
+  for (const b of root.querySelectorAll<HTMLButtonElement>('[data-delete-schedule]')) b.onclick = action(async () => { await resourceAPI(`/schedules/${encodeURIComponent(b.dataset.deleteSchedule!)}`, 'DELETE', undefined, node); await refresh(true); await swarmRefreshing; renderCalendarSchedules(); });
 }
 function editSchedule(schedule?: Schedule) { const node = schedule?.nodeId || settingsNode; const api = <T = any>(path: string, method = 'GET', body?: unknown) => resourceAPI<T>(path, method, body, node); const bots = state.bots.filter(b => sameMachine(b, node)); const endpoint = state.endpoints.find(e => sameMachine(e, node)); const selectedGeneration = generationByNode[node] || (node === modelNode && generation.endpointId ? generation : { endpointId: endpoint?.id || '', model: endpoint?.model || '', thinking: '', temperature: endpoint?.temperature ?? .6 });
   const el = dialog('Scheduled work', `<form class="form"><label>Bot<select name="botId">${bots.map(b => `<option value="${esc(b.id)}" ${b.id === schedule?.botId ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></label><label>Prompt<textarea name="prompt" required>${esc(schedule?.prompt)}</textarea></label><label>Recurrence<input name="recurrence" value="${esc(schedule?.recurrence || 'daily 15:00')}"><small>daily 15:00 · weekly MON 09:00 · every 2 hours · ISO date/time</small></label><label>Timezone<input name="timezone" value="${esc(schedule?.timezone || 'Local')}"><small>Local uses the Echo server's timezone; an IANA name such as America/Chicago is also accepted.</small></label><label class="check"><input name="paused" type="checkbox" ${schedule?.paused ? 'checked' : ''}>Paused</label><p class="subtle">Model: ${esc((schedule?.generation || selectedGeneration).model || 'Select a model in the chat first')}</p><button class="primary">Save schedule</button></form>`);

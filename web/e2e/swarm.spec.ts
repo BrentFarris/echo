@@ -231,6 +231,34 @@ test('offline bots stay visible and block mixed sends without losing the draft',
   await expect(page.locator('.message.assistant')).toContainText('Completed the requested work.');
 });
 
+test('Run Now executes only on the schedule owner and disables offline schedules', async ({ page }) => {
+  const [linux] = await connect(page), remote = `/api/v1/swarm/instances/${linux}`;
+  for (const api of ['/api/v1', remote]) {
+    const echo = (await json(page, `${api}/state`)).bots.find((b: any) => b.id === 'echo');
+    await json(page, `${api}/bots`, 'POST', { ...echo, plugins: { ...echo.plugins, calendar: true } });
+    await json(page, `${api}/plugins/calendar`, 'PATCH', { enabled: true, config: {} });
+  }
+  const saved = await json(page, `${remote}/schedules`, 'POST', { botId: 'echo', prompt: 'slow stream remote calendar task', recurrence: 'every 5 minutes', timezone: 'UTC', paused: true, generation: { endpointId: 'test', model: 'echo-test', temperature: .3, thinking: '' } });
+  // Identical local IDs make accidental entry-machine routing observable.
+  await json(page, '/api/v1/schedules', 'POST', { ...saved, prompt: 'Local schedule must stay idle' });
+  await page.reload(); await page.locator('#settings-button').click();
+  await page.getByLabel('Settings machine').selectOption(linux);
+  await page.locator('.settings-nav [data-section="calendar"]').click();
+  const run = page.locator(`[data-run-schedule="${linux}:${saved.id}"]`);
+  await expect(run).toBeEnabled();
+  await run.click();
+  await expect(run).toBeDisabled();
+  await expect.poll(async () => (await json(page, `${remote}/state`)).occurrences.filter((o: any) => o.scheduleId === saved.id && o.status === 'completed').length).toBe(1);
+  await expect(run).toBeEnabled();
+  expect((await json(page, '/api/v1/state')).occurrences.filter((o: any) => o.scheduleId === saved.id)).toHaveLength(0);
+  expect((await json(page, '/api/v1/state')).chats).toHaveLength(0);
+  expect((await json(page, `${remote}/state`)).chats).toHaveLength(1);
+  await expect(page.getByLabel('Settings machine')).toHaveValue(linux);
+  await json(page, `/api/v1/swarm/peers/${linux}`, 'PATCH', { disconnected: true });
+  await expect(run).toBeDisabled();
+  await expect(run).toHaveAttribute('title', 'Machine is offline');
+});
+
 test('remote plugin bridge, schedules and development stay bound to the selected host', async ({ page }) => {
   const [linux] = await connect(page), remote = `/api/v1/swarm/instances/${linux}`;
   const html = `<button id="write" disabled>Write host value</button><output id="result"></output><script>

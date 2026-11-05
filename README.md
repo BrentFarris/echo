@@ -380,6 +380,8 @@ You can also ask a bot to start a one-off chat. Its `chat_start` tool takes a bo
 
 Supported recurrences are `daily HH:MM`, `weekly MON HH:MM`, `every N minutes/hours/days`, and an RFC3339 one-time instant. Daily/weekly schedules preserve local wall time through DST; a nonexistent wall time is skipped and an ambiguous wall time runs once. The server's Windows timezone is resolved to an IANA name when saving.
 
+Choose **Run Now** beside a saved schedule to queue its saved prompt, bot and model settings in a new chat on the schedule's machine. One-time events lose their future automatic occurrence but remain available for deliberate manual reruns. Interval tasks restart their interval from acceptance; daily/weekly tasks get an extra run without moving their scheduled times. Run Now works while paused and leaves the schedule paused, but Calendar must be enabled for the bot. It is unavailable while that schedule has queued, running or update-deferred work. Failed execution does not undo the timing change. Settings stay open, and the resulting chat appears in the sidebar. Owner API clients can use `POST /api/v1/schedules/{id}/run`; a `202` response contains the accepted `schedule` and `occurrence`.
+
 After downtime, every missed occurrence awaits review. Select jobs, set concurrency (default `1`; `0` means unlimited), then choose **Run selected**. Unselected jobs are skipped. **Skip all** dismisses the entire pending batch. Use the missed-jobs panel to review these jobs; typed slash text is ordinary message content. Reviews survive restart; intentionally paused/disabled schedules do not accumulate missed work. Interrupted work is identified and never automatically replays uncertain tools.
 
 ## Development settings

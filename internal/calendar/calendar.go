@@ -3,6 +3,7 @@ package calendar
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,16 +19,17 @@ import (
 )
 
 type Schedule struct {
-	ID         string            `json:"id"`
-	BotID      string            `json:"botId"`
-	Prompt     string            `json:"prompt"`
-	Recurrence string            `json:"recurrence"`
-	Timezone   string            `json:"timezone"`
-	Generation domain.Generation `json:"generation"`
-	Paused     bool              `json:"paused"`
-	Suspended  bool              `json:"suspended"`
-	Next       time.Time         `json:"next"`
-	CreatedAt  time.Time         `json:"createdAt"`
+	ID              string            `json:"id"`
+	BotID           string            `json:"botId"`
+	Prompt          string            `json:"prompt"`
+	Recurrence      string            `json:"recurrence"`
+	Timezone        string            `json:"timezone"`
+	Generation      domain.Generation `json:"generation"`
+	Paused          bool              `json:"paused"`
+	Suspended       bool              `json:"suspended"`
+	Next            time.Time         `json:"next"`
+	CreatedAt       time.Time         `json:"createdAt"`
+	OneShotConsumed bool              `json:"oneShotConsumed,omitempty"`
 }
 type Occurrence struct {
 	ID         string            `json:"id"`
@@ -40,6 +42,7 @@ type Occurrence struct {
 	Error      string            `json:"error,omitempty"`
 	Timezone   string            `json:"timezone"`
 	Recurrence string            `json:"recurrence"`
+	Manual     bool              `json:"manual,omitempty"`
 }
 type Calendar struct {
 	Store    *store.Store
@@ -53,6 +56,23 @@ type Calendar struct {
 }
 
 var ErrDeferred = errors.New("scheduled start deferred during Echo update")
+var ErrScheduleNotFound = errors.New("schedule not found")
+var ErrActive = errors.New("this schedule already has queued, running, or deferred work")
+var ErrDisabled = errors.New("Calendar is disabled for this bot")
+
+// One-shot consumption is independent of execution success. Activation changes
+// must never resurrect a future occurrence that Run Now already consumed.
+func (s Schedule) next(after time.Time) (time.Time, error) {
+	if s.OneShotConsumed {
+		return time.Time{}, nil
+	}
+	return Next(s.Recurrence, s.Timezone, after)
+}
+
+func oneShot(rule string) bool {
+	_, err := time.Parse(time.RFC3339, strings.TrimSpace(rule))
+	return err == nil
+}
 
 func Next(rule, timezone string, after time.Time) (time.Time, error) {
 	loc, e := time.LoadLocation(timezone)
@@ -159,7 +179,7 @@ func (c *Calendar) ReconcileActivation(now time.Time) error {
 			continue
 		}
 		s.Suspended = paused
-		s.Next, e = Next(s.Recurrence, s.Timezone, now)
+		s.Next, e = s.next(now)
 		if e != nil {
 			return e
 		}
@@ -182,15 +202,30 @@ func (c *Calendar) Save(s Schedule, now time.Time) (Schedule, error) {
 		}
 		s.Timezone = zone
 	}
+	// This flag is server-owned, including when callers omit or forge it.
+	s.OneShotConsumed = false
 	if s.ID == "" {
 		s.ID = domain.ID()
 		s.CreatedAt = now
+	} else {
+		var previous Schedule
+		err := c.Store.Get("calendar:schedules", s.ID, &previous)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return s, err
+		}
+		if err == nil {
+			s.CreatedAt = previous.CreatedAt
+			if strings.TrimSpace(previous.Recurrence) == strings.TrimSpace(s.Recurrence) && oneShot(s.Recurrence) {
+				// Next == zero also recognizes consumed schedules from older versions.
+				s.OneShotConsumed = previous.OneShotConsumed || previous.Next.IsZero()
+			}
+		}
 	}
-	next, e := Next(s.Recurrence, s.Timezone, now)
+	next, e := s.next(now)
 	if e != nil {
 		return s, e
 	}
-	if next.IsZero() {
+	if next.IsZero() && !s.OneShotConsumed {
 		return s, errors.New("one-time schedule must be in the future")
 	}
 	s.Next = next
@@ -235,6 +270,75 @@ func occurrence(s Schedule) Occurrence {
 	hash := sha256.Sum256([]byte(s.ID + ":" + s.Next.UTC().Format(time.RFC3339Nano)))
 	return Occurrence{ID: hex.EncodeToString(hash[:16]), ScheduleID: s.ID, BotID: s.BotID, Prompt: s.Prompt, IntendedAt: s.Next, Generation: s.Generation, Timezone: s.Timezone, Recurrence: s.Recurrence}
 }
+
+// RunNow durably accepts work and its scheduling effect together. Execution uses
+// the caller's service lifetime, not the HTTP request that accepted the work.
+func (c *Calendar) RunNow(ctx context.Context, id string, now time.Time) (Schedule, Occurrence, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var s Schedule
+	if err := ctx.Err(); err != nil {
+		return s, Occurrence{}, err
+	}
+	if err := c.Store.Get("calendar:schedules", id, &s); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			err = ErrScheduleNotFound
+		}
+		return s, Occurrence{}, err
+	}
+	if c.Enabled != nil && !c.Enabled(s.BotID) {
+		return s, Occurrence{}, ErrDisabled
+	}
+	all, err := c.Occurrences()
+	if err != nil {
+		return s, Occurrence{}, err
+	}
+	single := oneShot(s.Recurrence)
+	o := occurrence(s)
+	o.ID = domain.ID()
+	for _, existing := range all {
+		if existing.ScheduleID != id {
+			continue
+		}
+		switch existing.Status {
+		case "queued", "running", "deferred":
+			return s, Occurrence{}, ErrActive
+		case "missed":
+			// An edited schedule can still have historical recurring missed jobs.
+			// Only consume the missed occurrence of this one-time event.
+			if single && strings.TrimSpace(existing.Recurrence) == strings.TrimSpace(s.Recurrence) {
+				o.ID = existing.ID
+			}
+		}
+	}
+	o.IntendedAt, o.Status, o.Manual = now.UTC(), "queued", true
+	if single {
+		s.OneShotConsumed, s.Next = true, time.Time{}
+	} else if parts := strings.Fields(strings.ToLower(s.Recurrence)); len(parts) > 0 && parts[0] == "every" {
+		s.Next, err = Next(s.Recurrence, s.Timezone, now)
+		if err != nil {
+			return s, Occurrence{}, err
+		}
+	}
+	// A paused manual run must not shift the interval again on the next tick.
+	s.Suspended = s.Paused
+	if err = c.Store.PutRecords(map[string]map[string]any{
+		"calendar:schedules":   {s.ID: s},
+		"calendar:occurrences": {o.ID: o},
+	}); err != nil {
+		return s, Occurrence{}, err
+	}
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.run(ctx, o)
+	}()
+	if c.Changed != nil {
+		c.Changed()
+	}
+	return s, o, nil
+}
+
 func (c *Calendar) Tick(now time.Time, offline bool) ([]Occurrence, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -251,7 +355,7 @@ func (c *Calendar) Tick(now time.Time, offline bool) ([]Occurrence, error) {
 				continue
 			}
 			s.Suspended = true
-			s.Next, e = Next(s.Recurrence, s.Timezone, now)
+			s.Next, e = s.next(now)
 			if e != nil {
 				return nil, e
 			}
@@ -262,7 +366,7 @@ func (c *Calendar) Tick(now time.Time, offline bool) ([]Occurrence, error) {
 		}
 		if s.Suspended {
 			s.Suspended = false
-			s.Next, e = Next(s.Recurrence, s.Timezone, now)
+			s.Next, e = s.next(now)
 			if e != nil {
 				return nil, e
 			}
@@ -290,6 +394,9 @@ func (c *Calendar) Tick(now time.Time, offline bool) ([]Occurrence, error) {
 			s.Next, e = Next(s.Recurrence, s.Timezone, s.Next)
 			if e != nil {
 				return nil, e
+			}
+			if s.Next.IsZero() && oneShot(s.Recurrence) {
+				s.OneShotConsumed = true
 			}
 		}
 		if !s.Next.Equal(originalNext) || s.Suspended != originalSuspended {
@@ -366,6 +473,9 @@ func (c *Calendar) run(ctx context.Context, o Occurrence) {
 			}
 			return current, nil
 		})
+		if c.Changed != nil {
+			c.Changed()
+		}
 		return
 	}
 	claimed := false
@@ -384,6 +494,9 @@ func (c *Calendar) run(ctx context.Context, o Occurrence) {
 	})
 	if e != nil || !claimed {
 		return
+	}
+	if c.Changed != nil {
+		c.Changed()
 	}
 	if c.Enabled != nil && !c.Enabled(o.BotID) {
 		o.Status = "skipped"
