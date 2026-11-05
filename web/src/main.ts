@@ -10,7 +10,7 @@ import { groupReference, memberHandle, referencedGroup } from './recipientMentio
 import { mountBotGroups } from './botGroupSettings';
 import { Renderers } from './renderers';
 import { updateStreamedText } from './messageContent';
-import { conversationItems, conversationThreads, threadMessages, type ResponseGroup } from './conversation';
+import { conversationItems, conversationThreads, delegatedChatTarget, threadMessages, type ResponseGroup } from './conversation';
 import { botAvatarMarkup, threadIdentityMarkup } from './botIdentity';
 import { fileChangesFooter } from './fileChanges';
 import { turnStatisticsFooter, statisticsPreferenceKey } from './turnStatistics';
@@ -643,10 +643,17 @@ function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.da
     }
     const name = grouped ? m.author.split(' · ').slice(1).join(' · ') || m.author : m.author;
     el.innerHTML += `<details data-disclosure="${esc(m.id)}:output"><summary><span>${esc(name)}</span>${statusBadge(m.status)}</summary><pre>${esc(liveToolOutput.get(m.id) || m.content)}</pre></details>`;
+    const target = delegatedChatTarget(m);
+    if (target) {
+      const link = document.createElement('a');
+      link.href = '#' + resourceID(target.nodeId, target.chatId);
+      link.textContent = 'Open delegated chat';
+      el.append(link);
+    }
     if (!grouped) { const media = mediaGalleries.render('tool:' + m.id, [m]); if (media) el.append(media); }
     restoreDisclosures(el); return el;
   }
-  if (m.role === 'user' && grouped) el.innerHTML += `<div class="handoff-label">${esc(m.author)}</div>`;
+  if (m.role === 'user' && (grouped || m.author.startsWith('Delegated by @'))) el.innerHTML += `<div class="handoff-label">${esc(m.author)}</div>`;
   if (m.reasoning && !final) el.innerHTML += reasoningMarkup(m);
   if (m.toolCalls?.length) el.innerHTML += `<details data-disclosure="${esc(m.id)}:calls"><summary>Tool calls (${m.toolCalls.length})</summary><pre>${esc(JSON.stringify(m.toolCalls, null, 2))}</pre></details>`;
   if (m.content || !m.reasoning && !m.toolCalls?.length && m.status === 'running') {

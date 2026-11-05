@@ -26,7 +26,7 @@ func validateMessageContent(content string) error {
 }
 
 // Caller holds mu, sharing the admission boundary with send and stopChat.
-func (s *Server) messageMutationGuard(chatID string) error {
+func (s *Server) idleChatGuard(chatID string) error {
 	if err := s.ctx.Err(); err != nil {
 		return err
 	}
@@ -40,6 +40,13 @@ func (s *Server) messageMutationGuard(chatID string) error {
 		if d.chatID == chatID {
 			return errors.New("Wait for the current response to finish before editing or deleting messages.")
 		}
+	}
+	return nil
+}
+
+func (s *Server) messageMutationGuard(chatID string) error {
+	if err := s.idleChatGuard(chatID); err != nil {
+		return err
 	}
 	c, err := s.Store.Chat(chatID)
 	if err != nil {
@@ -155,7 +162,7 @@ func (s *Server) messageActionRoutes(mux *http.ServeMux) {
 			return
 		}
 		req, err := s.prepareResubmit(chat, SendRequest{RequestID: input.RequestID, rerunMessageID: r.PathValue("messageId")})
-		respond(w, domain.Message{Content: req.Content, Segments: req.Segments, Recipients: req.rerunRecipients}, err)
+		respond(w, domain.Message{Author: req.inputAuthor, Content: req.Content, Segments: req.Segments, Recipients: req.rerunRecipients}, err)
 	})
 	mux.HandleFunc("POST /api/v1/chats/{id}/messages/{messageId}/rerun", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {

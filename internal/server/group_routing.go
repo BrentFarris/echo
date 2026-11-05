@@ -54,11 +54,6 @@ func (s *Server) previousTurn(chat string, req SendRequest) string {
 func (req SendRequest) promotes(d *dispatch) bool {
 	return req.routing != nil && req.routing.pending == d && d.ctx.Err() == nil
 }
-func (req SendRequest) identifyMessage(m *domain.Message) {
-	if req.routing != nil {
-		m.ID, m.CreatedAt = req.routing.message.ID, req.routing.message.CreatedAt
-	}
-}
 func (s *Server) acceptTurn(req SendRequest, c domain.Chat, m domain.Message, runs []domain.Run, id string, f *swarmDispatch) error {
 	records := map[string]map[string]any{}
 	if f != nil {
@@ -77,7 +72,7 @@ func (s *Server) acceptTurn(req SendRequest, c domain.Chat, m domain.Message, ru
 		}
 		records["group-commits"] = commits
 	}
-	return s.Store.AcceptTurn(c, m, runs, req.RequestID, id, records, assigning, req.replaceMessageID)
+	return s.storeTurn(req, c, m, runs, id, records)
 }
 func (s *Server) checkOnePeer(node string) error {
 	if !s.oneGroupCapable(node) {
@@ -98,7 +93,7 @@ func (s *Server) routeGroupTurn(chatID string, req SendRequest) (*dispatch, erro
 	if err := s.checkOnePeer(req.OriginNodeID); err != nil {
 		return nil, err
 	}
-	c, err := s.Store.Chat(chatID)
+	c, err := s.chatForSend(chatID, req)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +141,7 @@ func (s *Server) routeGroupTurn(chatID string, req SendRequest) (*dispatch, erro
 		}
 	}
 	t := &groupTurn{id: domain.ID(), chat: c, fixed: fixed}
-	t.message = domain.Message{ID: domain.ID(), ChatID: chatID, Author: "You", Role: "user", Content: req.Content, Segments: slices.Clone(req.Segments), Attachments: attachments, Status: "queued", CreatedAt: domain.Now()}
+	t.message = req.userMessage(chatID, "queued", slices.Clone(req.Segments), attachments)
 	seen := map[string]bool{}
 	for _, seg := range segments {
 		if seg.Type == "file" {
@@ -172,6 +167,7 @@ func (s *Server) routeGroupTurn(chatID string, req SendRequest) (*dispatch, erro
 		s.finishRotations(t, nil)
 		return d, err
 	}
+	req.newChat = nil // future assignment uses the committed chat and the queue's own context
 	go s.waitGroupTurn(req)
 	return d, nil
 }
@@ -183,15 +179,18 @@ func (s *Server) queueGroupTurn(req SendRequest) (*dispatch, error) {
 	if prior := s.Store.Accepted(t.chat.ID, req.RequestID); prior != "" {
 		return acceptedDispatch(prior), nil
 	}
-	if err := s.messageMutationGuard(t.chat.ID); err != nil {
+	if err := s.idleChatGuard(t.chat.ID); err != nil {
 		return nil, err
 	}
 	if err := s.checkRerunSnapshot(t.chat.ID, req); err != nil {
 		return nil, err
 	}
-	c, err := s.Store.Chat(t.chat.ID)
+	c, err := s.chatForSend(t.chat.ID, req)
 	if err != nil {
 		return nil, err
+	}
+	if c.Projection {
+		return nil, errors.New("edit messages on the chat's home machine")
 	}
 	if c.Title == "" || c.Title == "New chat" {
 		c.Title = truncate(req.Content, 70)
@@ -206,7 +205,7 @@ func (s *Server) queueGroupTurn(req SendRequest) (*dispatch, error) {
 	for _, g := range t.groups {
 		record.Groups = append(record.Groups, swarm.Ref{NodeID: g.NodeID, ID: g.GroupID})
 	}
-	if err = s.Store.AcceptWithRecord(c, t.message, nil, req.RequestID, t.id, "pending-groups", t.id, record, req.replaceMessageID); err != nil {
+	if err = s.storeTurn(req, c, t.message, nil, t.id, map[string]map[string]any{"pending-groups": {t.id: record}}); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(s.ctx)

@@ -468,7 +468,7 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := s.Store.Chat(chatID)
+	c, err := s.chatForSend(chatID, req)
 	if err != nil {
 		return nil, err
 	}
@@ -504,8 +504,7 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 	d := &dispatch{id: id, chatID: chatID, group: group, ctx: runCtx, cancel: cancel, done: make(chan struct{}), wake: map[string]chan struct{}{}, active: map[string]bool{}, admitted: map[string]chan struct{}{}}
 	f := &swarmDispatch{GroupAssignment: req.routing != nil, ID: id, ChatID: chatID, Origin: req.OriginNodeID, RequestID: req.RequestID, Participants: participants, Hosts: map[string]workerRequest{}, Status: "queued", group: group, d: d}
 	d.federation = f
-	message := domain.Message{ID: domain.ID(), ChatID: chatID, Author: "You", Role: "user", Content: req.Content, Segments: segments, Attachments: attachments, Status: "completed", CreatedAt: domain.Now()}
-	req.identifyMessage(&message)
+	message := req.userMessage(chatID, "completed", segments, attachments)
 	// Local history reads only paths which this host independently validated.
 	for i := range message.Segments {
 		seg := &message.Segments[i]

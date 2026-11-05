@@ -1,10 +1,19 @@
 import { expect, test } from 'vitest';
-import { conversationItems, conversationThreads, threadMessages } from './conversation';
+import { conversationItems, conversationThreads, delegatedChatTarget, threadMessages } from './conversation';
 import type { Message, Run } from './types';
 
 const message = (id: string, extra: Partial<Message> = {}): Message => ({ id, chatId: 'chat', runId: 'run', botId: 'bot', author: 'Kaiju', role: 'assistant', status: 'completed', content: '', createdAt: '', ...extra });
 const run = (status: string, id = 'run'): Run => ({ id, chatId: 'chat', botId: 'bot', status });
 const response = (messages: Message[], runs: Run[]) => conversationItems(messages, runs).flatMap(item => item.kind === 'response' ? [item.group] : []);
+
+test('delegation links use the machine and chat from a successful receipt', () => {
+  const target = { nodeId: 'a'.repeat(32), chatId: 'b'.repeat(32) };
+  const tool = message('tool', { role: 'tool', author: 'Echo · chat_start', content: JSON.stringify(target) });
+  expect(delegatedChatTarget(tool)).toEqual(target);
+  expect(delegatedChatTarget({ ...tool, status: 'running' })).toBeUndefined();
+  expect(delegatedChatTarget({ ...tool, content: 'interrupted' })).toBeUndefined();
+  expect(delegatedChatTarget({ ...tool, content: JSON.stringify({ ...target, chatId: '../apps' }) })).toBeUndefined();
+});
 
 test('media input follows the run input relationship even when another prompt intervenes', () => {
   const original = message('original', { runId: undefined, role: 'user' });

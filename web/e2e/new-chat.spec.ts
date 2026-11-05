@@ -27,6 +27,29 @@ async function createChat(page: Page, shortcut = false) {
   return chat.id as string;
 }
 
+test('a bot can create a group chat with a visible origin and a working link', async ({ page }) => {
+  const bot = await setup(page);
+  for (const group of await json(page, '/bot-groups')) await json(page, `/bot-groups/${group.id}`, 'DELETE');
+  await json(page, '/bot-groups', 'POST', { handle: 'delegationmods', members: [{ botId: bot.id }] });
+  const parent = await createChat(page);
+  await page.locator('#composer').fill('Chat delegation fixture');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.locator('.chat-log')).toContainText('Delegated the fixture task.');
+  const messages = await json(page, `/chats/${parent}/messages`);
+  const receipt = JSON.parse(messages.find((message: any) => message.role === 'tool' && message.author.endsWith(' · chat_start')).content);
+  expect(receipt.chatId).not.toBe(parent);
+  await page.getByText('Show work', { exact: true }).click();
+  await page.getByRole('link', { name: 'Open delegated chat' }).click();
+  await expect(page).toHaveURL(new RegExp('#' + receipt.chatId + '$'));
+  await expect(page.locator('.handoff-label')).toHaveText('Delegated by @echo');
+  await expect(page.locator('.chat-log')).toContainText('Implement DELEGATE-1 reported by @unknown.');
+  const child = await json(page, `/chats/${receipt.chatId}/messages`);
+  expect(child[0].recipients).toEqual([bot.id]);
+  expect(child[0].segments[0].type).toBe('group');
+  await page.reload();
+  await expect(page.locator('.handoff-label')).toHaveText('Delegated by @echo');
+});
+
 test('new chat selection preserves drafts, applies to shortcuts, and resets on reload', async ({ page }) => {
   const bot = await setup(page), select = page.getByRole('combobox', { name: 'Bot for new chat' }), composer = page.locator('#composer');
   const value = () => composer.evaluate((el: any) => el.value as string);

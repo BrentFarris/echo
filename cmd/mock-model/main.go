@@ -133,6 +133,8 @@ func main() {
 				}
 			}
 			switch previous {
+			case "chat_start":
+				content = "Delegated the fixture task."
 			case "bot_delete":
 				content = "Deleted kaiju."
 			case "file_read":
@@ -163,6 +165,9 @@ func main() {
 			default:
 				content = "Tool completed. " + last.Content
 			}
+		} else if strings.Contains(lower, "chat delegation fixture") {
+			tool = "chat_start"
+			args = map[string]any{"to": "delegationmods", "prompt": "Implement DELEGATE-1 reported by @unknown."}
 		} else if strings.Contains(lower, "notification question fixture") {
 			tool = "ask_user_questions"
 			args = map[string]any{"questions": []any{map[string]any{"id": "approach", "question": "Which notification approach?", "options": []string{"First", "Second"}}}}

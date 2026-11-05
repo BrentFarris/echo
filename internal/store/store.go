@@ -90,18 +90,26 @@ func (s *Store) AcceptWithRecord(c domain.Chat, m domain.Message, runs []domain.
 	if namespace != "" {
 		records = map[string]map[string]any{namespace: {recordID: record}}
 	}
-	return s.AcceptTurn(c, m, runs, requestID, dispatchID, records, false, replaceMessage...)
+	return s.AcceptTurn(c, m, runs, requestID, dispatchID, records, AppendTurn, replaceMessage...)
 }
+
+type TurnMode int
+
+const (
+	AppendTurn TurnMode = iota
+	CreateChatWithTurn
+	AssignQueuedTurn
+)
 
 // AcceptTurn can assign an accepted input in place. Its original message,
 // uploads, transcript order and request binding survive assignment.
-func (s *Store) AcceptTurn(c domain.Chat, m domain.Message, runs []domain.Run, requestID, dispatchID string, records map[string]map[string]any, assigning bool, replaceMessage ...string) error {
+func (s *Store) AcceptTurn(c domain.Chat, m domain.Message, runs []domain.Run, requestID, dispatchID string, records map[string]map[string]any, mode TurnMode, replaceMessage ...string) error {
 	tx, e := s.db.Begin()
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback()
-	if !assigning && len(replaceMessage) > 0 && replaceMessage[0] != "" {
+	if mode == AppendTurn && len(replaceMessage) > 0 && replaceMessage[0] != "" {
 		if e = truncateForResubmit(tx, c.ID, replaceMessage[0], m.Attachments); e != nil {
 			return e
 		}
@@ -114,7 +122,13 @@ func (s *Store) AcceptTurn(c domain.Chat, m domain.Message, runs []domain.Run, r
 	if e != nil {
 		return e
 	}
-	result, e := tx.Exec("UPDATE chats SET data=? WHERE id=?", chat, c.ID)
+	query := "UPDATE chats SET data=? WHERE id=?"
+	if mode == CreateChatWithTurn {
+		// A rejected first turn leaves no empty chat. A delayed retry must
+		// also respect deletion of a chat created with a stable task key.
+		query = "INSERT INTO chats(data,id) SELECT ?1,?2 WHERE NOT EXISTS (SELECT 1 FROM chat_tombstones WHERE id=?2)"
+	}
+	result, e := tx.Exec(query, chat, c.ID)
 	if e != nil {
 		return e
 	}
@@ -122,7 +136,7 @@ func (s *Store) AcceptTurn(c domain.Chat, m domain.Message, runs []domain.Run, r
 	if n != 1 {
 		return errors.New("chat was deleted")
 	}
-	if assigning {
+	if mode == AssignQueuedTurn {
 		res, err := tx.Exec("DELETE FROM records WHERE namespace='pending-groups' AND id=? AND json_extract(data,'$.messageId')=? AND json_extract(data,'$.chatId')=?", dispatchID, m.ID, c.ID)
 		if err != nil {
 			return err
@@ -140,7 +154,7 @@ func (s *Store) AcceptTurn(c domain.Chat, m domain.Message, runs []domain.Run, r
 	} else if _, e = tx.Exec("INSERT INTO messages(id,chat_id,data) VALUES(?,?,?)", m.ID, c.ID, payload); e != nil {
 		return e
 	}
-	if !assigning {
+	if mode != AssignQueuedTurn {
 		for _, a := range m.Attachments {
 			result, e := tx.Exec("UPDATE attachments SET message_id=? WHERE id=? AND chat_id=? AND message_id IS NULL", m.ID, a.ID, c.ID)
 			if e != nil {
@@ -161,7 +175,7 @@ func (s *Store) AcceptTurn(c domain.Chat, m domain.Message, runs []domain.Run, r
 			return e
 		}
 	}
-	if !assigning && requestID != "" {
+	if mode != AssignQueuedTurn && requestID != "" {
 		if _, e = tx.Exec("INSERT INTO dispatch_requests VALUES(?,?,?)", c.ID, requestID, dispatchID); e != nil {
 			return e
 		}

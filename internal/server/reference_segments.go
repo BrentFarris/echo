@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"unicode/utf16"
 
 	"github.com/brent/echo/internal/domain"
@@ -43,6 +44,15 @@ func referenceContent(req SendRequest) (string, error) {
 		// Filenames containing @ are data, never extra bot recipients.
 		for n := start; n < end; n++ {
 			masked[n] = ' '
+		}
+	}
+	if strings.HasPrefix(req.inputAuthor, delegatedAuthorPrefix) {
+		// chat_start puts its addressee alone on the first line. Mask the
+		// ticket body, retaining byte offsets for structured mention checks.
+		if end := strings.IndexByte(req.Content, '\n'); end >= 0 {
+			for i := end; i < len(masked); i++ {
+				masked[i] = ' '
+			}
 		}
 	}
 	return string(masked), nil

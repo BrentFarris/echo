@@ -312,6 +312,11 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		return nil, errors.New("plugin management belongs to Echo's Plugin Authoring plugin")
 	}
 	switch method {
+	case "chat.start":
+		if !manifest.Builtin || manifest.ID != "chat-delegation" {
+			return nil, errors.New("starting a chat requires the Chat Delegation plugin")
+		}
+		return s.startDelegatedChat(ctx, scope, text(a, "to"), text(a, "prompt"), text(a, "taskKey"))
 	case "confluence.search", "confluence.read", "confluence.users.search", "confluence.users.current":
 		return s.confluenceOperation(ctx, scope, manifest, method, raw)
 	case "jira.search", "jira.issue", "jira.comments":

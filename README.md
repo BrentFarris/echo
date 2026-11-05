@@ -342,6 +342,14 @@ Frontend unit tests use `cd web; npm test`. Their separate native JavaScript con
 
 ## Calendar and downtime
 
+To delegate work from a schedule, give the instructions to the bot that should do the polling. For example, send Echo this prompt, substituting the folder that contains your script.
+
+> Every 10 minutes, run `./jira.ps1` from `C:\work\my-project`. For each open ticket it returns, start a new chat with the `modbots` group. Give them the issue key, description and acceptance criteria, and ask them to implement the task and commit their changes. Use the Jira issue key as the task key so each ticket is dispatched once.
+
+The polling bot needs Calendar, Shell and **Chat Delegation**. Echo picks up Chat Delegation automatically. For an existing named bot, enable it under **Settings → Bots → Edit → Plugins**. Configure the workers with access to the repository and Git. Choose **One available bot** on the group to assign one worker per ticket, or **All bots** for shared work.
+
+You can also ask a bot to start a one-off chat. Its `chat_start` tool takes a bot or group handle and a self-contained prompt. Each accepted task appears in the sidebar on the delegating bot's machine. Open it directly from **Show work → Open delegated chat** in the polling chat. The polling bot can continue as soon as the task is queued. Only the explicit destination receives the prompt. With an optional `taskKey`, repeat calls from the same bot to the same handle return the original chat and dispatch IDs across polls and restarts. Omit the key to start a fresh chat every time.
+
 Supported recurrences are `daily HH:MM`, `weekly MON HH:MM`, `every N minutes/hours/days`, and an RFC3339 one-time instant. Daily/weekly schedules preserve local wall time through DST; a nonexistent wall time is skipped and an ambiguous wall time runs once. The server's Windows timezone is resolved to an IANA name when saving.
 
 After downtime, every missed occurrence awaits review. Select jobs, set concurrency (default `1`; `0` means unlimited), then choose **Run selected**. Unselected jobs are skipped. **Skip all** dismisses the entire pending batch. Use the missed-jobs panel to review these jobs; typed slash text is ordinary message content. Reviews survive restart; intentionally paused/disabled schedules do not accumulate missed work. Interrupted work is identified and never automatically replays uncertain tools.

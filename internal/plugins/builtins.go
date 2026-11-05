@@ -46,6 +46,13 @@ func Builtins() []domain.PluginManifest {
 			tool("schedule_delete", "Delete a schedule.", "calendar.delete", map[string]any{"id": S("Schedule id")}, "id"),
 			tool("schedule_missed", "List missed jobs requiring the user's selection.", "calendar.missed", map[string]any{}),
 		}, Settings: Schema(map[string]any{"timezone": S("Default IANA timezone")})},
+		{ID: "chat-delegation", Name: "Chat Delegation", Tools: []domain.Tool{
+			tool("chat_start", "Delegate a task on the user's behalf by starting an independent chat with one bot or bot group. Use the destination requested by the user. Returns the accepted chat and dispatch IDs immediately. For recurring work, call once per task with a stable taskKey to avoid dispatching it again on the next poll.", "chat.start", map[string]any{
+				"to":      S("One bot or group handle, e.g. modbots or machine.modbots"),
+				"prompt":  S("Self-contained task for the recipient, including the relevant details and requested outcome"),
+				"taskKey": S("Optional stable identifier such as a Jira issue key. Reusing it for the same recipient from this bot returns the first chat."),
+			}, "to", "prompt"),
+		}},
 		{ID: "hosted-server", Name: "Hosted Server", Scope: "app", Settings: Schema(map[string]any{"remote": B("Allow remote connections; takes effect on restart"), "port": N("Server port"), "certificate": S("Optional TLS certificate PEM path"), "key": S("Optional TLS private key PEM path")})},
 		{ID: "plugin-authoring", Name: "Plugin Authoring", Scope: "echo", Tools: []domain.Tool{
 			tool("plugin_template", "Get a working UI, renderer, model provider, or Go/WASI backend template and the plugin SDK. Use before authoring a plugin.", "plugin.template", map[string]any{"kind": S("ui, backend, provider, or renderer")}, "kind"),

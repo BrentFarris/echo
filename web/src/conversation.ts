@@ -1,5 +1,14 @@
 import type { Bot, Chat, Message, Run } from './types';
 
+export function delegatedChatTarget(message: Message): { nodeId: string; chatId: string } | undefined {
+  if (message.role !== 'tool' || message.status !== 'completed' || !message.author.endsWith(' · chat_start')) return;
+  try {
+    const { nodeId, chatId } = JSON.parse(message.content);
+    const validId = (id: unknown) => typeof id === 'string' && /^[a-f0-9]{32}$/.test(id);
+    if (validId(nodeId) && validId(chatId)) return { nodeId, chatId };
+  } catch { /* Historical tool output may be plain text. */ }
+}
+
 export function conversationThreads(chat: Chat | undefined, messages: Message[], runs: Run[], bots: Bot[]) {
   const names = new Map<string, string>();
   for (const message of messages) {

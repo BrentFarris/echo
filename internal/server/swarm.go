@@ -252,6 +252,7 @@ func (s *Server) prepareForwardedMessage(w http.ResponseWriter, r *http.Request,
 			return false, nil
 		}
 		req.Content, req.Segments, req.rerunMessageID = input.Content, input.Segments, "remote"
+		req.inputAuthor = input.Author
 		if len(input.Recipients) == 0 && slices.ContainsFunc(input.Segments, func(g domain.Segment) bool { return g.DeliveryMode == "one" && len(g.Members) == 0 }) {
 			req.rerunMessageID = ""
 			req.forwardedGroups = true

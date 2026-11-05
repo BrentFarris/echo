@@ -95,6 +95,7 @@ func (s *Server) prepareRerunLocked(chatID string, req SendRequest) (SendRequest
 	}
 	req.rerunFingerprint = transcriptFingerprint(messages)
 	req.replaceMessageID, req.Content = input.ID, input.Content
+	req.inputAuthor = input.Author
 	req.replacementAttachments = input.Attachments
 	for _, a := range input.Attachments {
 		req.Attachments = append(req.Attachments, a.ID)

@@ -10,7 +10,7 @@ import (
 // Enforced both when advertising a tool and on each guest-to-host call. A
 // backend cannot bypass the standalone boundary by calling another capability.
 func StandaloneMethodReason(method string) string {
-	if strings.HasPrefix(method, "model.") {
+	if strings.HasPrefix(method, "model.") || method == "chat.start" {
 		return "Requires a model run"
 	}
 	if strings.HasPrefix(method, "comfyui.") {

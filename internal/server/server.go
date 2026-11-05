@@ -147,6 +147,8 @@ type SendRequest struct {
 	Generation             domain.Generation            `json:"generation"`
 	RequestID              string                       `json:"requestId"`
 	Attachments            []string                     `json:"attachments"`
+	newChat                *chatStart
+	inputAuthor            string
 	scheduledBot           string
 	replaceMessageID       string
 	replacementAttachments []domain.Attachment
