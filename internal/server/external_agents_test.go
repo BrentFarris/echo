@@ -187,6 +187,44 @@ func TestExternalSessionsRestartForkRerunAndReset(t *testing.T) {
 		t.Fatal("reset did not clear session")
 	}
 }
+
+func TestExternalRecoveredCodexRunKeepsNativeSession(t *testing.T) {
+	s := testServer(t)
+	g, log := externalFixture(t, s, "codex-cli")
+	c := chat(t, s, g)
+	t.Setenv("ECHO_EXTERNAL_TEST_MODE", "reconnect-success")
+	externalSend(t, s, c, SendRequest{Content: "remember the original task"})
+	first := externalSaved(t, s, c.ID, "echo")
+	if !first.Ready {
+		t.Fatal("recovered session discarded")
+	}
+	messages, _ := s.Store.Messages(c.ID)
+	notices := 0
+	for _, m := range messages {
+		if m.Role == "activity" && strings.Contains(m.Content, "Reconnecting...") {
+			notices++
+		}
+		if m.Status == "failed" || strings.Contains(m.Content, "Reset external sessions") {
+			t.Fatal("recovered run displayed as failed", m)
+		}
+	}
+	if notices != 2 || messages[len(messages)-1].Content != "Remembered" {
+		t.Fatal("activity or final response lost", messages)
+	}
+	runs, _ := s.Store.ChatRuns(c.ID)
+	if len(runs) != 1 || runs[0].Status != "completed" || runs[0].Statistics.ModelCalls != 1 || runs[0].Statistics.InputTokens != 20 {
+		t.Fatal("recovery changed status or double-counted usage", runs)
+	}
+	t.Setenv("ECHO_EXTERNAL_TEST_MODE", "")
+	externalSend(t, s, c, SendRequest{Content: "followup"})
+	if externalSaved(t, s, c.ID, "echo").SessionID != first.SessionID {
+		t.Fatal("recovered session did not resume")
+	}
+	calls := externalCalls(t, log)
+	if len(calls) != 2 || !slices.Contains(calls[1].Args, first.SessionID) || strings.Contains(calls[1].Input, "original task") || strings.Contains(calls[1].Input, "Reconnecting...") {
+		t.Fatal("native followup replayed earlier context", calls)
+	}
+}
 func TestExternalQueuedTasksContinueAndBotsStaySeparate(t *testing.T) {
 	s := testServer(t)
 	g, log := externalFixture(t, s, "codex-cli")

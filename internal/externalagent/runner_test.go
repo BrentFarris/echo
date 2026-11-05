@@ -166,6 +166,57 @@ func TestNativeCLIFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexReconnectOutcome(t *testing.T) {
+	for _, mode := range []string{"reconnect-success", "reconnect-failed", "reconnect-incomplete", "reconnect-crash"} {
+		t.Run(mode, func(t *testing.T) {
+			r, q := fixture(t, "codex-cli")
+			t.Setenv("ECHO_EXTERNAL_TEST_MODE", mode)
+			log := filepath.Join(q.Directory, "calls.jsonl")
+			t.Setenv("ECHO_EXTERNAL_TEST_LOG", log)
+			var notices []Event
+			result, err := r.Run(context.Background(), q, func(e Event) error {
+				if strings.Contains(e.Content, "Reconnecting...") {
+					notices = append(notices, e)
+				}
+				return nil
+			})
+			if mode == "reconnect-success" {
+				if err != nil || result.Content != "Remembered" || result.Usage == nil || result.Usage.InputTokens != 20 {
+					t.Fatalf("recovered run did not succeed: %+v, %v", result, err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("unsuccessful run accepted")
+				}
+				if strings.Contains(err.Error(), "Reset external sessions") {
+					t.Fatal("network failure was misidentified as a missing session", err)
+				}
+				if mode == "reconnect-failed" && strings.Contains(err.Error(), "Reconnecting...") {
+					t.Fatal("transient notice replaced terminal error", err)
+				}
+				if mode == "reconnect-crash" && (!strings.Contains(err.Error(), "23") || !strings.Contains(err.Error(), "deliberate crash")) {
+					t.Fatal("process failure lost", err)
+				}
+				if mode == "reconnect-incomplete" && !strings.Contains(err.Error(), "stream disconnected") {
+					t.Fatal("incomplete run lost diagnostics", err)
+				}
+			}
+			if len(notices) != 2 {
+				t.Fatalf("reconnect activity missing: %+v", notices)
+			}
+			for _, e := range notices {
+				if e.Tool || e.Status == "failed" {
+					t.Fatal("notice treated as a failed tool", e)
+				}
+			}
+			data, err := os.ReadFile(log)
+			if err != nil || len(strings.Split(strings.TrimSpace(string(data)), "\n")) != 1 {
+				t.Fatal("Echo replayed the task", string(data), err)
+			}
+		})
+	}
+}
 func TestSubscriptionOverrideStopsBeforeInference(t *testing.T) {
 	r, q := fixture(t, "codex-cli")
 	t.Setenv("CODEX_API_KEY", "do-not-log-this-secret")

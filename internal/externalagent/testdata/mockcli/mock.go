@@ -94,10 +94,26 @@ func Run() {
 	}
 	if args[0] == "exec" {
 		emit(map[string]any{"type": "thread.started", "thread_id": session})
+		if strings.HasPrefix(mode, "reconnect-") {
+			for attempt := 1; attempt <= 2; attempt++ {
+				emit(map[string]any{"type": "error", "message": fmt.Sprintf("Reconnecting... %d/5 (stream disconnected before completion: error sending request)", attempt)})
+			}
+			switch mode {
+			case "reconnect-failed":
+				emit(map[string]any{"type": "turn.failed", "error": map[string]string{"message": "stream disconnected before completion: error sending request"}})
+				os.Exit(1)
+			case "reconnect-incomplete":
+				os.Exit(0)
+			}
+		}
 		emit(map[string]any{"type": "item.started", "item": map[string]any{"id": "tool-1", "type": "command_execution", "command": "echo mock", "status": "in_progress"}})
 		emit(map[string]any{"type": "item.completed", "item": map[string]any{"id": "tool-1", "type": "command_execution", "command": "echo mock", "aggregated_output": "mock", "status": "completed"}})
 		emit(map[string]any{"type": "item.completed", "item": map[string]any{"id": "answer", "type": "agent_message", "text": answer}})
 		emit(map[string]any{"type": "turn.completed", "usage": map[string]int{"input_tokens": 20, "output_tokens": 5, "cached_input_tokens": 3}})
+		if mode == "reconnect-crash" {
+			fmt.Fprintln(os.Stderr, "deliberate crash after completion")
+			os.Exit(23)
+		}
 	} else {
 		emit(map[string]any{"type": "system", "subtype": "init", "session_id": session})
 		emit(map[string]any{"type": "assistant", "message": map[string]any{"id": "message-1", "content": []any{map[string]any{"type": "tool_use", "id": "tool-1", "name": "Bash", "input": map[string]string{"command": "echo mock"}}}}})

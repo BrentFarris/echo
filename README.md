@@ -26,6 +26,8 @@ Each machine/chat/bot/connection keeps its own exact native session ID across Ec
 
 Native text and expandable activity appear as the CLI emits them; streaming granularity depends on the vendor. Activity persists through reloads and can be read as descriptive context by HTTP models. Reported token usage is counted once per CLI invocation; unavailable tokens and internal model-call counts remain unknown. Native tool events are never dispatched as Echo tool calls.
 
+Codex reconnect notices appear as activity while its own connection recovery continues. A successful final turn and process exit keep the run completed and its native session available for follow-ups. Echo does not replay the task to recover a dropped connection. A terminal failure or an incomplete stream remains an error; session-reset advice is reserved for a reported missing native conversation.
+
 Stop, chat deletion and server shutdown cancel the CLI process tree. Startup recovery marks unfinished work interrupted. Failed, cancelled or interrupted tasks are never automatically replayed; the next user-requested run starts a fresh session with the recorded history and an instruction to inspect interrupted work. These actions do not undo filesystem changes. Missing native sessions produce a reset instruction. Login failures, usage limits, policy denials, malformed output and CLI crashes remain visible. If an installed version rejects required unattended/streaming flags, update the CLI; Echo does not silently downgrade its execution mode.
 
 ## Slash commands

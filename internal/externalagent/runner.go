@@ -255,15 +255,34 @@ func (r Runner) Run(ctx context.Context, q Request, emit func(Event) error) (Res
 		return p.result, ctx.Err()
 	}
 	if p.failure != "" {
-		return p.result, errors.New(p.failure + "; use Reset external sessions if the saved native session is unavailable")
+		return p.result, nativeFailure(p.failure)
 	}
 	if out.ExitCode != 0 {
-		return p.result, fmt.Errorf("external agent exited with code %d: %s", out.ExitCode, strings.TrimSpace(out.Stderr))
+		detail := strings.TrimSpace(out.Stderr)
+		if p.notice != "" {
+			detail = strings.TrimSpace(p.notice + "\n" + detail)
+		}
+		return p.result, nativeFailure(fmt.Sprintf("external agent exited with code %d: %s", out.ExitCode, detail))
 	}
 	if !p.completed || p.result.SessionID == "" {
+		if p.notice != "" {
+			return p.result, nativeFailure("external agent ended without a successful result/session ID: " + p.notice)
+		}
 		return p.result, errors.New("external agent ended without a successful result/session ID; check CLI version and login")
 	}
 	return p.result, nil
+}
+
+func nativeFailure(message string) error {
+	// A connection failure, usage limit, or policy denial does not mean that a
+	// saved conversation is missing. Only give reset advice for that diagnosis.
+	lower := strings.ToLower(message)
+	for _, phrase := range []string{"session not found", "thread not found", "conversation not found", "no session found", "no saved session found", "no thread found", "no conversation found"} {
+		if strings.Contains(lower, phrase) {
+			return errors.New(message + "; use Reset external sessions to start a new native conversation")
+		}
+	}
+	return errors.New(message)
 }
 
 type parser struct {
@@ -272,6 +291,7 @@ type parser struct {
 	result    Result
 	completed bool
 	failure   string
+	notice    string // Latest non-terminal diagnostic, retained if the process ends without success.
 	tools     map[string]bool
 	texts     map[string]string
 	messageID string
@@ -338,17 +358,14 @@ func (p *parser) codex(o object) error {
 	case "turn.completed":
 		p.completed = true
 		p.result.Usage = usage(o.obj("usage"), false)
-	case "turn.failed", "error":
-		p.failure = o.obj("error").str("message")
-		if p.failure == "" {
-			p.failure = o.str("message")
-		}
-		if p.failure == "" {
-			p.failure = string(o["error"])
-		}
-		if p.failure == "" {
-			p.failure = "Codex turn failed"
-		}
+	case "turn.failed":
+		p.failure = codexErrorMessage(o)
+	case "error":
+		// Codex also emits error events while reconnecting. A later successful
+		// turn and zero exit status are authoritative; these notices must not
+		// poison the outcome or discard a successfully recovered native session.
+		p.notice = codexErrorMessage(o)
+		return p.event(Event{Name: "Codex notice", Content: p.notice, Status: "completed"})
 	case "item.started", "item.updated", "item.completed":
 		i := o.obj("item")
 		kind, id := i.str("type"), i.str("id")
@@ -368,6 +385,23 @@ func (p *parser) codex(o object) error {
 	}
 	return nil
 }
+
+func codexErrorMessage(o object) string {
+	if message := o.obj("error").str("message"); message != "" {
+		return message
+	}
+	if message := o.str("message"); message != "" {
+		return message
+	}
+	if message := o.str("error"); message != "" {
+		return message
+	}
+	if message := string(o["error"]); message != "" && message != "null" {
+		return message
+	}
+	return "Codex reported an error"
+}
+
 func (p *parser) claude(o object) error {
 	if id := o.str("session_id"); id != "" && o.str("parent_tool_use_id") == "" {
 		p.result.SessionID = id
