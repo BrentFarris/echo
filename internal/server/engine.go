@@ -113,6 +113,15 @@ func (s *Server) recipients(req SendRequest) ([]domain.Bot, error) {
 	}
 	for _, m := range mentionMatches(content) {
 		if group, ok := req.groupMentions[m[2]-1]; ok {
+			if group.DeliveryMode == "one" && req.routing == nil {
+				// Reference suggestions preview reachable candidates before dispatch.
+				for _, m := range group.Candidates {
+					if b, ok := byID[m.BotID]; ok && m.NodeID == s.Swarm.Node().ID {
+						add(b)
+					}
+				}
+				continue
+			}
 			err := s.bindGroup(group, func(member domain.BotGroupMember) (string, bool) {
 				b, ok := byID[member.BotID]
 				if !ok || member.NodeID != s.Swarm.Node().ID {
@@ -139,7 +148,7 @@ func (s *Server) recipients(req SendRequest) ([]domain.Bot, error) {
 		}
 		add(b)
 	}
-	if len(result) == 0 {
+	if len(result) == 0 && !oneGroupMentions(req) {
 		add(byID["echo"])
 	}
 	return result, nil
@@ -161,6 +170,13 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 	if err := s.prepareGroupMentions(s.ctx, &req); err != nil {
 		return nil, err
 	}
+	if oneGroupMentions(req) {
+		return s.routeGroupTurn(chatID, req)
+	}
+	return s.sendResolved(chatID, req)
+}
+
+func (s *Server) sendResolved(chatID string, req SendRequest) (*dispatch, error) {
 	if req.scheduledBot == "" && s.needsSwarm(req) {
 		return s.sendSwarm(chatID, req)
 	}
@@ -217,7 +233,7 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 		return nil, e
 	}
 	s.mu.Lock()
-	if prior := s.Store.Accepted(chatID, req.RequestID); prior != "" {
+	if prior := s.previousTurn(chatID, req); prior != "" {
 		s.mu.Unlock()
 		return acceptedDispatch(prior), nil
 	}
@@ -229,6 +245,14 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 		s.mu.Unlock()
 		return nil, errMaintenance
 	}
+	if req.routing != nil {
+		for _, g := range req.groupMentions {
+			if g.DeliveryMode == "one" && !s.hasGroupSlotLocked(g.Members[0].BotID, s.Swarm.Node().ID, req.routing.id) {
+				s.mu.Unlock()
+				return nil, errors.New("group slot reservation expired; retry this message")
+			}
+		}
+	}
 	for _, bot := range bots {
 		current, e := s.Bot(bot.ID)
 		if e != nil || s.revoking[bot.ID] > 0 || current.Revision != bot.Revision {
@@ -237,7 +261,7 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 		}
 	}
 	for _, active := range s.dispatches {
-		if active.chatID == chatID {
+		if active.chatID == chatID && !req.promotes(active) {
 			s.mu.Unlock()
 			return nil, errors.New("this chat is still running; stop it or wait before sending")
 		}
@@ -254,10 +278,11 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 		d.active[b.ID] = true
 		d.admitted[b.ID] = make(chan struct{})
 	}
-	s.dispatches[d.id] = d
+	if req.routing != nil {
+		d.id = req.routing.id
+	}
 	failed := func(err error) (*dispatch, error) {
 		cancel()
-		delete(s.dispatches, d.id)
 		s.mu.Unlock()
 		close(d.done)
 		return nil, err
@@ -279,14 +304,16 @@ func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
 	c.Generation = req.Generation
 	c.UpdatedAt = domain.Now()
 	m := domain.Message{ID: domain.ID(), ChatID: chatID, Author: "You", Role: "user", Content: req.Content, Segments: structuredSegments(req, bots), Recipients: ids, Status: "completed", CreatedAt: domain.Now()}
+	req.identifyMessage(&m)
 	m.Attachments = attachments
 	runs := make([]domain.Run, len(bots))
 	for i, b := range bots {
 		runs[i] = domain.Run{ID: domain.ID(), UserMessageID: m.ID, ChatID: chatID, DispatchID: d.id, BotID: b.ID, Generation: req.Generation, Status: "queued", CreatedAt: domain.Now()}
 	}
-	if e = s.Store.Accept(c, m, runs, req.RequestID, d.id, req.replaceMessageID); e != nil {
+	if e = s.acceptTurn(req, c, m, runs, d.id, nil); e != nil {
 		return failed(e)
 	}
+	s.dispatches[d.id] = d
 	if req.replaceMessageID != "" {
 		s.emitLocked("changed", chatID, "", "", map[string]bool{"messagesChanged": true})
 	}

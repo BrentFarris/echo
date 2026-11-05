@@ -79,19 +79,29 @@ func (s *Store) Accepted(chatID, requestID string) string {
 }
 
 // Accept commits the user message, chat metadata, run boundaries and retry key
-// together. A caller never observes an accepted message with no durable run.
+// together. An unassigned group turn journals its queue record in place of runs.
 func (s *Store) Accept(c domain.Chat, m domain.Message, runs []domain.Run, requestID, dispatchID string, replaceMessage ...string) error {
 	return s.AcceptWithRecord(c, m, runs, requestID, dispatchID, "", "", nil, replaceMessage...)
 }
 
 // AcceptWithRecord journals federation state in the same acceptance transaction.
 func (s *Store) AcceptWithRecord(c domain.Chat, m domain.Message, runs []domain.Run, requestID, dispatchID, namespace, recordID string, record any, replaceMessage ...string) error {
+	var records map[string]map[string]any
+	if namespace != "" {
+		records = map[string]map[string]any{namespace: {recordID: record}}
+	}
+	return s.AcceptTurn(c, m, runs, requestID, dispatchID, records, false, replaceMessage...)
+}
+
+// AcceptTurn can assign an accepted input in place. Its original message,
+// uploads, transcript order and request binding survive assignment.
+func (s *Store) AcceptTurn(c domain.Chat, m domain.Message, runs []domain.Run, requestID, dispatchID string, records map[string]map[string]any, assigning bool, replaceMessage ...string) error {
 	tx, e := s.db.Begin()
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback()
-	if len(replaceMessage) > 0 && replaceMessage[0] != "" {
+	if !assigning && len(replaceMessage) > 0 && replaceMessage[0] != "" {
 		if e = truncateForResubmit(tx, c.ID, replaceMessage[0], m.Attachments); e != nil {
 			return e
 		}
@@ -112,17 +122,34 @@ func (s *Store) AcceptWithRecord(c domain.Chat, m domain.Message, runs []domain.
 	if n != 1 {
 		return errors.New("chat was deleted")
 	}
-	if _, e = tx.Exec("INSERT INTO messages(id,chat_id,data) VALUES(?,?,?)", m.ID, c.ID, payload); e != nil {
+	if assigning {
+		res, err := tx.Exec("DELETE FROM records WHERE namespace='pending-groups' AND id=? AND json_extract(data,'$.messageId')=? AND json_extract(data,'$.chatId')=?", dispatchID, m.ID, c.ID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return errors.New("group assignment is no longer pending")
+		}
+		res, err = tx.Exec("UPDATE messages SET data=? WHERE id=? AND chat_id=?", payload, m.ID, c.ID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return errors.New("queued message was removed")
+		}
+	} else if _, e = tx.Exec("INSERT INTO messages(id,chat_id,data) VALUES(?,?,?)", m.ID, c.ID, payload); e != nil {
 		return e
 	}
-	for _, a := range m.Attachments {
-		result, e := tx.Exec("UPDATE attachments SET message_id=? WHERE id=? AND chat_id=? AND message_id IS NULL", m.ID, a.ID, c.ID)
-		if e != nil {
-			return e
-		}
-		n, _ := result.RowsAffected()
-		if n != 1 {
-			return errors.New("attachment was removed or already sent; attach it again")
+	if !assigning {
+		for _, a := range m.Attachments {
+			result, e := tx.Exec("UPDATE attachments SET message_id=? WHERE id=? AND chat_id=? AND message_id IS NULL", m.ID, a.ID, c.ID)
+			if e != nil {
+				return e
+			}
+			n, _ := result.RowsAffected()
+			if n != 1 {
+				return errors.New("attachment was removed or already sent; attach it again")
+			}
 		}
 	}
 	for _, run := range runs {
@@ -134,19 +161,13 @@ func (s *Store) AcceptWithRecord(c domain.Chat, m domain.Message, runs []domain.
 			return e
 		}
 	}
-	if requestID != "" {
+	if !assigning && requestID != "" {
 		if _, e = tx.Exec("INSERT INTO dispatch_requests VALUES(?,?,?)", c.ID, requestID, dispatchID); e != nil {
 			return e
 		}
 	}
-	if namespace != "" {
-		data, err := json.Marshal(record)
-		if err != nil {
-			return err
-		}
-		if _, err = tx.Exec("INSERT INTO records VALUES(?,?,?) ON CONFLICT(namespace,id) DO UPDATE SET data=excluded.data", namespace, recordID, data); err != nil {
-			return err
-		}
+	if err := putRecords(tx, records); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -187,6 +208,12 @@ func (s *Store) PutRecords(namespaces map[string]map[string]any) error {
 		return e
 	}
 	defer tx.Rollback()
+	if err := putRecords(tx, namespaces); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+func putRecords(tx *sql.Tx, namespaces map[string]map[string]any) error {
 	for ns, values := range namespaces {
 		for id, v := range values {
 			b, e := json.Marshal(v)
@@ -198,7 +225,7 @@ func (s *Store) PutRecords(namespaces map[string]map[string]any) error {
 			}
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 func pack(v any) ([]byte, error) {
 	b, e := json.Marshal(v)
@@ -561,7 +588,7 @@ func (s *Store) Recover() error {
 			return e
 		}
 		for _, m := range ms {
-			if m.Status == "running" {
+			if m.Status == "running" || m.Role == "user" && m.Status == "queued" {
 				m.Status = "interrupted"
 				if e = s.FinishMessage(m); e != nil {
 					return e

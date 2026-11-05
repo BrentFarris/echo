@@ -79,9 +79,9 @@ export function showBotDetails(anchor: HTMLElement, ref: Segment, bots: Bot[], e
   openDetails(anchor, popover, 'Bot details');
 }
 
-export function showGroupDetails(anchor: HTMLElement, label: string, handles: string[]) {
+export function showGroupDetails(anchor: HTMLElement, label: string, handles: string[], single = false) {
   const popover = document.createElement('div');
-  popover.innerHTML = `<strong>${esc(label)}</strong>` + (handles.length ? `<ul>${handles.map(handle => '<li>@' + esc(handle) + '</li>').join('')}</ul>` : '<span>This group is unavailable.</span>');
+  popover.innerHTML = `<strong>${esc(label)}</strong>` + (handles.length ? `${single ? '<span class="subtle">Assigned to</span>' : ''}<ul>${handles.map(handle => '<li>@' + esc(handle) + '</li>').join('')}</ul>` : (single ? '<span>No bot was assigned.</span>' : '<span>This group is unavailable.</span>'));
   openDetails(anchor, popover, 'Group members');
 }
 

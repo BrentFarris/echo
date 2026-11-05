@@ -129,6 +129,9 @@ func (s *Server) prepareResubmit(chatID string, req SendRequest) (SendRequest, e
 }
 
 func (s *Server) sendAttachments(chatID string, req SendRequest) ([]domain.Attachment, error) {
+	if req.routing != nil && req.routing.pending != nil {
+		return req.routing.message.Attachments, nil
+	}
 	if req.replaceMessageID != "" {
 		return req.replacementAttachments, nil
 	}

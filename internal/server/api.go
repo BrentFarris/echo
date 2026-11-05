@@ -39,7 +39,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
-		groups, e := s.botGroups()
+		groups, e := s.visibleBotGroups(r.Context())
 		if e != nil {
 			respond(w, nil, e)
 			return
@@ -49,9 +49,18 @@ func (s *Server) routes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
+		s.mu.Lock()
+		waiting := map[string]bool{}
+		for _, d := range s.dispatches {
+			if d.waitingGroup {
+				waiting[d.chatID] = true
+			}
+		}
+		s.mu.Unlock()
 		visible := chats[:0]
 		for _, chat := range chats {
 			if !chat.Projection {
+				chat.WaitingForGroup = waiting[chat.ID]
 				visible = append(visible, chat)
 			}
 		}

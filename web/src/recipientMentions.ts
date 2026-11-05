@@ -50,12 +50,15 @@ export function draftRecipients(content: string, segments: Segment[], bots: Bot[
     if (!instanceOnline(ref.nodeId || entryNode)) throw new Error(`Machine '${machineName(ref.nodeId)}' is offline; ${ref.text} is unavailable.`);
     const group = referencedGroup(ref, groups);
     if (!group) throw new Error(`Group ${ref.text} no longer exists.`);
+    const before = selected.length;
     for (const member of group.members) {
       const id = resourceID(member.nodeId, member.botId), handle = memberHandle(member, bots);
+      if (group.deliveryMode === 'one' && (!instanceOnline(member.nodeId) || !bots.some(b => b.id === id))) continue;
       if (!instanceOnline(member.nodeId)) throw new Error(`Machine '${machineName(member.nodeId)}' is offline; ${ref.text} member @${handle} is unavailable.`);
       if (!bots.some(b => b.id === id)) throw new Error(`${ref.text} member @${handle} is unavailable.`);
       selected.push({ type: 'bot', botId: id, nodeId: member.nodeId, text: '@' + handle });
     }
+    if (group.deliveryMode === 'one' && selected.length === before) throw new Error(`No member of ${ref.text} is online and available.`);
   }
   return { selected, masked };
 }

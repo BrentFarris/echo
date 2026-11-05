@@ -98,6 +98,10 @@ type Server struct {
 	cancel            context.CancelFunc
 	mu                sync.Mutex
 	dispatches        map[string]*dispatch
+	groupModels       map[string]groupModelCheck
+	groupLeases       map[groupLeaseKey]*time.Timer
+	groupTickets      map[string][]*groupTicket // protected by mu on the group owner
+	groupWake         chan struct{}             // closed on local capacity or group queue changes
 	botQueues         map[string][]*dispatch
 	botReservations   map[string]map[string]bool
 	streams           map[string]domain.Message
@@ -119,19 +123,20 @@ type Server struct {
 	shutdownRequested chan struct{}
 }
 type dispatch struct {
-	id, chatID string
-	group      coordination
-	federation *swarmDispatch
-	worker     *swarmWorker
-	cancel     context.CancelFunc
-	done       chan struct{}
-	wake       map[string]chan struct{}
-	active     map[string]bool
-	mu         sync.Mutex
-	wg         sync.WaitGroup
-	err        error
-	ctx        context.Context
-	admitted   map[string]chan struct{}
+	waitingGroup bool
+	id, chatID   string
+	group        coordination
+	federation   *swarmDispatch
+	worker       *swarmWorker
+	cancel       context.CancelFunc
+	done         chan struct{}
+	wake         map[string]chan struct{}
+	active       map[string]bool
+	mu           sync.Mutex
+	wg           sync.WaitGroup
+	err          error
+	ctx          context.Context
+	admitted     map[string]chan struct{}
 }
 type SendRequest struct {
 	GenerationByNode       map[string]domain.Generation `json:"generationByNode,omitempty"`
@@ -148,6 +153,7 @@ type SendRequest struct {
 	rerunMessageID         string
 	rerunRecipients        []string
 	rerunFingerprint       [32]byte
+	routing                *groupTurn
 	groupMentions          map[int]domain.Segment // Validated mention tokens keyed by byte offset.
 	botMentions            map[int]domain.Segment
 	forwardedGroups        bool // Only an authenticated entry can forward its resolved membership.

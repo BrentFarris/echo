@@ -102,7 +102,8 @@ function notice(value: unknown, error = false) {
   document.querySelector('.notice')?.remove(); const el = document.createElement('div'); el.className = 'notice' + (error ? ' error' : ''); el.setAttribute('role', error ? 'alert' : 'status'); el.textContent = value instanceof Error ? value.message : String(value); document.body.append(el); setTimeout(() => el.remove(), error ? 12000 : 5000);
 }
 function action(fn: () => unknown | Promise<unknown>) { return () => { Promise.resolve().then(fn).catch(e => notice(e, true)); }; }
-function busy() { return state.runs.some(r => r.chatId === chatId && ['running', 'waiting', 'queued'].includes(r.status)); }
+function groupWaiting(id: string) { return !!state.chats.find(chat => chat.id === id)?.waitingForGroup; }
+function busy() { return groupWaiting(chatId) || messages.some(m => m.chatId === chatId && m.role === 'user' && m.status === 'queued') || state.runs.some(r => r.chatId === chatId && ['running', 'waiting', 'queued'].includes(r.status)); }
 function currentBot(id?: string) { return state.bots.find(b => b.id === id); }
 function pluginEnabled(id: string, botId?: string) { return pluginAvailable(state.plugins.find(p => p.id === id), currentBot(botId)); }
 function markRead(id: string) { if (id) void api(`/chats/${id}/read`, 'POST', {}).catch(() => { /* Sidebar state recovers on the next refresh. */ }); }
@@ -434,7 +435,7 @@ function renderSidebar() {
 async function deleteChat(id: string) {
   if (submitting || closingChats.has(id)) return;
   const chat = state.chats.find(c => c.id === id); if (!chat) return;
-  const active = state.runs.some(r => r.chatId === id && activeRunStatuses.includes(r.status)), unread = chatUnread(chat, state.runs, chatId, !showingApps && !showingApp);
+  const active = groupWaiting(id) || state.runs.some(r => r.chatId === id && activeRunStatuses.includes(r.status)), unread = chatUnread(chat, state.runs, chatId, !showingApps && !showingApp);
   const reasons = [active ? 'This chat is still busy.' : '', unread ? 'This chat has not been read yet.' : ''].filter(Boolean);
   if (reasons.length && !window.confirm(`Close “${chat.title}”?\n\n${reasons.join(' ')}\n\nClosing permanently deletes this chat${active ? ' and stops its work' : ''}.`)) return;
   closingChats.add(id);
@@ -469,7 +470,7 @@ async function reloadTranscript(id: string) {
   if (id === chatId && navigation === chatNavigation) { messages = loaded; renderMessages(); }
 }
 const messageActionUI = new MessageActionUI({
-  busy: id => state.runs.some(run => run.chatId === id && activeRunStatuses.includes(run.status)) || (id === chatId && submitting),
+  busy: id => groupWaiting(id) || state.runs.some(run => run.chatId === id && activeRunStatuses.includes(run.status)) || (id === chatId && submitting),
   notice,
   rerun: async (message, requestId) => {
     await api(`/chats/${encodeURIComponent(message.chatId)}/messages/${encodeURIComponent(message.storedId || message.id)}/rerun`, 'POST', { requestId });
@@ -626,6 +627,12 @@ function paintMessage(m: Message, existing?: HTMLElement, grouped = existing?.da
   // Status/group changes must not flash an already formatted answer as source.
   const previousBody = m.role === 'assistant' ? el.querySelector<HTMLElement>(':scope > .message-content') : null;
   el.innerHTML = !grouped && m.role !== 'user' && m.role !== 'tool' ? `<div class="message-meta"><strong>${esc(m.author)}</strong>${statusBadge(m.status)}</div>` : '';
+  if (m.role === 'user' && ['interrupted', 'cancelled', 'failed'].includes(m.status)) {
+    el.innerHTML = statusBadge(m.status);
+    if (m.deliveryError) {
+      const error = document.createElement('span'); error.className = 'run-error'; error.textContent = m.deliveryError; el.append(error);
+    }
+  }
   if (m.role === 'tool') {
     if (isQuestionMessage(m)) {
       const cached = m.status === 'running' ? questionCards.get(m.id) : undefined;
@@ -735,7 +742,7 @@ function renderMessages(tail = false, force = false) {
   const visibleRuns = state.runs.filter(r => r.chatId === chatId && (!visibleBotId || r.botId === visibleBotId));
   const transcript = JSON.stringify([
     threadKey, visibleMessages, visibleRuns.map(({ updatedAt, ...run }) => run),
-    submitting || state.runs.some(r => r.chatId === chatId && activeRunStatuses.includes(r.status)),
+    submitting || busy(),
     state.bots.map(bot => [bot.id, bot.name, bot.handle]),
     visibleMessages.map(message => {
       const editorID = resourceID(splitID(message.chatId)[0], 'monaco-editor');
@@ -782,7 +789,7 @@ function renderMessages(tail = false, force = false) {
     const empty = document.createElement('p'); empty.className = 'empty-list'; empty.textContent = 'No messages in this bot’s thread yet.'; children.push(empty);
   }
   reconcileChildren(log, children);
-  renderQueuedRuns(); document.querySelector<HTMLButtonElement>('#setup-model')?.addEventListener('click', () => settings('models'));
+  updateSendButton(); renderQueuedRuns(); document.querySelector<HTMLButtonElement>('#setup-model')?.addEventListener('click', () => settings('models'));
   // Browsers reset nested scroll offsets when a retained answer is remounted.
   for (const { element, top, left } of contentScroll) if (element.isConnected) { element.scrollTop = top; element.scrollLeft = left; }
   if (focused) [...log.querySelectorAll<HTMLDetailsElement>('details[data-disclosure]')].find(d => d.dataset.disclosure === focused)?.querySelector('summary')?.focus({ preventScroll: true });
@@ -806,6 +813,11 @@ function renderMessages(tail = false, force = false) {
 function renderQueuedRuns() {
   const log = document.querySelector('.chat-log'); if (!log) return;
   const runs = state.runs.filter(r => r.chatId === chatId && (!visibleBotId || r.botId === visibleBotId));
+  for (const m of messages.filter(m => m.chatId === chatId && m.role === 'user' && m.status === 'queued')) {
+    const groups = [...new Set(m.segments?.filter(s => s.deliveryMode === 'one').map(s => s.text))];
+    const status = document.createElement('div'); status.className = 'run-queued subtle'; status.setAttribute('role', 'status');
+    status.textContent = 'Queued for ' + groups.join(', '); log.append(status);
+  }
   for (const run of runs.filter(r => r.status === 'queued')) { const div = document.createElement('div'); div.className = 'run-queued subtle'; div.setAttribute('role', 'status'); div.innerHTML = `${esc(currentBot(run.botId)?.name || 'Bot')} ${statusBadge('queued')}`; log.append(div); }
 }
 async function recoverInstance(node: string, current: () => boolean) {
@@ -877,8 +889,8 @@ async function activateReference(chip: HTMLElement) {
   const ref = referenceFromElement(chip);
   if (ref.type === 'group') {
     const current = referencedGroup(ref, state.botGroups || []);
-    const handles = ref.members?.map(member => member.handle) || current?.members.map(member => memberHandle(member, state.bots)) || [];
-    showGroupDetails(chip, ref.text || '@group', handles); return;
+    const handles = ref.members?.map(member => member.handle) || (ref.deliveryMode === 'one' ? [] : current?.members.map(member => memberHandle(member, state.bots))) || [];
+    showGroupDetails(chip, ref.text || '@group', handles, ref.deliveryMode === 'one'); return;
   }
   if (ref.type === 'bot') { showBotDetails(chip, ref, state.bots, bot => editBot(bot)); return; }
   try {

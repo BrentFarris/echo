@@ -20,7 +20,7 @@ export type ChatDotState = 'question' | 'busy' | 'done' | '';
 // resolve its questions. Yellow and green retain their existing busy/unread rules.
 export function chatDotState(chat: Chat, runs: Run[], questions: PendingQuestion[] | undefined, selectedChatId: string, viewingChat: boolean): ChatDotState {
   if (hasPendingQuestion(questions, chat.id)) return 'question';
-  if (runs.some(run => run.chatId === chat.id && activeRunStatuses.includes(run.status))) return 'busy';
+  if (chat.waitingForGroup || runs.some(run => run.chatId === chat.id && activeRunStatuses.includes(run.status))) return 'busy';
   if (!chat.lastReadAt) return '';
   return chatUnread(chat, runs, selectedChatId, viewingChat) ? 'done' : '';
 }

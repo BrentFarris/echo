@@ -125,6 +125,7 @@ func (s *Server) serveSwarmOwner(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) swarmRoutes(mux *http.ServeMux) {
 	s.swarmWorkerRoutes(mux)
+	s.groupRoutingRoutes(mux)
 	mux.HandleFunc("POST /api/v1/swarm/pair", func(w http.ResponseWriter, r *http.Request) {
 		var input swarm.PairRequest
 		if err := decode(w, r, &input); err != nil {
@@ -218,6 +219,22 @@ func (s *Server) prepareForwardedMessage(w http.ResponseWriter, r *http.Request,
 	if req.RequestID == "" {
 		req.RequestID = domain.ID()
 	}
+	// An acknowledged request wins even if the group was edited or deleted
+	// before the browser could retry a lost response.
+	if action != "rerun" {
+		var scope groupIntent
+		if s.Store.Get("group-intents", intentID(home, chat, req.RequestID), &scope) == nil {
+			var accepted string
+			err := s.Swarm.JSON(r.Context(), home, "POST", "/api/v1/swarm/workers/group-receipt", groupReceipt{Chat: chat, Request: req.RequestID}, &accepted)
+			if err != nil {
+				return false, err
+			}
+			if accepted != "" {
+				respond(w, map[string]string{"dispatchId": accepted}, nil)
+				return false, nil
+			}
+		}
+	}
 	if action == "resubmit" {
 		req.Segments = nil
 	}
@@ -235,6 +252,10 @@ func (s *Server) prepareForwardedMessage(w http.ResponseWriter, r *http.Request,
 			return false, nil
 		}
 		req.Content, req.Segments, req.rerunMessageID = input.Content, input.Segments, "remote"
+		if len(input.Recipients) == 0 && slices.ContainsFunc(input.Segments, func(g domain.Segment) bool { return g.DeliveryMode == "one" && len(g.Members) == 0 }) {
+			req.rerunMessageID = ""
+			req.forwardedGroups = true
+		}
 		for _, id := range input.Recipients {
 			if node, _ := swarm.Split(id); node == "" {
 				id = swarm.Key(home, id)
@@ -254,10 +275,21 @@ func (s *Server) prepareForwardedMessage(w http.ResponseWriter, r *http.Request,
 	req.Segments = slices.Clone(segments)
 	request := workerRequest{Home: home, Chat: domain.Chat{ID: chat}, RequestID: req.RequestID, Message: domain.Message{Content: req.Content, Segments: segments}, Participants: participants}
 	req.Permits = map[string]string{}
+	deferred := slices.ContainsFunc(segments, func(g domain.Segment) bool { return g.DeliveryMode == "one" && len(g.Members) == 0 })
+	if slices.ContainsFunc(segments, func(g domain.Segment) bool { return g.Type == "group" && g.DeliveryMode == "one" }) {
+		if err := s.checkOnePeer(home); err != nil {
+			return false, err
+		}
+	}
+	if deferred {
+		if err := s.rememberGroupIntent(request); err != nil {
+			return false, err
+		}
+	}
 	fingerprint := requestFingerprint(request)
 	for _, p := range participants {
 		req.Segments = append(req.Segments, domain.Segment{Type: "bot", NodeID: p.Ref.NodeID, BotID: p.Ref.ID, Text: "@" + p.Handle})
-		if p.Ref.NodeID == req.OriginNodeID || req.Permits[p.Ref.NodeID] != "" {
+		if deferred || p.Ref.NodeID == req.OriginNodeID || req.Permits[p.Ref.NodeID] != "" {
 			continue
 		}
 		proof, err := s.Swarm.Proof(p.Ref.NodeID, fingerprint)

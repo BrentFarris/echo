@@ -1,5 +1,5 @@
 import { escapeHTML as esc } from './helpers';
-import { InstanceClient, entryNode, instanceOnline, localID, machineName, resourceID } from './instances';
+import { InstanceClient, entryNode, instances, instanceOnline, localID, machineName, resourceID } from './instances';
 import { memberHandle } from './recipientMentions';
 import type { Bot, BotGroup, BotGroupMember } from './types';
 
@@ -7,6 +7,7 @@ type Dialog = (title: string, body: string) => HTMLDialogElement;
 
 export function mountBotGroups(root: HTMLElement, owner: string, currentBots: () => Bot[], groups: BotGroup[], dialog: Dialog, changed: () => Promise<void>, report: (error: unknown) => void) {
   const client = new InstanceClient(owner);
+  const canAssign = owner === entryNode || instances.get(owner)?.node.capabilities?.includes('bot-groups-one/1');
   const draw = () => {
     const bots = currentBots();
     root.innerHTML = '<h3>Groups</h3><button type="button" class="primary" data-add-group>＋ Add group</button>';
@@ -39,9 +40,11 @@ export function mountBotGroups(root: HTMLElement, owner: string, currentBots: ()
       const unavailable = !bots.some(b => b.id === id) || !instanceOnline(m.nodeId);
       return `<label class="check"><input type="checkbox" value="${esc(id)}" ${selected.has(id) ? 'checked' : ''} ${unavailable && !selected.has(id) ? 'disabled' : ''}> @${esc(memberHandle(m, bots))} · ${esc(machineName(m.nodeId))}${unavailable ? ' · Unavailable' : ''}</label>`;
     }).join('');
-    const editor = dialog(group ? 'Edit group' : 'Add group', `<form class="form"><label>Group handle<input name="handle" required maxlength="48" pattern="[A-Za-z][A-Za-z0-9_\\-]*" placeholder="modbots"></label><fieldset><legend>Members</legend>${options}</fieldset><p class="subtle" role="alert" hidden></p><button class="primary" type="submit">Save group</button></form>`);
+    const editor = dialog(group ? 'Edit group' : 'Add group', `<form class="form"><label>Group handle<input name="handle" required maxlength="48" pattern="[A-Za-z][A-Za-z0-9_\\-]*" placeholder="modbots"></label><label>Delivery<select name="deliveryMode"><option value="all">All bots</option><option value="one" ${canAssign ? '' : 'disabled'}>One available bot</option></select></label><fieldset><legend>Members</legend>${options}</fieldset><p class="subtle" role="alert" hidden></p><button class="primary" type="submit">Save group</button></form>`);
     const form = editor.querySelector('form')!;
     const handle = form.elements.namedItem('handle') as HTMLInputElement;
+    const delivery = form.elements.namedItem('deliveryMode') as HTMLSelectElement;
+    delivery.value = group?.deliveryMode || 'all';
     handle.value = group?.handle.split('.').at(-1) || ''; handle.focus();
     form.onsubmit = async event => {
       event.preventDefault();
@@ -50,7 +53,7 @@ export function mountBotGroups(root: HTMLElement, owner: string, currentBots: ()
       const members = [...new Set([...selected, ...checked])].filter(id => checked.has(id)).map(id => choices.get(id)!);
       save.disabled = true;
       try {
-        const saved = await client.json<BotGroup>(group ? '/bot-groups/' + encodeURIComponent(group.id) : '/bot-groups', group ? 'PUT' : 'POST', { handle: handle.value.trim(), members });
+        const saved = await client.json<BotGroup>(group ? '/bot-groups/' + encodeURIComponent(group.id) : '/bot-groups', group ? 'PUT' : 'POST', { handle: handle.value.trim(), deliveryMode: canAssign ? delivery.value : undefined, members });
         const displayHandle = owner === entryNode ? saved.handle : machineName(owner) + '.' + saved.handle;
         groups = [...groups.filter(g => g.id !== saved.id), { ...saved, handle: displayHandle }];
         editor.close(); draw(); await changed();

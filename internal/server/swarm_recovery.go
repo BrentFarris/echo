@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/brent/echo/internal/domain"
@@ -15,6 +17,9 @@ type pendingSwarmControl struct {
 }
 
 func (s *Server) recoverSwarm() error {
+	if err := s.recoverGroupTurns(); err != nil {
+		return err
+	}
 	workers, err := s.Store.Entries("swarm-workers")
 	if err != nil {
 		return err
@@ -64,9 +69,73 @@ func (s *Server) recoverSwarm() error {
 	return nil
 }
 
+// Release pre-restart tickets, including those on other owners. A committed
+// assignment already replaced its pending record and has its own outbox entry.
+func (s *Server) recoverGroupTurns() error {
+	pending, err := s.Store.Entries("pending-groups")
+	if err != nil {
+		return err
+	}
+	for turn, raw := range pending {
+		var record pendingGroupRecord
+		if err = json.Unmarshal(raw, &record); err != nil {
+			return err
+		}
+		leaves := map[string]any{}
+		for _, g := range record.Groups {
+			leaves[swarm.Key(turn, swarm.Key(g.NodeID, g.ID))] = groupCommit{Owner: g.NodeID, Query: rotationQuery{Group: g.ID, Turn: turn, Action: "leave"}}
+		}
+		if err = s.Store.PutBatch("group-commits", leaves); err != nil {
+			return err
+		}
+		if err = s.Store.Delete("pending-groups", turn); err != nil {
+			return err
+		}
+	}
+	// Clear our own orphaned leases before admitting new local turns. Apply
+	// committed winners first, even when Echo stopped before acknowledgement.
+	self := s.Swarm.Node().ID
+	cursors, err := s.Store.Entries("group-cursors")
+	if err != nil {
+		return err
+	}
+	for group, raw := range cursors {
+		var c rotationCursor
+		if err = json.Unmarshal(raw, &c); err != nil {
+			return err
+		}
+		home, turn := swarm.Split(c.Holder)
+		if home != self {
+			continue
+		}
+		id := swarm.Key(turn, swarm.Key(self, group))
+		item := groupCommit{Query: rotationQuery{Group: group, Turn: turn, Action: "leave"}}
+		if err = s.Store.Get("group-commits", id, &item); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if _, err = s.localRotation(self, item.Query); err != nil {
+			return err
+		}
+		if err = s.Store.Delete("group-commits", id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Reconciliation never starts a worker. A process crash leaves local execution
 // interrupted while workers which remained alive can finish and report results.
 func (s *Server) reconcileSwarm() {
+	// Replaying a cursor acknowledgement never schedules or starts a bot.
+	commits, _ := s.Store.Entries("group-commits")
+	for id, raw := range commits {
+		var item groupCommit
+		if json.Unmarshal(raw, &item) == nil && s.swarmAvailable(item.Owner) {
+			if _, err := s.rotation(s.ctx, item.Owner, item.Query); err == nil {
+				_ = s.Store.Delete("group-commits", id)
+			}
+		}
+	}
 	if !s.Swarm.Enabled() {
 		return
 	}

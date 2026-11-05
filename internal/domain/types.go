@@ -83,22 +83,25 @@ type BotGroupMember struct {
 }
 
 type BotGroup struct {
-	ID      string           `json:"id"`
-	Handle  string           `json:"handle"`
-	Members []BotGroupMember `json:"members"`
+	DeliveryMode string           `json:"deliveryMode,omitempty"`
+	ID           string           `json:"id"`
+	Handle       string           `json:"handle"`
+	Members      []BotGroupMember `json:"members"`
 }
 
 type Segment struct {
-	GroupID     string           `json:"groupId,omitempty"`
-	Members     []BotGroupMember `json:"members,omitempty"`
-	NodeID      string           `json:"nodeId,omitempty"`
-	Type        string           `json:"type"`
-	Text        string           `json:"text,omitempty"`
-	BotID       string           `json:"botId,omitempty"`
-	Path        string           `json:"path,omitempty"`
-	AllowedBots []string         `json:"allowedBots,omitempty"`
-	Kind        string           `json:"kind,omitempty"`
-	Range       *SegmentRange    `json:"range,omitempty"`
+	DeliveryMode string           `json:"deliveryMode,omitempty"`
+	Candidates   []BotGroupMember `json:"candidates,omitempty"`
+	GroupID      string           `json:"groupId,omitempty"`
+	Members      []BotGroupMember `json:"members,omitempty"`
+	NodeID       string           `json:"nodeId,omitempty"`
+	Type         string           `json:"type"`
+	Text         string           `json:"text,omitempty"`
+	BotID        string           `json:"botId,omitempty"`
+	Path         string           `json:"path,omitempty"`
+	AllowedBots  []string         `json:"allowedBots,omitempty"`
+	Kind         string           `json:"kind,omitempty"`
+	Range        *SegmentRange    `json:"range,omitempty"`
 }
 
 // SegmentRange uses half-open UTF-16 offsets, matching browser string indexes.
@@ -110,6 +113,7 @@ type SegmentRange struct {
 // LastReadAt records when the transcript was last opened, so the sidebar can
 // flag chats that finished work nobody has looked at yet.
 type Chat struct {
+	WaitingForGroup  bool                  `json:"waitingForGroup,omitempty"` // Derived for state responses.
 	ForkedFrom       *ForkOrigin           `json:"forkedFrom,omitempty"`
 	OwnerNodeID      string                `json:"ownerNodeId,omitempty"`
 	Projection       bool                  `json:"projection,omitempty"`
@@ -139,7 +143,8 @@ type TokenUsage struct {
 }
 
 type Message struct {
-	Usage *TokenUsage `json:"usage,omitempty"`
+	DeliveryError string      `json:"deliveryError,omitempty"`
+	Usage         *TokenUsage `json:"usage,omitempty"`
 	// ModelContent replaces only model input; original output and attachments stay inspectable.
 	ModelContent      *string      `json:"modelContent,omitempty"`
 	RerunUnavailable  bool         `json:"rerunUnavailable,omitempty"` // Derived when serving a transcript.

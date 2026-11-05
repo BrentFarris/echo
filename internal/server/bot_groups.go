@@ -19,7 +19,21 @@ func (s *Server) botGroups() ([]domain.BotGroup, error) {
 	if err != nil {
 		return nil, err
 	}
-	return store.Decode[domain.BotGroup](rows)
+	groups, err := store.Decode[domain.BotGroup](rows)
+	for i := range groups {
+		if groups[i].DeliveryMode == "" {
+			groups[i].DeliveryMode = "all"
+		}
+	}
+	return groups, err
+}
+
+func (s *Server) visibleBotGroups(ctx context.Context) ([]domain.BotGroup, error) {
+	groups, err := s.botGroups()
+	if caller, ok := swarm.Caller(ctx); ok && !s.oneGroupCapable(caller.NodeID) {
+		groups = slices.DeleteFunc(groups, func(g domain.BotGroup) bool { return g.DeliveryMode == "one" })
+	}
+	return groups, err
 }
 
 func (s *Server) checkGroupHandle(handle, except string) error {
@@ -48,6 +62,15 @@ func (s *Server) saveBotGroup(ctx context.Context, id string, group domain.BotGr
 		if err := s.Store.Get("bot-groups", id, &original); err != nil {
 			return group, err
 		}
+	}
+	if group.DeliveryMode == "" {
+		group.DeliveryMode = original.DeliveryMode
+	}
+	if group.DeliveryMode == "" {
+		group.DeliveryMode = "all"
+	}
+	if group.DeliveryMode != "all" && group.DeliveryMode != "one" {
+		return group, errors.New("choose All bots or One available bot for delivery")
 	}
 	// Existing bindings may be retained while a member is offline or deleted.
 	// New members must come from their owner's current bot roster.
@@ -111,7 +134,7 @@ func (s *Server) saveBotGroup(ctx context.Context, id string, group domain.BotGr
 		if err := s.Store.Get("bot-groups", id, &latest); err != nil {
 			return group, err
 		}
-		if original.Handle != latest.Handle || !slices.Equal(original.Members, latest.Members) {
+		if original.DeliveryMode != latest.DeliveryMode || original.Handle != latest.Handle || !slices.Equal(original.Members, latest.Members) {
 			return group, errors.New("group changed while saving; reopen it and try again")
 		}
 	}
@@ -134,7 +157,7 @@ func (s *Server) saveBotGroup(ctx context.Context, id string, group domain.BotGr
 
 func (s *Server) botGroupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/bot-groups", func(w http.ResponseWriter, r *http.Request) {
-		groups, err := s.botGroups()
+		groups, err := s.visibleBotGroups(r.Context())
 		respond(w, groups, err)
 	})
 	save := func(w http.ResponseWriter, r *http.Request) {

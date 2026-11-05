@@ -16,7 +16,6 @@ import (
 
 	"github.com/brent/echo/internal/coordinator"
 	"github.com/brent/echo/internal/domain"
-	"github.com/brent/echo/internal/model"
 	"github.com/brent/echo/internal/swarm"
 )
 
@@ -30,21 +29,23 @@ type swarmParticipant struct {
 func (p swarmParticipant) key() string { return swarm.Key(p.Ref.NodeID, p.Ref.ID) }
 
 type swarmDispatch struct {
-	ID           string                   `json:"id"`
-	ChatID       string                   `json:"chatId"`
-	Origin       string                   `json:"origin"`
-	RequestID    string                   `json:"requestId"`
-	Participants []swarmParticipant       `json:"participants"`
-	Hosts        map[string]workerRequest `json:"hosts"`
-	Status       string                   `json:"status"`
-	Reconciled   map[string]bool          `json:"reconciled,omitempty"`
-	group        *coordinator.Group
-	d            *dispatch
-	mu           sync.Mutex
-	journalMu    sync.Mutex
-	replicas     map[string]string
+	GroupAssignment bool                     `json:"groupAssignment,omitempty"`
+	ID              string                   `json:"id"`
+	ChatID          string                   `json:"chatId"`
+	Origin          string                   `json:"origin"`
+	RequestID       string                   `json:"requestId"`
+	Participants    []swarmParticipant       `json:"participants"`
+	Hosts           map[string]workerRequest `json:"hosts"`
+	Status          string                   `json:"status"`
+	Reconciled      map[string]bool          `json:"reconciled,omitempty"`
+	group           *coordinator.Group
+	d               *dispatch
+	mu              sync.Mutex
+	journalMu       sync.Mutex
+	replicas        map[string]string
 }
 type workerRequest struct {
+	GroupSlot    bool               `json:"groupSlot,omitempty"`
 	ID           string             `json:"id"`
 	Home         string             `json:"home"`
 	Origin       string             `json:"origin"`
@@ -366,7 +367,7 @@ func (s *Server) resolveSwarm(ctx context.Context, req SendRequest) ([]swarmPart
 			segments = append(segments, seg)
 		}
 	}
-	if len(selected) == 0 {
+	if len(selected) == 0 && !oneGroupMentions(req) {
 		p, ok := byID[swarm.Key(origin, "echo")]
 		if !ok {
 			return nil, nil, errors.New("entry instance Echo is unavailable")
@@ -378,7 +379,13 @@ func (s *Server) resolveSwarm(ctx context.Context, req SendRequest) ([]swarmPart
 
 func (s *Server) checkGroupWorkers(segments []domain.Segment, participants []swarmParticipant) error {
 	if hasGroupSegment(segments) {
+		one := slices.ContainsFunc(segments, func(g domain.Segment) bool { return g.DeliveryMode == "one" })
 		for _, p := range participants {
+			if one {
+				if err := s.checkOnePeer(p.Ref.NodeID); err != nil {
+					return err
+				}
+			}
 			if err := s.checkGroupCapability(p.Ref.NodeID); err != nil {
 				return err
 			}
@@ -444,7 +451,7 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 	if len(req.RequestID) > 128 {
 		return nil, errors.New("request id exceeds 128 characters")
 	}
-	if prior := s.Store.Accepted(chatID, req.RequestID); prior != "" {
+	if prior := s.previousTurn(chatID, req); prior != "" {
 		done := make(chan struct{})
 		close(done)
 		return &dispatch{id: prior, done: done}, nil
@@ -485,6 +492,9 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 		req.OriginNodeID = self
 	}
 	id := domain.ID()
+	if req.routing != nil {
+		id = req.routing.id
+	}
 	ids := []string{}
 	for _, p := range participants {
 		ids = append(ids, p.key())
@@ -492,9 +502,10 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 	runCtx, cancel := context.WithCancel(s.ctx)
 	group := coordinator.New(ids)
 	d := &dispatch{id: id, chatID: chatID, group: group, ctx: runCtx, cancel: cancel, done: make(chan struct{}), wake: map[string]chan struct{}{}, active: map[string]bool{}, admitted: map[string]chan struct{}{}}
-	f := &swarmDispatch{ID: id, ChatID: chatID, Origin: req.OriginNodeID, RequestID: req.RequestID, Participants: participants, Hosts: map[string]workerRequest{}, Status: "queued", group: group, d: d}
+	f := &swarmDispatch{GroupAssignment: req.routing != nil, ID: id, ChatID: chatID, Origin: req.OriginNodeID, RequestID: req.RequestID, Participants: participants, Hosts: map[string]workerRequest{}, Status: "queued", group: group, d: d}
 	d.federation = f
 	message := domain.Message{ID: domain.ID(), ChatID: chatID, Author: "You", Role: "user", Content: req.Content, Segments: segments, Attachments: attachments, Status: "completed", CreatedAt: domain.Now()}
+	req.identifyMessage(&message)
 	// Local history reads only paths which this host independently validated.
 	for i := range message.Segments {
 		seg := &message.Segments[i]
@@ -550,7 +561,7 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 		runs = append(runs, run)
 		host := f.Hosts[p.Ref.NodeID]
 		if host.ID == "" {
-			host = workerRequest{ID: id, Home: self, Origin: req.OriginNodeID, Token: domain.ID() + domain.ID(), Chat: c, Participants: participants, RequestID: req.RequestID, Status: "prepared", CreatedAt: domain.Now(), Permit: req.Permits[p.Ref.NodeID]}
+			host = workerRequest{GroupSlot: req.routing != nil, ID: id, Home: self, Origin: req.OriginNodeID, Token: domain.ID() + domain.ID(), Chat: c, Participants: participants, RequestID: req.RequestID, Status: "prepared", CreatedAt: domain.Now()}
 		}
 		run.BotID = p.Ref.ID
 		// The home owns this relationship. Keep requests compatible with workers
@@ -562,17 +573,30 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 		f.Hosts[p.Ref.NodeID] = host
 		d.active[p.key()] = true
 	}
+	if req.routing != nil && req.OriginNodeID != self {
+		req.Permits, err = s.finalGroupPermits(ctx, req, chatID, participants, segments)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+	}
 	for node, host := range f.Hosts {
+		host.Permit = req.Permits[node]
 		host.Chat = c
 		host.Message = message
 		f.Hosts[node] = host
-		if err = s.validateWorkerRemote(ctx, node, host); err != nil {
+		if f.GroupAssignment {
+			err = s.validateGroupWorkerRemote(ctx, node, host)
+		} else {
+			err = s.validateWorkerRemote(ctx, node, host)
+		}
+		if err != nil {
 			cancel()
 			return nil, err
 		}
 	}
 	s.mu.Lock()
-	if prior := s.Store.Accepted(chatID, req.RequestID); prior != "" {
+	if prior := s.previousTurn(chatID, req); prior != "" {
 		s.mu.Unlock()
 		cancel()
 		return acceptedDispatch(prior), nil
@@ -588,7 +612,7 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 		return nil, errMaintenance
 	}
 	for _, active := range s.dispatches {
-		if active.chatID == chatID {
+		if active.chatID == chatID && !req.promotes(active) {
 			s.mu.Unlock()
 			cancel()
 			return nil, errors.New("this chat is still running; stop it or wait before sending")
@@ -599,7 +623,7 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 		cancel()
 		return nil, err
 	}
-	if err = s.Store.AcceptWithRecord(c, message, runs, req.RequestID, id, "swarm-dispatches", id, f, req.replaceMessageID); err != nil {
+	if err = s.acceptTurn(req, c, message, runs, id, f); err != nil {
 		s.mu.Unlock()
 		cancel()
 		return nil, err
@@ -634,6 +658,10 @@ func (s *Server) validateWorkerRemote(ctx context.Context, node string, req work
 }
 
 func (s *Server) validateWorker(req workerRequest) error {
+	return s.checkWorker(req, requestFingerprint(req))
+}
+
+func (s *Server) checkWorker(req workerRequest, fingerprint string) error {
 	if req.Home == "" || req.ID == "" || len(req.Token) != 64 {
 		return errors.New("invalid worker request")
 	}
@@ -641,7 +669,7 @@ func (s *Server) validateWorker(req workerRequest) error {
 		return errors.New("the entry instance must authenticate this machine before dispatching its bots")
 	}
 	if req.Origin != req.Home && req.Origin != s.Swarm.Node().ID {
-		if err := s.Swarm.VerifyProof(req.Origin, req.Permit, requestFingerprint(req)); err != nil {
+		if err := s.Swarm.VerifyProof(req.Origin, req.Permit, fingerprint); err != nil {
 			return err
 		}
 	}
@@ -660,30 +688,8 @@ func (s *Server) validateWorker(req workerRequest) error {
 		if !found {
 			return errors.New("bot scope changed; retry with the current bot settings")
 		}
-		g := run.Generation
-		if g.EndpointID == "" {
-			g = s.defaultGeneration()
-		}
-		var ep domain.Endpoint
-		if err = s.Store.Get("endpoints", g.EndpointID, &ep); err != nil {
-			return fmt.Errorf("select a model on %s", s.Swarm.Node().Name)
-		}
-		if err = model.ValidateEndpoint(ep); err != nil {
+		if err = s.botGeneration(bot, run.Generation, nil); err != nil {
 			return err
-		}
-		if g.Model == "" {
-			g.Model = ep.Model
-		}
-		if g.Model == "" {
-			return errors.New("select a model name")
-		}
-		if ep.Provider != "" {
-			if _, err = s.Plugins.Provider(bot, ep.Provider); err != nil {
-				return err
-			}
-		}
-		if g.Temperature < 0 || g.Temperature > 2 {
-			return errors.New("temperature must be between 0 and 2")
 		}
 	}
 	for _, seg := range req.Message.Segments {
@@ -711,7 +717,15 @@ func (s *Server) runSwarm(f *swarmDispatch) {
 		nodes = append(nodes, node)
 	}
 	sort.Strings(nodes)
+	unpreparedGroupSlots := f.GroupAssignment
 	defer func() {
+		if unpreparedGroupSlots {
+			for node, host := range f.Hosts {
+				for _, run := range host.Runs {
+					_, _ = s.querySlot(s.ctx, node, slotQuery{Action: "release", Turn: f.ID, Bot: run.BotID})
+				}
+			}
+		}
 		for _, node := range nodes {
 			action := "finish"
 			f.mu.Lock()
@@ -746,6 +760,22 @@ func (s *Server) runSwarm(f *swarmDispatch) {
 			err := s.prepareWorkerRemote(ctx, node, f.Hosts[node])
 			cancel()
 			if err != nil {
+				if f.GroupAssignment {
+					// All slots were claimed before acceptance. A lost worker or
+					// grant invalidates the whole turn before any worker starts.
+					for _, readyNode := range prepared {
+						s.workerControl(f, readyNode, "release", "")
+					}
+					if d.ctx.Err() == nil {
+						for _, host := range nodes {
+							s.failSwarmHost(f, host, err)
+						}
+						f.mu.Lock()
+						f.Status = "completed"
+						f.mu.Unlock()
+					}
+					return
+				}
 				if strings.Contains(err.Error(), errMaintenance.Error()) {
 					maintenanceHosts[node] = true
 				}
@@ -761,6 +791,7 @@ func (s *Server) runSwarm(f *swarmDispatch) {
 			prepared = append(prepared, node)
 		}
 		if ready {
+			unpreparedGroupSlots = false
 			break
 		}
 		for _, node := range prepared {

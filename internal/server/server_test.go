@@ -44,7 +44,10 @@ func stream(w http.ResponseWriter, content string, calls []domain.ToolCall) {
 }
 func attachModel(t *testing.T, s *Server, handler http.HandlerFunc) domain.Generation {
 	t.Helper()
-	m := httptest.NewServer(handler)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /models", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, `{"data":[{"id":"test-model"}]}`) })
+	mux.HandleFunc("/", handler)
+	m := httptest.NewServer(mux)
 	t.Cleanup(m.Close)
 	ep := domain.Endpoint{ID: "model", Name: "Test", URL: m.URL, Model: "test-model", ContextTokens: 32768}
 	s.Store.Put("endpoints", ep.ID, ep)

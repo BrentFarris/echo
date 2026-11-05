@@ -41,6 +41,49 @@ test.afterEach(async ({ page }) => {
   for (const chat of (await state(page)).chats) await page.request.post(`/api/v1/chats/${chat.id}/stop`, { data: {} });
 });
 
+test('one available bot persists, queues without runs and shows the assigned member', async ({ page }) => {
+  const existing = (await state(page)).botGroups.find((g: any) => g.handle === 'reviewers');
+  if (existing) await page.request.delete('/api/v1/bot-groups/' + existing.id);
+  const worker = await (await page.request.post('/api/v1/bots', { data: { handle: 'reviewer', name: 'Reviewer' } })).json();
+  await page.reload();
+  const settings = async () => {
+    await page.locator('#settings-button').click();
+    await page.getByRole('button', { name: 'Bots', exact: true }).click();
+  };
+  await settings();
+  await page.getByRole('button', { name: 'Add group' }).click();
+  const form = page.getByRole('dialog', { name: 'Add group', exact: true });
+  await expect(form.getByLabel('Delivery')).toHaveValue('all');
+  await form.getByLabel('Group handle').fill('reviewers');
+  await form.getByLabel('Delivery').selectOption({ label: 'One available bot' });
+  await form.getByRole('checkbox', { name: /^@echo ·/ }).check();
+  await form.getByRole('checkbox', { name: /^@reviewer ·/ }).check();
+  await form.getByRole('button', { name: 'Save group' }).click();
+  await expect(form).toHaveCount(0);
+  await page.reload(); await settings();
+  await page.locator('#settings .list-card').filter({ hasText: '@reviewers' }).getByRole('button', { name: 'Edit' }).click();
+  const edit = page.getByRole('dialog', { name: 'Edit group' });
+  await expect(edit.getByLabel('Delivery')).toHaveValue('one');
+  await edit.getByRole('button', { name: 'Close' }).click();
+  await page.locator('#settings').getByRole('button', { name: 'Close', exact: true }).click();
+  await send(page, '@echo multitasking hold first');
+  await expect(page.locator('.message.assistant')).toContainText('Holding this request.');
+  const second = await newChat(page);
+  await send(page, '@reviewer multitasking hold second');
+  await expect(page.locator('.message.assistant')).toContainText('Holding this request.');
+  const queued = await newChat(page);
+  await send(page, '@reviewers review this');
+  await expect(page.getByText('Queued for @reviewers', { exact: true })).toBeVisible();
+  expect((await state(page)).runs.filter((r: any) => r.chatId === queued)).toHaveLength(0);
+  await page.reload();
+  await expect(page.getByText('Queued for @reviewers', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Stop response', exact: true })).toBeEnabled();
+  await page.request.post('/api/v1/chats/' + second + '/stop', { data: {} });
+  await expect.poll(async () => (await state(page)).runs.filter((r: any) => r.chatId === queued && r.status === 'completed').map((r: any) => r.botId)).toEqual([worker.id]);
+  await page.locator('.message.user').getByRole('button', { name: 'Show members of @reviewers' }).click();
+  await expect(page.getByRole('dialog', { name: 'Group members' }).getByRole('listitem')).toHaveText(['@reviewer']);
+});
+
 test('chat shortcuts preserve drafts, close read chats, and respect dialogs and repeated keys', async ({ page }) => {
   const first = new URL(page.url()).hash.slice(1), composer = page.getByRole('textbox', { name: 'Message', exact: true });
   await composer.fill('Keep this draft');

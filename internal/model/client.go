@@ -110,6 +110,13 @@ func URL(base, path string) string {
 	}
 	return base + path
 }
+
+type ModelListError struct{ Status int }
+
+func (e *ModelListError) Error() string {
+	return fmt.Sprintf("model server returned HTTP %d", e.Status)
+}
+
 func (c *Client) Models(ctx context.Context, e domain.Endpoint, key string) (any, error) {
 	ctx, cancel := context.WithTimeout(context.WithValue(ctx, localEndpointKey{}, !e.Cloud), 30*time.Second)
 	defer cancel()
@@ -126,7 +133,7 @@ func (c *Client) Models(ctx context.Context, e domain.Endpoint, key string) (any
 	}
 	defer res.Body.Close()
 	if res.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("model server returned HTTP %d", res.StatusCode)
+		return nil, &ModelListError{Status: res.StatusCode}
 	}
 	var value any
 	err = json.NewDecoder(io.LimitReader(res.Body, 2<<20)).Decode(&value)

@@ -20,13 +20,15 @@ func hasGroupSegment(segments []domain.Segment) bool {
 	return slices.ContainsFunc(segments, func(seg domain.Segment) bool { return seg.Type == "group" })
 }
 
-func (s *Server) groupCapability(node string) bool {
+func (s *Server) groupCapability(node string) bool { return s.peerSupports(node, "bot-groups/1") }
+func (s *Server) oneGroupCapable(node string) bool { return s.peerSupports(node, "bot-groups-one/1") }
+func (s *Server) peerSupports(node, capability string) bool {
 	if node == s.Swarm.Node().ID {
 		return true
 	}
 	for _, peer := range s.Swarm.Directory() {
 		if peer.Node.ID == node {
-			return slices.Contains(peer.Node.Capabilities, "bot-groups/1")
+			return slices.Contains(peer.Node.Capabilities, capability)
 		}
 	}
 	return false
@@ -109,7 +111,10 @@ func (s *Server) prepareGroupMentions(ctx context.Context, req *SendRequest) err
 			if chip.NodeID != "" {
 				owner = chip.NodeID
 			}
-			if req.forwardedGroups && len(chip.Members) > 0 {
+			if req.forwardedGroups && (len(chip.Members) > 0 || chip.DeliveryMode == "one" && len(chip.Candidates) > 0) {
+				if chip.DeliveryMode == "one" {
+					chip.Members = nil
+				}
 				req.groupMentions[start] = chip
 				continue
 			}
@@ -143,6 +148,11 @@ func (s *Server) prepareGroupMentions(ctx context.Context, req *SendRequest) err
 		for _, group := range groups {
 			if chip.GroupID != "" && group.ID == chip.GroupID || chip.GroupID == "" && group.Handle == name {
 				req.groupMentions[start] = domain.Segment{Type: "group", NodeID: owner, GroupID: group.ID, Text: content[start:end], Members: slices.Clone(group.Members), Range: &domain.SegmentRange{Start: utf16Offset(req.Content[:start]), End: utf16Offset(req.Content[:end])}}
+				if group.DeliveryMode == "one" {
+					seg := req.groupMentions[start]
+					seg.DeliveryMode, seg.Candidates, seg.Members = "one", seg.Members, nil
+					req.groupMentions[start] = seg
+				}
 				break
 			}
 		}
@@ -159,7 +169,7 @@ func (s *Server) prepareGroupMentions(ctx context.Context, req *SendRequest) err
 // Resolve stable member IDs against the same current roster as direct mentions.
 // The displayed and model-facing handles are captured at acceptance.
 func (s *Server) bindGroup(group domain.Segment, selectBot func(domain.BotGroupMember) (string, bool)) error {
-	if len(group.Members) == 0 {
+	if len(group.Members) == 0 && group.DeliveryMode != "one" {
 		return fmt.Errorf("group %s has no members", group.Text)
 	}
 	for i, member := range group.Members {

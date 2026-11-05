@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/brent/echo/internal/domain"
@@ -99,7 +100,11 @@ func (s *Server) prepareRerunLocked(chatID string, req SendRequest) (SendRequest
 		req.Attachments = append(req.Attachments, a.ID)
 	}
 	req.rerunRecipients = append([]string(nil), input.Recipients...)
-	if len(req.rerunRecipients) == 0 {
+	if len(req.rerunRecipients) == 0 && slices.ContainsFunc(input.Segments, func(g domain.Segment) bool { return g.DeliveryMode == "one" && len(g.Members) == 0 }) {
+		// An interrupted or stopped input has no winner. Retry its original pool.
+		req.rerunMessageID = ""
+		req.forwardedGroups = true
+	} else if len(req.rerunRecipients) == 0 {
 		req.rerunRecipients = []string{"echo"}
 	}
 	req.Segments = append([]domain.Segment(nil), input.Segments...)
@@ -132,7 +137,7 @@ func (s *Server) prepareRerunLocked(chatID string, req SendRequest) (SendRequest
 }
 
 func (s *Server) checkRerunSnapshot(chatID string, req SendRequest) error {
-	if req.rerunMessageID == "" {
+	if req.rerunFingerprint == ([32]byte{}) || req.routing != nil && req.routing.pending != nil {
 		return nil
 	}
 	messages, err := s.Store.Messages(chatID)

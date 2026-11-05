@@ -29,7 +29,7 @@ export function instanceReferenceDraft(content: string, segments: Segment[], nod
   if (!bots.length) throw new Error('This reference is no longer available to any recipient.');
   const files = segments.filter(s => s.type === 'file' && (s.nodeId || entryNode) === node);
   // Mentions are already resolved; the target receives only its own recipients.
-  let text = content.replace(/(?:^|[^A-Za-z0-9_@])@([A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)*)/g, value => ' '.repeat(value.length));
+  let text = ' '.repeat(content.length);
   // Keep filenames containing @ intact so their checked ranges still match.
   for (const ref of files) if (ref.range) text = text.slice(0, ref.range.start) + content.slice(ref.range.start, ref.range.end) + text.slice(ref.range.end);
   return { content: text, segments: [...files, ...bots.map(botId => ({ type: 'bot', botId }))] };

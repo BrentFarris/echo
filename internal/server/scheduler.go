@@ -23,6 +23,10 @@ func (s *Server) enqueueLocked(d *dispatch) {
 		s.botReservations = map[string]map[string]bool{}
 	}
 	for id := range d.admitted {
+		if s.adoptGroupSlotLocked(id, s.Swarm.Node().ID, d.id, d.id) {
+			close(d.admitted[id])
+			continue
+		}
 		s.botQueues[id] = append(s.botQueues[id], d)
 	}
 	for id := range d.admitted {
@@ -31,6 +35,7 @@ func (s *Server) enqueueLocked(d *dispatch) {
 }
 
 func (s *Server) admitLocked(id string) {
+	s.signalGroupWakeLocked()
 	bot, err := s.Bot(id)
 	if err != nil || s.revoking[id] > 0 {
 		return

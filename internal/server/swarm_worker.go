@@ -139,7 +139,8 @@ func (s *Server) prepareWorker(req workerRequest) error {
 	}
 	for _, run := range req.Runs {
 		bot, err := s.Bot(run.BotID)
-		if err != nil || s.revoking[run.BotID] > 0 || s.promptSlotsFullLocked(bot) || len(s.botQueues[run.BotID]) > 0 {
+		claimed := s.hasGroupSlotLocked(run.BotID, req.Home, req.ID)
+		if err != nil || s.revoking[run.BotID] > 0 || !claimed && (req.GroupSlot || s.promptSlotsFullLocked(bot) || len(s.botQueues[run.BotID]) > 0) {
 			s.mu.Unlock()
 			cancel()
 			return errors.New("worker bots are busy")
@@ -149,6 +150,7 @@ func (s *Server) prepareWorker(req workerRequest) error {
 		if s.botReservations[run.BotID] == nil {
 			s.botReservations[run.BotID] = map[string]bool{}
 		}
+		s.adoptGroupSlotLocked(run.BotID, req.Home, req.ID, d.id)
 		s.botReservations[run.BotID][d.id] = true
 		d.admitted[run.BotID] = make(chan struct{})
 		close(d.admitted[run.BotID])
