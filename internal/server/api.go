@@ -315,8 +315,23 @@ func (s *Server) routes(mux *http.ServeMux) {
 		respond(w, g, e)
 	})
 	mux.HandleFunc("POST /api/v1/chats/{id}/read", func(w http.ResponseWriter, r *http.Request) {
-		e := s.Store.SetChatReadAt(r.PathValue("id"), domain.Now())
-		s.emit("changed", r.PathValue("id"), "", "", nil)
+		id := r.PathValue("id")
+		s.mu.Lock()
+		e := s.Store.SetChatReadAt(id, domain.Now(), r.URL.Query().Get("preserveUnread") == "true")
+		s.mu.Unlock()
+		if e == nil {
+			s.emit("changed", id, "", "", nil)
+		}
+		respond(w, true, e)
+	})
+	mux.HandleFunc("POST /api/v1/chats/{id}/unread", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		s.mu.Lock()
+		e := s.Store.MarkChatUnread(id)
+		s.mu.Unlock()
+		if e == nil {
+			s.emit("changed", id, "", "", nil)
+		}
 		respond(w, true, e)
 	})
 	mux.HandleFunc("POST /api/v1/chats/{id}/stop", func(w http.ResponseWriter, r *http.Request) {

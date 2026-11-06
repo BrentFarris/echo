@@ -118,7 +118,7 @@ func swarmRouteAccess(pattern string) ([]string, bool) {
 	case "GET /api/v1/state", "GET /api/v1/events", "GET /api/v1/health", "GET /api/v1/swarm/peers", "POST /api/v1/swarm/revoke",
 		"GET /api/v1/bot-groups", "GET /api/v1/slash-commands", "GET /api/v1/slash-commands/catalog", "GET /api/v1/usage",
 		"GET /api/v1/chats/{id}/messages", "GET /api/v1/chats/{id}/snapshot", "GET /api/v1/chats/{id}/attachments/{attachment}",
-		"POST /api/v1/chats/{id}/read", "GET /api/v1/notifications/feed", "GET /api/v1/notifications/config":
+		"POST /api/v1/chats/{id}/read", "POST /api/v1/chats/{id}/unread", "GET /api/v1/notifications/feed", "GET /api/v1/notifications/config":
 		return allow, false
 	case "POST /api/v1/chats", "POST /api/v1/chats/{id}/messages", "POST /api/v1/chats/{id}/messages/{messageId}/rerun", "POST /api/v1/chats/{id}/messages/{messageId}/rerun-input",
 		"PUT /api/v1/chats/{id}/generation", "POST /api/v1/chats/{id}/questions/{messageId}", "POST /api/v1/chats/{id}/attachments", "DELETE /api/v1/chats/{id}/attachments/{attachment}":

@@ -101,6 +101,7 @@ let chatScroll: ChatScrollFollower;
 const liveToolOutput = new Map<string, string>();
 let chatGenerationSettings: GenerationSettings;
 const generationSaves = new Map<string, Promise<unknown>>();
+const chatReadWrites = new Map<string, Promise<void>>();
 const q = <T extends HTMLElement = HTMLElement>(selector: string, root: ParentNode = document) => root.querySelector<T>(selector)!;
 
 async function api<T = any>(path: string, method = 'GET', body?: unknown): Promise<T> {
@@ -117,7 +118,25 @@ function expiredChat(chat: Chat) { return !!chat.expiresAt && Date.parse(chat.ex
 function busy() { return groupWaiting(chatId) || messages.some(m => m.chatId === chatId && m.role === 'user' && m.status === 'queued') || state.runs.some(r => r.chatId === chatId && ['running', 'waiting', 'queued'].includes(r.status)); }
 function currentBot(id?: string) { return state.bots.find(b => b.id === id); }
 function pluginEnabled(id: string, botId?: string) { return pluginAvailable(state.plugins.find(p => p.id === id), currentBot(botId)); }
-function markRead(id: string) { if (id && !chatReadOnly(id)) void api(`/chats/${id}/read`, 'POST', {}).catch(() => { /* Sidebar state recovers on the next refresh. */ }); }
+function updateChatReadState(id: string, mode: 'read' | 'unread' | 'preserveUnread') {
+  if (!id || chatReadOnly(id)) return;
+  // Keep rapid clicks on one chat ordered without delaying navigation.
+  const previous = chatReadWrites.get(id) || Promise.resolve();
+  const pending = previous.then(async () => {
+    const path = mode === 'preserveUnread' ? 'read?preserveUnread=true' : mode;
+    await api(`/chats/${id}/${path}`, 'POST', {});
+    const chat = state.chats.find(c => c.id === id);
+    if (chat && mode !== 'preserveUnread') {
+      chat.markedUnread = mode === 'unread';
+      renderSidebar();
+    }
+  }).catch(error => {
+    if (mode === 'unread') notice(error, true);
+  }).finally(() => {
+    if (chatReadWrites.get(id) === pending) chatReadWrites.delete(id);
+  });
+  chatReadWrites.set(id, pending);
+}
 function chatDot(c: Chat) {
   return chatDotMarkup(chatDotState(c, state.runs, state.questions, chatId, !showingApps && !showingApp));
 }
@@ -258,20 +277,26 @@ async function newChat() {
     const c = await api<Chat>('/chats', 'POST', {}); createdId = c.id;
     await refresh(true);
     const bot = botId === 'echo' ? undefined : currentBot(botId);
-    await selectChat(c.id, bot && instanceOnline(splitID(bot.id)[0]) ? bot : undefined, newChatGenerations(instances.keys(), state.endpoints));
+    await selectChat(c.id, { initialRecipient: bot && instanceOnline(splitID(bot.id)[0]) ? bot : undefined, initialGenerations: newChatGenerations(instances.keys(), state.endpoints) });
     await generationSaves.get(c.id);
   } finally {
     creatingChat = false; composer.disabled = false;
     if ((!createdId || chatId === createdId) && !showingApps && !showingApp) composer.focus();
   }
 }
-async function selectChat(id: string, initialRecipient?: Bot, initialGenerations?: Record<string, Generation>) {
+async function selectChat(id: string, { initialRecipient, initialGenerations, preserveUnread }: { initialRecipient?: Bot; initialGenerations?: Record<string, Generation>; preserveUnread?: boolean } = {}) {
   if (submitting) return;
   if (!openingNotification) pendingNotificationHash = null;
   const navigation = ++chatNavigation, previous = chatId;
   showingApp = false; showingApps = false; renderMainView();
   closePicker(); ++referenceVersion; clearTimeout(referenceTimer); document.querySelector('.bot-details')?.dispatchEvent(new Event('dismiss'));
-  if (id !== chatId) rememberDraft(); chatId = id; commandResults.show(chatId); if (id !== previous) markRead(previous); markRead(id); history.replaceState(null, '', '#' + id); const c = state.chats.find(c => c.id === id), draft = drafts.get(id);
+  if (id !== previous) {
+    rememberDraft();
+    updateChatReadState(previous, 'preserveUnread');
+  }
+  chatId = id; commandResults.show(chatId);
+  updateChatReadState(id, preserveUnread ? 'preserveUnread' : 'read');
+  history.replaceState(null, '', '#' + id); const c = state.chats.find(c => c.id === id), draft = drafts.get(id);
   if (initialRecipient) selectedBotThreads.set(id, initialRecipient.id);
   generationByNode = initialGenerations || { ...(c?.generationByNode || {}), ...(draft?.generationByNode || {}) }; modelNode = draft?.modelNode || c?.nodeId || splitID(id)[0] || entryNode;
   generation = { ...(initialGenerations?.[modelNode] || draft?.generation || c?.generation || endpointGeneration(state.endpoints.find(e => sameMachine(e, modelNode)))) }; references = [...(draft?.references || [])]; attachments = [...(draft?.attachments || [])]; q<ReferenceInput>('#composer').restore({ text: draft?.text || '', references }); renderModels(); renderRefs(); renderAttachments(); renderSidebar(); updateSendButton(); autosizeComposer(); setSidebarOpen(false, false);
@@ -486,7 +511,15 @@ function renderSidebar() {
     if (expanded) expandedDeletedGroups.add(key); else expandedDeletedGroups.delete(key);
     el.setAttribute('aria-expanded', String(expanded)); q<HTMLElement>('.chat-group-rows', el.parentElement!).hidden = !expanded;
   };
-  for (const el of document.querySelectorAll<HTMLButtonElement>('[data-chat]')) el.onclick = action(() => selectChat(el.dataset.chat!));
+  for (const el of document.querySelectorAll<HTMLButtonElement>('[data-chat]')) el.onclick = event => {
+    const id = el.dataset.chat!;
+    if (event.altKey) {
+      event.preventDefault();
+      updateChatReadState(id, 'unread');
+    } else {
+      action(() => selectChat(id))();
+    }
+  };
   for (const el of document.querySelectorAll<HTMLButtonElement>('[data-delete]')) el.onclick = action(() => deleteChat(el.dataset.delete!));
   const count = state.occurrences.filter(j => j.status === 'missed').length; q('#missed-button').hidden = !count; q('#missed-button').textContent = `Missed jobs (${count})`;
 }
@@ -1401,7 +1434,7 @@ async function ready() {
   try {
     if (pendingNotificationHash) await openNotification(pendingNotificationHash);
     else if (route) await pluginWindows.open(route.pluginId, route.viewId, route.botId, 'embedded', route.feature);
-    else if (chatId && !showingApps) await selectChat(chatId);
+    else if (chatId && !showingApps) await selectChat(chatId, { preserveUnread: true });
     else renderMessages();
   } catch (error) { notice(error, true); }
   // A cached destination may have expired or been purged on its home machine.

@@ -152,6 +152,7 @@ type Chat struct {
 	CreatedAt        time.Time             `json:"createdAt"`
 	UpdatedAt        time.Time             `json:"updatedAt"`
 	LastReadAt       *time.Time            `json:"lastReadAt,omitempty"`
+	MarkedUnread     bool                  `json:"markedUnread,omitempty"`
 }
 type ForkOrigin struct {
 	ChatID    string `json:"chatId"`

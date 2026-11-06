@@ -180,7 +180,7 @@ test('unread results require confirmation, and opening the chat clears the close
   await page.locator(`[data-chat="${unread}"]`).click();
   await expect(row.locator('.chat-dot')).toHaveCount(0);
   await page.getByRole('textbox', { name: 'Message', exact: true }).press('Control+w');
-  await expect(page.locator(`[data-chat="${unread}"]`)).toHaveCount(0);
+  await expect(page.locator(`.deleted-chat-row [data-chat="${unread}"]`)).toHaveCount(1);
   expect(prompts).toHaveLength(1);
 });
 
@@ -196,6 +196,33 @@ test('a never-opened chat requires confirmation before the X deletes it', async 
   await dialog.accept(); await closing;
   await expect(page.locator(`[data-chat="${unread.id}"]`)).toHaveCount(0);
   await expect(page).toHaveURL(new RegExp('#' + selected + '$'));
+});
+
+test('Alt-click marks a chat unread until it is explicitly opened', async ({ page }) => {
+  const first = new URL(page.url()).hash.slice(1);
+  const second = await newChat(page);
+  const chat = page.locator(`[data-chat="${first}"]`);
+  const dot = page.locator('.chat-row').filter({ has: chat }).getByRole('img', { name: 'Unread' });
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await composer.fill('Keep this draft');
+  await chat.click({ modifiers: ['Alt'] });
+  await expect(dot).toBeVisible();
+  await expect(page).toHaveURL(new RegExp('#' + second + '$'));
+  await expect(composer).toContainText('Keep this draft');
+  await chat.click({ modifiers: ['Alt'] });
+  await chat.click();
+  await expect(dot).toHaveCount(0);
+  await expect(page).toHaveURL(new RegExp('#' + first + '$'));
+
+  await chat.click({ modifiers: ['Alt'] });
+  await expect(dot).toBeVisible();
+  await page.reload();
+  await expect(dot).toBeVisible();
+  await page.locator(`[data-chat="${second}"]`).click();
+  await page.reload();
+  await expect(dot).toBeVisible();
+  await chat.click();
+  await expect(dot).toHaveCount(0);
 });
 
 test('bot saves show progress, allow retry, and update the list before inventory refresh', async ({ page }) => {

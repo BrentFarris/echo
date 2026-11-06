@@ -66,7 +66,8 @@ func (s *Server) captureFork(chatID, target string) (forkSnapshot, error) {
 			}
 		}
 	}
-	c.LastReadAt = nil // Opening the source in another browser is not a content change.
+	// Sidebar read state belongs to the source and is independent of its history.
+	c.LastReadAt, c.MarkedUnread = nil, false
 	snapshot = forkSnapshot{Chat: c, Messages: all[:end+1], Partial: map[string]bool{}}
 	seen := map[string]bool{}
 	for _, m := range snapshot.Messages {

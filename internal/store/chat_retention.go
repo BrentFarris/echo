@@ -239,6 +239,7 @@ func (s *Store) RestoreChat(id string, now time.Time) (domain.Chat, error) {
 	c.DeletedAt, c.ExpiresAt = nil, nil
 	c.ExecutionEpoch = domain.ID()
 	c.LastReadAt = &now
+	c.MarkedUnread = false
 	data, err = json.Marshal(c)
 	if err != nil {
 		return c, err

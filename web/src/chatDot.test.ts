@@ -48,6 +48,15 @@ test('a remaining question keeps the chat blue without affecting other chats or 
   expect(hasPendingQuestion(remaining, 'chat1', 'bot2')).toBe(true);
 });
 
+test('a manual unread mark applies even to the open chat and respects status priority', () => {
+  const marked = chat({ markedUnread: true });
+  expect(chatUnread(marked, [], marked.id, true)).toBe(true);
+  expect(chatDotState(marked, [], [], marked.id, true)).toBe('done');
+  expect(chatDotState(marked, [run()], [], marked.id, true)).toBe('busy');
+  expect(chatDotState(marked, [run()], [question()], marked.id, true)).toBe('question');
+  expect(chatDotState({ ...marked, deletedAt: '2026-01-03T00:00:00Z' }, [], [], '', false)).toBe('');
+});
+
 test('machine-qualified chat and bot IDs keep questions isolated', () => {
   const node = 'a'.repeat(32), remoteChat = `${node}:chat1`, remoteBot = `${node}:bot1`;
   const questions = [question({ chatId: remoteChat, botId: remoteBot })];

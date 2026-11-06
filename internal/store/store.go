@@ -405,14 +405,26 @@ func (s *Store) SetChatGeneration(id string, generation domain.Generation) error
 	return nil
 }
 
-// SetChatReadAt records when the transcript was last opened. It patches the
-// stored JSON so a concurrent title or generation update is never clobbered.
-func (s *Store) SetChatReadAt(id string, at time.Time) error {
-	stamp, e := json.Marshal(at)
+// Leaving a transcript acknowledges work seen while it was open. Only an
+// explicit open also clears a manual unread mark.
+func (s *Store) SetChatReadAt(id string, at time.Time, preserveUnread bool) error {
+	patch := map[string]any{"lastReadAt": at}
+	if !preserveUnread {
+		patch["markedUnread"] = nil
+	}
+	return s.patchChatReadState(id, patch)
+}
+
+func (s *Store) MarkChatUnread(id string) error {
+	return s.patchChatReadState(id, map[string]any{"markedUnread": true})
+}
+
+func (s *Store) patchChatReadState(id string, patch map[string]any) error {
+	data, e := json.Marshal(patch)
 	if e != nil {
 		return e
 	}
-	r, e := s.db.Exec("UPDATE chats SET data=json_set(data,'$.lastReadAt',json(?)) WHERE id=? AND json_extract(data,'$.deletedAt') IS NULL", string(stamp), id)
+	r, e := s.db.Exec("UPDATE chats SET data=json_patch(data,?) WHERE id=? AND json_extract(data,'$.deletedAt') IS NULL", string(data), id)
 	if e != nil {
 		return e
 	}

@@ -186,6 +186,8 @@ Named bots receive the installed plugin defaults when created. Plugins added lat
 
 ## Work through chat
 
+**Alt-click** a chat in the sidebar to mark it unread and keep your current chat open. Click the marked chat normally to clear its green dot.
+
 Press **Ctrl+N** to create a chat and **Ctrl+W** to close the current chat. Closing with Ctrl+W or the sidebar **X** permanently deletes the chat; busy or unread chats ask for confirmation first. Cancel keeps the chat and its work intact. While the code editor has focus, these shortcuts continue to create and close editor tabs.
 
 Choose a bot beside **New chat** to start chats with its mention already in the composer. The selector includes local and Swarm bots; **Echo** is the default and leaves the composer empty. Your selection applies to **Ctrl+N** too and stays selected until you change it or reload the page. New chats stay on this machine, including when you choose a Swarm bot.
