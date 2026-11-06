@@ -1,11 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { InstanceClient, combineState, ownedEvent, ownedMessage, ownedState, resourceAPI, resourceID, route, attachmentURL } from './instances';
+import { InstanceClient, chatMachineIds, combineState, ownedEvent, ownedMessage, ownedState, resourceAPI, resourceID, route, attachmentURL } from './instances';
 import type { Message, State } from './types';
 
 const a = 'a'.repeat(32), b = 'b'.repeat(32);
 const empty = (): State => ({ bots: [], chats: [], endpoints: [], plugins: [], appDock: [], schedules: [], occurrences: [], runs: [] });
 beforeEach(() => { vi.restoreAllMocks(); combineState(empty(), { node: { nodeId: a, name: 'desktop', epoch: '1', version: 1 }, enabled: true, peers: [], instances: [{ node: { nodeId: b, name: 'linux', epoch: '2', version: 1 }, online: true, state: empty() }] }); });
 describe('instance ownership', () => {
+  it('counts participants and runs, including a chat-home Echo omitted from the bot list', () => {
+    const state = empty();
+    const chat = { id: 'mixed', bots: { [`${a}:bot`]: 'desktop.bot' }, title: '', updatedAt: '', generation: { endpointId: '', model: '', thinking: '', temperature: 0 } };
+    state.chats.push(chat, { ...chat, id: 'empty', bots: {} }, { ...chat, id: 'pending', bots: {}, waitingForGroup: true });
+    state.runs.push({ id: 'one', chatId: 'mixed', botId: 'echo', status: 'completed' },
+      { id: 'two', chatId: 'mixed', botId: `${a}:bot`, status: 'completed' });
+    const owned = ownedState(b, state);
+    const machines = chatMachineIds(owned.chats, owned.runs);
+    expect(machines.get(`${b}:mixed`)).toEqual(new Set([a, b]));
+    expect(machines.get(`${b}:empty`)).toEqual(new Set([b]));
+    expect(machines.get(`${b}:pending`)).toEqual(new Set());
+  });
   it('owns bot override connections and localizes them when saving to their machine', async () => {
     const bot = { id: 'bot', handle: 'worker', plugins: {}, modelOverride: { endpointId: 'cli', model: 'fixed' }, thinkingOverride: 'high' } as State['bots'][number];
     const owned = ownedState(b, { ...empty(), bots: [bot] }).bots[0];

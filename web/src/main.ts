@@ -2,7 +2,7 @@ import { updateTerminalDock, openTerminalDock } from './terminal';
 import { pluginNetworkNotice } from './pluginNetwork';
 import { GenerationSettings, endpointGeneration } from './generationSettings';
 import { mountNewChatModel, newChatGeneration, newChatGenerations } from './newChatModel';
-import { InstanceClient, resourceAPI, resourceURL, resourceID, localID, splitID, entryNode, instances, machineName, sameMachine, combineState, ownedEvent, ownedGeneration, instanceOnline, attachmentURL, attachmentPreviewURL, type SwarmState } from './instances';
+import { InstanceClient, resourceAPI, resourceURL, resourceID, localID, splitID, entryNode, instances, machineName, chatMachineIds, sameMachine, combineState, ownedEvent, ownedGeneration, instanceOnline, attachmentURL, attachmentPreviewURL, type SwarmState } from './instances';
 import { swarmCan, type Permission } from './swarmAccess';
 import { mountSwarm } from './swarmSettings';
 import { InstanceEvents } from './instanceEvents';
@@ -449,16 +449,22 @@ function renderNewChatBots() {
   if (markup !== newChatBotMarkup) { select.innerHTML = markup; newChatBotMarkup = markup; }
   select.value = newChatBotId; select.title = select.selectedOptions[0]?.textContent || 'Echo';
 }
+function chatMachineChip(node: string) {
+  if (instances.size < 2) return '';
+  return `<small class="machine-chip" title="${esc(node)}">${esc(machineName(node))}${instanceOnline(node) ? '' : ' · Offline'}</small>`;
+}
 function renderSidebar() {
   renderNewChatBots();
   renderThreadIdentity();
   q('#chat-title').textContent = showingApp ? 'App' : showingApps ? 'Apps' : state.chats.find(c => c.id === chatId)?.title || 'Echo';
   const filter = q<HTMLSelectElement>('.machine-filter select'); q('.machine-filter').hidden = instances.size < 2;
+  if (instances.size < 2 || !instances.has(machineFilter)) machineFilter = '';
   const options = '<option value="">All machines</option>' + [...instances.keys()].map(id => `<option value="${id}">${esc(machineName(id))}${instanceOnline(id) ? '' : ' · Offline'}</option>`).join('');
   if (filter.innerHTML !== options) { filter.innerHTML = options; filter.value = machineFilter; } filter.onchange = () => { machineFilter = filter.value; renderSidebar(); };
-  const machines = (c: Chat) => [c.nodeId || entryNode, ...Object.keys(c.bots || {}).map(id => splitID(id)[0])];
-  const chips = (nodes: string[]) => [...new Set(nodes)].filter(n => n !== entryNode).map(n => `<small class="machine-chip" title="${esc(n)}">${esc(machineName(n))}${instanceOnline(n) ? '' : ' · Offline'}</small>`).join('');
-  const visible = state.chats.filter(c => !machineFilter || machines(c).includes(machineFilter));
+  const byChat = chatMachineIds(state.chats, state.runs);
+  const machines = (c: Chat) => [...byChat.get(c.id)!];
+  const chips = (nodes: string[]) => [...new Set(nodes)].sort((a, b) => machineName(a).localeCompare(machineName(b))).map(chatMachineChip).join('');
+  const visible = state.chats.filter(c => !machineFilter || byChat.get(c.id)!.has(machineFilter));
   const retained = visible.filter(c => c.deletedAt).sort((a, b) => b.deletedAt!.localeCompare(a.deletedAt!));
   const groupsMarkup = (chats: Chat[], deleted: boolean) => groupChats(chats).map((group, index) => {
     const expanded = deleted ? expandedDeletedGroups.has(group.key) : !collapsedChatGroups.has(group.key), rowsId = `${deleted ? 'deleted' : 'chat'}-group-rows-${index}`;
@@ -652,7 +658,9 @@ function renderBotTabs() {
     const pendingQuestion = hasPendingQuestion(state.questions, chatId, thread.id);
     const status = pendingQuestion ? 'Waiting for your answer' : statusLabel(thread.status), label = thread.name + (status ? ' ' + status : '');
     const working = ['running', 'waiting', 'queued'].includes(thread.status || '');
-    return `<button type="button" role="tab" id="bot-tab-${esc(thread.id)}" data-bot-thread="${esc(thread.id)}" aria-controls="bot-thread-panel" aria-label="${esc(label)}" title="${esc(label)}" aria-selected="${thread.id === visibleBotId}" tabindex="${thread.id === visibleBotId ? 0 : -1}">${botAvatarMarkup(thread)}${pendingQuestion ? '<span class="bot-tab-question-dot" aria-hidden="true"></span>' : working ? '<span class="bot-tab-busy-dot" aria-hidden="true"></span>' : ''}<span class="bot-tab-label">${esc(thread.name)}</span>${splitID(thread.id)[0] !== entryNode ? `<small class="machine-chip">${esc(machineName(splitID(thread.id)[0]))}</small>` : ''}</button>`;
+    const node = splitID(thread.id)[0];
+    const machineDescription = instances.size > 1 ? ` aria-description="${esc(machineName(node))}"` : '';
+    return `<button type="button" role="tab" id="bot-tab-${esc(thread.id)}" data-bot-thread="${esc(thread.id)}" aria-controls="bot-thread-panel" aria-label="${esc(label)}"${machineDescription} title="${esc(label)}" aria-selected="${thread.id === visibleBotId}" tabindex="${thread.id === visibleBotId ? 0 : -1}">${botAvatarMarkup(thread)}${pendingQuestion ? '<span class="bot-tab-question-dot" aria-hidden="true"></span>' : working ? '<span class="bot-tab-busy-dot" aria-hidden="true"></span>' : ''}<span class="bot-tab-label">${esc(thread.name)}</span>${chatMachineChip(node)}</button>`;
   }).join('') : '';
   if (tabs.innerHTML !== markup) {
     const focused = tabs.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.botThread : undefined;

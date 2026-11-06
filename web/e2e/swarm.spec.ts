@@ -204,7 +204,7 @@ test('Deleted respects machine filters, remote capability, and offline recovery 
   const remoteBase = `/api/v1/swarm/instances/${linux}`;
   const remote = await json(page, `${remoteBase}/chats`, 'POST', {});
   await json(page, `/api/v1/chats/${local.id}/messages`, 'POST', { content: 'Keep local history' });
-  await json(page, `${remoteBase}/chats/${remote.id}/messages`, 'POST', { content: 'Keep remote history' });
+  await json(page, `${remoteBase}/chats/${remote.id}/messages`, 'POST', { content: '@linux.echo Keep remote history' });
   await page.route('**/api/v1/swarm/state', async route => {
     const state = await (await route.fetch()).json();
     for (const instance of state.instances) if (instance.node.nodeId === linux) instance.node.capabilities = instance.node.capabilities.filter((value: string) => value !== 'chat-retention/1');
@@ -225,6 +225,8 @@ test('Deleted respects machine filters, remote capability, and offline recovery 
   await page.getByLabel('Filter machines').selectOption(linux);
   await expect(root).toHaveText('Deleted (1)');
   await root.click(); await page.locator('[data-deleted-group]').click();
+  await expect(page.locator(`[data-chat="${remoteID}"] .machine-chip`)).toHaveText(['linux']);
+  await expect(page.locator('[data-deleted-group] .machine-chip')).toHaveText(['linux']);
   await page.locator(`[data-chat="${remoteID}"]`).click();
   await expect(page.locator('.deleted-chat-banner')).toBeVisible();
   await json(page, `/api/v1/swarm/peers/${linux}`, 'PATCH', { disconnected: true });
@@ -364,6 +366,84 @@ test('stop cancels held responses on every chat home and across swarm workers', 
     await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeVisible();
     await expect.poll(async () => (await json(page, `${api}/state`)).runs.filter((r: any) => r.chatId === chat.id).map((r: any) => r.status)).toEqual(['cancelled', 'cancelled', 'cancelled']);
   }
+});
+
+test('delegated chat machine chips agree on all three swarm members', async ({ page, browser }) => {
+  const [linux, mac] = await connect(page);
+  const linuxPage = await browser.newPage({ baseURL: 'http://127.0.0.1:3744' });
+  const macPage = await browser.newPage({ baseURL: 'http://127.0.0.1:3745' });
+  // The fixture keeps pairing secrets in memory. Refresh the worker-to-worker
+  // link as well so all three browsers can see both workers online.
+  await linuxPage.goto('/');
+  await expect(linuxPage.locator('#apps-button')).toBeVisible();
+  await json(linuxPage, '/api/v1/swarm/peers', 'POST', { url: 'http://127.0.0.1:3745', password });
+  const desktop = (await json(page, '/api/v1/state')).nodeId;
+  const linuxState = await json(page, `/api/v1/swarm/instances/${linux}/state`);
+  const linuxBot = linuxState.bots.find((bot: any) => bot.handle === 'kaiju').id;
+  const groups = '/api/v1/bot-groups';
+  const previous = (await json(page, groups)).find((group: any) => group.handle === 'delegationmods');
+  const group = await json(page, previous ? `${groups}/${previous.id}` : groups, previous ? 'PUT' : 'POST', {
+    handle: 'delegationmods', members: [{ nodeId: linux, botId: linuxBot }]
+  });
+  await page.locator('#new-chat').click();
+  await page.locator('#composer').fill('Chat delegation fixture');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.locator('.chat-log')).toContainText('Delegated the fixture task.');
+  const childRow = page.locator('[data-chat]').filter({ hasText: 'Implement DELEGATE-1' });
+  await childRow.click();
+  await expect(page.locator('.handoff-label')).toHaveText('Delegated by @echo');
+  const chat = await childRow.getAttribute('data-chat');
+  await expect(page.locator('.message.assistant')).toContainText('Completed the requested work.');
+
+  const machines = [{ id: desktop, page }, { id: linux, page: linuxPage }, { id: mac, page: macPage }];
+  const linuxWorker = { node: linux, bot: linuxBot, name: 'linux' };
+  const macWorker = { node: mac, bot: 'echo', name: 'mac' };
+  async function checkViews(workers: typeof linuxWorker[]) {
+    const names = workers.map(worker => worker.name);
+    for (const { id: viewer, page } of machines) {
+      const id = viewer === desktop ? chat : `${desktop}:${chat}`;
+      await page.goto(`/#${id}`);
+      await page.reload();
+      const row = page.locator(`[data-chat="${id}"]`);
+      await expect(row.locator('.machine-chip')).toHaveText(names);
+      await expect(page.locator('.chat-groups > section').filter({ has: row }).locator('[data-group] .machine-chip')).toHaveText(names);
+      await row.click();
+      const tabs = page.locator('.bot-tabs [role=tab]');
+      await expect(tabs).toHaveCount(workers.length === 1 ? 0 : workers.length);
+      if (workers.length > 1) {
+        for (const worker of workers) {
+          const botId = viewer === worker.node ? worker.bot : `${worker.node}:${worker.bot}`;
+          await expect(page.locator(`[data-bot-thread="${botId}"] .machine-chip`)).toHaveText([worker.name]);
+        }
+      }
+      const filter = page.getByLabel('Filter machines');
+      for (const machine of machines) {
+        await filter.selectOption(machine.id);
+        await expect(row).toHaveCount(workers.some(worker => worker.node === machine.id) ? 1 : 0);
+      }
+    }
+  }
+  try {
+    await checkViews([linuxWorker]);
+    await json(page, `${groups}/${group.id}`, 'PUT', { ...group, members: [...group.members, { nodeId: mac, botId: 'echo' }] });
+    await json(page, `/api/v1/chats/${chat}/messages`, 'POST', { content: '@delegationmods Review the delegated work' });
+    await checkViews([linuxWorker, macWorker]);
+  } finally {
+    await json(page, `${groups}/${group.id}`, 'DELETE');
+    await json(linuxPage, `/api/v1/swarm/peers/${mac}`, 'DELETE');
+    await Promise.all([linuxPage.close(), macPage.close()]);
+  }
+
+  await page.getByLabel('Filter machines').selectOption('');
+  const row = page.locator(`[data-chat="${chat}"]`);
+  await json(page, `/api/v1/swarm/peers/${linux}`, 'PATCH', { disconnected: true });
+  await expect(row.locator('.machine-chip')).toHaveText(['linux · Offline', 'mac']);
+  await expect(page.locator(`[data-bot-thread="${linux}:${linuxBot}"] .machine-chip`)).toHaveText(['linux · Offline']);
+  await json(page, '/api/v1/plugins/swarm', 'PATCH', { enabled: false, config: {} });
+  await page.reload();
+  await expect(row).toBeVisible();
+  await expect(page.locator('.bot-tabs [role=tab]')).toHaveCount(2);
+  await expect(page.locator('.chat-groups .machine-chip, .bot-tabs .machine-chip')).toHaveCount(0);
 });
 
 test('three machines, existing remote chats, namespace chips and remote-only dispatch', async ({ page }) => {

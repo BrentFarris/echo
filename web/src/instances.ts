@@ -1,4 +1,4 @@
-import type { Attachment, Bot, Chat, EchoEvent, Generation, Message, Plugin, State } from './types';
+import type { Attachment, Bot, Chat, EchoEvent, Generation, Message, Plugin, Run, State } from './types';
 
 export type Instance = { nodeId: string; name: string; epoch: string; version: number; url?: string; capabilities?: string[] };
 export type Peer = { node: Instance; authorized: boolean; connected: boolean; blocked: boolean; disconnected?: boolean; error?: string };
@@ -23,6 +23,23 @@ export function machineName(node = entryNode) {
   return (instance?.name || node.slice(0, 8) || 'This machine') + (same.length > 1 ? '-' + node.slice(0, 8) : '');
 }
 export function instanceOnline(node: string) { return !node || node === entryNode || instances.get(node)?.online === true; }
+
+// Bot and run IDs here have already been normalized for the viewing machine.
+export function chatMachineIds(chats: Chat[], runs: Run[]): Map<string, Set<string>> {
+  const machines = new Map<string, Set<string>>();
+  for (const chat of chats) {
+    machines.set(chat.id, new Set(Object.keys(chat.bots || {}).map(id => splitID(id)[0])));
+  }
+  // The built-in Echo bot can have runs without an entry in chat.bots.
+  for (const run of runs) {
+    if (run.botId) machines.get(run.chatId)?.add(splitID(run.botId)[0]);
+  }
+  for (const chat of chats) {
+    const nodes = machines.get(chat.id)!;
+    if (!nodes.size && !chat.waitingForGroup) nodes.add(chat.nodeId || splitID(chat.id)[0]);
+  }
+  return machines;
+}
 
 // A client is permanently bound to an owner. It is safe to keep one in an app
 // window while another window changes its selected machine.
