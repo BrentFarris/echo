@@ -17,6 +17,7 @@ import (
 // Once a concrete turn fails final validation, surface that failure on its
 // queued input so the user can inspect it and retry.
 type groupAssignmentError struct{ error }
+
 type pendingGroupRecord struct {
 	Access    *domain.ExecutionAccess `json:"access,omitempty"`
 	RequestID string                  `json:"requestId"`
@@ -32,6 +33,22 @@ type groupTurn struct {
 	fixed   []swarmParticipant
 	files   []domain.Segment
 	pending *dispatch
+}
+
+// A queued turn can retry a busy or offline candidate. If every candidate's
+// host denied access, surface the denial on the queued input.
+func (t *groupTurn) probeFailure(err error, reasons ...error) error {
+	if t.pending == nil || len(reasons) == 0 {
+		return err
+	}
+	for _, reason := range reasons {
+		var local *accessError
+		var remote *swarm.AccessDenied
+		if !errors.As(reason, &local) && !errors.As(reason, &remote) {
+			return err
+		}
+	}
+	return &groupAssignmentError{err}
 }
 
 func oneGroupMentions(req SendRequest) bool {
@@ -404,7 +421,7 @@ func (s *Server) tryGroupTurn(ctx context.Context, req SendRequest) (actual *dis
 		}
 		info, err := probe(p.Ref)
 		if err != nil {
-			return nil, fmt.Errorf("@%s: %w", p.Handle, err)
+			return nil, t.probeFailure(fmt.Errorf("@%s: %w", p.Handle, err), err)
 		}
 		fixedFree = fixedFree && info.Free
 	}
@@ -441,7 +458,8 @@ func (s *Server) tryGroupTurn(ctx context.Context, req SendRequest) (actual *dis
 			p.choices = append(p.choices, groupChoice{m, info})
 		}
 		if len(p.choices) == 0 {
-			return nil, errors.Join(fmt.Errorf("no eligible bot in %s", g.Text), errors.Join(reasons...))
+			err := errors.Join(fmt.Errorf("no eligible bot in %s", g.Text), errors.Join(reasons...))
+			return nil, t.probeFailure(err, reasons...)
 		}
 		sort.SliceStable(p.choices, func(i, j int) bool { return p.choices[i].slot.Active == 0 && p.choices[j].slot.Active != 0 })
 		pools = append(pools, p)

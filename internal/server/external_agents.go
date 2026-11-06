@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/brent/echo/internal/broker"
 	"github.com/brent/echo/internal/domain"
 	"github.com/brent/echo/internal/externalagent"
 )
@@ -64,6 +65,68 @@ func (s *Server) externalPrompt(bot domain.Bot, chat string, messages []domain.M
 		return "", errors.New("external agent context exceeds 4 MiB; start a new chat with a concise task")
 	}
 	return b.String(), nil
+}
+
+type sharedCLIRun struct {
+	botID  string
+	cancel context.CancelCauseFunc
+}
+
+func (s *Server) sharedCLIGrantChangedLocked(botID string) {
+	for run := range s.sharedCLIRuns {
+		if run.botID == botID {
+			run.cancel(errors.New("the owner changed this bot’s shared CLI access or settings"))
+		}
+	}
+	s.signalGroupWakeLocked()
+}
+
+// Register cancellation under the same lock as the grant write so a queued
+// turn cannot start using a grant after its revocation.
+func (s *Server) runCLI(ctx context.Context, access *domain.ExecutionAccess, botID string, req externalagent.Request, emit func(externalagent.Event) error) (externalagent.Result, error) {
+	runner := externalagent.Runner{Process: s.Process}
+	if !s.executionFull(access) {
+		if err := s.validateAccessParents(ctx, access); err != nil {
+			return externalagent.Result{}, err
+		}
+		exe, err := externalagent.Resolve(req.Endpoint)
+		if err != nil {
+			return externalagent.Result{}, err
+		}
+		s.mu.Lock()
+		if s.revoking[botID] > 0 {
+			s.mu.Unlock()
+			return externalagent.Result{}, errors.New("bot settings are changing; retry after saving finishes")
+		}
+		current, err := s.Bot(botID)
+		if err == nil {
+			err = s.requireSharedCLI(access, current, req.Endpoint)
+		}
+		if err != nil {
+			s.mu.Unlock()
+			return externalagent.Result{}, err
+		}
+		var cancel context.CancelCauseFunc
+		ctx, cancel = context.WithCancelCause(ctx)
+		run := &sharedCLIRun{botID: botID, cancel: cancel}
+		if s.sharedCLIRuns == nil {
+			s.sharedCLIRuns = make(map[*sharedCLIRun]struct{})
+		}
+		s.sharedCLIRuns[run] = struct{}{}
+		s.mu.Unlock()
+		defer func() {
+			cancel(nil)
+			s.mu.Lock()
+			delete(s.sharedCLIRuns, run)
+			s.mu.Unlock()
+		}()
+		runner.Process = broker.PinnedCLI{Broker: s.Process, Executable: exe, Directory: req.Directory}
+	}
+	result, err := runner.Run(ctx, req, emit)
+	if cause := context.Cause(ctx); cause != nil {
+		return result, cause
+	}
+	return result, err
 }
 
 func (s *Server) runExternalAgent(ctx context.Context, d *dispatch, bot domain.Bot, run domain.Run, endpoint domain.Endpoint) (err error) {
@@ -202,7 +265,7 @@ func (s *Server) runExternalAgent(ctx context.Context, d *dispatch, bot domain.B
 		s.emit("message", m.ChatID, m.RunID, m.BotID, m)
 		return nil
 	}
-	result, runErr := (externalagent.Runner{Process: s.Process}).Run(ctx, externalagent.Request{Endpoint: endpoint, Directory: dir, Model: run.Generation.Model, Thinking: run.Generation.Thinking, SessionID: sessionID, Prompt: prompt}, emit)
+	result, runErr := s.runCLI(ctx, d.access, bot.ID, externalagent.Request{Endpoint: endpoint, Directory: dir, Model: run.Generation.Model, Thinking: run.Generation.Thinking, SessionID: sessionID, Prompt: prompt}, emit)
 	status := "completed"
 	if runErr != nil {
 		status = "failed"

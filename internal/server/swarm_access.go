@@ -457,20 +457,36 @@ func (s *Server) swarmAccessRoutes(mux *http.ServeMux) {
 			respond(w, nil, errors.New("unknown sharing resource"))
 			return
 		}
-		err := s.Store.Update(kind, id, func(raw json.RawMessage) (any, error) {
-			var record map[string]any
-			if err := json.Unmarshal(raw, &record); err != nil {
-				return nil, err
-			}
-			record["swarmAvailable"] = *body.Shared
-			return record, nil
-		})
+		err := s.updateResourceSharing(kind, id, *body.Shared)
 		if err == nil {
 			err = s.setResourceSharing(kind, id, *body.Shared)
 		}
 		respond(w, map[string]bool{"shared": *body.Shared}, err)
 	})
 	s.accessGrantRoutes(mux)
+}
+
+func (s *Server) updateResourceSharing(kind, id string, shared bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if kind == "bots" && s.revoking[id] > 0 {
+		return errors.New("bot settings are changing; retry after saving finishes")
+	}
+	err := s.Store.Update(kind, id, func(raw json.RawMessage) (any, error) {
+		var record map[string]any
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return nil, err
+		}
+		record["swarmAvailable"] = shared
+		if kind == "bots" && !shared {
+			delete(record, "sharedCliEndpointId")
+		}
+		return record, nil
+	})
+	if err == nil && kind == "bots" && !shared {
+		s.sharedCLIGrantChangedLocked(id)
+	}
+	return err
 }
 
 func (s *Server) setResourceSharing(kind, id string, shared bool) error {

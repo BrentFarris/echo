@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -17,22 +18,27 @@ func ID() string {
 func Now() time.Time { return time.Now().UTC() }
 
 type Bot struct {
-	SwarmAvailable     *bool             `json:"swarmAvailable,omitempty"`
-	ModelOverride      *BotModelOverride `json:"modelOverride,omitempty"`
-	ThinkingOverride   *string           `json:"thinkingOverride,omitempty"`
-	MaxParallelPrompts *int              `json:"maxParallelPrompts,omitempty"`
-	ID                 string            `json:"id"`
-	Handle             string            `json:"handle"`
-	Name               string            `json:"name"`
-	Prompt             string            `json:"prompt"`
-	Roots              []string          `json:"roots"`
-	Plugins            map[string]bool   `json:"plugins"`
-	Revision           int64             `json:"revision"`
+	SharedCLIEndpointID string            `json:"sharedCliEndpointId,omitempty"`
+	SwarmAvailable      *bool             `json:"swarmAvailable,omitempty"`
+	ModelOverride       *BotModelOverride `json:"modelOverride,omitempty"`
+	ThinkingOverride    *string           `json:"thinkingOverride,omitempty"`
+	MaxParallelPrompts  *int              `json:"maxParallelPrompts,omitempty"`
+	ID                  string            `json:"id"`
+	Handle              string            `json:"handle"`
+	Name                string            `json:"name"`
+	Prompt              string            `json:"prompt"`
+	Roots               []string          `json:"roots"`
+	Plugins             map[string]bool   `json:"plugins"`
+	Revision            int64             `json:"revision"`
 }
 
 type BotModelOverride struct {
 	EndpointID string `json:"endpointId"`
 	Model      string `json:"model,omitempty"`
+}
+
+func (b Bot) SharesPinnedCLI() bool {
+	return Shared(b.SwarmAvailable) && b.SharedCLIEndpointID != "" && b.ModelOverride != nil && strings.TrimSpace(b.ModelOverride.EndpointID) == b.SharedCLIEndpointID
 }
 
 // OverrideGeneration leaves the user's selection intact for other bots.

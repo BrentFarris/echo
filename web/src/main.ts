@@ -1256,7 +1256,7 @@ function editBot(bot?: Bot) {
   const el = dialog(bot ? 'Edit bot' : 'Create a bot', `<form class="form"><label>Handle<input name="handle" required pattern="[A-Za-z][A-Za-z0-9_-]*" value="${esc(bot?.handle.split('.').pop())}" ${localID(bot?.id) === 'echo' ? 'readonly' : ''}></label><label>Name<input name="name" value="${esc(bot?.name)}"></label><label>System prompt<textarea name="prompt">${esc(bot?.prompt)}</textarea></label><label>Folders, one absolute path per line<textarea name="roots" placeholder="C:\\Users\\you\\project">${esc(bot?.roots?.join('\n'))}</textarea><small>Leave empty for unrestricted host access. Assigned folders apply to file tools and shell commands.</small></label>${parallelPrompts}${node === entryNode ? checkbox('swarmAvailable', 'Available in swarm', 'Shared bots keep their configured tools and folders. Unbound bots have broad filesystem access.', bot?.swarmAvailable !== false) : ''}<h3>Plugins</h3>${pluginCheckboxes}<button class="primary">Save bot</button></form>`);
   const form = q<HTMLFormElement>('form', el);
   if (supportsOverrides) {
-    q('[name=roots]', form).closest('label')!.insertAdjacentHTML('beforebegin', botModelSettingsMarkup(bot, endpoints));
+    q('[name=roots]', form).closest('label')!.insertAdjacentHTML('beforebegin', botModelSettingsMarkup(bot, endpoints, node === entryNode));
     mountBotModelSettings(form, bot, endpoints, async endpoint => {
       const value = await api<{ data?: { id: string }[] }>(`/endpoints/${endpoint.id}/models`);
       return (value.data || []).map(model => model.id);

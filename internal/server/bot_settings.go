@@ -23,14 +23,15 @@ type botSaveInput struct {
 
 func (s *Server) checkBotSave(raw json.RawMessage, a *domain.ExecutionAccess) (bool, error) {
 	var fields struct {
-		ID             string
-		SwarmAvailable json.RawMessage
+		ID                  string
+		SwarmAvailable      json.RawMessage
+		SharedCLIEndpointID json.RawMessage
 	}
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return false, err
 	}
 	if a != nil {
-		if fields.SwarmAvailable != nil {
+		if fields.SwarmAvailable != nil || fields.SharedCLIEndpointID != nil {
 			return false, denied("ownerSession")
 		}
 		if fields.ID != "" {
@@ -43,10 +44,14 @@ func (s *Server) checkBotSave(raw json.RawMessage, a *domain.ExecutionAccess) (b
 }
 func (s *Server) saveBotInput(raw json.RawMessage, scope *domain.ExecutionScope) (domain.Bot, error) {
 	var target struct {
-		ID string `json:"id"`
+		ID                  string          `json:"id"`
+		SharedCLIEndpointID json.RawMessage `json:"sharedCliEndpointId"`
 	}
 	if err := json.Unmarshal(raw, &target); err != nil {
 		return domain.Bot{}, err
+	}
+	if scope != nil && target.SharedCLIEndpointID != nil {
+		return domain.Bot{}, denied("ownerSession")
 	}
 	s.mu.Lock()
 	var input botSaveInput
@@ -84,6 +89,13 @@ func (s *Server) saveBotInput(raw json.RawMessage, scope *domain.ExecutionScope)
 			s.mu.Unlock()
 			return b, err
 		}
+	}
+	if target.SharedCLIEndpointID == nil && !b.SharesPinnedCLI() {
+		b.SharedCLIEndpointID = ""
+	}
+	if bytes.Equal(target.SharedCLIEndpointID, []byte("null")) {
+		s.mu.Unlock()
+		return b, errors.New("sharedCliEndpointId must be an endpoint ID or an empty string")
 	}
 	switch {
 	case input.Limit != nil:
@@ -127,7 +139,9 @@ func (s *Server) saveBotLocked(b domain.Bot) (domain.Bot, error) {
 		return b, err
 	}
 	b.Revision = 1
+	var previousGrant string
 	if old, err := s.Bot(b.ID); err == nil {
+		previousGrant = old.SharedCLIEndpointID
 		b.Revision = old.Revision
 		if !sameBotScope(old, b) {
 			b.Revision++
@@ -135,6 +149,9 @@ func (s *Server) saveBotLocked(b domain.Bot) (domain.Bot, error) {
 	}
 	err := s.Store.Put("bots", b.ID, b)
 	if err == nil {
+		if previousGrant != b.SharedCLIEndpointID {
+			s.sharedCLIGrantChangedLocked(b.ID)
+		}
 		s.admitLocked(b.ID)
 	}
 	return b, err

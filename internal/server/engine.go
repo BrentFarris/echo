@@ -525,7 +525,7 @@ func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run do
 	ctx = s.accessContext(ctx, d.access)
 	ctx = context.WithValue(ctx, providerKey{}, &providerInvocation{Statistics: run.Statistics, Scope: domain.ExecutionScope{Access: d.access, Bot: bot, ChatID: run.ChatID, RunID: run.ID, DispatchID: d.id}})
 	if endpoint.External() {
-		if err := s.requireModelAccess(d.access, endpoint); err != nil {
+		if err := s.requireModelAccess(d.access, bot, endpoint); err != nil {
 			return fmt.Errorf("@%s: %w", bot.Handle, err)
 		}
 		return s.runExternalAgent(ctx, d, bot, run, endpoint)

@@ -99,7 +99,8 @@ type Server struct {
 	mu                sync.Mutex
 	chatRetentionMu   sync.Mutex
 	chatRetentionWG   sync.WaitGroup
-	externalLocks     sync.Map // Session key -> cancellable semaphore; never exposed to plugins.
+	externalLocks     sync.Map                   // Session key -> cancellable semaphore; never exposed to plugins.
+	sharedCLIRuns     map[*sharedCLIRun]struct{} // Protected by mu, alongside bot saves.
 	dispatches        map[string]*dispatch
 	groupModels       map[string]groupModelCheck
 	groupLeases       map[groupLeaseKey]*time.Timer
@@ -440,6 +441,7 @@ func (s *Server) stopBot(id string) func() {
 // access need to retire the shared native sessions and their filesystem grants.
 func (s *Server) stopBotLocked(id string, stopSourceControl bool) func() {
 	s.revoking[id]++
+	s.sharedCLIGrantChangedLocked(id)
 	s.mu.Unlock()
 	if s.Plugins != nil {
 		s.Plugins.CancelBot(id)

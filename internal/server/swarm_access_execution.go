@@ -226,7 +226,7 @@ func (s *Server) authorizeWorker(req workerRequest, fingerprint string) error {
 		}
 		var endpoint domain.Endpoint
 		_ = s.Store.Get("endpoints", g.EndpointID, &endpoint)
-		if err := s.requireModelAccess(a, endpoint); err != nil {
+		if err := s.requireModelAccess(a, b, endpoint); err != nil {
 			return fmt.Errorf("@%s: %w", b.Handle, err)
 		}
 	}

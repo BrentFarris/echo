@@ -449,10 +449,8 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		if e = s.managementTarget(scope, b.ID); e != nil {
 			return nil, e
 		}
-		finish := s.stopBot(b.ID)
-		defer finish()
-		b.Roots = stringsValue(a["roots"])
-		b, e = s.saveBot(b)
+		input, _ := json.Marshal(map[string]any{"id": b.ID, "roots": stringsValue(a["roots"])})
+		b, e = s.saveBotInput(input, &scope)
 		s.emit("changed", "", "", "", nil)
 		return b, e
 	case "calendar.list":

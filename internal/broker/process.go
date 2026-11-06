@@ -98,12 +98,36 @@ func (b *ProcessBroker) journal(j aclJournal) error {
 	return os.Rename(path+".tmp", path)
 }
 func (b *ProcessBroker) Run(ctx context.Context, r ProcessRequest, emit func(string)) (ProcessResult, error) {
+	if IsRestricted(ctx) && (len(r.Roots) == 0 || r.PrivateNetwork) {
+		return ProcessResult{}, errors.New("owner-level execution requires Full swarm access; use bound folders without private-network execution")
+	}
 	return b.runRequest(ctx, r, emit, false)
 }
 
 // RunHost runs a native executable as the Echo account. Only a host-authorized
 // caller may select this entry point; tool arguments cannot select it.
 func (b *ProcessBroker) RunHost(ctx context.Context, r ProcessRequest, emit func(string)) (ProcessResult, error) {
+	if IsRestricted(ctx) {
+		return ProcessResult{}, errors.New("owner-level execution requires Full swarm access")
+	}
+	return b.runHost(ctx, r, emit)
+}
+
+// PinnedCLI is given only to the external-agent runner for an owner-authorized
+// bot turn. All three native invocations use the same executable and directory.
+type PinnedCLI struct {
+	Broker                *ProcessBroker
+	Executable, Directory string
+}
+
+func (p PinnedCLI) RunHost(ctx context.Context, r ProcessRequest, emit func(string)) (ProcessResult, error) {
+	if p.Executable == "" || r.Executable != p.Executable || r.Directory != p.Directory {
+		return ProcessResult{}, errors.New("process does not match the authorized external CLI")
+	}
+	return p.Broker.runHost(ctx, r, emit)
+}
+
+func (b *ProcessBroker) runHost(ctx context.Context, r ProcessRequest, emit func(string)) (ProcessResult, error) {
 	if r.Executable == "" || r.Command != "" || r.duplex != nil || r.SandboxSession != "" || len(r.Roots)+len(r.Toolchains)+len(r.ReadPaths) != 0 || r.OutputFileArgument != "" {
 		return ProcessResult{}, errors.New("host execution requires a direct executable without a sandbox scope")
 	}
@@ -111,9 +135,6 @@ func (b *ProcessBroker) RunHost(ctx context.Context, r ProcessRequest, emit func
 }
 
 func (b *ProcessBroker) runRequest(ctx context.Context, r ProcessRequest, emit func(string), host bool) (ProcessResult, error) {
-	if IsRestricted(ctx) && (host || len(r.Roots) == 0 || r.PrivateNetwork) {
-		return ProcessResult{}, errors.New("owner-level execution requires Full swarm access; use bound folders without private-network execution")
-	}
 	if e := ctx.Err(); e != nil {
 		return ProcessResult{}, e
 	}
