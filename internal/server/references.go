@@ -16,6 +16,12 @@ func (s *Server) fileReferences(ctx context.Context, bots []domain.Bot, query st
 	if err != nil {
 		return nil, status, err
 	}
+	allBots = s.sharedBots(contextAccess(ctx), allBots)
+	for _, b := range bots {
+		if err := s.requireSharedBot(contextAccess(ctx), b.ID); err != nil {
+			return nil, status, err
+		}
+	}
 	entries := map[string]broker.Entry{}
 	for _, bot := range bots {
 		roots := append([]string{}, bot.Roots...)

@@ -17,6 +17,7 @@ func ID() string {
 func Now() time.Time { return time.Now().UTC() }
 
 type Bot struct {
+	SwarmAvailable     *bool             `json:"swarmAvailable,omitempty"`
 	ModelOverride      *BotModelOverride `json:"modelOverride,omitempty"`
 	ThinkingOverride   *string           `json:"thinkingOverride,omitempty"`
 	MaxParallelPrompts *int              `json:"maxParallelPrompts,omitempty"`
@@ -233,13 +234,14 @@ type PendingQuestion struct {
 }
 
 type ExecutionScope struct {
-	Standalone    bool   `json:"-"` // Owner-invoked plugin action without a model/chat run.
-	Bot           Bot    `json:"bot"`
-	ChatID        string `json:"chatId"`
-	RunID         string `json:"runId"`
-	DispatchID    string `json:"dispatchId"`
-	PluginID      string `json:"pluginId"`
-	ToolMessageID string `json:"toolMessageId,omitempty"`
+	Access        *ExecutionAccess `json:"-"`
+	Standalone    bool             `json:"-"` // Owner-invoked plugin action without a model/chat run.
+	Bot           Bot              `json:"bot"`
+	ChatID        string           `json:"chatId"`
+	RunID         string           `json:"runId"`
+	DispatchID    string           `json:"dispatchId"`
+	PluginID      string           `json:"pluginId"`
+	ToolMessageID string           `json:"toolMessageId,omitempty"`
 }
 type Event struct {
 	Sequence int64           `json:"sequence"`
@@ -274,6 +276,7 @@ type AppRegistration struct {
 	Icon   string `json:"icon,omitempty"`
 }
 type PluginManifest struct {
+	SwarmAvailable          *bool            `json:"swarmAvailable,omitempty"`
 	API                     int              `json:"api"`
 	ID                      string           `json:"id"`
 	Name                    string           `json:"name"`

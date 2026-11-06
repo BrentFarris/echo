@@ -19,10 +19,11 @@ import (
 // queued input so the user can inspect it and retry.
 type groupAssignmentError struct{ error }
 type pendingGroupRecord struct {
-	RequestID string      `json:"requestId"`
-	ChatID    string      `json:"chatId"`
-	MessageID string      `json:"messageId"`
-	Groups    []swarm.Ref `json:"groups"`
+	Access    *domain.ExecutionAccess `json:"access,omitempty"`
+	RequestID string                  `json:"requestId"`
+	ChatID    string                  `json:"chatId"`
+	MessageID string                  `json:"messageId"`
+	Groups    []swarm.Ref             `json:"groups"`
 }
 type groupTurn struct {
 	id      string
@@ -201,7 +202,7 @@ func (s *Server) queueGroupTurn(req SendRequest) (*dispatch, error) {
 		c.GenerationByNode = map[string]domain.Generation{}
 	}
 	maps.Copy(c.GenerationByNode, req.GenerationByNode)
-	record := pendingGroupRecord{RequestID: req.RequestID, ChatID: c.ID, MessageID: t.message.ID}
+	record := pendingGroupRecord{Access: s.narrowAccess(req.access), RequestID: req.RequestID, ChatID: c.ID, MessageID: t.message.ID}
 	for _, g := range t.groups {
 		record.Groups = append(record.Groups, swarm.Ref{NodeID: g.NodeID, ID: g.GroupID})
 	}
@@ -210,6 +211,7 @@ func (s *Server) queueGroupTurn(req SendRequest) (*dispatch, error) {
 	}
 	ctx, cancel := context.WithCancel(s.ctx)
 	d := &dispatch{id: t.id, chatID: c.ID, group: coordinator.New(nil), ctx: ctx, cancel: cancel, done: make(chan struct{}), waitingGroup: true}
+	d.access = s.narrowAccess(req.access)
 	t.pending = d
 	s.dispatches[t.id] = d
 	s.emitLocked("message", c.ID, "", "", t.message)
@@ -223,6 +225,10 @@ func (s *Server) waitGroupTurn(req SendRequest) {
 	defer d.cancel()
 	var failed *groupAssignmentError
 	for d.ctx.Err() == nil {
+		if err := s.requireAccess(d.access, domain.AccessBots); err != nil {
+			failed = &groupAssignmentError{err}
+			break
+		}
 		wake := s.groupWakeChannel()
 		actual, err := s.tryGroupTurn(d.ctx, req)
 		if actual != nil {
@@ -281,6 +287,9 @@ func (s *Server) slotQueryFor(req SendRequest, ref swarm.Ref) slotQuery {
 		g = req.Generation
 	}
 	q := slotQuery{Queued: t.pending != nil, Action: "probe", Turn: t.id, Bot: ref.ID, Origin: req.OriginNodeID, Generation: g}
+	if req.access != nil && (ref.NodeID == s.Swarm.Node().ID || s.peerSupports(ref.NodeID, "swarm-access/1")) {
+		q.Access = s.narrowAccess(req.access)
+	}
 	for _, f := range t.files {
 		if f.NodeID == ref.NodeID {
 			q.Paths = append(q.Paths, f.Path)

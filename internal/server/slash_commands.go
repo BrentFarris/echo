@@ -253,6 +253,18 @@ func (s *Server) invokeSlashCommand(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
+	if err := s.requireSharedBot(s.requestAccess(r), bot.ID); err != nil {
+		respond(w, nil, err)
+		return
+	}
+	if err := s.requireSharedPlugin(s.requestAccess(r), a.PluginID); err != nil {
+		respond(w, nil, err)
+		return
+	}
+	if err := s.requireAccess(s.requestAccess(r), domain.AccessExecute); err != nil {
+		respond(w, nil, err)
+		return
+	}
 	ctx, release, err := s.Plugins.Lease(r.Context(), bot, a.PluginID, input.Digest)
 	if err != nil {
 		respond(w, nil, err)
@@ -262,17 +274,18 @@ func (s *Server) invokeSlashCommand(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go s.watchPluginNetwork(ctx, cancel, r, bot.ID, a.PluginID)
-	value, err := s.Plugins.InvokePlugin(ctx, domain.ExecutionScope{Bot: bot, Standalone: true}, a.PluginID, a.Tool, a.Arguments)
+	value, err := s.Plugins.InvokePlugin(ctx, domain.ExecutionScope{Access: s.requestAccess(r), Bot: bot, Standalone: true}, a.PluginID, a.Tool, a.Arguments)
 	respond(w, value, err)
 }
 
 func (s *Server) slashCommandRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/slash-commands", func(w http.ResponseWriter, r *http.Request) {
 		value, err := s.slashCommands()
-		respond(w, value, err)
+		respond(w, s.sharedCommands(s.requestAccess(r), value), err)
 	})
 	mux.HandleFunc("GET /api/v1/slash-commands/catalog", func(w http.ResponseWriter, r *http.Request) {
 		value, err := s.slashCommandCatalog()
+		value = slices.DeleteFunc(value, func(p commandPlugin) bool { return s.requireSharedPlugin(s.requestAccess(r), p.ID) != nil })
 		respond(w, value, err)
 	})
 	for _, pattern := range []string{"POST /api/v1/slash-commands", "PUT /api/v1/slash-commands/{id}"} {

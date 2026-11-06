@@ -3,6 +3,7 @@ import { pluginNetworkNotice } from './pluginNetwork';
 import { GenerationSettings, endpointGeneration } from './generationSettings';
 import { mountNewChatModel, newChatGeneration, newChatGenerations } from './newChatModel';
 import { InstanceClient, resourceAPI, resourceURL, resourceID, localID, splitID, entryNode, instances, machineName, sameMachine, combineState, ownedEvent, ownedGeneration, instanceOnline, attachmentURL, attachmentPreviewURL, type SwarmState } from './instances';
+import { swarmCan, type Permission } from './swarmAccess';
 import { mountSwarm } from './swarmSettings';
 import { InstanceEvents } from './instanceEvents';
 import { ReferenceInput, trimmedDraft } from './referenceEditor';
@@ -355,7 +356,7 @@ function updateSendButton() {
   const stopping = stoppingChats.has(chatId);
   const label = stopping ? 'Stopping response' : active ? 'Stop response' : submitting ? 'Sending message' : 'Send message';
   button.innerHTML = active ? icons.stop : icons.send; button.setAttribute('aria-label', label); button.title = label;
-  button.disabled = chatReadOnly() || stopping || !instanceOnline(splitID(chatId)[0]) || submitting || (!active && !q<ReferenceInput>('#composer').value.trim() && !attachments.length);
+  button.disabled = !swarmCan(splitID(chatId)[0], active ? 'changeChats' : 'runBots') || chatReadOnly() || stopping || !instanceOnline(splitID(chatId)[0]) || submitting || (!active && !q<ReferenceInput>('#composer').value.trim() && !attachments.length);
 }
 function addFiles(files: File[]) {
   if (submitting || chatReadOnly()) return;
@@ -440,10 +441,10 @@ function queueRefresh() { clearTimeout(refreshTimer); refreshTimer = window.setT
 function renderNewChatBots() {
   const select = q<HTMLSelectElement>('#new-chat-bot');
   const bots = state.bots.filter(bot => bot.id !== 'echo').sort((a, b) => a.handle.localeCompare(b.handle));
-  if (!bots.some(bot => bot.id === newChatBotId && instanceOnline(splitID(bot.id)[0]))) newChatBotId = 'echo';
+  if (!bots.some(bot => bot.id === newChatBotId && instanceOnline(splitID(bot.id)[0]) && swarmCan(splitID(bot.id)[0], 'runBots'))) newChatBotId = 'echo';
   const markup = '<option value="echo">Echo</option>' + bots.map(bot => {
-    const offline = !instanceOnline(splitID(bot.id)[0]);
-    return `<option value="${esc(bot.id)}"${offline ? ' disabled' : ''}>${esc(bot.name)} (@${esc(bot.handle)})${offline ? ' · Offline' : ''}</option>`;
+    const offline = !instanceOnline(splitID(bot.id)[0]), restricted = !swarmCan(splitID(bot.id)[0], 'runBots');
+    return `<option value="${esc(bot.id)}"${offline || restricted ? ' disabled' : ''}>${esc(bot.name)} (@${esc(bot.handle)})${restricted ? ' · Bot use restricted' : offline ? ' · Offline' : ''}</option>`;
   }).join('');
   if (markup !== newChatBotMarkup) { select.innerHTML = markup; newChatBotMarkup = markup; }
   select.value = newChatBotId; select.title = select.selectedOptions[0]?.textContent || 'Echo';
@@ -461,7 +462,7 @@ function renderSidebar() {
   const retained = visible.filter(c => c.deletedAt).sort((a, b) => b.deletedAt!.localeCompare(a.deletedAt!));
   const groupsMarkup = (chats: Chat[], deleted: boolean) => groupChats(chats).map((group, index) => {
     const expanded = deleted ? expandedDeletedGroups.has(group.key) : !collapsedChatGroups.has(group.key), rowsId = `${deleted ? 'deleted' : 'chat'}-group-rows-${index}`;
-    return `<section><button type="button" class="group-label" ${deleted ? 'data-deleted-group' : 'data-group'}="${esc(group.key)}" aria-expanded="${expanded}" aria-controls="${rowsId}"><span class="group-chevron" aria-hidden="true"></span><span class="group-heading">${esc(group.label)}<span class="chat-machines">${chips(group.chats.flatMap(machines))}</span></span></button><div class="chat-group-rows" id="${rowsId}"${expanded ? '' : ' hidden'}>${group.chats.map(c => `<div class="chat-row ${deleted ? 'deleted-chat-row' : ''} ${!showingApps && !showingApp && c.id === chatId ? 'active' : ''}">${chatDot(c)}<button class="chat-link" data-chat="${esc(c.id)}" title="${esc(c.title)}${deleted ? ' (deleted)' : ''}"><span class="chat-link-title">${esc(c.title)}</span><span class="chat-machines">${chips(machines(c))}</span></button>${deleted ? '' : `<button class="icon chat-remove" data-delete="${esc(c.id)}" aria-label="Delete ${esc(c.title)}"${canRetainChat(c.id) ? '' : ' disabled title="Update this chat’s machine to support 30-day retention"'}>×</button>`}</div>`).join('')}</div></section>`;
+    return `<section><button type="button" class="group-label" ${deleted ? 'data-deleted-group' : 'data-group'}="${esc(group.key)}" aria-expanded="${expanded}" aria-controls="${rowsId}"><span class="group-chevron" aria-hidden="true"></span><span class="group-heading">${esc(group.label)}<span class="chat-machines">${chips(group.chats.flatMap(machines))}</span></span></button><div class="chat-group-rows" id="${rowsId}"${expanded ? '' : ' hidden'}>${group.chats.map(c => `<div class="chat-row ${deleted ? 'deleted-chat-row' : ''} ${!showingApps && !showingApp && c.id === chatId ? 'active' : ''}">${chatDot(c)}<button class="chat-link" data-chat="${esc(c.id)}" title="${esc(c.title)}${deleted ? ' (deleted)' : ''}"><span class="chat-link-title">${esc(c.title)}</span><span class="chat-machines">${chips(machines(c))}</span></button>${deleted ? '' : `<button class="icon chat-remove" data-delete="${esc(c.id)}" aria-label="Delete ${esc(c.title)}"${!swarmCan(splitID(c.id)[0], 'changeChats') ? ' disabled title="Chat changes restricted by owner"' : canRetainChat(c.id) ? '' : ' disabled title="Update this chat’s machine to support 30-day retention"'}>×</button>`}</div>`).join('')}</div></section>`;
   }).join('');
   const activeMarkup = groupsMarkup(visible.filter(c => !c.deletedAt), false);
   const markup = activeMarkup + (retained.length ? `<section class="deleted-chat-category"><button type="button" class="group-label" data-deleted-root aria-expanded="${deletedExpanded}" aria-controls="deleted-chat-groups"><span class="group-chevron" aria-hidden="true"></span><span class="group-heading">Deleted (${retained.length})</span></button><div id="deleted-chat-groups"${deletedExpanded ? '' : ' hidden'}>${groupsMarkup(retained, true)}</div></section>` : '') || '<p class="empty-list">Your chats will appear here.</p>';
@@ -559,6 +560,12 @@ async function reloadTranscript(id: string) {
 }
 const messageActionUI = new MessageActionUI({
   readOnly: id => chatReadOnly(id),
+  deny: (message, action) => {
+    const node = splitID(message.chatId)[0];
+    if (action !== 'copy' && action !== 'rerun' && !swarmCan(node, 'changeChats')) return 'Chat changes restricted by owner';
+    if ((action === 'rerun' || action === 'edit' && message.role === 'user') && !swarmCan(node, 'runBots')) return 'Bot use restricted by owner';
+    return '';
+  },
   busy: id => groupWaiting(id) || state.runs.some(run => run.chatId === id && activeRunStatuses.includes(run.status)) || (id === chatId && submitting),
   notice,
   rerun: async (message, requestId) => {
@@ -1080,11 +1087,11 @@ function showPicker() {
   if (composer.snapshot().references.some(ref => ref.range && ref.range.start <= match.start && ref.range.end > match.start)) return;
   selectedSuggestion = 0;
   if (match.type === '@') {
-    suggestions = state.bots.filter(b => `${b.handle} ${b.name}`.toLowerCase().includes(match.query.toLowerCase())).map(b => ({ label: '@' + b.handle, offline: !instanceOnline(b.nodeId || splitID(b.id)[0]), hint: b.name + (instanceOnline(b.nodeId || splitID(b.id)[0]) ? '' : ' · Offline') + ' · ' + (b.roots?.length ? b.roots.join(', ') : 'Unrestricted host access'), insert: '@' + b.handle, ref: { type: 'bot', botId: b.id, text: '@' + b.handle } }));
+    suggestions = state.bots.filter(b => `${b.handle} ${b.name}`.toLowerCase().includes(match.query.toLowerCase())).map(b => ({ label: '@' + b.handle, unavailable: swarmCan(b.nodeId || splitID(b.id)[0], 'runBots') ? '' : 'Bot use restricted by owner', offline: !instanceOnline(b.nodeId || splitID(b.id)[0]), hint: b.name + (instanceOnline(b.nodeId || splitID(b.id)[0]) ? '' : ' · Offline') + ' · ' + (b.roots?.length ? b.roots.join(', ') : 'Unrestricted host access'), insert: '@' + b.handle, ref: { type: 'bot', botId: b.id, text: '@' + b.handle } }));
     for (const group of state.botGroups || []) {
       if (!group.handle.toLowerCase().includes(match.query.toLowerCase())) continue;
       const label = '@' + group.handle;
-      suggestions.push({ label, hint: group.members.map(m => '@' + memberHandle(m, state.bots)).join(', '), insert: label, ref: groupReference(group), offline: !instanceOnline(group.nodeId || entryNode) });
+      suggestions.push({ label, hint: group.members.map(m => '@' + memberHandle(m, state.bots)).join(', '), insert: label, ref: groupReference(group), unavailable: swarmCan(group.nodeId || entryNode, 'runBots') ? '' : 'Bot use restricted by owner', offline: !instanceOnline(group.nodeId || entryNode) });
     }
     pickerStatus = suggestions.length ? '' : 'No matching bots or groups.'; renderPicker();
   } else referenceSearch.search(composer.value, match.query, result => {
@@ -1129,11 +1136,14 @@ function settings(section = 'general', node = settingsNode || entryNode, selectM
   nav.innerHTML = `<div class="settings-nav-main">${entries.map(e => `<button data-section="${esc(e.id)}" class="${section === e.id ? 'active' : ''}">${esc(e.name)}</button>`).join('')}</div><hr><button data-section="development" data-update-notice="*" class="${section === 'development' ? 'active' : ''}">Development</button>`;
   renderDevelopmentUpdates();
   for (const button of nav.querySelectorAll<HTMLButtonElement>('button')) button.onclick = () => settings(button.dataset.section, node, selectModel);
+  const sections: Record<string, Permission> = { bots: 'manageBots', models: 'manageModels', 'cloud-models': 'manageModels', 'external-agents': 'manageModels', development: 'manageMachine', 'hosted-server': 'manageMachine', notifications: 'manageMachine' };
+  if (sections[section] && !swarmCan(node, sections[section])) { content.textContent = 'The owner has restricted these settings for this computer.'; return; }
   if (section === 'general') {
     mountGeneral(content, () => renderMessages(false, true));
     const defaultModel = document.createElement('section'); q('.general-settings h3', content).after(defaultModel);
     mountNewChatModel(defaultModel, node, state.endpoints, async endpoint => (await api<{ data?: { id: string }[] }>(`/endpoints/${endpoint.id}/models`)).data?.map(model => model.id) || []);
     const commands = document.createElement('section'); commands.className = 'slash-command-settings'; content.append(commands);
+    if (!swarmCan(node, 'managePlugins')) { commands.textContent = 'Slash command settings are restricted by the owner.'; return; }
     mountSlashCommandSettings(commands, boundAPI, state.bots.filter(bot => sameMachine(bot, node)), () => refresh(), slashSupported(node));
   }
   else if (section === 'bots') botSettings(content);
@@ -1141,7 +1151,23 @@ function settings(section = 'general', node = settingsNode || entryNode, selectM
   else if (section === 'models' || section === 'cloud-models') modelSettings(content, section === 'cloud-models', selectModel);
   else if (section === 'external-agents') externalAgentSettings(content, selectModel);
   else if (section === 'development') void mountDevelopment(content, boundAPI, new InstanceClient(node), async () => { await refresh(true); await swarmRefreshing; });
-  else pluginSettings(content, ownerPlugins.find(p => localID(p.id) === section)!);
+  else {
+    const plugin = ownerPlugins.find(p => localID(p.id) === section);
+    if (!plugin) { content.textContent = 'This plugin is not shared by its owner.'; return; }
+    if (!swarmCan(node, 'managePlugins')) {
+      if (section === 'calendar' && swarmCan(node, 'manageSchedules')) calendarSettings(content);
+      else content.textContent = 'Plugin settings are restricted by the owner.';
+      return;
+    }
+    pluginSettings(content, plugin);
+    if (node === entryNode) {
+      const label = document.createElement('label'); label.className = 'check';
+      const box = document.createElement('input'); box.type = 'checkbox'; box.checked = plugin.swarmAvailable !== false;
+      label.append(box, ' Available for direct swarm use'); content.prepend(label);
+      label.title = 'Controls direct apps and standalone actions. Shared bots keep their configured plugin tools.';
+      box.onchange = async () => { box.disabled = true; try { await boundAPI('/swarm/access/plugins/' + encodeURIComponent(localID(plugin.id)), 'PUT', { shared: box.checked }); await refresh(); } catch (e) { box.checked = !box.checked; notice(e, true); } finally { box.disabled = false; } };
+    }
+  }
 }
 function botSettings(root: HTMLElement) { const bots = state.bots.filter(b => sameMachine(b, settingsNode));
   root.innerHTML = `<button class="primary" id="add-bot">＋ Add bot</button>${bots.map(b => `<div class="list-card"><div class="grow"><strong>${esc(b.name)}</strong><p class="subtle">@${esc(b.handle)} · ${esc(b.roots?.length ? b.roots.join(', ') : 'Unbound')}</p></div><button data-edit="${esc(b.id)}">Edit</button>${localID(b.id) !== 'echo' ? `<button class="danger" data-remove="${esc(b.id)}">Delete</button>` : ''}</div>`).join('')}`;
@@ -1186,7 +1212,7 @@ function editBot(bot?: Bot) {
     const status = p.enabled ? '' : ` Disabled globally; enable it in Settings → ${p.name} to use it.`;
     return checkbox(`plugin:${p.id}`, p.name, description + status, botPluginSelected(bot, p.id));
   }).join('');
-  const el = dialog(bot ? 'Edit bot' : 'Create a bot', `<form class="form"><label>Handle<input name="handle" required pattern="[A-Za-z][A-Za-z0-9_-]*" value="${esc(bot?.handle.split('.').pop())}" ${localID(bot?.id) === 'echo' ? 'readonly' : ''}></label><label>Name<input name="name" value="${esc(bot?.name)}"></label><label>System prompt<textarea name="prompt">${esc(bot?.prompt)}</textarea></label><label>Folders, one absolute path per line<textarea name="roots" placeholder="C:\\Users\\you\\project">${esc(bot?.roots?.join('\n'))}</textarea><small>Leave empty for unrestricted host access. Assigned folders apply to file tools and shell commands.</small></label>${parallelPrompts}<h3>Plugins</h3>${pluginCheckboxes}<button class="primary">Save bot</button></form>`);
+  const el = dialog(bot ? 'Edit bot' : 'Create a bot', `<form class="form"><label>Handle<input name="handle" required pattern="[A-Za-z][A-Za-z0-9_-]*" value="${esc(bot?.handle.split('.').pop())}" ${localID(bot?.id) === 'echo' ? 'readonly' : ''}></label><label>Name<input name="name" value="${esc(bot?.name)}"></label><label>System prompt<textarea name="prompt">${esc(bot?.prompt)}</textarea></label><label>Folders, one absolute path per line<textarea name="roots" placeholder="C:\\Users\\you\\project">${esc(bot?.roots?.join('\n'))}</textarea><small>Leave empty for unrestricted host access. Assigned folders apply to file tools and shell commands.</small></label>${parallelPrompts}${node === entryNode ? checkbox('swarmAvailable', 'Available in swarm', 'Shared bots keep their configured tools and folders. Unbound bots have broad filesystem access.', bot?.swarmAvailable !== false) : ''}<h3>Plugins</h3>${pluginCheckboxes}<button class="primary">Save bot</button></form>`);
   const form = q<HTMLFormElement>('form', el);
   if (supportsOverrides) {
     q('[name=roots]', form).closest('label')!.insertAdjacentHTML('beforebegin', botModelSettingsMarkup(bot, endpoints));
@@ -1210,7 +1236,7 @@ function editBot(bot?: Bot) {
       saved = await api<Bot>('/bots', 'POST', {
         id: bot?.id || '', handle: f.get('handle'), name: f.get('name'), prompt: f.get('prompt'),
         roots: String(f.get('roots')).split('\n').map(v => v.trim()).filter(Boolean),
-        plugins: overrides, maxParallelPrompts: Number(f.get('maxParallelPrompts')), revision: bot?.revision || 0,
+        ...(node === entryNode ? { swarmAvailable: f.has('swarmAvailable') } : {}), plugins: overrides, maxParallelPrompts: Number(f.get('maxParallelPrompts')), revision: bot?.revision || 0,
         ...(supportsOverrides ? botModelSettingsValues(form) : {})
       });
     } catch (reason) {
@@ -1284,7 +1310,7 @@ function pluginSettings(root: HTMLElement, plugin: Plugin) {
     mountHosting(q('#plugin-extra', root), api, notice);
   }
   if (id === 'swarm') void mountSwarm(q('#plugin-extra', root), new InstanceClient(node), refresh, notice);
-  if (id === 'calendar') calendarSettings(q('#plugin-extra', root));
+  if (id === 'calendar' && swarmCan(node, 'manageSchedules')) calendarSettings(q('#plugin-extra', root));
   if (id === 'workspaces') q('#plugin-extra', root).innerHTML = '<p class="subtle">Assign folders in Bots → Edit, or ask Echo to bind a bot. Existing folder restrictions stay enforced when this plugin is disabled.</p>';
   if (id === 'comfyui') q('#plugin-extra', root).innerHTML = '<p class="subtle">Connect an existing ComfyUI server and choose a checkpoint. Export custom workflows in ComfyUI API format. Image generation has a built-in fallback; video generation needs a workflow. Ask a bot to generate an image or video, or attach an image and ask it to edit or animate it.</p><p class="subtle">Templates support {{PROMPT}}, {{NEGATIVE_PROMPT}}, {{MODEL}}, {{IMAGE}}, {{WIDTH}}, {{HEIGHT}}, {{STEPS}}, {{CFG_SCALE}}, {{SEED}}, {{FRAMES}}, {{FPS}}, {{FORMAT}}, {{DURATION}}, {{ASPECT_RATIO}} and {{MEGAPIXELS}}. Workflow and input-image paths must be accessible to the bot. Results remain in the chat; ask to save them when you want a workspace file.</p>';
   if (id === 'plugin-authoring') q('#plugin-extra', root).innerHTML = '<p class="subtle">Ask Echo to create a plugin—for example, “Create a GUI calculator I can drag around.” UI plugins need no compiler. Go backend plugins require an installed Go toolchain.</p>';

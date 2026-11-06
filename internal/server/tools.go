@@ -132,12 +132,28 @@ func (s *Server) managementTarget(scope domain.ExecutionScope, id string) error 
 	return nil
 }
 func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionScope, call domain.ToolCall) (any, error) {
+	if scope.Access == nil && d != nil {
+		scope.Access = d.access
+	}
+	if err := s.validateAccessParents(ctx, scope.Access); err != nil {
+		return nil, err
+	}
+	if err := s.requireAccess(scope.Access, domain.AccessBots); err != nil {
+		return nil, err
+	}
+	if err := s.requireSharedBot(scope.Access, scope.Bot.ID); err != nil {
+		return nil, err
+	}
+	ctx = s.accessContext(ctx, scope.Access)
 	name := call.Function.Name
 	raw := json.RawMessage(call.Function.Arguments)
 	isCore := false
 	for _, t := range s.coreTools(scope.Bot) {
 		if t.Name == name {
 			isCore = true
+			if err := s.authorizeTool(scope, name, raw); err != nil {
+				return nil, err
+			}
 			if e := plugins.Validate(t.Parameters, raw); e != nil {
 				return nil, e
 			}
@@ -210,7 +226,8 @@ func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionSc
 	case AskUserQuestionsToolName:
 		return s.askUserQuestions(ctx, scope, raw)
 	case "bot_list":
-		return s.Bots()
+		bots, err := s.Bots()
+		return s.sharedBots(scope.Access, bots), err
 	case "bot_save":
 		b, e := s.saveBotInput(raw, &scope)
 		s.emit("changed", "", "", "", nil)
@@ -287,6 +304,16 @@ func (s *Server) tool(ctx context.Context, d *dispatch, scope domain.ExecutionSc
 }
 
 func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, method string, raw json.RawMessage) (any, error) {
+	if scope.Access == nil {
+		scope.Access = contextAccess(ctx)
+	}
+	if err := s.validateAccessParents(ctx, scope.Access); err != nil {
+		return nil, err
+	}
+	if err := s.authorizeTool(scope, method, raw); err != nil {
+		return nil, err
+	}
+	ctx = s.accessContext(ctx, scope.Access)
 	if scope.Standalone {
 		if reason := plugins.StandaloneMethodReason(method); reason != "" {
 			return nil, errors.New(reason)
@@ -435,7 +462,7 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		}
 		out := []calendar.Schedule{}
 		for _, schedule := range ss {
-			if scope.Bot.ID == "echo" || scope.Bot.ID == schedule.BotID {
+			if (scope.Bot.ID == "echo" || scope.Bot.ID == schedule.BotID) && s.requireSharedBot(scope.Access, schedule.BotID) == nil {
 				out = append(out, schedule)
 			}
 		}
@@ -470,6 +497,10 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		if s.Store.Get("runs", scope.RunID, &run) == nil {
 			schedule.Generation = run.Generation
 		}
+		schedule.AccessIDs, e = s.saveScheduleAccess(scope.Access)
+		if e != nil {
+			return nil, e
+		}
 		result, e := s.Calendar.Save(schedule, domain.Now())
 		s.emit("changed", "", "", "", nil)
 		return result, e
@@ -491,13 +522,14 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 		}
 		out := []calendar.Occurrence{}
 		for _, j := range jobs {
-			if j.Status == "missed" && (scope.Bot.ID == "echo" || j.BotID == scope.Bot.ID) {
+			if j.Status == "missed" && s.requireSharedBot(scope.Access, j.BotID) == nil && (scope.Bot.ID == "echo" || j.BotID == scope.Bot.ID) {
 				out = append(out, j)
 			}
 		}
 		return map[string]any{"jobs": out, "instruction": "The owner can select jobs in the missed-jobs panel. Zero concurrency means unlimited."}, nil
 	case "plugin.list":
-		return s.Plugins.List()
+		list, err := s.Plugins.List()
+		return s.sharedPlugins(scope.Access, list), err
 	case "plugin.configure":
 		if text(a, "id") == "git" {
 			s.gitSettingsMu.Lock()
@@ -591,6 +623,16 @@ func (s *Server) pluginCall(ctx context.Context, scope domain.ExecutionScope, me
 			data, _ := json.Marshal(value)
 			if e = json.Unmarshal(data, &m); e != nil {
 				return nil, e
+			}
+		}
+		if scope.Access != nil {
+			if m.SwarmAvailable != nil {
+				return nil, denied("ownerSession")
+			}
+			if _, err := s.Plugins.Get(m.ID); err == nil {
+				if err := s.requireSharedPlugin(scope.Access, m.ID); err != nil {
+					return nil, err
+				}
 			}
 		}
 		if html := text(a, "html"); html != "" {

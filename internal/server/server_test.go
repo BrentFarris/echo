@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -46,7 +48,17 @@ func attachModel(t *testing.T, s *Server, handler http.HandlerFunc) domain.Gener
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /models", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, `{"data":[{"id":"test-model"}]}`) })
-	mux.HandleFunc("/", handler)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Receive the prompt before streaming. Replying while a large tool catalog
+		// is still uploading can reset the client's connection on Windows.
+		prompt, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(prompt))
+		handler(w, r)
+	})
 	m := httptest.NewServer(mux)
 	t.Cleanup(m.Close)
 	ep := domain.Endpoint{ID: "model", Name: "Test", URL: m.URL, Model: "test-model", ContextTokens: 32768}

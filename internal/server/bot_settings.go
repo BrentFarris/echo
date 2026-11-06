@@ -21,6 +21,26 @@ type botSaveInput struct {
 	EnableMultitasking *bool           `json:"enableMultitasking"`
 }
 
+func (s *Server) checkBotSave(raw json.RawMessage, a *domain.ExecutionAccess) (bool, error) {
+	var fields struct {
+		ID             string
+		SwarmAvailable json.RawMessage
+	}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return false, err
+	}
+	if a != nil {
+		if fields.SwarmAvailable != nil {
+			return false, denied("ownerSession")
+		}
+		if fields.ID != "" {
+			if err := s.requireSharedBot(a, fields.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return false, err
+			}
+		}
+	}
+	return fields.SwarmAvailable != nil, nil
+}
 func (s *Server) saveBotInput(raw json.RawMessage, scope *domain.ExecutionScope) (domain.Bot, error) {
 	var target struct {
 		ID string `json:"id"`
@@ -50,6 +70,12 @@ func (s *Server) saveBotInput(raw json.RawMessage, scope *domain.ExecutionScope)
 		return domain.Bot{}, err
 	}
 	b := input.Bot
+	if scope != nil && scope.Access != nil {
+		if _, err := s.checkBotSave(raw, scope.Access); err != nil {
+			s.mu.Unlock()
+			return b, err
+		}
+	}
 	if input.ModelSelection != nil {
 		b.ModelOverride = nil
 		selection := json.NewDecoder(bytes.NewReader(input.ModelSelection))

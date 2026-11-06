@@ -135,6 +135,27 @@ func (s *Server) terminalRequest(w http.ResponseWriter, r *http.Request) {
 		editorError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	if caller, ok := swarm.Caller(r.Context()); ok && err == nil && r.Method == "POST" {
+		if snap, ok := result.(terminal.Snapshot); ok {
+			session = snap.ID
+		}
+		if session != "" {
+			s.accessMu.Lock()
+			if s.remoteTerminals == nil {
+				s.remoteTerminals = map[string]map[terminalAccess]bool{}
+			}
+			if s.remoteTerminals[caller.NodeID] == nil {
+				s.remoteTerminals[caller.NodeID] = map[terminalAccess]bool{}
+			}
+			s.remoteTerminals[caller.NodeID][terminalAccess{bot, session}] = true
+			s.accessMu.Unlock()
+			if !s.executionFull(s.requestAccess(r)) {
+				_ = s.Terminal.Stop(bot, session)
+				respond(w, nil, denied("fullAccess"))
+				return
+			}
+		}
+	}
 	respond(w, result, err)
 }
 

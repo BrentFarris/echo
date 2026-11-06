@@ -47,19 +47,21 @@ type swarmDispatch struct {
 	replicas        map[string]string
 }
 type workerRequest struct {
-	GroupSlot    bool               `json:"groupSlot,omitempty"`
-	ID           string             `json:"id"`
-	Home         string             `json:"home"`
-	Origin       string             `json:"origin"`
-	Token        string             `json:"token"`
-	Chat         domain.Chat        `json:"chat"`
-	Message      domain.Message     `json:"message"`
-	Runs         []domain.Run       `json:"runs"`
-	Participants []swarmParticipant `json:"participants"`
-	RequestID    string             `json:"requestId"`
-	Status       string             `json:"status"`
-	CreatedAt    time.Time          `json:"createdAt"`
-	Permit       string             `json:"permit,omitempty"`
+	Access       *domain.ExecutionAccess `json:"executionAccess,omitempty"`
+	AccessPermit string                  `json:"accessPermit,omitempty"`
+	GroupSlot    bool                    `json:"groupSlot,omitempty"`
+	ID           string                  `json:"id"`
+	Home         string                  `json:"home"`
+	Origin       string                  `json:"origin"`
+	Token        string                  `json:"token"`
+	Chat         domain.Chat             `json:"chat"`
+	Message      domain.Message          `json:"message"`
+	Runs         []domain.Run            `json:"runs"`
+	Participants []swarmParticipant      `json:"participants"`
+	RequestID    string                  `json:"requestId"`
+	Status       string                  `json:"status"`
+	CreatedAt    time.Time               `json:"createdAt"`
+	Permit       string                  `json:"permit,omitempty"`
 }
 type workerSnapshot struct {
 	Status   string           `json:"status"`
@@ -450,6 +452,9 @@ func requestFingerprint(req workerRequest) string {
 }
 
 func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
+	if err := s.requireAccess(req.access, domain.AccessBots); err != nil {
+		return nil, err
+	}
 	if !s.Swarm.Enabled() {
 		for _, group := range req.groupMentions {
 			for _, member := range group.Members {
@@ -517,6 +522,8 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 	runCtx, cancel := context.WithCancel(s.ctx)
 	group := coordinator.New(ids)
 	d := &dispatch{id: id, chatID: chatID, group: group, ctx: runCtx, cancel: cancel, done: make(chan struct{}), wake: map[string]chan struct{}{}, active: map[string]bool{}, admitted: map[string]chan struct{}{}}
+	d.access = s.narrowAccess(req.access)
+	d.ctx = s.accessContext(d.ctx, d.access)
 	f := &swarmDispatch{GroupAssignment: req.routing != nil, ID: id, ChatID: chatID, Origin: req.OriginNodeID, RequestID: req.RequestID, Participants: participants, Hosts: map[string]workerRequest{}, Status: "queued", group: group, d: d}
 	d.federation = f
 	message := req.userMessage(chatID, "completed", segments, attachments)
@@ -615,6 +622,23 @@ func (s *Server) sendSwarm(chatID string, req SendRequest) (*dispatch, error) {
 		host.Permit = req.Permits[node]
 		host.Chat = c
 		host.Message = message
+		if req.access != nil {
+			legacy := node != self && !s.peerSupports(node, "swarm-access/1")
+			if legacy && (!s.executionFull(req.access) || len(req.access.Parents) > 0) {
+				cancel()
+				return nil, denied("updateRequired")
+			}
+			if !legacy {
+				host.Access = s.narrowAccess(req.access)
+			}
+			if node != self && !legacy {
+				host.AccessPermit, err = s.Swarm.Proof(node, accessFingerprint(host, requestFingerprint(host)))
+				if err != nil {
+					cancel()
+					return nil, err
+				}
+			}
+		}
 		f.Hosts[node] = host
 		if f.GroupAssignment {
 			err = s.validateGroupWorkerRemote(ctx, node, host)
@@ -693,6 +717,9 @@ func (s *Server) validateWorker(req workerRequest) error {
 }
 
 func (s *Server) checkWorker(req workerRequest, fingerprint string) error {
+	if err := s.authorizeWorker(req, fingerprint); err != nil {
+		return err
+	}
 	if req.Home == "" || req.ID == "" || len(req.Token) != 64 {
 		return errors.New("invalid worker request")
 	}

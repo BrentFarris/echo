@@ -103,11 +103,11 @@ func (s *Server) pluginBridge(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		go s.watchPluginNetwork(ctx, cancel, r, bot.ID, r.PathValue("id"))
-		value, err := s.pluginCall(ctx, domain.ExecutionScope{Bot: bot, PluginID: r.PathValue("id")}, a.Method, a.Params)
+		value, err := s.pluginCall(ctx, domain.ExecutionScope{Access: s.requestAccess(r), Standalone: true, Bot: bot, PluginID: r.PathValue("id")}, a.Method, a.Params)
 		respond(w, value, err)
 		return
 	}
-	value, err := s.pluginCall(ctx, domain.ExecutionScope{Bot: bot, PluginID: r.PathValue("id")}, a.Method, a.Params)
+	value, err := s.pluginCall(ctx, domain.ExecutionScope{Access: s.requestAccess(r), Standalone: true, Bot: bot, PluginID: r.PathValue("id")}, a.Method, a.Params)
 	respond(w, value, err)
 }
 
@@ -212,7 +212,7 @@ func (s *Server) pluginNetworkRelay(w http.ResponseWriter, r *http.Request) {
 			currentBot, err := s.Bot(botID)
 			var result any
 			if err == nil {
-				result, err = s.pluginCall(ctx, domain.ExecutionScope{Bot: currentBot, PluginID: id}, method, raw)
+				result, err = s.pluginCall(ctx, domain.ExecutionScope{Access: s.requestAccess(r), Standalone: true, Bot: currentBot, PluginID: id}, method, raw)
 			}
 			reply := map[string]any{"id": requestID, "result": result}
 			if err != nil {

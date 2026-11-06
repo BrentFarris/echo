@@ -52,7 +52,11 @@ func (s *Server) startDelegatedChat(ctx context.Context, scope domain.ExecutionS
 	}
 	id := domain.ID()
 	if taskKey != "" {
-		sum := sha256.Sum256([]byte("chat_start\x00" + scope.Bot.ID + "\x00" + to + "\x00" + taskKey))
+		principal := ""
+		if scope.Access != nil {
+			principal = scope.Access.Origin + "\x00" + strings.Join(scope.Access.Via, "/") + "\x00"
+		}
+		sum := sha256.Sum256([]byte("chat_start\x00" + principal + scope.Bot.ID + "\x00" + to + "\x00" + taskKey))
 		id = hex.EncodeToString(sum[:16])
 	}
 	now := domain.Now()
@@ -70,6 +74,10 @@ func (s *Server) startDelegatedChat(ctx context.Context, scope domain.ExecutionS
 		Content: "@" + to + "\n" + prompt, inputAuthor: delegatedAuthorPrefix + scope.Bot.Handle,
 		RequestID: "chat_start", newChat: &chatStart{chat: c, ctx: ctx},
 		Generation: c.Generation, GenerationByNode: c.GenerationByNode,
+	}
+	req.access, err = s.delegatedAccess(scope.Access, scope.Bot.ID, run.ID)
+	if err != nil {
+		return chatReceipt{}, err
 	}
 	d, err := s.send(id, req)
 	if err != nil {

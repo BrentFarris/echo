@@ -284,6 +284,10 @@ func (s *Server) externalAgentRoutes(mux *http.ServeMux) {
 			respond(w, nil, err)
 			return
 		}
+		if err := s.requireFull(s.requestAccess(r)); err != nil {
+			respond(w, nil, err)
+			return
+		}
 		check, err := (externalagent.Runner{Process: s.Process}).Check(r.Context(), e, dir)
 		if err != nil {
 			check.Message = err.Error()

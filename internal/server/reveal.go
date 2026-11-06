@@ -56,6 +56,16 @@ func (s *Server) openRecordedChange(w http.ResponseWriter, r *http.Request, pref
 			if change.Path != request.Path {
 				continue
 			}
+			if err := s.requireSharedBot(s.requestAccess(r), message.BotID); err != nil {
+				respond(w, nil, err)
+				return
+			}
+			if preferEditor {
+				if err := s.requireSharedPlugin(s.requestAccess(r), "monaco-editor"); err != nil {
+					respond(w, nil, err)
+					return
+				}
+			}
 			bot, err := s.Bot(message.BotID)
 			if err != nil {
 				respond(w, nil, errors.New("this bot no longer exists; its historical file changes are still available"))
@@ -116,6 +126,13 @@ func (s *Server) fileEditorRef(botID, path string) (editorfs.FileRef, error) {
 }
 
 func (s *Server) openReference(w http.ResponseWriter, r *http.Request, path string, bots []domain.Bot, preferEditor bool) {
+	bots = s.sharedBots(s.requestAccess(r), bots)
+	if preferEditor {
+		if err := s.requireSharedPlugin(s.requestAccess(r), "monaco-editor"); err != nil {
+			respond(w, nil, err)
+			return
+		}
+	}
 	var last error = errors.New("this reference is no longer available to any recipient")
 	if preferEditor {
 		editorEnabled := false

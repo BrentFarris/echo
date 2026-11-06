@@ -80,7 +80,7 @@ export function combineState(local: State, swarm: SwarmState): State {
   for (const entry of swarm.instances) {
     if (!entry.state) continue;
     const state = ownedState(entry.node.nodeId, entry.state);
-    for (const field of Object.keys(combined) as (keyof State)[]) (combined[field] as unknown[]).push(...(state[field] || []));
+    for (const field of Object.keys(combined) as (keyof State)[]) if (field !== 'swarmAccess') (combined[field] as unknown[]).push(...(state[field] || []));
   }
   combined.chats.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   return combined;

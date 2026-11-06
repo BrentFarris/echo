@@ -3,6 +3,7 @@ import type { Message } from './types';
 
 const waitMessage = 'Wait for the current response to finish before editing or deleting messages.';
 type Options = {
+  deny?: (message: Message, action: string) => string;
 	readOnly?: (chatId: string) => boolean;
   busy: (chatId: string) => boolean;
   notice: (error: unknown, failure?: boolean) => void;
@@ -19,7 +20,7 @@ export function messageActions(role: string, act: (action: string, button: HTMLB
   const labels = { copy: role === 'user' ? 'Copy message' : 'Copy final response', fork: 'Fork chat from this message', edit: role === 'user' ? 'Edit message' : 'Edit response', rerun: role === 'user' ? 'Rerun from message' : 'Rerun response', trash: role === 'user' ? 'Delete message' : 'Delete response' };
   for (const key of ['copy', 'fork', 'edit', 'rerun', 'trash'] as const) {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'message-action toolbar-icon ' + key;
-    button.dataset.action = key; button.innerHTML = icons[key]; button.title = labels[key]; button.setAttribute('aria-label', labels[key]);
+    button.dataset.action = key; button.dataset.label = labels[key]; button.innerHTML = icons[key]; button.title = labels[key]; button.setAttribute('aria-label', labels[key]);
     button.onclick = event => { event.stopPropagation(); act(key, button); };
     toolbar.append(button);
   }
@@ -79,15 +80,18 @@ export class MessageActionUI {
     container.dataset.messageActions = message.id; container.tabIndex = 0; container.classList.toggle('is-open', open);
     container.append(entry.toolbar);
     const readOnly = !!this.options.readOnly?.(message.chatId);
-    if (readOnly && entry.form) this.close(entry);
+    if ((readOnly || this.options.deny?.(message, 'edit')) && entry.form) this.close(entry);
     for (const button of entry.toolbar.querySelectorAll('button')) {
+      const reason = this.options.deny?.(message, button.dataset.action!) || '';
+      button.disabled = !!reason; button.title = reason || button.dataset.label!;
       button.hidden = readOnly && button.dataset.action !== 'copy';
-      button.setAttribute('aria-disabled', String(this.options.busy(message.chatId) || entry.saving || button.hidden));
+      button.setAttribute('aria-disabled', String(this.options.busy(message.chatId) || entry.saving || button.hidden || button.disabled));
     }
     const rerun = entry.toolbar.querySelector<HTMLButtonElement>('[data-action="rerun"]')!;
-    rerun.disabled = !!message.rerunUnavailable;
+    const denial = this.options.deny?.(message, 'rerun');
+    rerun.disabled = !!message.rerunUnavailable || !!denial;
     if (rerun.disabled) rerun.setAttribute('aria-disabled', 'true');
-    rerun.title = rerun.disabled ? 'Cannot rerun without the original user message' : message.role === 'user' ? 'Rerun from message' : 'Rerun response';
+    rerun.title = denial || (rerun.disabled ? 'Cannot rerun without the original user message' : message.role === 'user' ? 'Rerun from message' : 'Rerun response');
     rerun.setAttribute('aria-label', rerun.title);
     container.classList.toggle('is-editing', !!entry.form); body.classList.toggle('is-editing', !!entry.form);
     if (entry.form) body.append(entry.form);
@@ -100,7 +104,7 @@ export class MessageActionUI {
     entry.container.classList.remove('is-editing'); entry.body.classList.remove('is-editing');
   }
   private async act(entry: Entry, action: string, button: HTMLButtonElement) {
-    if (entry.saving) return;
+    if (entry.saving || this.options.deny?.(entry.message, action)) return;
     if (action !== 'copy' && this.options.readOnly?.(entry.message.chatId)) return;
     if (this.options.busy(entry.message.chatId)) { this.options.notice(action === 'fork' ? 'Wait for the current response to finish before forking the chat.' : action === 'rerun' ? 'Wait for the current response to finish before rerunning messages.' : waitMessage, true); return; }
     try {

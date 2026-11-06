@@ -6,6 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 import "./terminal.css";
 import { closeTerminalSocket } from "./socket";
 import type { Bot, Plugin } from "../types";
+import { swarmCan } from "../swarmAccess";
 import { entryNode, splitID, localID, machineName, instances, instanceOnline, resourceID } from "../instances";
 import { pluginAvailable } from "../apps";
 import { isBuiltinDock } from "../builtinApps";
@@ -1075,7 +1076,7 @@ export function updateTerminalDock(host: HTMLElement, bots: Bot[], plugins: Plug
   const next = bots.filter(bot => {
     const node = splitID(bot.id)[0];
     const plugin = plugins.find(p => localID(p.id) === "terminal" && (p.nodeId || entryNode) === node);
-    return isBuiltinDock(plugin, "main") && pluginAvailable(plugin, bot);
+    return swarmCan(node, "full") && isBuiltinDock(plugin, "main") && pluginAvailable(plugin, bot);
   }).map(bot => ({ id: bot.id, name: bot.name + (splitID(bot.id)[0] !== entryNode ? ` · ${machineName(splitID(bot.id)[0])}` : ""), mainPath:bot.roots[0] || "", folders:[...new Set(bot.roots)], online:instanceOnline(splitID(bot.id)[0]) }));
   const valid = new Set(next.map(b => b.id));
   for (const [id, controller] of controllers) if (!valid.has(controller.botId)) {

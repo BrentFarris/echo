@@ -45,7 +45,7 @@ type Node struct {
 }
 
 func capabilities() []string {
-	return []string{"chat-retention/1", "owner-api/1", "dispatch/1", "stream/1", "native-monaco/1", "go-language/1", "editor-debug/1", "native-terminal/1", "native-notes/1", "development-update/1", "fork-history/1", "slash-commands/1", "bot-groups/1", "bot-groups-one/1", "bot-model-overrides/1"}
+	return []string{"swarm-access/1", "chat-retention/1", "owner-api/1", "dispatch/1", "stream/1", "native-monaco/1", "go-language/1", "editor-debug/1", "native-terminal/1", "native-notes/1", "development-update/1", "fork-history/1", "slash-commands/1", "bot-groups/1", "bot-groups-one/1", "bot-model-overrides/1"}
 }
 func compatible(n Node) bool {
 	return n.Version == Version && slices.Contains(n.Capabilities, "owner-api/1") && slices.Contains(n.Capabilities, "dispatch/1") && slices.Contains(n.Capabilities, "stream/1")
@@ -80,6 +80,7 @@ func HostName(name string) string {
 }
 
 type Peer struct {
+	Revocation string    `json:"revocation,omitempty"` // New epoch on owner revocation; preserve across re-pairing.
 	Node       Node      `json:"node"`
 	Connected  bool      `json:"connected"`
 	Authorized bool      `json:"authorized"`
@@ -108,17 +109,29 @@ type Route struct {
 	Path []string `json:"path"`
 }
 
+// AccessDenied preserves an authorization failure across authenticated RPC.
+type AccessDenied struct {
+	Permission string `json:"permission"`
+	Reason     string `json:"error"`
+	Code       string `json:"code"`
+}
+
+func (e *AccessDenied) Error() string { return e.Reason }
+
 type PairRequest struct {
-	Version     int    `json:"version"`
-	ID          string `json:"id"`
-	Node        Node   `json:"node"`
-	Password    string `json:"password"`
-	ReturnToken string `json:"returnToken"`
-	Activate    bool   `json:"activate"`
+	InvitationPacket *packet `json:"invitationPacket,omitempty"`
+	Invitation       string  `json:"invitation,omitempty"`
+	Version          int     `json:"version"`
+	ID               string  `json:"id"`
+	Node             Node    `json:"node"`
+	Password         string  `json:"password"`
+	ReturnToken      string  `json:"returnToken"`
+	Activate         bool    `json:"activate"`
 }
 type PairResponse struct {
-	Node  Node   `json:"node"`
-	Token string `json:"token"`
+	InvitationPacket *packet `json:"invitationPacket,omitempty"`
+	Node             Node    `json:"node"`
+	Token            string  `json:"token"`
 }
 
 type Records interface {
@@ -134,17 +147,18 @@ type Secrets interface {
 }
 
 type Config struct {
-	Store         Records
-	Secrets       Secrets
-	SecretPrefix  string
-	IdentityFile  string
-	Name          string
-	Epoch         string
-	Enabled       func() bool
-	Enable        func() error
-	CheckPassword func(context.Context, string, string) error
-	Handler       http.Handler
-	Changed       func()
+	Store            Records
+	Secrets          Secrets
+	SecretPrefix     string
+	IdentityFile     string
+	Name             string
+	Epoch            string
+	Enabled          func() bool
+	Enable           func() error
+	CheckPassword    func(context.Context, string, string) error
+	AcceptInvitation func(context.Context, PairRequest) error
+	Handler          http.Handler
+	Changed          func()
 }
 
 type Principal struct {

@@ -228,9 +228,9 @@ func (s *Server) authRoutes(mux *http.ServeMux) {
 			return
 		}
 		s.authMu.Lock()
-		defer s.authMu.Unlock()
 		// Recheck after hashing: a different request may have revoked us.
 		if _, ok := s.savedSessionLocked(r); !ok && !swarm.Owner(r.Context()) {
+			s.authMu.Unlock()
 			http.Error(w, "Sign in required", http.StatusUnauthorized)
 			return
 		}
@@ -238,6 +238,7 @@ func (s *Server) authRoutes(mux *http.ServeMux) {
 		if err == nil {
 			err = s.Store.ClearNamespace("sessions")
 		}
+		s.authMu.Unlock()
 		if err != nil {
 			respond(w, nil, err)
 			return
@@ -248,6 +249,9 @@ func (s *Server) authRoutes(mux *http.ServeMux) {
 				return
 			}
 		}
+		s.revokeAccessWork("")
+		s.authMu.Lock()
+		defer s.authMu.Unlock()
 		if swarm.Owner(r.Context()) {
 			respond(w, map[string]bool{"changed": true}, nil)
 		} else {

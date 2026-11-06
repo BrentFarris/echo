@@ -38,9 +38,10 @@ func (s *Server) initSwarm() error {
 			p.Enabled = true
 			return s.Plugins.Save(p)
 		},
-		CheckPassword: s.swarmPassword,
-		Handler:       http.HandlerFunc(s.serveSwarmOwner),
-		Changed:       func() { s.requestSwarmRefresh(); s.emit("changed", "", "", "", nil) },
+		CheckPassword:    s.swarmPassword,
+		AcceptInvitation: s.acceptSwarmInvitation,
+		Handler:          http.HandlerFunc(s.serveSwarmOwner),
+		Changed:          func() { s.requestSwarmRefresh(); s.emit("changed", "", "", "", nil) },
 	})
 	if err != nil {
 		return err
@@ -125,6 +126,7 @@ func (s *Server) serveSwarmOwner(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) swarmRoutes(mux *http.ServeMux) {
+	s.swarmAccessRoutes(mux)
 	s.swarmWorkerRoutes(mux)
 	s.groupRoutingRoutes(mux)
 	mux.HandleFunc("POST /api/v1/swarm/pair", func(w http.ResponseWriter, r *http.Request) {
@@ -133,7 +135,7 @@ func (s *Server) swarmRoutes(mux *http.ServeMux) {
 			respond(w, nil, err)
 			return
 		}
-		if caller, ok := swarm.Caller(r.Context()); ok && caller.NodeID != input.Node.ID {
+		if caller, ok := swarm.Caller(r.Context()); ok && caller.NodeID != input.Node.ID && (input.InvitationPacket == nil || input.InvitationPacket.From.ID != caller.NodeID) {
 			http.Error(w, "Pairing identity mismatch", 403)
 			return
 		}
@@ -184,6 +186,9 @@ func (s *Server) swarmRoutes(mux *http.ServeMux) {
 			return
 		}
 		err := s.Swarm.SetDisconnected(r.PathValue("id"), input.Disconnected)
+		if err == nil && input.Disconnected {
+			s.revokeAccessWork(r.PathValue("id"))
+		}
 		respond(w, map[string]bool{"disconnected": input.Disconnected}, err)
 	})
 	mux.HandleFunc("DELETE /api/v1/swarm/peers/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -192,6 +197,9 @@ func (s *Server) swarmRoutes(mux *http.ServeMux) {
 		_ = s.Swarm.JSON(ctx, id, "POST", "/api/v1/swarm/revoke", nil, nil)
 		cancel()
 		err := s.Swarm.Revoke(id)
+		if err == nil {
+			s.revokeAccessWork(id)
+		}
 		respond(w, map[string]bool{"revoked": err == nil}, err)
 	})
 	mux.HandleFunc("POST /api/v1/swarm/revoke", func(w http.ResponseWriter, r *http.Request) {
@@ -202,7 +210,11 @@ func (s *Server) swarmRoutes(mux *http.ServeMux) {
 		}
 		// Finish the response before closing the tunnel carrying it.
 		respond(w, map[string]bool{"revoked": true}, nil)
-		go func() { time.Sleep(50 * time.Millisecond); _ = s.Swarm.Revoke(caller.NodeID) }()
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			_ = s.Swarm.Revoke(caller.NodeID)
+			s.revokeAccessWork(caller.NodeID)
+		}()
 	})
 	mux.HandleFunc("GET /api/v1/swarm/state", s.swarmState)
 	mux.HandleFunc("GET /api/v1/swarm/events", s.swarmEvents)

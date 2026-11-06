@@ -123,6 +123,8 @@ func (s *Server) handleInlineChat(w http.ResponseWriter, r *http.Request) {
 	stopRequest := context.AfterFunc(r.Context(), cancel)
 	defer stopRequest()
 	d := &dispatch{id: domain.ID(), group: coordinator.New([]string{bot.ID}), ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: map[string]chan struct{}{bot.ID: make(chan struct{}, 1)}, active: map[string]bool{bot.ID: true}, admitted: map[string]chan struct{}{bot.ID: make(chan struct{})}}
+	d.access = s.requestAccess(r)
+	ctx = s.accessContext(ctx, d.access)
 	s.mu.Lock()
 	current, lookupErr := s.Bot(bot.ID)
 	if s.maintenance || s.ctx.Err() != nil || lookupErr != nil || current.Revision != bot.Revision || s.revoking[bot.ID] > 0 {
@@ -183,7 +185,7 @@ func (s *Server) handleInlineChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if err = d.awaitAdmission(ctx, bot.ID); err == nil {
 		if err = emit(inlineChatEvent{Type: "status", Text: "Working..."}); err == nil {
-			scope := domain.ExecutionScope{Bot: bot, RunID: d.id, DispatchID: d.id}
+			scope := domain.ExecutionScope{Access: d.access, Bot: bot, RunID: d.id, DispatchID: d.id}
 			modelCtx := context.WithValue(ctx, providerKey{}, &providerInvocation{Scope: scope})
 			err = s.runInlineChat(modelCtx, d, scope, endpoint, input, candidate, messages, emit)
 		}

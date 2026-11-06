@@ -120,6 +120,11 @@ func (s *Server) executeSCM(ctx context.Context, botID string, request scmexec.R
 	if !sourceControl(id) {
 		return out, errors.New("unknown source control provider")
 	}
+	if a, _ := ctx.Value(scmDirectAccessKey{}).(*domain.ExecutionAccess); a != nil {
+		if err := s.requireSharedPlugin(a, id); err != nil {
+			return out, err
+		}
+	}
 	if err := s.scmAvailable(botID, id); err != nil {
 		return out, err
 	}
@@ -282,13 +287,31 @@ func p4CredentialKey(server, user string) string {
 	return sourcecontrol.RepositoryID("p4-credential", server, user)
 }
 
+type scmDirectAccessKey struct{}
+
 func (s *Server) sourceControlEditorRoutes(mux *http.ServeMux) {
 	base := "/api/v1/plugins/monaco-editor/bots/{botId}/source-control"
 	handle := func(method, path string, fn http.HandlerFunc) {
-		mux.HandleFunc(method+" "+base+path, s.editorGuard(fn))
+		mux.HandleFunc(method+" "+base+path, s.editorGuard(func(w http.ResponseWriter, r *http.Request) {
+			if a := s.requestAccess(r); a != nil {
+				if path == "/p4/credential" {
+					if err := s.requireSharedPlugin(a, "p4"); err != nil {
+						respond(w, nil, err)
+						return
+					}
+				}
+				r = r.WithContext(context.WithValue(r.Context(), scmDirectAccessKey{}, a))
+			}
+			fn(w, r)
+		}))
 	}
 	reply := func(w http.ResponseWriter, value any, err error) {
 		if err != nil {
+			var denial *accessError
+			if errors.As(err, &denial) {
+				accessErrorResponse(w, denial)
+				return
+			}
 			var typed *sourcecontrol.Error
 			if errors.As(err, &typed) {
 				editorData(w, 409, map[string]any{"error": typed.Message, "code": typed.Code})

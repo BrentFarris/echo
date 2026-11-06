@@ -38,6 +38,41 @@ test.afterEach(async ({ page }) => {
   await page.request.patch('/api/v1/plugins/swarm', { data: { enabled: false, config: {} } });
 });
 
+test('coworker permissions apply on the destination and private bots leave the picker', async ({ page, browser }) => {
+  const [linux] = await connect(page);
+  const remote = '/api/v1/swarm/instances/' + linux;
+  const dir = await json(page, '/api/v1/swarm/peers'), peer = dir.node.nodeId;
+  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:3744' });
+  const owner = await context.newPage();
+  await owner.goto('http://127.0.0.1:3744/'); await expect(owner.locator('#apps-button')).toBeVisible();
+  const bot = (await json(owner, '/api/v1/state')).bots.find((b: any) => b.handle === 'kaiju');
+  const policyPath = '/api/v1/swarm/peers/' + peer + '/access', saved = await json(owner, policyPath);
+  try {
+    await owner.locator('#settings-button').click();
+    await owner.getByRole('button', { name: 'Swarm', exact: true }).click();
+    await owner.locator('[data-target]').selectOption(peer);
+    const editor = owner.locator('[data-access-form]');
+    await expect(editor.getByRole('button', { name: 'Use machine defaults' })).toBeVisible();
+    await editor.getByRole('button', { name: 'Use coworker settings' }).click();
+    await editor.getByRole('button', { name: 'Save access' }).click();
+    await expect.poll(async () => (await json(page, remote + '/state')).swarmAccess.full).toBe(false);
+    for (const [method, path] of [['GET', '/plugins/terminal/bots/echo/sessions'], ['POST', '/bots'], ['PUT', '/swarm/access']]) {
+      const response = await page.request.fetch(remote + path, { method, ...(method === 'GET' ? {} : { data: {} }) });
+      expect(response.status()).toBe(403); expect((await response.json()).code).toBe('swarm_access_denied');
+    }
+    await page.getByRole('combobox', { name: 'Bot for new chat' }).selectOption(linux + ':' + bot.id);
+    await page.locator('#new-chat').click(); const composer = page.locator('#composer');
+    await composer.pressSequentially('hello'); await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    await expect(page.locator('.message.assistant')).toContainText('Completed the requested work.');
+    await json(owner, '/api/v1/swarm/access/bots/' + bot.id, 'PUT', { shared: false });
+    await expect(page.locator('#new-chat-bot option[value="' + linux + ':' + bot.id + '"]')).toHaveCount(0);
+    await expect(page.locator('.message.assistant')).toContainText('Completed the requested work.');
+  } finally {
+    await json(owner, '/api/v1/swarm/access/bots/' + bot.id, 'PUT', { shared: true });
+    await json(owner, policyPath, 'PUT', saved.policy); await context.close();
+  }
+});
+
 test('new chat bot choices include remote Echo, dispatch qualified mentions, and reset offline selections', async ({ page }) => {
   const [linux] = await connect(page), remote = `/api/v1/swarm/instances/${linux}`;
   const select = page.getByRole('combobox', { name: 'Bot for new chat' }), composer = page.locator('#composer');

@@ -118,6 +118,9 @@ func NetworkFetch(ctx context.Context, args NetworkRequest, origins []string) (m
 	transport := &http.Transport{Proxy: nil, DialContext: networkDial, MaxResponseHeaderBytes: 32 << 10}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if err := checkRestrictedURL(ctx, req.URL); err != nil {
+			return err
+		}
 		if len(via) > 5 {
 			return errors.New("too many redirects")
 		}
@@ -132,6 +135,7 @@ func NetworkFetch(ctx context.Context, args NetworkRequest, origins []string) (m
 			headers = http.Header{}
 		}
 		req.Header = headers.Clone()
+		markRemotePlugin(ctx, req.Header)
 		req.Header.Set("User-Agent", "Echo/1.0")
 		return nil
 	}}
@@ -140,6 +144,10 @@ func NetworkFetch(ctx context.Context, args NetworkRequest, origins []string) (m
 		return nil, err
 	}
 	req.Header = headers.Clone()
+	markRemotePlugin(ctx, req.Header)
+	if err := checkRestrictedURL(ctx, req.URL); err != nil {
+		return nil, err
+	}
 	req.Header.Set("User-Agent", "Echo/1.0")
 	res, err := client.Do(req)
 	if err != nil {

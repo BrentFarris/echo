@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -150,6 +151,13 @@ func NetworkSocketCall(ctx context.Context, method string, raw json.RawMessage, 
 		return nil, err
 	}
 	if method == "websocket.open" {
+		parsed, err := url.Parse(a.URL)
+		if err != nil {
+			return nil, err
+		}
+		if err := checkRestrictedURL(ctx, parsed); err != nil {
+			return nil, err
+		}
 		if err := CheckNetworkURL(a.URL, origins, true); err != nil {
 			return nil, err
 		}
@@ -180,6 +188,7 @@ func NetworkSocketCall(ctx context.Context, method string, raw json.RawMessage, 
 		defer func() { s.mu.Lock(); s.opening--; s.mu.Unlock() }()
 		dial := websocket.Dialer{NetDialContext: networkDial, Proxy: nil, HandshakeTimeout: 30 * time.Second, Subprotocols: a.Protocols, ReadBufferSize: 4096, WriteBufferSize: 4096}
 		// Gorilla requires a 101 response and never follows handshake redirects.
+		markRemotePlugin(ctx, headers)
 		conn, response, err := dial.DialContext(ctx, a.URL, headers)
 		if response != nil && response.Body != nil {
 			response.Body.Close()

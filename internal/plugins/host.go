@@ -111,6 +111,7 @@ func New(ctx context.Context, s *store.Store, dir string, guest []byte, broker B
 		if s.Get("plugins", m.ID, &current) == nil {
 			m.Enabled = current.Enabled
 			m.Config = current.Config
+			m.SwarmAvailable = current.SwarmAvailable
 		}
 		if m.ID == "go" {
 			if m.Config == nil {
@@ -382,6 +383,9 @@ func (h *Host) Install(m domain.PluginManifest, wasm []byte) (domain.PluginManif
 		return m, errors.New("backend exceeds 32 MiB")
 	}
 	old, oldErr := h.Get(m.ID)
+	if oldErr == nil {
+		m.SwarmAvailable = old.SwarmAvailable
+	}
 	if old.Builtin {
 		return m, errors.New("built-in packages cannot be replaced")
 	}
@@ -577,6 +581,7 @@ func (h *Host) Rollback(id string) error {
 	if e != nil {
 		return e
 	}
+	previous.SwarmAvailable = current.SwarmAvailable
 	if e = h.Save(previous); e != nil {
 		return e
 	}

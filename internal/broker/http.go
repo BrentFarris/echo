@@ -26,6 +26,9 @@ func Fetch(ctx context.Context, raw string, allowedOrigins []string) (map[string
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	if e := checkRestrictedURL(ctx, u); e != nil {
+		return nil, e
+	}
 	transport := &http.Transport{Proxy: nil, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, e := net.SplitHostPort(address)
 		if e != nil {
@@ -55,6 +58,10 @@ func Fetch(ctx context.Context, raw string, allowedOrigins []string) (map[string
 		if req.URL.User != nil || (req.URL.Scheme != "http" && req.URL.Scheme != "https") {
 			return errors.New("unsafe redirect")
 		}
+		if err := checkRestrictedURL(ctx, req.URL); err != nil {
+			return err
+		}
+		markRemotePlugin(ctx, req.Header)
 		u = req.URL
 		return nil
 	}}
@@ -62,6 +69,7 @@ func Fetch(ctx context.Context, raw string, allowedOrigins []string) (map[string
 	if e != nil {
 		return nil, e
 	}
+	markRemotePlugin(ctx, req.Header)
 	req.Header.Set("User-Agent", "Echo/1.0")
 	res, e := client.Do(req)
 	if e != nil {

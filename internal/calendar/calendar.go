@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 )
 
 type Schedule struct {
+	AccessIDs       []string          `json:"swarmAccessIds,omitempty"`
 	ID              string            `json:"id"`
 	BotID           string            `json:"botId"`
 	Prompt          string            `json:"prompt"`
@@ -32,6 +34,7 @@ type Schedule struct {
 	OneShotConsumed bool              `json:"oneShotConsumed,omitempty"`
 }
 type Occurrence struct {
+	AccessIDs  []string          `json:"swarmAccessIds,omitempty"`
 	ID         string            `json:"id"`
 	ScheduleID string            `json:"scheduleId"`
 	BotID      string            `json:"botId"`
@@ -215,6 +218,7 @@ func (c *Calendar) Save(s Schedule, now time.Time) (Schedule, error) {
 		}
 		if err == nil {
 			s.CreatedAt = previous.CreatedAt
+			s.AccessIDs = mergeAccessIDs(previous.AccessIDs, s.AccessIDs)
 			if strings.TrimSpace(previous.Recurrence) == strings.TrimSpace(s.Recurrence) && oneShot(s.Recurrence) {
 				// Next == zero also recognizes consumed schedules from older versions.
 				s.OneShotConsumed = previous.OneShotConsumed || previous.Next.IsZero()
@@ -268,12 +272,24 @@ func (c *Calendar) DeleteBot(id string) error {
 }
 func occurrence(s Schedule) Occurrence {
 	hash := sha256.Sum256([]byte(s.ID + ":" + s.Next.UTC().Format(time.RFC3339Nano)))
-	return Occurrence{ID: hex.EncodeToString(hash[:16]), ScheduleID: s.ID, BotID: s.BotID, Prompt: s.Prompt, IntendedAt: s.Next, Generation: s.Generation, Timezone: s.Timezone, Recurrence: s.Recurrence}
+	return Occurrence{AccessIDs: s.AccessIDs, ID: hex.EncodeToString(hash[:16]), ScheduleID: s.ID, BotID: s.BotID, Prompt: s.Prompt, IntendedAt: s.Next, Generation: s.Generation, Timezone: s.Timezone, Recurrence: s.Recurrence}
+}
+
+// These opaque IDs reference host-only execution provenance; never store a
+// delegation token in a schedule or occurrence returned to a browser/model.
+func mergeAccessIDs(a, b []string) []string {
+	out := append([]string(nil), a...)
+	for _, id := range b {
+		if id != "" && !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // RunNow durably accepts work and its scheduling effect together. Execution uses
 // the caller's service lifetime, not the HTTP request that accepted the work.
-func (c *Calendar) RunNow(ctx context.Context, id string, now time.Time) (Schedule, Occurrence, error) {
+func (c *Calendar) RunNow(ctx context.Context, id string, now time.Time, accessIDs ...string) (Schedule, Occurrence, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var s Schedule
@@ -295,6 +311,7 @@ func (c *Calendar) RunNow(ctx context.Context, id string, now time.Time) (Schedu
 	}
 	single := oneShot(s.Recurrence)
 	o := occurrence(s)
+	o.AccessIDs = mergeAccessIDs(o.AccessIDs, accessIDs)
 	o.ID = domain.ID()
 	for _, existing := range all {
 		if existing.ScheduleID != id {
@@ -517,7 +534,10 @@ func (c *Calendar) run(ctx context.Context, o Occurrence) {
 		c.Changed()
 	}
 }
-func (c *Calendar) Review(ctx context.Context, ids []string, concurrency int) error {
+func (c *Calendar) Review(ctx context.Context, ids []string, concurrency int, accessIDs ...string) error {
+	return c.ReviewVisible(ctx, ids, concurrency, nil, accessIDs...)
+}
+func (c *Calendar) ReviewVisible(ctx context.Context, ids []string, concurrency int, visible func(string) bool, accessIDs ...string) error {
 	if concurrency < 0 {
 		return errors.New("concurrency must be zero or greater")
 	}
@@ -526,6 +546,9 @@ func (c *Calendar) Review(ctx context.Context, ids []string, concurrency int) er
 	if e != nil {
 		c.mu.Unlock()
 		return e
+	}
+	if visible != nil {
+		all = slices.DeleteFunc(all, func(o Occurrence) bool { return !visible(o.BotID) })
 	}
 	selected := map[string]bool{}
 	for _, id := range ids {
@@ -550,6 +573,7 @@ func (c *Calendar) Review(ctx context.Context, ids []string, concurrency int) er
 			continue
 		}
 		if selected[o.ID] {
+			o.AccessIDs = mergeAccessIDs(o.AccessIDs, accessIDs)
 			o.Status = "queued"
 			batch = append(batch, o)
 			delete(selected, o.ID)

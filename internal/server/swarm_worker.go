@@ -124,6 +124,8 @@ func (s *Server) prepareWorker(req workerRequest) error {
 		chatID = req.Chat.ID
 	}
 	d := &dispatch{id: "worker:" + key, chatID: chatID, ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: map[string]chan struct{}{}, admitted: map[string]chan struct{}{}, active: map[string]bool{}}
+	d.access = s.narrowAccess(s.workerAccess(req))
+	d.ctx = s.accessContext(d.ctx, d.access)
 	w := &swarmWorker{s: s, request: req, d: d, localHome: local}
 	d.worker = w
 	d.group = &workerGroup{worker: w, drains: map[string]int{}}
@@ -361,6 +363,7 @@ func (s *Server) startWorker(input workerControl) error {
 }
 
 func (s *Server) executeWorkerBot(w *swarmWorker, run domain.Run) {
+	go s.watchExecutionAccess(w.d.ctx, w.d.cancel, w.d.access, []string{run.BotID})
 	defer w.d.wg.Done()
 	bot, err := s.Bot(run.BotID)
 	if err != nil {

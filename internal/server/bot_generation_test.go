@@ -11,6 +11,7 @@ import (
 
 	"github.com/brent/echo/internal/calendar"
 	"github.com/brent/echo/internal/domain"
+	"github.com/brent/echo/internal/swarm"
 )
 
 func TestBotGenerationSaveAndInheritance(t *testing.T) {
@@ -317,7 +318,13 @@ func TestBotGenerationInlineAndCLIRejection(t *testing.T) {
 }
 
 func TestBotGenerationLegacyHomeCannotIgnoreOverrides(t *testing.T) {
-	s := testServer(t)
+	s, _ := swarmFixture(t, "worker", remotePassword)
+	legacy, _ := swarmFixture(t, "legacy", remotePassword)
+	home := legacy.Swarm.Node()
+	home.Capabilities = slices.DeleteFunc(slices.Clone(home.Capabilities), func(c string) bool { return c == "bot-model-overrides/1" || c == "swarm-access/1" })
+	if _, err := s.Swarm.Pair(t.Context(), swarm.PairRequest{Version: swarm.Version, Node: home, ID: domain.ID() + domain.ID(), ReturnToken: domain.ID() + domain.ID(), Password: remotePassword, Activate: true}, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
 	g := attachModel(t, s, func(w http.ResponseWriter, r *http.Request) { stream(w, "ok", nil) })
 	bot, _ := s.Bot("echo")
 	bot.ModelOverride = &domain.BotModelOverride{EndpointID: g.EndpointID}
@@ -326,7 +333,7 @@ func TestBotGenerationLegacyHomeCannotIgnoreOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	self := s.Swarm.Node().ID
-	req := workerRequest{Home: "legacy", Origin: self, ID: domain.ID(), Token: strings.Repeat("t", 64), Runs: []domain.Run{{BotID: bot.ID, Generation: g}}}
+	req := workerRequest{Home: home.ID, Origin: self, ID: domain.ID(), Token: strings.Repeat("t", 64), Runs: []domain.Run{{BotID: bot.ID, Generation: g}}}
 	if err := s.validateWorker(req); err == nil || !strings.Contains(err.Error(), "update the chat home") {
 		t.Fatal(err)
 	}

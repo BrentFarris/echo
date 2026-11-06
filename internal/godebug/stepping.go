@@ -38,12 +38,6 @@ func sourceStep(stepCtx context.Context, op debugger.StepClient, command string,
 	targetC := ""
 	targetGoBase := ""
 	var bridgeCtx context.Context
-	var cancel context.CancelFunc
-	defer func() {
-		if cancel != nil {
-			cancel()
-		}
-	}()
 	prologueTarget := ""
 	prologueLine := 0
 	prologueChecked := false
@@ -87,7 +81,9 @@ func sourceStep(stepCtx context.Context, op debugger.StepClient, command string,
 					}
 				}
 			}
+			var cancel context.CancelFunc
 			bridgeCtx, cancel = context.WithTimeout(stepCtx, cgoStepTimeout)
+			defer cancel() // traversing is set once, on entry to the bridge
 			ctx = bridgeCtx
 		}
 		if command == "stepIn" && targetC != "" && !cgoBridgeFrame(origin) && frame.Name == origin.Name && frame.Source.Path == origin.Source.Path {

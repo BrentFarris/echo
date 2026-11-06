@@ -33,7 +33,7 @@ func (s *Server) visibleBotGroups(ctx context.Context) ([]domain.BotGroup, error
 	if caller, ok := swarm.Caller(ctx); ok && !s.oneGroupCapable(caller.NodeID) {
 		groups = slices.DeleteFunc(groups, func(g domain.BotGroup) bool { return g.DeliveryMode == "one" })
 	}
-	return groups, err
+	return s.sharedGroups(ctx, groups), err
 }
 
 func (s *Server) checkGroupHandle(handle, except string) error {
@@ -87,6 +87,11 @@ func (s *Server) saveBotGroup(ctx context.Context, id string, group domain.BotGr
 			member.NodeID = self
 		}
 		key := swarm.Ref{NodeID: member.NodeID, ID: member.BotID}
+		if key.NodeID == self {
+			if err := s.requireSharedBot(contextAccess(ctx), key.ID); err != nil {
+				return group, err
+			}
+		}
 		if seen[key] {
 			continue
 		}

@@ -161,7 +161,9 @@ func (s *Service) prepareSession(requestContext context.Context, id string, entr
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	// Keep the requesting execution identity for the plugin lease. HTTP completion
+	// does not end a debug session; owner revocation still can.
+	ctx, cancel := context.WithCancel(context.WithoutCancel(requestContext))
 	release := func() {}
 	if s.options.Lease != nil {
 		var e error

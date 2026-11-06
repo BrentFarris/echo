@@ -1,3 +1,4 @@
+import { swarmCan } from './swarmAccess';
 import type { Bot, Plugin } from './types';
 import { entryNode, localID, machineName, ownerEcho, sameMachine } from './instances';
 
@@ -6,12 +7,15 @@ export function botPluginSelected(bot: Bot | undefined, id: string): boolean {
   return !bot || (bot.plugins[id] ?? (localID(bot.id) === 'echo'));
 }
 
+function appRestriction(plugin: Plugin) { const node = plugin.nodeId || entryNode, id = localID(plugin.id); return id === 'terminal' && !swarmCan(node, 'full') ? 'Terminal requires Full access' : id === 'monaco-editor' && !swarmCan(node, 'readFiles') ? 'File reading restricted by owner' : ''; }
+
 export function pluginAvailable(plugin: Plugin | undefined, bot: Bot | undefined): boolean {
-  return !!plugin && !!bot && sameMachine(bot, plugin.nodeId || entryNode) && plugin.enabled && !plugin.pending &&
+  return !!plugin && !appRestriction(plugin) && !!bot && sameMachine(bot, plugin.nodeId || entryNode) && plugin.enabled && !plugin.pending &&
     (plugin.scope !== 'echo' || localID(bot.id) === 'echo') && (plugin.scope === 'app' || botPluginSelected(bot, plugin.id));
 }
 
 export function appStatus(plugin: Plugin, echo: Bot | undefined): string {
+  if (appRestriction(plugin)) return appRestriction(plugin);
   if (plugin.pending) return 'Awaiting permission';
   if (!plugin.enabled) return 'Disabled';
   if (!pluginAvailable(plugin, echo)) return 'Disabled for Echo';
@@ -72,7 +76,7 @@ export class Apps {
   render(plugins: Plugin[], ids: string[], echo: Bot | undefined, bots: Bot[] = echo ? [echo] : []) {
     this.data = { plugins, ids, echo, bots };
     const apps = registeredApps(plugins);
-    const signature = JSON.stringify([apps.map(p => [p.id, p.name, p.app, p.enabled, p.pending, p.scope]), ids, echo?.plugins, !!echo, [...this.pending]]);
+    const signature = JSON.stringify([apps.map(p => [p.id, p.name, p.app, p.enabled, p.pending, p.scope, appStatus(p, ownerEcho(p, bots)), swarmCan(p.nodeId || entryNode, 'managePlugins')]), ids, echo?.plugins, !!echo, [...this.pending]]);
     if (signature === this.signature) return;
     this.signature = signature;
     const active = document.activeElement as HTMLElement | null;
@@ -98,7 +102,9 @@ export class Apps {
         finally { this.pending.delete(plugin.id); this.signature = ''; if (this.data) this.render(this.data.plugins, this.data.ids, this.data.echo, this.data.bots); }
       });
       pin.setAttribute('aria-label', `${pinned ? 'Undock' : 'Dock'} ${plugin.name}`);
-      pin.disabled = this.pending.has(plugin.id) || (!pinned && !!status);
+      const canManage = swarmCan(plugin.nodeId || entryNode, 'managePlugins');
+      pin.disabled = !canManage || this.pending.has(plugin.id) || (!pinned && !!status);
+      if (!canManage) pin.title = 'Plugin administration restricted by owner';
       const settings = this.button('Settings', `settings:${plugin.id}`, () => this.actions.settings(plugin, status === 'Disabled for Echo'));
       settings.setAttribute('aria-label', `Settings for ${plugin.name}`);
       buttons.append(open, pin, settings); card.append(buttons); grid.append(card);

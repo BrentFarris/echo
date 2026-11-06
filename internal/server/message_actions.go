@@ -174,6 +174,7 @@ func (s *Server) messageActionRoutes(mux *http.ServeMux) {
 			return
 		}
 		req := SendRequest{RequestID: body.RequestID, rerunMessageID: r.PathValue("messageId"), OriginNodeID: s.Swarm.Node().ID}
+		req.access = s.requestAccess(r)
 		if caller, ok := swarm.Caller(r.Context()); ok {
 			req.OriginNodeID = caller.NodeID
 			req.Permits = body.Permits
@@ -223,6 +224,7 @@ func (s *Server) messageActionRoutes(mux *http.ServeMux) {
 			return
 		}
 		req := SendRequest{Content: body.Content, RequestID: body.RequestID, replaceMessageID: r.PathValue("messageId"), OriginNodeID: s.Swarm.Node().ID}
+		req.access = s.requestAccess(r)
 		if caller, ok := swarm.Caller(r.Context()); ok {
 			req.OriginNodeID = caller.NodeID
 			req.Segments, req.Permits, req.forwardedGroups = body.Segments, body.Permits, true

@@ -101,6 +101,23 @@ The combined sidebar includes existing remote chats and machine chips, with an o
 
 Remote inventory refreshes in the background, so an offline or slow machine does not delay local chat actions. Cached bots and chats remain visible with an Offline label. Offline bots cannot be selected or sent work; a message mentioning both available and offline bots is rejected before any bot starts, preserving the draft. Reconnection happens automatically in the background. Previously opened remote transcripts remain readable while their machine is offline.
 
+### Share a computer with coworkers
+
+Open **Settings → Swarm → Access to this machine** on the computer whose resources you want to share. Existing connections start with **Full access**. Each permission defaults to Allow. Select a connected computer to **Inherit**, **Allow**, or **Deny** individual permissions. The connection is identified by its stable node ID; changing its name or reconnecting does not reset the policy. These controls distinguish computers, not different people using the same computer.
+
+**Use coworker settings** allows shared bots to run and denies direct file access, execution, and administration. For example, a coworker can ask a shared coding bot to fix a file and run a build in its assigned folders, but cannot open a terminal, change the folders, or ask Echo to change them. Shared bots retain their configured tools and integrations. A bot without assigned folders has broad filesystem access; assign folders before sharing a coding bot that should stay in one workspace. Interactive terminals, unscoped commands and external CLI agents require Full access.
+
+| To control | Setting |
+| --- | --- |
+| Which bots coworkers can invoke, including through groups or delegation | **Available in swarm** in the bot’s settings, or exclude the bot for a specific peer |
+| Which plugin apps, bridges and standalone actions coworkers can open | **Available for direct swarm use** in the plugin’s settings, or exclude the plugin for a peer |
+| Direct file reads, changes and scoped execution | The three independent file and command permissions |
+| Bot and group edits, plugin settings, connections and credentials, schedules, chat changes, or machine administration | The corresponding permissions under Swarm access |
+
+Bots and plugins start shared. Sharing never enables a disabled plugin. Making a plugin private for direct use does not remove it from a shared bot. Making a bot private removes it from remote choices and blocks new work through old references. Access changes apply to running and queued remote work; they cannot undo completed actions. **Previously recorded chat history remains visible.**
+
+To pair without sharing the owner password, choose **Create an invitation**, choose what the other computer can do here, and give its owner the pairing code and your Echo address. On their computer, they choose **Pair with an invitation** and set your reciprocal access. Codes expire after 15 minutes, pair one computer, and can be revoked before use. Invitation pairing does not save a password for automatic discovery. Use updated Echo instances for invitations and for delegated work with restricted access. For coworkers, use invitations instead of giving them an owner password that can sign in outside the swarm.
+
 Swarm discovers topology through connected peers, with direct links preferred and encrypted relay transport when necessary. Peers with matching passwords can authenticate automatically. A different-password destination requires its own password from each entry point: access through an intermediate machine does not grant access to that destination. No network scan is performed. **Disconnect** retains credentials but prevents automatic reconnection; **Reconnect** reverses it. **Revoke access**, a password change, or disabling Swarm invalidates or suspends access. Automatic discovery cannot reactivate disabled or revoked connections; explicit pairing can.
 
 Reachable workers continue when another worker disconnects. Running workers can finish if their chat home disappears; results reconcile when it returns. Opened transcripts remain readable from the entry machine's cache, while new messages require the home to be reachable. There is no ownership failover. Accepted execution is durable and retries do not rerun tools; a worker crash leaves interrupted work. Stop and deletion persist pending cancellation during outages, and deletion tombstones prevent late results from recreating history. Mixed-machine work reserves its bots across hosts before starting; busy reservations are released and retried without holding a partial set indefinitely.

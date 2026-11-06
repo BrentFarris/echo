@@ -18,14 +18,15 @@ import (
 // The home probes only routing metadata. A claim is checked again under the
 // same lock and in the same reservation map as direct, inline and Swarm work.
 type slotQuery struct {
-	Queued     bool              `json:"queued,omitempty"`
-	Turn       string            `json:"turn"`
-	Bot        string            `json:"bot"`
-	Origin     string            `json:"origin"`
-	Generation domain.Generation `json:"generation"`
-	Paths      []string          `json:"paths,omitempty"`
-	Action     string            `json:"action"`
-	Revision   int64             `json:"revision,omitempty"`
+	Access     *domain.ExecutionAccess `json:"access,omitempty"`
+	Queued     bool                    `json:"queued,omitempty"`
+	Turn       string                  `json:"turn"`
+	Bot        string                  `json:"bot"`
+	Origin     string                  `json:"origin"`
+	Generation domain.Generation       `json:"generation"`
+	Paths      []string                `json:"paths,omitempty"`
+	Action     string                  `json:"action"`
+	Revision   int64                   `json:"revision,omitempty"`
 }
 type slotInfo struct {
 	Active   int      `json:"active"`
@@ -203,6 +204,18 @@ func (s *Server) localSlot(home string, q slotQuery) (slotInfo, error) {
 	if q.Origin != s.Swarm.Node().ID && !s.Swarm.Authorized(q.Origin) {
 		return info, errors.New("entry machine is not paired with this worker")
 	}
+	if home != s.Swarm.Node().ID || q.Origin != s.Swarm.Node().ID || q.Access != nil {
+		a := s.workerAccess(workerRequest{Home: home, Origin: q.Origin, Access: q.Access})
+		if err := s.validateAccessParents(s.ctx, a); err != nil {
+			return info, err
+		}
+		if err := s.requireAccess(a, domain.AccessBots); err != nil {
+			return info, err
+		}
+		if err := s.requireSharedBot(a, q.Bot); err != nil {
+			return info, err
+		}
+	}
 	bot, err := s.Bot(q.Bot)
 	if err != nil {
 		return info, errors.New("bot no longer exists")
@@ -378,7 +391,7 @@ type groupWorkerCheck struct {
 
 func (s *Server) validateGroupWorkerRemote(ctx context.Context, node string, host workerRequest) error {
 	check := groupWorkerCheck{Fingerprint: requestFingerprint(host)}
-	check.Worker = workerRequest{ID: host.ID, Token: host.Token, Home: host.Home, Origin: host.Origin, Permit: host.Permit, Participants: host.Participants, Runs: host.Runs}
+	check.Worker = workerRequest{ID: host.ID, Token: host.Token, Home: host.Home, Origin: host.Origin, Permit: host.Permit, Access: host.Access, AccessPermit: host.AccessPermit, Participants: host.Participants, Runs: host.Runs}
 	for _, seg := range host.Message.Segments {
 		if seg.Type == "file" && seg.NodeID == node {
 			check.Worker.Message.Segments = append(check.Worker.Message.Segments, domain.Segment{Type: "file", NodeID: node, Path: seg.Path})

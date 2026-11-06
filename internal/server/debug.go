@@ -28,6 +28,15 @@ func (s *Server) leaseDebug(ctx context.Context, id, plugin string) (context.Con
 		return nil, nil, err
 	}
 	var releases []func()
+	if a := contextAccess(ctx); a != nil {
+		var release func()
+		ctx, release = s.trackAccess(ctx, a)
+		if err := s.requireFull(a); err != nil {
+			release()
+			return nil, nil, err
+		}
+		releases = append(releases, release)
+	}
 	release := func() {
 		for i := len(releases) - 1; i >= 0; i-- {
 			releases[i]()

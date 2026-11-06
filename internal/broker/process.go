@@ -111,6 +111,9 @@ func (b *ProcessBroker) RunHost(ctx context.Context, r ProcessRequest, emit func
 }
 
 func (b *ProcessBroker) runRequest(ctx context.Context, r ProcessRequest, emit func(string), host bool) (ProcessResult, error) {
+	if IsRestricted(ctx) && (host || len(r.Roots) == 0 || r.PrivateNetwork) {
+		return ProcessResult{}, errors.New("owner-level execution requires Full swarm access; use bound folders without private-network execution")
+	}
 	if e := ctx.Err(); e != nil {
 		return ProcessResult{}, e
 	}

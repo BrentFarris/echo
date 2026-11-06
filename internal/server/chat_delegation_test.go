@@ -235,6 +235,9 @@ func TestChatDelegationSwarmGroup(t *testing.T) {
 	}
 	eventuallySwarm(t, func() bool {
 		runs, _ := s.Store.ChatRuns(result.ChatID)
+		if len(runs) == 1 && (runs[0].Status == "failed" || runs[0].Status == "cancelled") {
+			t.Fatalf("delegated group run %s: %s", runs[0].Status, runs[0].Error)
+		}
 		return len(runs) == 1 && runs[0].Status == "completed"
 	})
 	messages, err := s.Store.Messages(result.ChatID)

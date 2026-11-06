@@ -154,6 +154,15 @@ func (s *Server) recipients(req SendRequest) ([]domain.Bot, error) {
 	return result, nil
 }
 func (s *Server) send(chatID string, req SendRequest) (*dispatch, error) {
+	if req.access == nil && req.OriginNodeID != "" && req.OriginNodeID != s.Swarm.Node().ID {
+		req.access = &domain.ExecutionAccess{Origin: req.OriginNodeID}
+	}
+	if err := s.requireAccess(req.access, domain.AccessBots); err != nil {
+		return nil, err
+	}
+	if err := s.validateAccessParents(s.ctx, req.access); err != nil {
+		return nil, err
+	}
 	if req.newChat == nil {
 		if _, err := s.Store.Chat(chatID); err != nil {
 			return nil, err
@@ -225,8 +234,14 @@ func (s *Server) sendResolved(chatID string, req SendRequest) (*dispatch, error)
 	endpoints := make([]domain.Endpoint, len(bots))
 	ids := []string{}
 	for i, b := range bots {
+		if err := s.requireSharedBot(req.access, b.ID); err != nil {
+			return nil, err
+		}
 		ids = append(ids, b.ID)
 		generations[i], endpoints[i], e = s.resolveGeneration(b.OverrideGeneration(req.Generation))
+		if e == nil && endpoints[i].External() {
+			e = s.requireFull(req.access)
+		}
 		if e == nil {
 			e = s.validateGeneration(b, generations[i], nil)
 		}
@@ -278,6 +293,8 @@ func (s *Server) sendResolved(chatID string, req SendRequest) (*dispatch, error)
 	ctx, cancel := context.WithCancel(s.ctx)
 	localGroup := coordinator.New(ids)
 	d := &dispatch{id: domain.ID(), chatID: chatID, group: localGroup, ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: map[string]chan struct{}{}, active: map[string]bool{}, admitted: map[string]chan struct{}{}}
+	d.access = s.narrowAccess(req.access)
+	d.ctx = s.accessContext(d.ctx, d.access)
 	for _, b := range bots {
 		d.wake[b.ID] = make(chan struct{}, 1)
 		d.active[b.ID] = true
@@ -327,6 +344,7 @@ func (s *Server) sendResolved(chatID string, req SendRequest) (*dispatch, error)
 	}
 	s.enqueueLocked(d)
 	s.mu.Unlock()
+	go s.watchExecutionAccess(ctx, cancel, d.access, ids)
 	localGroup.OnSend = func(r coordinator.Request) {
 		s.emit("handoff", chatID, "", r.From, r)
 		d.mu.Lock()
@@ -501,8 +519,21 @@ func (s *Server) history(bot domain.Bot, chat string) ([]model.Message, error) {
 	return s.withGeneratedImages(chat, bot.ID, ms, out)
 }
 func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run domain.Run, endpoint domain.Endpoint) error {
-	ctx = context.WithValue(ctx, providerKey{}, &providerInvocation{Statistics: run.Statistics, Scope: domain.ExecutionScope{Bot: bot, ChatID: run.ChatID, RunID: run.ID, DispatchID: d.id}})
+	if err := s.validateAccessParents(ctx, d.access); err != nil {
+		return err
+	}
+	if err := s.requireAccess(d.access, domain.AccessBots); err != nil {
+		return err
+	}
+	if err := s.requireSharedBot(d.access, bot.ID); err != nil {
+		return err
+	}
+	ctx = s.accessContext(ctx, d.access)
+	ctx = context.WithValue(ctx, providerKey{}, &providerInvocation{Statistics: run.Statistics, Scope: domain.ExecutionScope{Access: d.access, Bot: bot, ChatID: run.ChatID, RunID: run.ID, DispatchID: d.id}})
 	if endpoint.External() {
+		if err := s.requireFull(d.access); err != nil {
+			return err
+		}
 		return s.runExternalAgent(ctx, d, bot, run, endpoint)
 	}
 	history, e := s.history(bot, run.ChatID)
@@ -523,7 +554,8 @@ func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run do
 	if e != nil {
 		return e
 	}
-	tools := append(s.coreTools(bot), s.Plugins.Tools(bot)...)
+	toolScope := domain.ExecutionScope{Access: d.access, Bot: bot}
+	tools := append(s.visibleCoreTools(toolScope), s.restrictedPluginTools(toolScope)...)
 	pending := []string{}
 	for {
 		if ctx.Err() != nil {
@@ -646,7 +678,7 @@ func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run do
 				return e
 			}
 			s.emit("message", tm.ChatID, tm.RunID, tm.BotID, tm)
-			scope := domain.ExecutionScope{Bot: bot, ChatID: run.ChatID, RunID: run.ID, DispatchID: d.id, ToolMessageID: tm.ID}
+			scope := domain.ExecutionScope{Access: d.access, Bot: bot, ChatID: run.ChatID, RunID: run.ID, DispatchID: d.id, ToolMessageID: tm.ID}
 			toolBuffer := &streamBuffer{s: s, m: tm}
 			changes := &fileChangeCollector{}
 			toolCtx, stopOutput := context.WithCancel(context.WithValue(context.WithValue(ctx, toolOutputKey{}, toolBuffer), fileChangesKey{}, changes))

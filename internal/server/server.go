@@ -113,6 +113,12 @@ type Server struct {
 	questionsMu       sync.Mutex
 	pendingQuestions  map[string]*pendingQuestion
 	authMu            sync.Mutex
+	accessMu          sync.Mutex
+	policyMu          sync.RWMutex
+	policyCache       map[string]domain.SwarmAccess
+	remoteTerminals   map[string]map[terminalAccess]bool
+	accessRequests    map[*accessLease]bool
+	invitationMu      sync.Mutex
 	appDockMu         sync.Mutex
 	slashCommandsMu   sync.Mutex
 	loginAttempts     map[string][]time.Time
@@ -126,6 +132,7 @@ type Server struct {
 	shutdownRequested chan struct{}
 }
 type dispatch struct {
+	access       *domain.ExecutionAccess
 	waitingGroup bool
 	id, chatID   string
 	group        coordination
@@ -142,6 +149,7 @@ type dispatch struct {
 	admitted     map[string]chan struct{}
 }
 type SendRequest struct {
+	access                 *domain.ExecutionAccess
 	GenerationByNode       map[string]domain.Generation `json:"generationByNode,omitempty"`
 	OriginNodeID           string                       `json:"originNodeId,omitempty"`
 	Permits                map[string]string            `json:"permits,omitempty"`
@@ -493,6 +501,16 @@ func (s *Server) snapshot(id string) ([]domain.Message, int64, error) {
 	return ms, s.seq.Load(), nil
 }
 func respond(w http.ResponseWriter, v any, e error) {
+	var remote *swarm.AccessDenied
+	if errors.As(e, &remote) {
+		accessErrorResponse(w, &accessError{remote.Permission, remote.Reason})
+		return
+	}
+	var access *accessError
+	if errors.As(e, &access) {
+		accessErrorResponse(w, e)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if e != nil {
 		if errors.Is(e, errMaintenance) {
@@ -562,6 +580,10 @@ func (s *Server) Handler() http.Handler {
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Cache-Control", "no-store")
+			if r.Header.Get(broker.RemotePluginHeader) == "1" {
+				accessErrorResponse(w, denied("ownerAPI"))
+				return
+			}
 			if r.URL.Path != "/api/v1/session" && r.URL.Path != "/api/v1/swarm/pair" && r.URL.Path != "/api/v1/swarm/link" && !s.authenticated(r) {
 				http.Error(w, "Sign in required", 401)
 				return
@@ -569,6 +591,16 @@ func (s *Server) Handler() http.Handler {
 		}
 		if !s.guardRetainedChat(w, r) {
 			return
+		}
+		if caller, remote := swarm.Caller(r.Context()); remote && !caller.Pairing {
+			ctx, release := s.trackAccess(r.Context(), s.requestAccess(r))
+			defer release()
+			r = r.WithContext(ctx)
+			_, pattern := mux.Handler(r)
+			if err := s.authorizeSwarmHTTP(r, pattern); err != nil {
+				accessErrorResponse(w, err)
+				return
+			}
 		}
 		mux.ServeHTTP(w, r)
 	})
@@ -751,6 +783,22 @@ func (s *Server) key(ctx context.Context, e domain.Endpoint) (string, error) {
 	return s.Secrets.Get(ctx, e.Credential)
 }
 func (s *Server) scheduled(ctx context.Context, o calendar.Occurrence) error {
+	access, err := s.scheduleAccess(o.AccessIDs)
+	if err != nil {
+		return err
+	}
+	if err := s.requireAccess(access, domain.AccessSchedules); err != nil {
+		return err
+	}
+	if err := s.requireAccess(access, domain.AccessBots); err != nil {
+		return err
+	}
+	if err := s.requireSharedBot(access, o.BotID); err != nil {
+		return err
+	}
+	if err := s.validateAccessParents(ctx, access); err != nil {
+		return err
+	}
 	if s.maintenanceActive() {
 		return calendar.ErrDeferred
 	}
@@ -763,6 +811,7 @@ func (s *Server) scheduled(ctx context.Context, o calendar.Occurrence) error {
 		return e
 	}
 	request := SendRequest{Content: o.Prompt, Segments: []domain.Segment{{Type: "bot", BotID: b.ID}, {Type: "text", Text: o.Prompt}}, Generation: o.Generation, scheduledBot: b.ID}
+	request.access = access
 	d, e := s.send(c.ID, request)
 	if e != nil {
 		if errors.Is(e, errMaintenance) {

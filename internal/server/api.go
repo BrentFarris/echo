@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -108,7 +109,19 @@ func (s *Server) routes(mux *http.ServeMux) {
 			}
 		}
 		runs = visibleRuns
-		respond(w, map[string]any{"nodeId": s.Swarm.Node().ID, "bots": bots, "botGroups": groups, "chats": chats, "endpoints": endpoints, "plugins": ps, "schedules": schedules, "occurrences": jobs, "runs": runs, "appDock": dock, "slashCommands": commands, "questions": s.pendingQuestionState()}, e)
+		a := s.requestAccess(r)
+		peer := ""
+		if a != nil {
+			peer = a.Origin
+		}
+		access := s.effectiveAccess(peer)
+		if a != nil {
+			bots, ps, commands = s.sharedBots(a, bots), s.sharedPlugins(a, ps), s.sharedCommands(a, commands)
+			dock = slices.DeleteFunc(dock, func(id string) bool { return s.requireSharedPlugin(a, id) != nil })
+			schedules = slices.DeleteFunc(schedules, func(v calendar.Schedule) bool { return s.requireSharedBot(a, v.BotID) != nil })
+			jobs = slices.DeleteFunc(jobs, func(v calendar.Occurrence) bool { return s.requireSharedBot(a, v.BotID) != nil })
+		}
+		respond(w, map[string]any{"swarmAccess": access, "nodeId": s.Swarm.Node().ID, "bots": bots, "botGroups": groups, "chats": chats, "endpoints": endpoints, "plugins": ps, "schedules": schedules, "occurrences": jobs, "runs": runs, "appDock": dock, "slashCommands": commands, "questions": s.pendingQuestionState()}, e)
 	})
 	mux.HandleFunc("POST /api/v1/bots", func(w http.ResponseWriter, r *http.Request) {
 		var input json.RawMessage
@@ -116,7 +129,15 @@ func (s *Server) routes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
+		sharing, e := s.checkBotSave(input, s.requestAccess(r))
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
 		value, e := s.saveBotInput(input, nil)
+		if e == nil && sharing {
+			e = s.setResourceSharing("bots", value.ID, domain.Shared(value.SwarmAvailable))
+		}
 		if e == nil {
 			e = s.Calendar.ReconcileActivation(domain.Now())
 		}
@@ -150,6 +171,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 		if e := decode(w, r, &a); e != nil {
 			respond(w, nil, e)
 			return
+		}
+		if a.Endpoint.External() {
+			if err := s.requireFull(s.requestAccess(r)); err != nil {
+				respond(w, nil, err)
+				return
+			}
 		}
 		e := a.Endpoint
 		if e.ID == "" {
@@ -323,6 +350,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 		}
 		if caller, ok := swarm.Caller(r.Context()); ok {
 			a.OriginNodeID = caller.NodeID
+			a.access = s.requestAccess(r)
 			a.forwardedGroups = true
 		} else {
 			a.OriginNodeID = s.Swarm.Node().ID
@@ -365,6 +393,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
+		for _, bot := range bots {
+			if err := s.requireSharedBot(s.requestAccess(r), bot.ID); err != nil {
+				respond(w, nil, err)
+				return
+			}
+		}
 		if e := s.validateFileSegments(&a, bots, false); e != nil {
 			respond(w, nil, e)
 			return
@@ -401,11 +435,15 @@ func (s *Server) routes(mux *http.ServeMux) {
 			return
 		}
 		var a struct {
-			Enabled bool           `json:"enabled"`
-			Config  map[string]any `json:"config"`
+			Enabled        bool           `json:"enabled"`
+			Config         map[string]any `json:"config"`
+			SwarmAvailable *bool          `json:"swarmAvailable,omitempty"`
 		}
 		if e = decode(w, r, &a); e != nil {
 			respond(w, nil, e)
+			return
+		}
+		if a.SwarmAvailable != nil && !ownerAccessOnly(w, r) {
 			return
 		}
 		if a.Enabled && m.Pending {
@@ -420,9 +458,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 		} else if m.ID == "confluence" {
 			a.Config, e = confluenceSettings(m, a.Config, true)
 		} else if m.ID == "go" {
-			a.Config, e = s.goConfig(m, a.Config, true)
+			a.Config, e = s.goConfig(m, a.Config, s.executionFull(s.requestAccess(r)))
 		} else if sourceControl(m.ID) {
-			a.Config, e = s.sourceControlConfig(m, a.Config, true)
+			a.Config, e = s.sourceControlConfig(m, a.Config, s.executionFull(s.requestAccess(r)))
 		} else {
 			b, _ := json.Marshal(a.Config)
 			e = plugins.Validate(m.Settings, b)
@@ -432,6 +470,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 			return
 		}
 		m.Enabled = a.Enabled
+		if a.SwarmAvailable != nil {
+			m.SwarmAvailable = a.SwarmAvailable
+		}
 		m.Config = a.Config
 		if m.ID == "swarm" {
 			name := text(a.Config, "name")
@@ -444,7 +485,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 			}
 		}
 		e = s.saveConfiguredPlugin(m)
+		if e == nil && a.SwarmAvailable != nil {
+			e = s.setResourceSharing("plugins", m.ID, *a.SwarmAvailable)
+		}
 		if e == nil && m.ID == "swarm" {
+			if !m.Enabled {
+				s.revokeAccessWork("")
+			}
 			s.Swarm.Refresh()
 		}
 		if e == nil && m.ID == "confluence" {
@@ -510,15 +557,33 @@ func (s *Server) routes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
+		if err := s.requireSharedBot(s.requestAccess(r), a.BotID); err != nil {
+			respond(w, nil, err)
+			return
+		}
+		if err := s.checkScheduleTarget(s.requestAccess(r), a.ID); err != nil {
+			respond(w, nil, err)
+			return
+		}
 		if _, e := s.Bot(a.BotID); e != nil {
 			respond(w, nil, e)
 			return
 		}
+		accessIDs, e := s.saveScheduleAccess(s.requestAccess(r))
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		a.AccessIDs = accessIDs
 		v, e := s.Calendar.Save(a, domain.Now())
 		s.emit("changed", "", "", "", nil)
 		respond(w, v, e)
 	})
 	mux.HandleFunc("DELETE /api/v1/schedules/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.checkScheduleTarget(s.requestAccess(r), r.PathValue("id")); err != nil {
+			respond(w, nil, err)
+			return
+		}
 		e := s.Calendar.Delete(r.PathValue("id"))
 		s.emit("changed", "", "", "", nil)
 		respond(w, true, e)
@@ -546,7 +611,16 @@ func (s *Server) routes(mux *http.ServeMux) {
 			}
 			return
 		}
-		schedule, occurrence, err := s.Calendar.RunNow(s.ctx, saved.ID, domain.Now())
+		if err := s.requireSharedBot(s.requestAccess(r), saved.BotID); err != nil {
+			respond(w, nil, err)
+			return
+		}
+		accessIDs, err := s.saveScheduleAccess(s.requestAccess(r))
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		schedule, occurrence, err := s.Calendar.RunNow(s.ctx, saved.ID, domain.Now(), accessIDs...)
 		if err != nil {
 			status := http.StatusInternalServerError
 			if errors.Is(err, calendar.ErrActive) || errors.Is(err, calendar.ErrDisabled) {
@@ -570,7 +644,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 			respond(w, nil, e)
 			return
 		}
-		e := s.Calendar.Review(s.ctx, a.IDs, a.Concurrency)
+		accessIDs, e := s.saveScheduleAccess(s.requestAccess(r))
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		e = s.Calendar.ReviewVisible(s.ctx, a.IDs, a.Concurrency, func(bot string) bool { return s.requireSharedBot(s.requestAccess(r), bot) == nil }, accessIDs...)
 		s.emit("changed", "", "", "", nil)
 		respond(w, true, e)
 	})

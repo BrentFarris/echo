@@ -3,6 +3,7 @@ package swarm
 import (
 	"context"
 	"crypto/ecdh"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -299,6 +300,7 @@ func (m *Manager) savePair(p Peer) error {
 	if previous.Authorized && !previous.Blocked {
 		grants = peerGrants(previous)
 	}
+	grants = slices.DeleteFunc(grants, func(g Grant) bool { return g.PairID == p.PairID })
 	grants = append(grants, Grant{PairID: p.PairID, Inbound: p.Inbound, Outbound: p.Outbound, Hash: p.InboundHash})
 	removed := []Grant{}
 	if len(grants) > 8 {
@@ -306,11 +308,15 @@ func (m *Manager) savePair(p Peer) error {
 		grants = grants[len(grants)-8:]
 	}
 	p.Grants = grants
+	p.Revocation = previous.Revocation
 	if p.Node.URL == "" {
 		p.Node.URL = previous.Node.URL
 	}
 	if err := m.savePeer(p); err != nil {
 		return err
+	}
+	if p.Discovery == "" && previous.Discovery != "" {
+		_ = m.config.Secrets.Delete(m.ctx, previous.Discovery)
 	}
 	for _, g := range removed {
 		_ = m.config.Secrets.Delete(m.ctx, g.Inbound)
@@ -322,17 +328,45 @@ func (m *Manager) savePair(p Peer) error {
 // Pair is the only password entry point. It never uses browser cookies or the
 // loopback bootstrap exemption. Automatic discovery cannot enable a plugin.
 func (m *Manager) Pair(ctx context.Context, input PairRequest, address string) (PairResponse, error) {
+	if input.InvitationPacket != nil {
+		var inner PairRequest
+		if err := m.openInvitation(input.InvitationPacket, "invitation-request", &inner); err != nil || inner.Invitation == "" || inner.Node.ID != input.InvitationPacket.From.ID || inner.ID != input.InvitationPacket.ID {
+			return PairResponse{}, errors.New("invalid invitation pairing proof")
+		}
+		input = inner
+	} else if input.Invitation != "" {
+		return PairResponse{}, errors.New("invitation pairing requires a peer identity proof")
+	}
+	pairResponse := func(token string, err error) (PairResponse, error) {
+		result := PairResponse{Node: m.Node(), Token: token}
+		if err != nil || input.Invitation == "" {
+			return result, err
+		}
+		data, err := json.Marshal(result)
+		if err != nil {
+			return PairResponse{}, err
+		}
+		p, err := m.seal(input.Node, input.ID, "invitation-response", nil, data)
+		return PairResponse{InvitationPacket: &p}, err
+	}
 	if input.Version != Version || !compatible(input.Node) {
 		return PairResponse{}, errors.New("incompatible Swarm protocol; update both Echo instances")
 	}
 	if !input.Node.Valid() || input.Node.ID == m.Node().ID || len(input.ID) != 64 || len(input.ReturnToken) != 64 {
 		return PairResponse{}, errors.New("invalid Swarm pairing identity")
 	}
-	if err := m.config.CheckPassword(ctx, input.Password, address); err != nil {
-		return PairResponse{}, err
-	}
 	m.pairMu.Lock()
 	defer m.pairMu.Unlock()
+	if input.Invitation != "" {
+		if m.config.AcceptInvitation == nil || !slices.Contains(input.Node.Capabilities, "swarm-access/1") {
+			return PairResponse{}, errors.New("update both machines to use swarm invitations")
+		}
+		if err := m.config.AcceptInvitation(ctx, input); err != nil {
+			return PairResponse{}, err
+		}
+	} else if err := m.config.CheckPassword(ctx, input.Password, address); err != nil {
+		return PairResponse{}, err
+	}
 	m.mu.Lock()
 	p := m.peers[input.Node.ID]
 	m.mu.Unlock()
@@ -348,14 +382,20 @@ func (m *Manager) Pair(ctx context.Context, input PairRequest, address string) (
 		for _, grant := range peerGrants(p) {
 			if grant.PairID == input.ID {
 				token, err := m.config.Secrets.Get(ctx, grant.Inbound)
-				return PairResponse{Node: m.Node(), Token: token}, err
+				return pairResponse(token, err)
 			}
 		}
 	}
 	token := randomID()
 	prefix := m.config.SecretPrefix + "/peers/" + input.Node.ID
 	p = Peer{Node: input.Node, Authorized: true, PairID: input.ID, Inbound: prefix + "/" + input.ID + "/in", Outbound: prefix + "/" + input.ID + "/out", InboundHash: tokenHash(token), Discovery: prefix + "/discovery", LastSeen: time.Now().UTC()}
-	for key, value := range map[string]string{p.Inbound: token, p.Outbound: input.ReturnToken, p.Discovery: input.Password} {
+	secrets := map[string]string{p.Inbound: token, p.Outbound: input.ReturnToken}
+	if input.Invitation != "" {
+		p.Discovery = ""
+	} else {
+		secrets[p.Discovery] = input.Password
+	}
+	for key, value := range secrets {
 		if err := m.config.Secrets.Set(ctx, key, value); err != nil {
 			return PairResponse{}, err
 		}
@@ -364,11 +404,19 @@ func (m *Manager) Pair(ctx context.Context, input PairRequest, address string) (
 		return PairResponse{}, err
 	}
 	m.changed()
-	return PairResponse{Node: m.Node(), Token: token}, nil
+	return pairResponse(token, nil)
 }
 
 func (m *Manager) Connect(ctx context.Context, endpoint, nodeID, password string, activate bool) (Node, error) {
-	if password == "" {
+	return m.connect(ctx, endpoint, nodeID, password, "", activate, nil)
+}
+
+func (m *Manager) ConnectInvitation(ctx context.Context, endpoint, nodeID, invitation string, beforeGrant func(Node) error) (Node, error) {
+	return m.connect(ctx, endpoint, nodeID, "", invitation, true, beforeGrant)
+}
+
+func (m *Manager) connect(ctx context.Context, endpoint, nodeID, password, invitation string, activate bool, beforeGrant func(Node) error) (Node, error) {
+	if password == "" && invitation == "" {
 		return Node{}, errors.New("enter the remote owner's password")
 	}
 	var err error
@@ -389,8 +437,32 @@ func (m *Manager) Connect(ctx context.Context, endpoint, nodeID, password string
 	if !m.Enabled() {
 		return Node{}, errors.New("Swarm is disabled")
 	}
-	input := PairRequest{Version: Version, ID: randomID(), Node: m.Node(), Password: password, ReturnToken: randomID(), Activate: activate}
+	input := PairRequest{Version: Version, ID: randomID(), Node: m.Node(), Password: password, Invitation: invitation, ReturnToken: randomID(), Activate: activate}
+	var issuer Node
+	if invitation != "" {
+		secret, pub, ok := strings.Cut(invitation, ".")
+		key, err := hex.DecodeString(pub)
+		h := sha256.Sum256(key)
+		issuer = Node{ID: hex.EncodeToString(h[:16]), Name: "issuer", PublicKey: key}
+		if err != nil || !ok || len(secret) != 64 || !issuer.Valid() || issuer.ID == input.Node.ID || (nodeID != "" && nodeID != issuer.ID) {
+			return Node{}, errors.New("invalid invitation code or destination")
+		}
+		// Retrying this code from this private identity reproduces the same transaction.
+		derive := func(label string) string {
+			mac := hmac.New(sha256.New, m.key.Bytes())
+			mac.Write([]byte(label + "\x00" + invitation))
+			return hex.EncodeToString(mac.Sum(nil))
+		}
+		input.ID, input.ReturnToken, input.Invitation = derive("invitation-id"), derive("invitation-return"), secret
+	}
 	raw, _ := json.Marshal(input)
+	if invitation != "" {
+		p, err := m.seal(issuer, input.ID, "invitation-request", nil, raw)
+		if err != nil {
+			return Node{}, err
+		}
+		raw, _ = json.Marshal(PairRequest{InvitationPacket: &p})
+	}
 	var client *http.Client
 	if nodeID != "" {
 		client = m.client(nodeID, true)
@@ -417,16 +489,39 @@ func (m *Manager) Connect(ctx context.Context, endpoint, nodeID, password string
 	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&result); err != nil {
 		return Node{}, err
 	}
+	if invitation != "" {
+		p := result.InvitationPacket
+		if p == nil || p.ID != input.ID || p.From.ID != issuer.ID {
+			return Node{}, errors.New("invalid invitation issuer proof")
+		}
+		if err := m.openInvitation(p, "invitation-response", &result); err != nil || result.Node.ID != issuer.ID {
+			return Node{}, errors.New("invalid invitation response")
+		}
+	}
 	if !result.Node.Valid() || result.Node.ID == input.Node.ID || !compatible(result.Node) || len(result.Token) != 64 || nodeID != "" && nodeID != result.Node.ID {
 		return Node{}, errors.New("remote Echo returned an invalid or incompatible identity")
 	}
 	if nodeID == "" {
 		result.Node.URL = endpoint
 	}
+	if invitation != "" && !slices.Contains(result.Node.Capabilities, "swarm-access/1") {
+		return Node{}, errors.New("update the remote machine to use invitations")
+	}
+	if beforeGrant != nil {
+		if err := beforeGrant(result.Node); err != nil {
+			return Node{}, err
+		}
+	}
 	m.pairMu.Lock()
 	prefix := m.config.SecretPrefix + "/peers/" + result.Node.ID
 	p := Peer{Node: result.Node, Authorized: true, PairID: input.ID, Inbound: prefix + "/" + input.ID + "/in", Outbound: prefix + "/" + input.ID + "/out", InboundHash: tokenHash(input.ReturnToken), Discovery: prefix + "/discovery", LastSeen: time.Now().UTC()}
-	for key, value := range map[string]string{p.Inbound: input.ReturnToken, p.Outbound: result.Token, p.Discovery: password} {
+	secrets := map[string]string{p.Inbound: input.ReturnToken, p.Outbound: result.Token}
+	if invitation != "" {
+		p.Discovery = ""
+	} else {
+		secrets[p.Discovery] = password
+	}
+	for key, value := range secrets {
 		if err = m.config.Secrets.Set(ctx, key, value); err != nil {
 			break
 		}
@@ -444,6 +539,24 @@ func (m *Manager) Connect(ctx context.Context, endpoint, nodeID, password string
 	m.announce()
 	m.changed()
 	return result.Node, nil
+}
+
+func (m *Manager) openInvitation(p *packet, kind string, target any) error {
+	if p.To != m.Node().ID || p.Kind != kind || len(p.Data) > 64<<10 {
+		return errors.New("invalid invitation packet")
+	}
+	aead, err := m.aead(p.From)
+	if err != nil {
+		return err
+	}
+	if len(p.Nonce) != aead.NonceSize() {
+		return errors.New("invalid invitation nonce")
+	}
+	data, err := aead.Open(nil, p.Nonce, p.Data, associated(*p))
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, target)
 }
 
 func noRedirect(*http.Request, []*http.Request) error {
@@ -510,6 +623,7 @@ func (m *Manager) Revoke(id string) error {
 	}
 	grants := peerGrants(p)
 	p.Authorized, p.Blocked, p.Connected = false, true, false
+	p.Revocation = randomID()
 	p.InboundHash = ""
 	p.Grants = nil
 	if err := m.savePeer(p); err != nil {
@@ -708,6 +822,10 @@ func (m *Manager) JSON(ctx context.Context, id, method, path string, input, outp
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(response.Body, 8192))
+		var denied AccessDenied
+		if response.StatusCode == http.StatusForbidden && json.Unmarshal(data, &denied) == nil && denied.Code == "swarm_access_denied" {
+			return &denied
+		}
 		return fmt.Errorf("%s", strings.TrimSpace(string(data)))
 	}
 	if output == nil {
