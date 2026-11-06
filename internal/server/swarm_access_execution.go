@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"time"
@@ -225,10 +226,8 @@ func (s *Server) authorizeWorker(req workerRequest, fingerprint string) error {
 		}
 		var endpoint domain.Endpoint
 		_ = s.Store.Get("endpoints", g.EndpointID, &endpoint)
-		if endpoint.External() {
-			if err := s.requireFull(a); err != nil {
-				return err
-			}
+		if err := s.requireModelAccess(a, endpoint); err != nil {
+			return fmt.Errorf("@%s: %w", b.Handle, err)
 		}
 	}
 	return nil

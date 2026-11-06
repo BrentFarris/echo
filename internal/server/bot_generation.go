@@ -10,6 +10,14 @@ import (
 	"github.com/brent/echo/internal/model"
 )
 
+func (s *Server) requireModelAccess(access *domain.ExecutionAccess, ep domain.Endpoint) error {
+	if ep.External() && !s.executionFull(access) {
+		reason := fmt.Sprintf("The %q external agent on %s runs as the machine owner and requires Full access.", ep.Name, s.Swarm.Node().Name)
+		return &accessError{"fullAccess", reason + " Select an HTTP model connection to use this bot with shared access."}
+	}
+	return nil
+}
+
 func (s *Server) normalizeBotGeneration(b domain.Bot) (domain.Bot, error) {
 	if b.ThinkingOverride != nil {
 		v := strings.TrimSpace(*b.ThinkingOverride)
@@ -41,14 +49,18 @@ func (s *Server) normalizeBotGeneration(b domain.Bot) (domain.Bot, error) {
 	return b, nil
 }
 
-// resolveGeneration expands endpoint defaults without applying live bot preferences.
-func (s *Server) resolveGeneration(g domain.Generation) (domain.Generation, domain.Endpoint, error) {
+// Validate the same endpoint snapshot that the run or slot probe will use.
+// Callers choose whether to apply live bot overrides or use captured settings.
+func (s *Server) resolveGeneration(bot domain.Bot, g domain.Generation, access *domain.ExecutionAccess, query *slotQuery) (domain.Generation, domain.Endpoint, error) {
 	var ep domain.Endpoint
 	if g.EndpointID == "" || s.Store.Get("endpoints", g.EndpointID, &ep) != nil {
-		return g, ep, fmt.Errorf("model connection %q is unavailable; configure and select a model", g.EndpointID)
+		return g, ep, fmt.Errorf("model connection %q is unavailable on %s. Configure and select a model", g.EndpointID, s.Swarm.Node().Name)
+	}
+	if err := s.requireModelAccess(access, ep); err != nil {
+		return g, ep, err
 	}
 	if g.Model == "" {
 		g.Model = ep.Model
 	}
-	return g, ep, nil
+	return g, ep, s.validateGeneration(bot, g, ep, query)
 }

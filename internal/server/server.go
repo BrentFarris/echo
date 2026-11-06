@@ -503,7 +503,7 @@ func (s *Server) snapshot(id string) ([]domain.Message, int64, error) {
 func respond(w http.ResponseWriter, v any, e error) {
 	var remote *swarm.AccessDenied
 	if errors.As(e, &remote) {
-		accessErrorResponse(w, &accessError{remote.Permission, remote.Reason})
+		accessErrorResponse(w, &accessError{remote.Permission, e.Error()})
 		return
 	}
 	var access *accessError

@@ -238,13 +238,7 @@ func (s *Server) sendResolved(chatID string, req SendRequest) (*dispatch, error)
 			return nil, err
 		}
 		ids = append(ids, b.ID)
-		generations[i], endpoints[i], e = s.resolveGeneration(b.OverrideGeneration(req.Generation))
-		if e == nil && endpoints[i].External() {
-			e = s.requireFull(req.access)
-		}
-		if e == nil {
-			e = s.validateGeneration(b, generations[i], nil)
-		}
+		generations[i], endpoints[i], e = s.resolveGeneration(b, b.OverrideGeneration(req.Generation), req.access, nil)
 		if e != nil {
 			return nil, fmt.Errorf("@%s: %w", b.Handle, e)
 		}
@@ -531,8 +525,8 @@ func (s *Server) runBot(ctx context.Context, d *dispatch, bot domain.Bot, run do
 	ctx = s.accessContext(ctx, d.access)
 	ctx = context.WithValue(ctx, providerKey{}, &providerInvocation{Statistics: run.Statistics, Scope: domain.ExecutionScope{Access: d.access, Bot: bot, ChatID: run.ChatID, RunID: run.ID, DispatchID: d.id}})
 	if endpoint.External() {
-		if err := s.requireFull(d.access); err != nil {
-			return err
+		if err := s.requireModelAccess(d.access, endpoint); err != nil {
+			return fmt.Errorf("@%s: %w", bot.Handle, err)
 		}
 		return s.runExternalAgent(ctx, d, bot, run, endpoint)
 	}

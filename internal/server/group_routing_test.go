@@ -147,6 +147,58 @@ func TestOneGroupUnavailableModelKeepsDraft(t *testing.T) {
 	}
 }
 
+func TestSwarmGroupSkipsExternalAgentWithRestrictedAccess(t *testing.T) {
+	entry, _ := swarmFixture(t, "desktop", remotePassword)
+	worker, host := swarmFixture(t, "worker", remotePassword)
+	node := connectSwarm(t, entry, host, remotePassword)
+	g := attachModel(t, worker, func(w http.ResponseWriter, r *http.Request) { stream(w, "done", nil) })
+	cli, log := externalFixture(t, worker, "codex-cli")
+	bot, err := worker.saveBot(domain.Bot{Handle: "cli", ModelOverride: &domain.BotModelOverride{EndpointID: cli.EndpointID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// CLI is first in rotation, but only the HTTP bot can run for this peer.
+	if err := worker.saveAccessPolicy(entry.Swarm.Node().ID, domain.SwarmPolicy{Permissions: map[string]bool{domain.AccessMachine: false}}); err != nil {
+		t.Fatal(err)
+	}
+	group := makeOneGroup(t, worker, domain.BotGroupMember{BotID: bot.ID}, domain.BotGroupMember{BotID: "echo"})
+	c := chatForSwarm(t, entry)
+	req := SendRequest{Content: "@worker.pool hello", GenerationByNode: map[string]domain.Generation{node.ID: g}}
+	d, err := entry.send(c.ID, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDispatch(t, d)
+	runs := dispatchRuns(t, entry, d)
+	if len(runs) != 1 || runs[0].BotID != swarm.Key(node.ID, "echo") || runs[0].Status != "completed" {
+		t.Fatalf("expected only the HTTP bot to complete, got %+v", runs)
+	}
+
+	for _, mode := range []string{"all", "one"} {
+		group.DeliveryMode = mode
+		if mode == "one" {
+			group.Members = group.Members[:1]
+		}
+		if _, err := worker.saveBotGroup(t.Context(), group.ID, group); err != nil {
+			t.Fatal(err)
+		}
+		c = chatForSwarm(t, entry)
+		_, err = entry.send(c.ID, req)
+		w := httptest.NewRecorder()
+		respond(w, nil, err)
+		var denial swarm.AccessDenied
+		if json.Unmarshal(w.Body.Bytes(), &denial) != nil || w.Code != http.StatusForbidden || denial.Permission != "fullAccess" || !strings.Contains(denial.Reason, "@cli") || !strings.Contains(denial.Reason, "External fixture") {
+			t.Fatalf("%s delivery: got %d %s", mode, w.Code, w.Body.String())
+		}
+		if ms, err := entry.Store.Messages(c.ID); err != nil || len(ms) != 0 {
+			t.Fatalf("%s delivery accepted a denied turn: %v %v", mode, ms, err)
+		}
+	}
+	if _, err := os.Stat(log); !os.IsNotExist(err) {
+		t.Fatalf("restricted group invoked the external CLI: %v", err)
+	}
+}
+
 func TestOneGroupFileEligibility(t *testing.T) {
 	s := testServer(t)
 	g, started := controlledModel(t, s)

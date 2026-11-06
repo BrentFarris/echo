@@ -753,8 +753,8 @@ func (s *Server) checkWorker(req workerRequest, fingerprint string) error {
 		if g.EndpointID == "" {
 			g = s.defaultGeneration()
 		}
-		if err = s.validateGeneration(bot, g, nil); err != nil {
-			return err
+		if _, _, err = s.resolveGeneration(bot, g, s.workerAccess(req), nil); err != nil {
+			return fmt.Errorf("@%s: %w", bot.Handle, err)
 		}
 	}
 	for _, seg := range req.Message.Segments {

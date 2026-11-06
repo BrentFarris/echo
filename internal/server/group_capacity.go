@@ -126,20 +126,8 @@ func (s *Server) checkGroupModel(ep domain.Endpoint, name string, q *slotQuery) 
 	return err
 }
 
-func (s *Server) botGeneration(bot domain.Bot, g domain.Generation, query *slotQuery) error {
-	if g.EndpointID == "" {
-		g = s.defaultGeneration()
-	}
-	g = bot.OverrideGeneration(g)
-	return s.validateGeneration(bot, g, query)
-}
-
 // Captured run settings are validated without consulting current overrides.
-func (s *Server) validateGeneration(bot domain.Bot, g domain.Generation, query *slotQuery) error {
-	var ep domain.Endpoint
-	if err := s.Store.Get("endpoints", g.EndpointID, &ep); err != nil {
-		return fmt.Errorf("select a model on %s", s.Swarm.Node().Name)
-	}
+func (s *Server) validateGeneration(bot domain.Bot, g domain.Generation, ep domain.Endpoint, query *slotQuery) error {
 	if err := model.ValidateEndpoint(ep); err != nil {
 		return err
 	}
@@ -153,7 +141,7 @@ func (s *Server) validateGeneration(bot domain.Bot, g domain.Generation, query *
 		_, err := externalagent.Resolve(ep)
 		return err
 	}
-	if g.Model == "" && ep.Model == "" {
+	if g.Model == "" {
 		return errors.New("select a model name")
 	}
 	if ep.Provider != "" {
@@ -171,9 +159,6 @@ func (s *Server) validateGeneration(bot domain.Bot, g domain.Generation, query *
 	}
 	if query == nil {
 		return nil
-	}
-	if g.Model == "" {
-		g.Model = ep.Model
 	}
 	return s.checkGroupModel(ep, g.Model, query)
 }
@@ -204,23 +189,25 @@ func (s *Server) localSlot(home string, q slotQuery) (slotInfo, error) {
 	if q.Origin != s.Swarm.Node().ID && !s.Swarm.Authorized(q.Origin) {
 		return info, errors.New("entry machine is not paired with this worker")
 	}
-	if home != s.Swarm.Node().ID || q.Origin != s.Swarm.Node().ID || q.Access != nil {
-		a := s.workerAccess(workerRequest{Home: home, Origin: q.Origin, Access: q.Access})
-		if err := s.validateAccessParents(s.ctx, a); err != nil {
-			return info, err
-		}
-		if err := s.requireAccess(a, domain.AccessBots); err != nil {
-			return info, err
-		}
-		if err := s.requireSharedBot(a, q.Bot); err != nil {
-			return info, err
-		}
+	access := s.workerAccess(workerRequest{Home: home, Origin: q.Origin, Access: q.Access})
+	if err := s.validateAccessParents(s.ctx, access); err != nil {
+		return info, err
+	}
+	if err := s.requireAccess(access, domain.AccessBots); err != nil {
+		return info, err
+	}
+	if err := s.requireSharedBot(access, q.Bot); err != nil {
+		return info, err
 	}
 	bot, err := s.Bot(q.Bot)
 	if err != nil {
 		return info, errors.New("bot no longer exists")
 	}
-	if err := s.botGeneration(bot, q.Generation, &q); err != nil {
+	g := q.Generation
+	if g.EndpointID == "" {
+		g = s.defaultGeneration()
+	}
+	if _, _, err := s.resolveGeneration(bot, bot.OverrideGeneration(g), access, &q); err != nil {
 		return info, err
 	}
 	info.Handle, info.Revision = bot.Handle, bot.Revision

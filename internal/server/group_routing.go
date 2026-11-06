@@ -7,7 +7,6 @@ import (
 	"maps"
 	"slices"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/brent/echo/internal/coordinator"
@@ -422,7 +421,7 @@ func (s *Server) tryGroupTurn(ctx context.Context, req SendRequest) (actual *dis
 		}
 		start := slices.IndexFunc(g.Candidates, func(m domain.BotGroupMember) bool { return refOf(m) == last }) + 1
 		p := groupPool{group: g}
-		var reasons []string
+		var reasons []error
 		for i := range g.Candidates {
 			m := g.Candidates[(start+i)%len(g.Candidates)]
 			if s.swarmAvailable(m.NodeID) {
@@ -432,7 +431,7 @@ func (s *Server) tryGroupTurn(ctx context.Context, req SendRequest) (actual *dis
 			}
 			info, err := probe(refOf(m))
 			if err != nil {
-				reasons = append(reasons, fmt.Sprintf("@%s: %s", m.Handle, err))
+				reasons = append(reasons, fmt.Errorf("@%s: %w", m.Handle, err))
 				continue
 			}
 			m.Handle = info.Handle
@@ -442,7 +441,7 @@ func (s *Server) tryGroupTurn(ctx context.Context, req SendRequest) (actual *dis
 			p.choices = append(p.choices, groupChoice{m, info})
 		}
 		if len(p.choices) == 0 {
-			return nil, fmt.Errorf("no eligible bot in %s (%s)", g.Text, strings.Join(reasons, ", "))
+			return nil, errors.Join(fmt.Errorf("no eligible bot in %s", g.Text), errors.Join(reasons...))
 		}
 		sort.SliceStable(p.choices, func(i, j int) bool { return p.choices[i].slot.Active == 0 && p.choices[j].slot.Active != 0 })
 		pools = append(pools, p)
